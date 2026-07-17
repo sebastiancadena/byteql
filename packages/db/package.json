@@ -1,0 +1,21 @@
+{
+  "name": "@byteql/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest --passWithNoTests"
+  },
+  "dependencies": {
+    "@duckdb/duckdb-wasm": "1.33.1-dev57.0",
+    "apache-arrow": "^21.1.0"
+  }
+}

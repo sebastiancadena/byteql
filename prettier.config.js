@@ -1,0 +1,6 @@
+export default {
+  plugins: ['prettier-plugin-svelte'],
+  singleQuote: true,
+  trailingComma: 'all',
+  printWidth: 110,
+};

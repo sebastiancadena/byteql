@@ -1,0 +1,23 @@
+{
+  "name": "@byteql/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest --passWithNoTests"
+  },
+  "dependencies": {
+    "apache-arrow": "^21.1.0",
+    "jsep": "^1.4.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  }
+}
