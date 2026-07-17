@@ -150,7 +150,7 @@ packages:
 
 Set `target: ES2022`, `module: ESNext`, `moduleResolution: Bundler`, `strict: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, `verbatimModuleSyntax: true`, and `skipLibCheck: true` in `tsconfig.base.json`. Ignore `.superpowers/`, `node_modules/`, `dist/`, `coverage/`, `playwright-report/`, `test-results/`, and `packages/formats/*/gen/`.
 
-Core, database, and MIDI package manifests initially use `build: "tsc -p tsconfig.json"`, `check: "tsc -p tsconfig.json --noEmit"`, and `test: "vitest"`. The web package uses `build: "vite build"`, `check: "svelte-check --tsconfig ./tsconfig.json"`, `test: "vitest"`, `test:e2e: "playwright test"`, and `dev: "vite"`. Each library `src/index.ts` is an explicit public entrypoint and each package sets `type: "module"`.
+Core, database, and MIDI package manifests initially use `build: "tsc -p tsconfig.json"`, `check: "tsc -p tsconfig.json --noEmit"`, and `test: "vitest --passWithNoTests"`. The web package uses `build: "vite build"`, `check: "svelte-check --tsconfig ./tsconfig.json"`, `test: "vitest --passWithNoTests"`, `test:e2e: "playwright test"`, and `dev: "vite"`. `--passWithNoTests` keeps the workspace gate green before later tasks add package-specific tests; Task 1 still proves the core package through its required smoke test. Each library `src/index.ts` is an explicit public entrypoint and each package sets `type: "module"`.
 
 Configure ESLint with `@eslint/js` recommended rules, `typescript-eslint` recommended rules, and `eslint-plugin-svelte` flat recommended rules. Configure Prettier with `plugins: ['prettier-plugin-svelte']`, `singleQuote: true`, `trailingComma: 'all'`, and `printWidth: 110`.
 
