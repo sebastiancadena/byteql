@@ -1,10 +1,11 @@
 import {
+  IssueCollector,
   compileProjection,
   parseProjectionSpec,
   projectTree,
   projectedTableToArrow,
   tableToIpc,
-  type ParseIssue,
+  type IssueReport,
   type ParseResult,
   type ProjectedTable,
   type TableTransfer,
@@ -122,11 +123,11 @@ const appendProjected = (target: MutableProjectedTable, source: ProjectedTable):
   target.rowCount += source.rowCount;
 };
 
-const parseIssue = (stage: ParseIssue['stage'], track: TrackChunk, error: unknown): ParseIssue => {
+const issueReport = (stage: string, track: TrackChunk, error: unknown): IssueReport => {
   if (error instanceof MidiParseError) {
     return {
       stage,
-      track: track.index,
+      ordinal: track.index,
       code: error.code,
       message: error.message,
       recoverable: true,
@@ -134,11 +135,10 @@ const parseIssue = (stage: ParseIssue['stage'], track: TrackChunk, error: unknow
       sourceEnd: error.offset < track.bodyEnd ? error.offset + 1 : error.offset,
     };
   }
-
   const code = stage === 'parsing' ? 'KAITAI_PARSE_FAILED' : 'PROJECTION_FAILED';
   return {
     stage,
-    track: track.index,
+    ordinal: track.index,
     code,
     message:
       stage === 'parsing'
@@ -149,31 +149,6 @@ const parseIssue = (stage: ParseIssue['stage'], track: TrackChunk, error: unknow
     sourceEnd: track.bodyEnd,
   };
 };
-
-const errorsTable = (issues: readonly ParseIssue[]): MutableProjectedTable => ({
-  name: 'errors',
-  rowCount: issues.length,
-  columns: {
-    error_id: issues.map((_issue, index) => BigInt(index + 1)),
-    stage: issues.map((issue) => issue.stage),
-    track: issues.map((issue) => issue.track),
-    code: issues.map((issue) => issue.code),
-    message: issues.map((issue) => issue.message),
-    recoverable: issues.map((issue) => issue.recoverable),
-    _src_start: issues.map((issue) => (issue.sourceStart === null ? null : BigInt(issue.sourceStart))),
-    _src_end: issues.map((issue) => (issue.sourceEnd === null ? null : BigInt(issue.sourceEnd))),
-  },
-  types: {
-    error_id: 'int64',
-    stage: 'utf8',
-    track: 'int32',
-    code: 'utf8',
-    message: 'utf8',
-    recoverable: 'bool',
-    _src_start: 'uint64',
-    _src_end: 'uint64',
-  },
-});
 
 const toTransfer = (table: ProjectedTable): TableTransfer => {
   const arrow = projectedTableToArrow(table);
@@ -236,7 +211,7 @@ export async function parseAndProjectMidi(
     );
   }
 
-  const issues: ParseIssue[] = [];
+  const collector = new IssueCollector({ ordinalColumn: 'track' });
   const total = container.tracks.length;
   const normalizedTracks: NormalizedTrackWork[] = [];
 
@@ -244,7 +219,7 @@ export async function parseAndProjectMidi(
   for (const [index, track] of container.tracks.entries()) {
     throwIfAborted(signal);
     const normalized = normalizeTrack(track);
-    if (normalized.error) issues.push(parseIssue('normalizing', track, normalized.error));
+    if (normalized.error) collector.report(issueReport('normalizing', track, normalized.error));
     normalizedTracks.push({ track, normalized });
     await yieldToWorker();
     throwIfAborted(signal);
@@ -263,7 +238,7 @@ export async function parseAndProjectMidi(
       );
       parsedTracks.push({ ...work, safeEvents });
     } catch (error) {
-      issues.push(parseIssue('parsing', track, error));
+      collector.report(issueReport('parsing', track, error));
       parsedTracks.push(null);
     }
     await yieldToWorker();
@@ -304,7 +279,7 @@ export async function parseAndProjectMidi(
           appendProjected(target, table);
         }
       } catch (error) {
-        issues.push(parseIssue('projecting', track, error));
+        collector.report(issueReport('projecting', track, error));
       }
     }
     await yieldToWorker();
@@ -313,12 +288,12 @@ export async function parseAndProjectMidi(
   }
 
   throwIfAborted(signal);
-  const tables = [...baseTables, errorsTable(issues)].map(toTransfer);
+  const tables = [...baseTables, collector.table()].map(toTransfer);
   const smpte = container.header.divisionMode === 'smpte';
   return {
     format: { id: 'standard_midi_file', title: 'Standard MIDI file' },
     tables,
-    issues,
+    issues: collector.issues(),
     queries: midiQueries,
     capabilities: {
       audio: smpte

@@ -6,7 +6,8 @@ export interface TableTransfer {
 }
 
 export interface ParseIssue {
-  stage: 'framing' | 'normalizing' | 'parsing' | 'projecting';
+  /** Well-known values: 'framing', 'normalizing', 'parsing', 'projecting', 'dissecting'. */
+  stage: string;
   track: number | null;
   code: string;
   message: string;
