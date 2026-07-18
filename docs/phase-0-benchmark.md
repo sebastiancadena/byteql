@@ -17,7 +17,8 @@ and attaches its timing and does not fail merely because a later shared runner e
 | CPU                    | ARM Cortex-X925/Cortex-A725, 20 logical processors                       |
 | Browser                | system snap Chromium 150.0.7871.100, headless                            |
 | Delivery               | Vite production-format E2E build in `dist-e2e`, served on `127.0.0.1`    |
-| Browser state          | newly launched Playwright run and fresh isolated browser context         |
+| Browser run            | full Playwright suite; performance test ran third                        |
+| Test isolation         | fresh isolated browser context for the performance test                  |
 | Fixture                | `demo.mid`, 98 uncompressed bytes                                        |
 | Fixture SHA-256        | `487018c42a265f4a32aeff9ccc0d32295c73ef28eb446f45b5f6c288821d7eea`       |
 | Start                  | immediately before clicking `Try sample` after `[data-app-ready="true"]` |
@@ -32,7 +33,9 @@ the preview serves `dist-e2e` while normal `dist` contains none of those markers
 
 The timer intentionally excludes initial page and DuckDB-WASM startup. That matches the Task 12
 acceptance definition: sample acceptance begins at the explicit `Try sample` action in a fresh
-context. The complete browser process was newly launched for this dedicated one-test observation.
+context. The full Playwright suite launched the browser, and this performance case ran third after
+the audio and happy-path cases. Playwright gave the performance test a fresh isolated browser context;
+this was not a dedicated one-test browser observation.
 
 The accepted review record supplies 307.29 ms precision and the date above; this document does not
 invent a finer elapsed value or attachment timestamp.
