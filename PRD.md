@@ -4,9 +4,9 @@
 
 | | |
 |---|---|
-| Status | Draft v0.2 |
+| Status | Draft v0.3 — updated 2026-07-18 |
 | Owner | TBD |
-| Target | Phase 0 spike: TBD · Phase 1: TBD |
+| Progress | Phase 0 ✅ shipped · Phase 1a engine prep ✅ shipped 2026-07-18 · Phase 1 (pcap) next |
 
 ## 1. Problem
 
@@ -123,6 +123,8 @@ interface dissector {
 
 Gallery formats ship as precompiled Kaitai→JS parsers driven by the projection engine (fast, small, no component overhead). The component boundary exists for what Kaitai can't express — and we hit that immediately with EVTX (see Risks). Because the contract is "Arrow IPC bytes in and out," a JS module and a Rust component are interchangeable.
 
+*Status: the TypeScript mirror of this contract (`FormatPack`/`RecordSource` in `packages/core/src/protocol.ts`) shipped with Phase 1a — the MIDI pack implements it and the parse worker's probe registry drives it.*
+
 Build decision: precompile all gallery `.ksy` at build time. The Kaitai compiler is Scala.js and weighs several MB — lazy-load it only for the "bring your own .ksy" path, never in the critical bundle.
 
 ## 10. Tech stack
@@ -143,9 +145,11 @@ Build decision: precompile all gallery `.ksy` at build time. The Kaitai compiler
 
 ## 12. Roadmap
 
-**Phase 0 — MIDI spike.** Smallest end-to-end loop: drop a `.mid`, get an `events` table, run SQL. Killer demo: pipe query results into Tone.js — `select * from events where channel = 9` and you hear only the drums. "SQL you can listen to" is the shareable moment, and MIDI's tiny files dodge every memory problem while proving the core loop. *Exit criteria: §6 Phase 0 metrics; projection DSL conformance suite exists.*
+**Phase 0 — MIDI spike. ✅ Shipped.** Smallest end-to-end loop: drop a `.mid`, get an `events` table, run SQL. Killer demo: pipe query results into Tone.js — `select * from events where channel = 9` and you hear only the drums. "SQL you can listen to" is the shareable moment, and MIDI's tiny files dodge every memory problem while proving the core loop. *Status: cold sample → first result measured at 307 ms vs the <10 s target (`docs/phase-0-benchmark.md`); the projection DSL conformance suite exists. Two manual exit items remain open: the audible smoke test and the unaided external reproduction (`docs/phase-0-external-test.md`).*
 
-**Phase 1 — pcap and the real engine.** Streaming framer, dissector registry, multi-table output with `packet_id` joins, OPFS/Parquet spill, hex-provenance UI. *Exit: architecture proven per §6; everything after is content and plugins.*
+**Phase 1a — engine generalization (prep). ✅ Shipped 2026-07-18.** Everything the second format needs, proven against MIDI as a continuous regression harness: projection spec v0.2 (`dissect` chaining + `parent_key`) validated at load and executed by a single-pass engine with an incremental Arrow batch-flush seam; `ProjectionSession` and a generic per-record errors table (`IssueCollector`) lifted into core; hex literals; `timestamp_us`/`binary` column types; the WIT-aligned `FormatPack`/`RecordSource` boundary; and a probe-based format registry in the parse worker. *Design record and binding runtime contracts: `docs/superpowers/specs/2026-07-18-phase1-generalization-prep-design.md` (see its "Implementation notes").*
+
+**Phase 1 — pcap and the real engine. ⬅ Next.** Remaining scope: the pcap pack with its streaming container framer; worker-protocol streaming and DuckDB incremental registration; OPFS/Parquet spill (requires deliberately revisiting the DuckDB hardening PRAGMAs); File System Access intake with size-tiering; and the hex-provenance UI. Starts with a small pre-task batching the review-deferred cleanups from Phase 1a. *Exit: architecture proven per §6; everything after is content and plugins.*
 
 **Phase 2 — forensics pack + plugin model.** windows_lnk_file, regf, utmp, systemd_journal via the Kaitai path; EVTX as the first Rust component (proving the boundary); a `union all` timeline view across all forensic tables as the flagship feature.
 
@@ -178,6 +182,14 @@ Build decision: precompile all gallery `.ksy` at build time. The Kaitai compiler
 ---
 
 ## Appendix A — The projection DSL
+
+> **Implementation status (2026-07-18):** spec v0.2 is implemented and conformance-tested in
+> `packages/core/src/projection/` — anchor paths, state registers, `where`/`when` guards,
+> `parent_key`, `dissect` chaining with composed provenance, hex literals, and the
+> `timestamp_us`/`binary` column types. The function library currently ships `enum_str`, `to_i`,
+> `len`, `u24be` (`substring` and format helpers like `ip4_str` arrive with pcap). Binding runtime
+> contracts (payload offset convention, session state semantics, drain-before-finish) are recorded
+> in `docs/superpowers/specs/2026-07-18-phase1-generalization-prep-design.md` → "Implementation notes".
 
 ### Design principles
 
@@ -212,7 +224,7 @@ tables:
 
 **Anchor paths.** The `rows` path is the heart of the spec:
 
-```
+```text
 path      = "$" , { step } ;
 step      = "." , ident                 (* struct field *)
           | "[" , "*" , "]"             (* iterate array *)
@@ -278,25 +290,31 @@ Compile the spec once per file-load into a small IR: anchor selectors become a s
 
 ### Repo structure
 
-```
+```text
 byteql/
 ├── pnpm-workspace.yaml              # pnpm: apps/*, packages/*, packages/formats/*
 ├── packages/
 │   ├── core/                        # zero-DOM, runs in Node and workers
 │   │   └── src/
 │   │       ├── projection/
-│   │       │   ├── spec.ts          # YAML schema types + zod validation
-│   │       │   ├── expression.ts    # safe expression parse/validate/evaluate
-│   │       │   ├── anchors.ts       # anchor-path compile + deterministic traversal
-│   │       │   └── project.ts       # state registers, row emit, keys, provenance
+│   │       │   ├── spec.ts          # YAML schema types (v0.1/v0.2) + zod validation
+│   │       │   ├── expression.ts    # safe expression parse/validate/evaluate (hex literals)
+│   │       │   ├── anchors.ts       # anchor-path compile + single-anchor traversal
+│   │       │   ├── walk.ts          # combined anchor matcher + single-pass walker
+│   │       │   ├── project.ts       # compile + execution: rows, keys, state, dissect, provenance
+│   │       │   ├── session.ts       # ProjectionSession: multi-root projection over batch builders
+│   │       │   └── parsers.ts       # RecordParser/ParserRegistry seam for dissect child parsers
 │   │       ├── arrow/build.ts       # per-table Arrow vectors + IPC serialization
-│   │       ├── protocol.ts          # worker/table-transfer contracts shared with the app
+│   │       ├── arrow/batch.ts       # TableBatchBuilder (flush-threshold seam)
+│   │       ├── issues.ts            # IssueCollector → issues list + generic errors table
+│   │       ├── protocol.ts          # worker contracts + FormatPack/RecordSource (WIT mirror)
 │   │       └── index.ts
 │   ├── formats/
 │   │   └── midi/
 │   │       ├── standard_midi_file.ksy   # vendored, patched (gotchas)
 │   │       ├── midi.tables.yaml
 │   │       ├── queries.yaml             # canned queries (double as LLM few-shots)
+│   │       ├── src/                     # framer, running-status normalizer, kaitai wrapper, pack.ts (FormatPack)
 │   │       ├── scripts/compile.mjs      # build step: .ksy → JS parsers (debug mode on)
 │   │       └── gen/                     # ksc output, gitignored
 │   ├── db/src/browser.ts            # duckdb-wasm wrapper: init, registerArrow, query
@@ -304,7 +322,7 @@ byteql/
 ├── apps/
 │   └── web/                         # Vite + Svelte
 │       └── src/
-│           ├── workers/parse.worker.ts  # framer→kaitai→projection→Arrow IPC out
+│           ├── workers/parse.worker.ts  # probe registry → FormatPack.open → drain batches → ParseResult
 │           ├── components/          # explorer, grid, SQL editor, inspector, viewers
 │           └── lib/viewers/tone-engine.ts  # Tone.js scheduler from result rows
 ```
