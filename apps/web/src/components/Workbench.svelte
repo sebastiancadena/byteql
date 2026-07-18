@@ -52,6 +52,10 @@
     );
   });
   const activeViewer = $derived(viewers.find(({ id }) => id === activeViewerId) ?? null);
+  export function closeActiveViewer(): void {
+    activeViewerId = null;
+  }
+
   const disabledCapabilityReasons = $derived(
     Object.values(session.capabilities ?? {})
       .filter((capability) => !capability.enabled && capability.reason)

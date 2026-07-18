@@ -365,6 +365,20 @@ describe('Inspector Workbench', () => {
     await vi.waitFor(() => expect(sessionReplaced.dispose).toHaveBeenCalledOnce());
   });
 
+  it('closes and disposes the active viewer through the exported closeActiveViewer method', async () => {
+    const engine = fakeAudioEngine();
+    const controller = new FakeController({ ...readyState(), result: audioResult });
+    const view = render(Workbench, { controller, audioEngineFactory: () => engine });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Open in…' }));
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Audio playback' }));
+    expect(await screen.findByRole('heading', { name: 'Audio playback' })).toBeTruthy();
+
+    view.component.closeActiveViewer();
+    await vi.waitFor(() => expect(screen.queryByRole('heading', { name: 'Audio playback' })).toBeNull());
+    expect(engine.dispose).toHaveBeenCalledOnce();
+  });
+
   it('uses desktop landmarks without hidden tab widgets and removes its media listener', () => {
     const controller = new FakeController(readyState());
     const view = render(Workbench, { controller });

@@ -15,6 +15,7 @@
   let startupError = $state<string | null>(null);
   let starting = $state(true);
   let retryStartup = $state<() => void>(() => undefined);
+  let workbench = $state<ReturnType<typeof Workbench> | null>(null);
 
   onMount(() => {
     let disposed = false;
@@ -35,8 +36,9 @@
           return;
         }
 
+        const stopViewer = (): void => workbench?.closeActiveViewer();
         ownedController = new SessionController(
-          e2eHarness ? { database, parser: e2eHarness.createParser() } : { database },
+          e2eHarness ? { database, parser: e2eHarness.createParser(), stopViewer } : { database, stopViewer },
         );
         currentController = ownedController;
         await ownedController.initialize();
@@ -85,7 +87,7 @@
 
 {#if controller}
   <div data-app-ready="true">
-    <Workbench {controller} audioEngineFactory={e2eHarness?.audioEngineFactory} />
+    <Workbench bind:this={workbench} {controller} audioEngineFactory={e2eHarness?.audioEngineFactory} />
   </div>
 {:else}
   <main class="startup-state" aria-busy={starting}>

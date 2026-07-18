@@ -12,7 +12,7 @@ const { database, databaseDispose, initialize, dispose, createBrowserDatabase, S
     const initialize = vi.fn<() => Promise<void>>();
     const dispose = vi.fn<() => Promise<void>>();
     const createBrowserDatabase = vi.fn(async () => database);
-    const SessionController = vi.fn(function () {
+    const SessionController = vi.fn(function (_options: { stopViewer?: () => void }) {
       return {
         subscribe(listener: (state: SessionState) => void) {
           listener({
@@ -82,7 +82,7 @@ describe('App lifecycle', () => {
 
     await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
     expect(createBrowserDatabase).toHaveBeenCalledOnce();
-    expect(SessionController).toHaveBeenCalledWith({ database });
+    expect(SessionController).toHaveBeenCalledWith({ database, stopViewer: expect.any(Function) });
     expect(screen.queryByText(/files stay on this device/i)).toBeNull();
     expect(view.container.querySelector('[data-app-ready="true"]')).toBeNull();
 
@@ -92,6 +92,25 @@ describe('App lifecycle', () => {
 
     view.unmount();
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('constructs the controller with a stopViewer callback that is safe before the Workbench mounts', async () => {
+    let resolveInitialization!: () => void;
+    initialize.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveInitialization = resolve;
+      }),
+    );
+    render(App);
+    await vi.waitFor(() => expect(SessionController).toHaveBeenCalledOnce());
+
+    const stopViewer = SessionController.mock.calls[0]?.[0]?.stopViewer;
+    expect(stopViewer).toBeTypeOf('function');
+    expect(() => stopViewer!()).not.toThrow();
+
+    resolveInitialization();
+    expect(await screen.findByText(/files stay on this device/i)).toBeTruthy();
+    expect(() => stopViewer!()).not.toThrow();
   });
 
   it('disposes an initializing controller when the app unmounts', async () => {
