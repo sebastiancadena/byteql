@@ -22,7 +22,7 @@ export interface AudioEngine {
 
 export interface TransportPort {
   seconds: number;
-  schedule(callback: (time: number) => void, seconds: number): number;
+  scheduleOnce(callback: (time: number) => void, seconds: number): number;
   clear(id: number): void;
   start(): void;
   pause(): void;
@@ -137,7 +137,7 @@ export class ToneAudioEngine implements AudioEngine {
     for (const row of this.rows) {
       if (row.seconds < position) continue;
       let id = 0;
-      id = this.dependencies.transport.schedule((time) => {
+      id = this.dependencies.transport.scheduleOnce((time) => {
         this.scheduledIds.delete(id);
         const synth = this.synths.get(row.channel);
         if (this.disposed || !synth) return;

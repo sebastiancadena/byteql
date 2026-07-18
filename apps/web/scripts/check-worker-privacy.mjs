@@ -14,6 +14,9 @@ import { resolveChromiumExecutable } from './chromium.mjs';
 const executablePath = resolveChromiumExecutable(chromium);
 
 const webRoot = fileURLToPath(new URL('../', import.meta.url));
+const smpteFixture = fileURLToPath(
+  new URL('../../../packages/formats/midi/test/fixtures/basic-type0.mid', import.meta.url),
+);
 const outDir = await mkdtemp(join(tmpdir(), 'byteql-worker-privacy-'));
 let previewServer;
 let browser;
@@ -221,6 +224,12 @@ try {
       `Expected the Play gesture to resume the audio context; received ${audioResumeCalls} resume calls. Viewer alert: ${audioAlert ?? 'none'}`,
     );
   }
+
+  await appPage.getByRole('button', { name: 'Stop', exact: true }).click();
+  await appPage.getByRole('button', { name: 'Play', exact: true }).click();
+  await appPage.getByRole('button', { name: 'Pause', exact: true }).waitFor();
+  await appPage.getByRole('button', { name: 'Close audio viewer' }).click();
+
   const postInteractionRequests = appRequests.slice(readyRequestCount);
   if (postInteractionRequests.length > 0) {
     throw new Error(
@@ -261,12 +270,42 @@ try {
     throw new Error(`SQL syntax contrast is below 4.5:1: ${JSON.stringify(editorContrast)}`);
   }
 
+  const smptePage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const smpteRequests = [];
+  smptePage.on('request', (request) => smpteRequests.push(request.url()));
+  await smptePage.goto(origin);
+  await smptePage.locator('[data-app-ready="true"]').waitFor();
+  const smpteReadyRequestCount = smpteRequests.length;
+  await smptePage.waitForTimeout(150);
+  await smptePage.getByLabel('Open file').setInputFiles(smpteFixture);
+  await smptePage.getByText('basic-type0.mid', { exact: true }).first().waitFor();
+  await smptePage.getByRole('button', { name: 'Run query' }).waitFor();
+  await smptePage.getByRole('button', { name: 'Play all notes' }).click();
+  await smptePage.getByRole('button', { name: 'Run query' }).click();
+  await smptePage.getByRole('columnheader', { name: /seconds/u }).waitFor();
+  if ((await smptePage.getByRole('button', { name: 'Open in…' }).count()) !== 0) {
+    throw new Error('SMPTE playback results exposed the disabled audio viewer.');
+  }
+  const smpteNotice = (
+    await smptePage.getByRole('status', { name: 'Format capability notice' }).textContent({ timeout: 2_000 })
+  )?.trim();
+  const expectedSmpteNotice = 'SMPTE time division is not supported by the Phase 0 player.';
+  if (smpteNotice !== expectedSmpteNotice) {
+    throw new Error(`Expected the exact SMPTE capability reason; received ${smpteNotice ?? 'none'}.`);
+  }
+  const postSmpteReadyRequests = smpteRequests.slice(smpteReadyRequestCount);
+  if (postSmpteReadyRequests.length > 0) {
+    throw new Error(`SMPTE inspection made requests after readiness:\n${postSmpteReadyRequests.join('\n')}`);
+  }
+
   console.log(
     JSON.stringify({
       postReadyRequests: requests,
       postAppReadyRequests,
       postInteractionRequests,
+      postSmpteReadyRequests,
       audioResumeCalls,
+      smpteNotice,
       openFileFocus,
       compactInitial,
       desktopSemantics,

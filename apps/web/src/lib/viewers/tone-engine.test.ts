@@ -23,15 +23,23 @@ const deferred = <T>(): Deferred<T> => {
 
 class FakeTransport implements TransportPort {
   seconds = 0;
-  readonly callbacks = new Map<number, { at: number; callback: (time: number) => void }>();
+  readonly callbacks = new Map<number, { at: number; callback: (time: number) => void; once: boolean }>();
   readonly cleared: number[] = [];
   readonly calls: string[] = [];
   private nextId = 1;
 
   schedule(callback: (time: number) => void, at: number): number {
+    return this.add(callback, at, false);
+  }
+
+  scheduleOnce(callback: (time: number) => void, at: number): number {
+    return this.add(callback, at, true);
+  }
+
+  private add(callback: (time: number) => void, at: number, once: boolean): number {
     const id = this.nextId++;
-    this.callbacks.set(id, { at, callback });
-    this.calls.push(`schedule:${at}`);
+    this.callbacks.set(id, { at, callback, once });
+    this.calls.push(`${once ? 'scheduleOnce' : 'schedule'}:${at}`);
     return id;
   }
 
@@ -57,7 +65,7 @@ class FakeTransport implements TransportPort {
   run(at: number): void {
     for (const [id, scheduled] of this.callbacks) {
       if (scheduled.at === at) {
-        this.callbacks.delete(id);
+        if (scheduled.once) this.callbacks.delete(id);
         scheduled.callback(at);
       }
     }
@@ -116,6 +124,37 @@ describe('ToneAudioEngine', () => {
     expect(synth.triggerRelease).toHaveBeenCalledWith(60, 1.25);
   });
 
+  it('removes completed timeline events before replay schedules exactly one copy', async () => {
+    const { engine, transport, synthFor } = setup();
+    await engine.load(rows);
+    await engine.play();
+
+    transport.run(0.5);
+    transport.run(1.25);
+    engine.stop();
+    expect(transport.callbacks.size).toBe(0);
+
+    await engine.play();
+    expect(transport.callbacks.size).toBe(rows.length);
+    transport.run(0.5);
+    expect(synthFor(0).triggerAttack).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears fired and pending timeline events before replaying a partial result', async () => {
+    const { engine, transport, synthFor } = setup();
+    await engine.load(rows);
+    await engine.play();
+
+    transport.run(0.5);
+    engine.stop();
+    expect(transport.callbacks.size).toBe(0);
+
+    await engine.play();
+    expect(transport.callbacks.size).toBe(rows.length);
+    transport.run(0.5);
+    expect(synthFor(0).triggerAttack).toHaveBeenCalledTimes(2);
+  });
+
   it('releases interleaved same-pitch notes through their own channel synths', async () => {
     const { engine, transport, synthFor } = setup();
     await engine.load([
@@ -153,6 +192,7 @@ describe('ToneAudioEngine', () => {
     expect(channelSynth.releaseAll).toHaveBeenCalledOnce();
     expect(defaultSynth.dispose).toHaveBeenCalledOnce();
     expect(channelSynth.dispose).toHaveBeenCalledOnce();
+    expect(transport.callbacks.size).toBe(0);
   });
 
   it('releases notes and clears every callback on stop and before replacement load', async () => {

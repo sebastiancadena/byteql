@@ -290,6 +290,7 @@ describe('Inspector Workbench', () => {
   it('offers the trusted audio viewer only for compatible enabled results', async () => {
     const enabled = new FakeController({ ...readyState(), result: audioResult });
     const enabledView = render(Workbench, { controller: enabled });
+    expect(screen.queryByRole('status', { name: 'Format capability notice' })).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: 'Open in…' }));
     expect(screen.getByRole('menuitem', { name: 'Audio playback' })).toBeTruthy();
     enabledView.unmount();
@@ -297,17 +298,29 @@ describe('Inspector Workbench', () => {
     const aggregate = new FakeController(readyState());
     const aggregateView = render(Workbench, { controller: aggregate });
     expect(screen.queryByRole('button', { name: 'Open in…' })).toBeNull();
+    expect(screen.queryByRole('status', { name: 'Format capability notice' })).toBeNull();
     aggregateView.unmount();
 
+    const reason = 'SMPTE time division is not supported by the Phase 0 player.';
     const smpte = new FakeController({
       ...readyState(),
       result: audioResult,
       capabilities: {
-        audio: { enabled: false, reason: 'SMPTE time division is not supported.' },
+        audio: { enabled: false, reason },
       },
     });
     render(Workbench, { controller: smpte });
     expect(screen.queryByRole('button', { name: 'Open in…' })).toBeNull();
+    expect(textOf(screen.getByRole('status', { name: 'Format capability notice' }))).toBe(reason);
+  });
+
+  it('keeps an unsupported Type 2 failure on the fatal-error path without an audio notice', () => {
+    const reason = 'MIDI Type 2 files are not supported.';
+    const controller = new FakeController({ ...initialSessionState, phase: 'failed', fatalError: reason });
+    render(Workbench, { controller });
+
+    expect(textOf(screen.getByRole('alert'))).toBe(reason);
+    expect(screen.queryByRole('status', { name: 'Format capability notice' })).toBeNull();
   });
 
   it('disposes the contextual viewer on close, result replacement, and session replacement', async () => {

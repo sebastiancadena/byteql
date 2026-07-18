@@ -240,6 +240,12 @@
           </div>
         {/if}
 
+        {#if session.capabilities?.audio.enabled === false && session.capabilities.audio.reason}
+          <div class="format-notice" role="status" aria-label="Format capability notice">
+            {session.capabilities.audio.reason}
+          </div>
+        {/if}
+
         <div class="results-heading">
           <div>
             <p class="eyebrow">Output</p>

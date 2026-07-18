@@ -626,6 +626,14 @@ button {
   font-size: 0.72rem;
 }
 
+.format-notice {
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--color-border-strong);
+  color: var(--color-text-muted);
+  background: var(--color-surface-raised);
+  font-size: 0.72rem;
+}
+
 .results-heading {
   min-height: 3.7rem;
   border-bottom: 1px solid var(--color-border);
