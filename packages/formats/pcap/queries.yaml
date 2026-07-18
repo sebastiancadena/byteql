@@ -11,6 +11,7 @@ queries:
       union all select 'udp', count(*) from udp
       union all select 'dns', count(*) from dns
       union all select 'icmp', count(*) from icmp
+      union all select 'icmpv6', count(*) from icmpv6
       union all select 'tls', count(*) from tls
       order by table_name
       limit 100;

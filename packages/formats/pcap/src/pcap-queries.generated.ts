@@ -7,7 +7,7 @@ const queries = [
     "id": "overview",
     "title": "Table overview",
     "kind": "grid",
-    "sql": "select 'packets' as table_name, count(*) as row_count from packets\nunion all select 'ip', count(*) from ip\nunion all select 'tcp', count(*) from tcp\nunion all select 'udp', count(*) from udp\nunion all select 'dns', count(*) from dns\nunion all select 'icmp', count(*) from icmp\nunion all select 'tls', count(*) from tls\norder by table_name\nlimit 100;\n"
+    "sql": "select 'packets' as table_name, count(*) as row_count from packets\nunion all select 'ip', count(*) from ip\nunion all select 'tcp', count(*) from tcp\nunion all select 'udp', count(*) from udp\nunion all select 'dns', count(*) from dns\nunion all select 'icmp', count(*) from icmp\nunion all select 'icmpv6', count(*) from icmpv6\nunion all select 'tls', count(*) from tls\norder by table_name\nlimit 100;\n"
   },
   {
     "id": "protocols",
