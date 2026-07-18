@@ -81,7 +81,7 @@ const binaryOperators = new Set([
   '%',
 ]);
 const unaryOperators = new Set(['-', '+', '!', 'not', '~']);
-const builtinNames = new Set(['enum_str', 'to_i', 'len', 'u24be']);
+const builtinNames = new Set(['enum_str', 'to_i', 'len', 'u24be', 'ip4_str', 'ip6_str']);
 const contextIdentifierNames = new Set(['_', '_root', '_parent']);
 const expressionTokenNames = new Set(['true', 'false', 'null', 'and', 'or', 'not', 'this']);
 const forbiddenIdentifiers = new Set([
@@ -600,6 +600,29 @@ const builtins = {
   u24be: (value: unknown): unknown => {
     if (!(value instanceof Uint8Array) || value.length !== 3) return null;
     return (value[0]! << 16) | (value[1]! << 8) | value[2]!;
+  },
+  ip4_str: (value: unknown): unknown => {
+    if (!(value instanceof Uint8Array) || value.length !== 4) return null;
+    return `${value[0]}.${value[1]}.${value[2]}.${value[3]}`;
+  },
+  ip6_str: (value: unknown): unknown => {
+    if (!(value instanceof Uint8Array) || value.length !== 16) return null;
+    const groups: number[] = [];
+    for (let i = 0; i < 16; i += 2) groups.push((value[i]! << 8) | value[i + 1]!);
+    // RFC 5952: compress the longest run (length >= 2) of zero groups to "::".
+    let bestStart = -1, bestLen = 0, curStart = -1, curLen = 0;
+    for (let i = 0; i < 8; i += 1) {
+      if (groups[i] === 0) {
+        if (curStart < 0) curStart = i;
+        curLen += 1;
+        if (curLen > bestLen) { bestLen = curLen; bestStart = curStart; }
+      } else { curStart = -1; curLen = 0; }
+    }
+    const hex = (g: number): string => g.toString(16);
+    if (bestLen < 2) return groups.map(hex).join(':');
+    const head = groups.slice(0, bestStart).map(hex).join(':');
+    const tail = groups.slice(bestStart + bestLen).map(hex).join(':');
+    return `${head}::${tail}`;
   },
 } as const;
 

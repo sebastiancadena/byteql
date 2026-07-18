@@ -231,6 +231,19 @@ describe('projection expressions', () => {
     ).toBe(0x123456);
   });
 
+  it('ip4_str formats a 4-byte address', () => {
+    expect(evaluate('ip4_str(_.a)', { _: { a: new Uint8Array([192, 168, 0, 1]) } })).toBe('192.168.0.1');
+  });
+
+  it('ip4_str returns null on wrong length', () => {
+    expect(evaluate('ip4_str(_.a)', { _: { a: new Uint8Array([1, 2, 3]) } })).toBeNull();
+  });
+
+  it('ip6_str compresses the longest zero run', () => {
+    const addr = new Uint8Array(16); addr[0] = 0x20; addr[1] = 0x01; addr[15] = 0x01;
+    expect(evaluate('ip6_str(_.a)', { _: { a: addr } })).toBe('2001::1');
+  });
+
   it('reads wildcard indexes only from own data properties', () => {
     const inherited = new Array<number>(1);
     Object.setPrototypeOf(inherited, { 0: 9 });
