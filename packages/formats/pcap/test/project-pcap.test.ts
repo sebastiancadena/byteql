@@ -55,6 +55,49 @@ describe('parseAndProjectPcap', () => {
     expect(start).toBe(40 + 14 + 20 + 8);
   });
 
+  it('projects a DNS packet with qdcount=0 with null query_name/query_type', async () => {
+    // dnsQuery() always emits one question; qdcount=0 isn't expressible through it, so
+    // build the minimal 12-byte DNS header directly (network/dns_packet.ksy's `seq`):
+    // transaction_id(2) + flags(2) + qdcount(2)=0 + ancount(2) + nscount(2) + arcount(2).
+    const emptyDns = Uint8Array.of(
+      0x56,
+      0x78, // transaction_id = 0x5678
+      0x01,
+      0x00, // flags: opcode=0 (valid), rd=1
+      0x00,
+      0x00, // qdcount = 0
+      0x00,
+      0x00, // ancount = 0
+      0x00,
+      0x00, // nscount = 0
+      0x00,
+      0x00, // arcount = 0
+    );
+    const pktNoQuestions = ethFrame({
+      etherType: 0x0800,
+      payload: ipv4({
+        protocol: 17,
+        src: '1.1.1.1',
+        dst: '8.8.8.8',
+        payload: udp({ srcPort: 5000, dstPort: 53, payload: emptyDns }),
+      }),
+    });
+    const pcapNoQuestions = buildPcap({
+      magic: 'be_us',
+      linktype: 1,
+      packets: [{ tsSec: 1, tsFrac: 0, data: pktNoQuestions }],
+    });
+
+    const result = await parseAndProjectPcap(pcapNoQuestions, new AbortController().signal);
+    const dnsTable = findTable(result, 'dns');
+    expect(dnsTable.numRows).toBe(1);
+    const row = dnsTable.get(0)!;
+    expect(row.tx_id).toBe(0x5678);
+    expect(row.qd_count).toBe(0);
+    expect(row.query_name).toBeNull();
+    expect(row.query_type).toBeNull();
+  });
+
   it('turns a poison transport payload into an errors row, not a throw', async () => {
     const bad = ethFrame({
       etherType: 0x0800,

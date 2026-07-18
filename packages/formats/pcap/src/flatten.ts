@@ -121,5 +121,5 @@ export function tlsSni(clientHelloNode: TlsClientHelloNode): string | null {
   if (hostName === undefined) {
     return null;
   }
-  return String.fromCharCode(...hostName);
+  return new TextDecoder().decode(hostName);
 }

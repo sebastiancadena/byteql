@@ -197,6 +197,20 @@ describe('pcapParserRegistry', () => {
     expect(root.echo_seq).toBe(3);
   });
 
+  it('icmp wrapper leaves echo id/seq null for a non-echo message', () => {
+    // destination_unreachable (type 3): icmp_type(1) + code(1) + checksum(2),
+    // per network/icmp_packet.ksy's `destination_unreachable_msg` — no `echo` field.
+    const bytes = Uint8Array.of(3, 0, 0x00, 0x00);
+    const root = parseWith<{
+      icmp_type: number;
+      echo_id: number | null;
+      echo_seq: number | null;
+    }>('icmp_packet', bytes);
+    expect(root.icmp_type).toBe(3); // destination unreachable
+    expect(root.echo_id).toBeNull();
+    expect(root.echo_seq).toBeNull();
+  });
+
   it('tls wrapper emits client_hello only for a ClientHello and extracts SNI', () => {
     const hello = tlsClientHello({ sni: 'secure.example' });
     const notHello = new Uint8Array([0x17, 0x03, 0x03, 0, 1, 0]); // app-data record
