@@ -108,12 +108,19 @@ importers:
 
   packages/db:
     dependencies:
+      '@byteql/core':
+        specifier: workspace:*
+        version: link:../core
       '@duckdb/duckdb-wasm':
         specifier: 1.33.1-dev57.0
         version: 1.33.1-dev57.0
       apache-arrow:
         specifier: ^21.1.0
         version: 21.1.0
+    devDependencies:
+      vite:
+        specifier: ^8.1.5
+        version: 8.1.5(@types/node@24.13.3)(yaml@2.9.0)
 
   packages/formats/midi:
     dependencies:
