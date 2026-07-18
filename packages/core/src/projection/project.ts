@@ -1,12 +1,14 @@
-import { compileAnchor, isAnchorPrefix, type AnchorMatch, type CompiledAnchor } from './anchors.js';
+import { compileAnchor, isAnchorPrefix, traverseAnchor, type AnchorMatch, type CompiledAnchor } from './anchors.js';
 import {
   ProjectionCompileError,
   compileExpression,
   evaluateExpression,
   getExpressionStateReferences,
   type CompiledExpression,
+  type ExpressionContext,
 } from './expression.js';
-import type { ParserRegistry, RecordParser } from './parsers.js';
+import type { IssueCollector } from '../issues.js';
+import type { ParsedRecord, ParserRegistry, RecordParser } from './parsers.js';
 import type { ArrowTypeName, ProjectionSpec, TableSpec } from './spec.js';
 import { buildMatcher, walkMatcher } from './walk.js';
 
@@ -403,6 +405,13 @@ export const createRuntimes = (compiled: CompiledProjection): Map<string, TableR
     ]),
   );
 
+export interface EmitContext {
+  readonly compiled: CompiledProjection;
+  readonly runtimes: Map<string, TableRuntime>;
+  readonly sink: RowSink;
+  readonly issues?: IssueCollector;
+}
+
 const emitRow = (
   table: CompiledProjectionTable,
   runtime: TableRuntime,
@@ -410,6 +419,9 @@ const emitRow = (
   root: unknown,
   provenance: ProvenanceResolver,
   sink: RowSink,
+  keysByTable: ReadonlyMap<string, bigint>,
+  emitContext: EmitContext,
+  parentKey?: { name: string; value: bigint | null },
 ): void => {
   for (const register of table.state) {
     const currentScope = match.indexes.slice(0, register.scope.wildcardCount);
@@ -429,8 +441,10 @@ const emitRow = (
   const context = expressionContext(match, root, runtime.stateValues);
   if (table.where && !evaluateExpression(table.where, context)) return;
 
-  const row: Record<string, unknown> = { [table.key]: runtime.nextKey };
+  const key = runtime.nextKey;
+  const row: Record<string, unknown> = { [table.key]: key };
   runtime.nextKey += 1n;
+  if (parentKey) row[parentKey.name] = parentKey.value;
   for (const column of table.columns) {
     if (column.name === table.key || column.name === '_src_start' || column.name === '_src_end') continue;
     row[column.name] =
@@ -442,10 +456,17 @@ const emitRow = (
   row._src_start = BigInt(range.start);
   row._src_end = BigInt(range.end);
   sink.push(table.name, row);
+
+  const childKeys = new Map(keysByTable);
+  childKeys.set(table.name, key);
+  for (const dissect of emitContext.compiled.dissectByFrom.get(table.name) ?? []) {
+    fireDissect(dissect, context, childKeys, emitContext, range);
+  }
 };
 
 export const tableOutputTypes = (table: CompiledProjectionTable): Record<string, ArrowTypeName> => {
   const types: Record<string, ArrowTypeName> = { [table.key]: 'int64' };
+  if (table.parentKey) types[table.parentKey.column] = 'int64';
   for (const column of table.columns) {
     if (column.name === table.key || column.name === '_src_start' || column.name === '_src_end') continue;
     types[column.name] = column.type;
@@ -455,6 +476,102 @@ export const tableOutputTypes = (table: CompiledProjectionTable): Record<string,
   return types;
 };
 
+interface PayloadRange {
+  readonly bytes: Uint8Array;
+  readonly start: number;
+}
+
+const asPayloadRange = (value: unknown): PayloadRange | null => {
+  if (value === null || typeof value !== 'object') return null;
+  const bytes = (value as { bytes?: unknown }).bytes;
+  const start = (value as { start?: unknown }).start;
+  if (!(bytes instanceof Uint8Array) || typeof start !== 'number' || !Number.isSafeInteger(start) || start < 0) {
+    return null;
+  }
+  return { bytes, start };
+};
+
+const fireDissect = (
+  dissect: CompiledDissect,
+  context: ExpressionContext,
+  keysByTable: ReadonlyMap<string, bigint>,
+  emitContext: EmitContext,
+  parentRange: SourceRange,
+): void => {
+  const payload = asPayloadRange(evaluateExpression(dissect.payload, context));
+  if (!payload) {
+    emitContext.issues?.report({
+      stage: 'dissecting',
+      code: 'DISSECT_PAYLOAD_INVALID',
+      recoverable: true,
+      message: `dissect from ${JSON.stringify(dissect.from)}: payload did not evaluate to { bytes, start }`,
+      sourceStart: parentRange.start,
+      sourceEnd: parentRange.end,
+    });
+    return;
+  }
+
+  for (const link of dissect.chain) {
+    if (!evaluateExpression(link.when, context)) continue;
+
+    let parsed: ParsedRecord;
+    try {
+      parsed = link.parser(payload.bytes);
+    } catch (error) {
+      emitContext.issues?.report({
+        stage: 'dissecting',
+        code: 'DISSECT_PARSE_FAILED',
+        recoverable: true,
+        message: error instanceof Error ? error.message : String(error),
+        sourceStart: payload.start,
+        sourceEnd: payload.start + payload.bytes.length,
+      });
+      return;
+    }
+
+    if (link.table) projectChildTable(link.table, parsed, payload, keysByTable, emitContext);
+
+    const childContext: ExpressionContext = { _: parsed.root, _root: parsed.root };
+    for (const deeper of emitContext.compiled.dissectByFrom.get(link.parserId) ?? []) {
+      fireDissect(deeper, childContext, keysByTable, emitContext, {
+        start: payload.start,
+        end: payload.start + payload.bytes.length,
+      });
+    }
+    return; // first matching guard wins
+  }
+};
+
+const projectChildTable = (
+  table: CompiledProjectionTable,
+  parsed: ParsedRecord,
+  payload: PayloadRange,
+  keysByTable: ReadonlyMap<string, bigint>,
+  emitContext: EmitContext,
+): void => {
+  const resolver: ProvenanceResolver = {
+    resolve(tableName, match) {
+      if (!parsed.resolve) return { start: payload.start, end: payload.start + payload.bytes.length };
+      const relative = parsed.resolve(tableName, match);
+      return { start: payload.start + relative.start, end: payload.start + relative.end };
+    },
+  };
+  const parentKeyValue = keysByTable.get(table.parentKey!.table) ?? null;
+  for (const match of traverseAnchor(table.rows, parsed.root)) {
+    emitRow(
+      table,
+      emitContext.runtimes.get(table.name)!,
+      match,
+      parsed.root,
+      resolver,
+      emitContext.sink,
+      keysByTable,
+      emitContext,
+      { name: table.parentKey!.column, value: parentKeyValue },
+    );
+  }
+};
+
 export const projectInto = (
   compiled: CompiledProjection,
   root: unknown,
@@ -462,12 +579,15 @@ export const projectInto = (
   sink: RowSink,
   runtimes: Map<string, TableRuntime>,
   subset: ReadonlySet<string> | null,
+  issues?: IssueCollector,
 ): void => {
   const active = compiled.rootTables.filter((table) => !subset || subset.has(table.name));
   const matcher = buildMatcher(active.map((table) => table.rows));
+  const emitContext: EmitContext = { compiled, runtimes, sink, ...(issues ? { issues } : {}) };
+  const emptyKeys: ReadonlyMap<string, bigint> = new Map();
   walkMatcher(root, matcher, (anchorIndex, match) => {
     const table = active[anchorIndex]!;
-    emitRow(table, runtimes.get(table.name)!, match, root, provenance, sink);
+    emitRow(table, runtimes.get(table.name)!, match, root, provenance, sink, emptyKeys, emitContext);
   });
 };
 

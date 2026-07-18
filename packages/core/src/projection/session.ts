@@ -1,5 +1,6 @@
 import type { Table } from 'apache-arrow';
 import { TableBatchBuilder } from '../arrow/batch.js';
+import type { IssueCollector } from '../issues.js';
 import {
   createRuntimes,
   projectInto,
@@ -26,6 +27,7 @@ export interface ProjectionSession {
 
 export interface ProjectionSessionOptions {
   readonly flushRowThreshold?: number;
+  readonly issues?: IssueCollector;
 }
 
 export const createProjectionSession = (
@@ -44,7 +46,7 @@ export const createProjectionSession = (
   return {
     project(root, resolver, callOptions) {
       const subset = callOptions?.tables === undefined ? null : new Set(callOptions.tables);
-      projectInto(compiled, root, resolver, sink, runtimes, subset);
+      projectInto(compiled, root, resolver, sink, runtimes, subset, options.issues);
     },
     finish() {
       return compiled.tables.map((table) => {
