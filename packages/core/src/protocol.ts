@@ -22,10 +22,15 @@ export interface PackQuery {
   sql: string;
 }
 
+export interface FormatCapability {
+  enabled: boolean;
+  reason: string | null;
+}
+
 export interface ParseResult {
-  format: { id: 'standard_midi_file'; title: 'Standard MIDI file' };
+  format: { id: string; title: string };
   tables: readonly TableTransfer[];
   issues: readonly ParseIssue[];
   queries: readonly PackQuery[];
-  capabilities: { audio: { enabled: boolean; reason: string | null } };
+  capabilities: Readonly<Record<string, FormatCapability>>;
 }

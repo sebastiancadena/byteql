@@ -1,17 +1,19 @@
+import type { FormatCapability } from '@byteql/core';
 import type { Table } from 'apache-arrow';
 import type { Component } from 'svelte';
 
 import AudioViewer from '../../components/AudioViewer.svelte';
 import type { AudioEngine } from './tone-engine.js';
 
-export interface FormatViewerMetadata {
-  audio: { enabled: boolean; reason: string | null };
-}
+export type FormatViewerMetadata = Readonly<Record<string, FormatCapability>>;
 
 export interface ViewerCapability {
   id: string;
   label: string;
-  accepts(columns: readonly { name: string; type: string }[], audioEnabled: boolean): boolean;
+  accepts(
+    columns: readonly { name: string; type: string }[],
+    capability: FormatCapability | undefined,
+  ): boolean;
   component: Component<ViewerComponentProps>;
 }
 
@@ -27,8 +29,8 @@ const utf8Type = /^(?:utf8|dictionary<[^,]+,\s*utf8>)$/iu;
 const audioCapability: ViewerCapability = {
   id: 'audio',
   label: 'Audio playback',
-  accepts(columns, audioEnabled) {
-    if (!audioEnabled) return false;
+  accepts(columns, capability) {
+    if (!capability?.enabled) return false;
     const byName = new Map(columns.map((column) => [column.name, column.type]));
     return (
       numericType.test(byName.get('seconds') ?? '') &&
@@ -47,7 +49,5 @@ export function compatibleViewers(
   columns: readonly { name: string; type: string }[],
   formatMetadata: FormatViewerMetadata,
 ): ViewerCapability[] {
-  return trustedCapabilities.filter((capability) =>
-    capability.accepts(columns, formatMetadata.audio.enabled),
-  );
+  return trustedCapabilities.filter((viewer) => viewer.accepts(columns, formatMetadata[viewer.id]));
 }

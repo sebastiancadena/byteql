@@ -52,6 +52,11 @@
     );
   });
   const activeViewer = $derived(viewers.find(({ id }) => id === activeViewerId) ?? null);
+  const disabledCapabilityReasons = $derived(
+    Object.values(session.capabilities ?? {})
+      .filter((capability) => !capability.enabled && capability.reason)
+      .map((capability) => capability.reason as string),
+  );
 
   onMount(() => {
     const compactQuery = window.matchMedia('(max-width: 1099px)');
@@ -240,11 +245,11 @@
           </div>
         {/if}
 
-        {#if session.capabilities?.audio.enabled === false && session.capabilities.audio.reason}
+        {#each disabledCapabilityReasons as reason (reason)}
           <div class="format-notice" role="status" aria-label="Format capability notice">
-            {session.capabilities.audio.reason}
+            {reason}
           </div>
-        {/if}
+        {/each}
 
         <div class="results-heading">
           <div>

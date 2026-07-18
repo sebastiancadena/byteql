@@ -314,6 +314,20 @@ describe('Inspector Workbench', () => {
     expect(textOf(screen.getByRole('status', { name: 'Format capability notice' }))).toBe(reason);
   });
 
+  it('shows the notice for any disabled pack capability, not only audio', () => {
+    const reason = 'Hex preview is unavailable for this source.';
+    const controller = new FakeController({
+      ...readyState(),
+      result: audioResult,
+      capabilities: {
+        audio: { enabled: true, reason: null },
+        hex: { enabled: false, reason },
+      },
+    });
+    render(Workbench, { controller });
+    expect(textOf(screen.getByRole('status', { name: 'Format capability notice' }))).toBe(reason);
+  });
+
   it('keeps an unsupported Type 2 failure on the fatal-error path without an audio notice', () => {
     const reason = 'MIDI Type 2 files are not supported.';
     const controller = new FakeController({ ...initialSessionState, phase: 'failed', fatalError: reason });

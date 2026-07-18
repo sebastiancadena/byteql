@@ -50,4 +50,17 @@ describe('compatibleViewers', () => {
       }),
     ).toEqual([]);
   });
+
+  it('does not match when the pack declares no audio capability at all', () => {
+    expect(compatibleViewers(columns, {})).toEqual([]);
+  });
+
+  it('ignores unrelated capabilities declared by other packs', () => {
+    expect(
+      compatibleViewers(columns, {
+        hex: { enabled: true, reason: null },
+        audio: { enabled: true, reason: null },
+      }).map(({ id }) => id),
+    ).toEqual(['audio']);
+  });
 });
