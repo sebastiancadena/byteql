@@ -114,14 +114,21 @@ interface FormatPack {
   schemas(): TableSchema[];                     // WIT: schemas — derived from the compiled spec
   open(bytes: Uint8Array, opts: OpenOptions): RecordSource;  // WIT: open
   queries: PackQuery[];                         // pack metadata outside the WIT core
-  capabilities: Record<string, FormatCapability>;
 }
 
 interface RecordSource {
   nextBatch(): Promise<BatchTransfer | null>;   // WIT: next-batch — IPC record batch + table name
-  issues(): ParseIssue[];                       // drained at end; errors is just another table
+  finish(): SourceFinish;                       // after the last batch: issues + capabilities
+}
+
+interface SourceFinish {
+  issues: ParseIssue[];                         // errors is also emitted as an ordinary table
+  capabilities: Record<string, FormatCapability>;
 }
 ```
+
+Capabilities are returned by `finish()` rather than declared statically on the pack because they
+can depend on the parsed file (MIDI disables the audio capability for SMPTE-division files).
 
 `OpenOptions` carries the abort signal and progress callback. The parse worker becomes the
 driving loop: read a bounded head slice (4 KiB), probe every registered pack, dispatch to the
