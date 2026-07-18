@@ -17,7 +17,8 @@
   "dependencies": {
     "@duckdb/duckdb-wasm": "1.33.1-dev57.0",
     "@byteql/core": "workspace:*",
-    "apache-arrow": "^21.1.0"
+    "apache-arrow": "^21.1.0",
+    "apache-arrow-duckdb": "npm:apache-arrow@17.0.0"
   },
   "devDependencies": {
     "vite": "^8.1.5"

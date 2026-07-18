@@ -714,7 +714,10 @@ git commit -m "feat: emit MIDI format pack as Arrow IPC"
 - Create: `packages/db/src/browser.ts`
 - Create: `packages/db/src/browser.test.ts`
 - Create: `packages/db/src/index.ts`
+- Modify: `docs/superpowers/plans/2026-07-17-byteql-phase-0.md`
 - Modify: `packages/db/package.json`
+- Modify: `packages/db/tsconfig.json`
+- Modify: `pnpm-lock.yaml`
 
 **Interfaces:**
 - Consumes: `TableTransfer[]` from Task 7.
@@ -735,7 +738,7 @@ export interface ByteqlDatabase {
 }
 ```
 
-Mock `AsyncDuckDBConnection.query` and assert initialization sends the five hardening statements before any user query. Assert table names reject anything outside `/^[A-Za-z_][A-Za-z0-9_]*$/`.
+Mock `AsyncDuckDBConnection.query` for hardening and `AsyncDuckDBConnection.send` for user SQL. Assert initialization sends the five hardening statements before any user query. Assert table names reject anything outside `/^[A-Za-z_][A-Za-z0-9_]*$/`.
 
 - [ ] **Step 2: Run the tests to verify red**
 
@@ -759,7 +762,9 @@ Never use `getJsDelivrBundles`. Use `VoidLogger` in production and an injected l
 
 - [ ] **Step 4: Implement replace, query, cancel, and dispose**
 
-Within a transaction, drop only previously registered ByteQL tables, then call `connection.insertArrowFromIPCStream(table.ipc, { name: table.name, create: true })`. On failure, roll back and preserve the previous table set. `query` records `performance.now()`, calls `connection.query(sql)`, and returns the Arrow `Table`. `cancelQuery` calls `connection.cancelSent()`. `dispose` closes the connection and terminates the database worker.
+Synchronously validate and snapshot every table name and copy every IPC buffer before queueing replacement work. Within a transaction, drop only previously registered ByteQL tables, then call `connection.insertArrowFromIPCStream(snapshot.ipc, { name: snapshot.name, create: true })`. Use only the immutable snapshots for insertion and the committed registry. On failure, roll back and preserve the previous table set.
+
+`query` records `performance.now()` and calls `connection.send(sql)` so the active operation uses DuckDB's pending-query path targeted by `connection.cancelSent()`. Materialize every returned Arrow 17 record batch into stream IPC with the matching Arrow writer, then deserialize that IPC with the workspace's public Arrow 21 package and return the resulting Arrow 21 `Table`. `dispose` cancels an active pending query, waits for it to settle, closes the connection, and terminates the database worker.
 
 - [ ] **Step 5: Verify and commit**
 
@@ -768,7 +773,7 @@ Run: `pnpm --filter @byteql/db test -- --run && pnpm --filter @byteql/db build`
 Expected: PASS and no CDN URL appears in `packages/db/dist`.
 
 ```bash
-git add packages/db
+git add docs/superpowers/plans/2026-07-17-byteql-phase-0.md packages/db pnpm-lock.yaml
 git commit -m "feat(db): add secure DuckDB-WASM client"
 ```
 

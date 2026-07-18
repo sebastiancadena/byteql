@@ -117,6 +117,9 @@ importers:
       apache-arrow:
         specifier: ^21.1.0
         version: 21.1.0
+      apache-arrow-duckdb:
+        specifier: npm:apache-arrow@17.0.0
+        version: apache-arrow@17.0.0
     devDependencies:
       vite:
         specifier: ^8.1.5

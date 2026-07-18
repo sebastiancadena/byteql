@@ -14,7 +14,8 @@ import duckdbEhWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js
 import duckdbMvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
 import duckdbMvpWasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
 import type { TableTransfer } from '@byteql/core';
-import type { Table } from 'apache-arrow';
+import { tableFromIPC } from 'apache-arrow';
+import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
 
 import type { ByteqlDatabase, QueryResult } from './types.js';
 
@@ -39,15 +40,20 @@ const LOCAL_BUNDLES: DuckDBBundles = {
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+interface TableSnapshot {
+  readonly name: string;
+  readonly ipc: Uint8Array;
+}
+
 export interface BrowserDatabaseOptions {
   logger?: Logger;
 }
 
 const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
 
-const validateTables = (tables: readonly TableTransfer[]): void => {
+const snapshotTables = (tables: readonly TableTransfer[]): readonly TableSnapshot[] => {
   const names = new Set<string>();
-  for (const table of tables) {
+  return tables.map((table) => {
     if (!IDENTIFIER.test(table.name)) {
       throw new Error(`Invalid table identifier: ${JSON.stringify(table.name)}`);
     }
@@ -56,7 +62,8 @@ const validateTables = (tables: readonly TableTransfer[]): void => {
       throw new Error(`Duplicate table identifier: ${JSON.stringify(table.name)}`);
     }
     names.add(canonicalName);
-  }
+    return { name: table.name, ipc: table.ipc.slice() };
+  });
 };
 
 class BrowserDatabase implements ByteqlDatabase {
@@ -98,21 +105,21 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   async replaceTables(tables: readonly TableTransfer[]): Promise<void> {
-    validateTables(tables);
+    const snapshots = snapshotTables(tables);
     return this.enqueue(async (connection) => {
       await connection.query('BEGIN TRANSACTION;');
       try {
         for (const name of this.tableNames) {
           await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(name)};`);
         }
-        for (const table of tables) {
-          await connection.insertArrowFromIPCStream(table.ipc.slice(), {
+        for (const table of snapshots) {
+          await connection.insertArrowFromIPCStream(table.ipc, {
             name: table.name,
             create: true,
           });
         }
         await connection.query('COMMIT;');
-        this.tableNames = tables.map(({ name }) => name);
+        this.tableNames = snapshots.map(({ name }) => name);
       } catch (error) {
         try {
           await connection.query('ROLLBACK;');
@@ -131,7 +138,10 @@ class BrowserDatabase implements ByteqlDatabase {
       const startedAt = performance.now();
       this.queryInFlight = true;
       try {
-        const table = (await connection.query(sql)) as unknown as Table;
+        const reader = await connection.send(sql);
+        const writer = await RecordBatchStreamWriter.writeAll(reader);
+        const ipc = await writer.toUint8Array();
+        const table = tableFromIPC(ipc);
         return { table, elapsedMs: performance.now() - startedAt };
       } finally {
         this.queryInFlight = false;

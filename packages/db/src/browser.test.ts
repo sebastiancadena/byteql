@@ -1,10 +1,17 @@
 import type { TableTransfer } from '@byteql/core';
-import type { Table } from 'apache-arrow';
+import { Table } from 'apache-arrow';
+import {
+  Int32 as DuckdbInt32,
+  Table as DuckdbTable,
+  Utf8 as DuckdbUtf8,
+  vectorFromArray as duckdbVectorFromArray,
+} from 'apache-arrow-duckdb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const duckdbMocks = vi.hoisted(() => {
   const connection = {
     query: vi.fn(),
+    send: vi.fn(),
     insertArrowFromIPCStream: vi.fn(),
     cancelSent: vi.fn(),
     close: vi.fn(),
@@ -56,6 +63,17 @@ const transfer = (name: string, bytes = [1, 2, 3]): TableTransfer => ({
   columns: [],
 });
 
+const resultTable = () =>
+  new DuckdbTable({
+    note: duckdbVectorFromArray([60], new DuckdbInt32()),
+    label: duckdbVectorFromArray(['kick'], new DuckdbUtf8()),
+  }).concat(
+    new DuckdbTable({
+      note: duckdbVectorFromArray([64], new DuckdbInt32()),
+      label: duckdbVectorFromArray(['snare'], new DuckdbUtf8()),
+    }),
+  );
+
 const deferred = <T>() => {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -92,6 +110,7 @@ describe('createBrowserDatabase', () => {
     duckdbMocks.database.connect.mockResolvedValue(duckdbMocks.connection);
     duckdbMocks.database.terminate.mockResolvedValue(undefined);
     duckdbMocks.connection.query.mockResolvedValue({} as Table);
+    duckdbMocks.connection.send.mockResolvedValue(resultTable().batches);
     duckdbMocks.connection.insertArrowFromIPCStream.mockResolvedValue(undefined);
     duckdbMocks.connection.cancelSent.mockResolvedValue(true);
     duckdbMocks.connection.close.mockResolvedValue(undefined);
@@ -137,10 +156,11 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.database.instantiate).toHaveBeenCalledOnce();
     expect(duckdbMocks.database.instantiate).toHaveBeenCalledWith('/assets/duckdb-eh.wasm', null);
     expect(duckdbMocks.database.connect).toHaveBeenCalledOnce();
-    expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([
-      ...HARDENING_STATEMENTS,
-      'SELECT 42;',
-    ]);
+    expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([...HARDENING_STATEMENTS]);
+    expect(duckdbMocks.connection.send).toHaveBeenCalledWith('SELECT 42;');
+    expect(duckdbMocks.connection.query.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      duckdbMocks.connection.send.mock.invocationCallOrder[0]!,
+    );
   });
 
   it.each(['9events', 'bad-name', 'has space', 'semi;drop', 'quote"name', ''])(
@@ -244,19 +264,30 @@ describe('createBrowserDatabase', () => {
   it('measures query time and serializes queries and replacements', async () => {
     const database = await createBrowserDatabase();
     await database.initialize();
-    const pending = deferred<Table>();
-    const table = {} as Table;
-    duckdbMocks.connection.query.mockImplementationOnce(() => pending.promise);
+    const pending = deferred<readonly unknown[]>();
+    const table = resultTable();
+    duckdbMocks.connection.send.mockImplementationOnce(() => pending.promise);
     const now = vi.spyOn(performance, 'now');
     now.mockReturnValueOnce(10).mockReturnValueOnce(16.25);
 
     const query = database.query('SELECT * FROM events;');
     const replacement = database.replaceTables([transfer('tempo')]);
-    await vi.waitFor(() => expect(duckdbMocks.connection.query).toHaveBeenCalledTimes(6));
+    await vi.waitFor(() => expect(duckdbMocks.connection.send).toHaveBeenCalledOnce());
     expect(duckdbMocks.connection.insertArrowFromIPCStream).not.toHaveBeenCalled();
-    pending.resolve(table);
+    pending.resolve(table.batches);
 
-    await expect(query).resolves.toEqual({ table, elapsedMs: 6.25 });
+    const result = await query;
+    expect(result.elapsedMs).toBe(6.25);
+    expect(result.table).toBeInstanceOf(Table);
+    expect(result.table).not.toBe(table);
+    expect(result.table.schema.fields.map(({ name, type }) => [name, type.toString()])).toEqual([
+      ['note', 'Int32'],
+      ['label', 'Utf8'],
+    ]);
+    expect(result.table.toArray().map((row) => ({ ...row }))).toEqual([
+      { note: 60, label: 'kick' },
+      { note: 64, label: 'snare' },
+    ]);
     await replacement;
     expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenCalledOnce();
   });
@@ -264,16 +295,16 @@ describe('createBrowserDatabase', () => {
   it('cancels without waiting behind the active query', async () => {
     const database = await createBrowserDatabase();
     await database.initialize();
-    const pending = deferred<Table>();
-    duckdbMocks.connection.query.mockImplementationOnce(() => pending.promise);
+    const pending = deferred<readonly unknown[]>();
+    duckdbMocks.connection.send.mockImplementationOnce(() => pending.promise);
 
     const query = database.query('SELECT * FROM events;');
-    await vi.waitFor(() => expect(duckdbMocks.connection.query).toHaveBeenCalledTimes(6));
+    await vi.waitFor(() => expect(duckdbMocks.connection.send).toHaveBeenCalledOnce());
 
     await expect(database.cancelQuery()).resolves.toBe(true);
     expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
 
-    pending.resolve({} as Table);
+    pending.resolve(resultTable().batches);
     await query;
   });
 
@@ -293,17 +324,29 @@ describe('createBrowserDatabase', () => {
   it('cancels an active query before waiting for safe disposal', async () => {
     const database = await createBrowserDatabase();
     await database.initialize();
-    const pending = deferred<Table>();
-    duckdbMocks.connection.query.mockImplementationOnce(() => pending.promise);
+    const cancellation = deferred<void>();
+    let cancelled = false;
+    async function* pendingBatches() {
+      yield resultTable().batches[0]!;
+      await cancellation.promise;
+      if (cancelled) {
+        throw new Error('query cancelled');
+      }
+    }
+    duckdbMocks.connection.send.mockResolvedValueOnce(pendingBatches());
+    duckdbMocks.connection.cancelSent.mockImplementationOnce(async () => {
+      cancelled = true;
+      cancellation.resolve();
+      return true;
+    });
 
     const query = database.query('SELECT * FROM events;');
-    await vi.waitFor(() => expect(duckdbMocks.connection.query).toHaveBeenCalledTimes(6));
+    await vi.waitFor(() => expect(duckdbMocks.connection.send).toHaveBeenCalledOnce());
     const disposal = database.dispose();
 
     await vi.waitFor(() => expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce());
     expect(duckdbMocks.connection.close).not.toHaveBeenCalled();
-    pending.resolve({} as Table);
-    await query;
+    await expect(query).rejects.toThrow('query cancelled');
     await disposal;
     expect(duckdbMocks.connection.close).toHaveBeenCalledOnce();
     expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
@@ -320,5 +363,31 @@ describe('createBrowserDatabase', () => {
     await database.dispose();
     expect(duckdbMocks.connection.close).toHaveBeenCalledOnce();
     expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
+  });
+
+  it('snapshots names and IPC bytes before queued replacement work', async () => {
+    const database = await createBrowserDatabase();
+    await database.initialize();
+    const pending = deferred<readonly unknown[]>();
+    duckdbMocks.connection.send.mockImplementationOnce(() => pending.promise);
+    const activeQuery = database.query('SELECT 1;');
+    await vi.waitFor(() => expect(duckdbMocks.connection.send).toHaveBeenCalledOnce());
+
+    const original = transfer('events', [4, 5, 6]);
+    const input = [original];
+    const replacement = database.replaceTables(input);
+    original.name = 'mutated';
+    original.ipc[0] = 99;
+    input[0] = transfer('other', [8, 8, 8]);
+    input.push(transfer('late', [7, 7, 7]));
+    pending.resolve(resultTable().batches);
+    await activeQuery;
+    await replacement;
+
+    expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenCalledOnce();
+    const [inserted, options] = duckdbMocks.connection.insertArrowFromIPCStream.mock.calls[0]!;
+    expect(options).toEqual({ name: 'events', create: true });
+    expect([...inserted]).toEqual([4, 5, 6]);
+    expect(await database.listTables()).toEqual(['events']);
   });
 });
