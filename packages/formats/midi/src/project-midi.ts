@@ -200,7 +200,7 @@ const yieldToWorker = (): Promise<void> => new Promise((resolve) => setTimeout(r
 const stageLabel = (stage: MidiParseProgress['stage'], completed: number, total: number): string => {
   const present = { normalizing: 'Normalizing', parsing: 'Parsing', projecting: 'Projecting' }[stage];
   if (completed === 0) return `${present} MIDI tracks`;
-  const past = { normalizing: 'Normalized', parsing: 'Parsed', projecting: 'Projected' }[stage];
+  const past = stage === 'normalizing' ? 'Normalized' : 'Processed';
   return `${past} track ${completed} of ${total}`;
 };
 

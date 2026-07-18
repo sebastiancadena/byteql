@@ -714,8 +714,34 @@ describe('parseAndProjectMidi', () => {
     for (const stage of ['normalizing', 'parsing', 'projecting'] as const) {
       const labels = progress.filter((update) => update.stage === stage).map((update) => update.label);
       expect(labels[0]).toBe(`${stage[0]!.toUpperCase()}${stage.slice(1)} MIDI tracks`);
-      expect(labels.at(-1)).toContain('track 3 of 3');
+      expect(labels.slice(1)).toEqual(
+        [1, 2, 3].map((completed) =>
+          stage === 'normalizing'
+            ? `Normalized track ${completed} of 3`
+            : `Processed track ${completed} of 3`,
+        ),
+      );
     }
+  });
+
+  it('uses neutral completion labels when recoverable parse failures skip projection work', async () => {
+    const progress: string[] = [];
+
+    const result = await parseAndProjectMidi(
+      await loadFixture('malformed-then-valid.mid'),
+      new AbortController().signal,
+      (update) => {
+        if (update.completed > 0 && update.stage !== 'normalizing') progress.push(update.label);
+      },
+    );
+
+    expect(result.issues.some((issue) => issue.recoverable)).toBe(true);
+    expect(progress).toEqual([
+      'Processed track 1 of 2',
+      'Processed track 2 of 2',
+      'Processed track 1 of 2',
+      'Processed track 2 of 2',
+    ]);
   });
 
   it('rejects Type 2 as unsupported rather than corrupt', async () => {

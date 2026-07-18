@@ -545,9 +545,9 @@ describe('parse worker boundary', () => {
       { stage: 'normalizing', completed: 0, total: 1, label: 'Normalizing MIDI tracks' },
       { stage: 'normalizing', completed: 1, total: 1, label: 'Normalized track 1 of 1' },
       { stage: 'parsing', completed: 0, total: 1, label: 'Parsing MIDI tracks' },
-      { stage: 'parsing', completed: 1, total: 1, label: 'Parsed track 1 of 1' },
+      { stage: 'parsing', completed: 1, total: 1, label: 'Processed track 1 of 1' },
       { stage: 'projecting', completed: 0, total: 1, label: 'Projecting MIDI tracks' },
-      { stage: 'projecting', completed: 1, total: 1, label: 'Projected track 1 of 1' },
+      { stage: 'projecting', completed: 1, total: 1, label: 'Processed track 1 of 1' },
     ];
     installParseWorker(scope, async (_bytes, _signal, onProgress) => {
       for (const update of progress) onProgress?.(update);
