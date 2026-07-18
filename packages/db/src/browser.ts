@@ -218,6 +218,9 @@ class BrowserDatabase implements ByteqlDatabase {
         throw new Error('ByteQL database has been disposed.');
       }
       await this.initialize();
+      if (this.disposeRequested) {
+        throw new Error('ByteQL database has been disposed.');
+      }
       return operation(this.getConnection());
     });
     this.operationTail = result.then(

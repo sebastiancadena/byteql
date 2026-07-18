@@ -352,6 +352,41 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
   });
 
+  it('does not start a query after disposal is requested during cold initialization', async () => {
+    const initialization = deferred<null>();
+    duckdbMocks.database.instantiate.mockImplementationOnce(() => initialization.promise);
+    const database = await createBrowserDatabase();
+
+    const query = database.query('SELECT 1;');
+    await vi.waitFor(() => expect(duckdbMocks.database.instantiate).toHaveBeenCalledOnce());
+    const disposal = database.dispose();
+    initialization.resolve(null);
+
+    await expect(query).rejects.toThrow('disposed');
+    await disposal;
+    expect(duckdbMocks.connection.send).not.toHaveBeenCalled();
+    expect(duckdbMocks.connection.close).toHaveBeenCalledOnce();
+    expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
+  });
+
+  it('does not start a replacement after disposal is requested during cold initialization', async () => {
+    const initialization = deferred<null>();
+    duckdbMocks.database.instantiate.mockImplementationOnce(() => initialization.promise);
+    const database = await createBrowserDatabase();
+
+    const replacement = database.replaceTables([transfer('events')]);
+    await vi.waitFor(() => expect(duckdbMocks.database.instantiate).toHaveBeenCalledOnce());
+    const disposal = database.dispose();
+    initialization.resolve(null);
+
+    await expect(replacement).rejects.toThrow('disposed');
+    await disposal;
+    expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([...HARDENING_STATEMENTS]);
+    expect(duckdbMocks.connection.insertArrowFromIPCStream).not.toHaveBeenCalled();
+    expect(duckdbMocks.connection.close).toHaveBeenCalledOnce();
+    expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
+  });
+
   it('cleans up the worker and connection after partial initialization failure', async () => {
     duckdbMocks.connection.query.mockRejectedValueOnce(new Error('hardening failed'));
     const database = await createBrowserDatabase();
