@@ -44,6 +44,9 @@ export default function WorkerWrapper(options) {
 };
 
 export default defineConfig({
+  define: {
+    __BYTEQL_E2E__: JSON.stringify(process.env.BYTEQL_E2E === '1'),
+  },
   plugins: [svelte(), dataUrlParseWorker],
   resolve: {
     conditions: ['browser'],

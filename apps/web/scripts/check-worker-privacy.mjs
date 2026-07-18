@@ -1,30 +1,17 @@
 /* global clearTimeout, document, getComputedStyle, setTimeout */
 
 import console from 'node:console';
-import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import process from 'node:process';
 import { fileURLToPath, URL } from 'node:url';
 
 import { chromium } from '@playwright/test';
 import { build, preview } from 'vite';
 
-const chromiumCandidates = [
-  process.env.BYTEQL_CHROMIUM_PATH,
-  chromium.executablePath(),
-  '/snap/bin/chromium',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-  '/usr/bin/google-chrome',
-].filter(Boolean);
-const executablePath = chromiumCandidates.find((candidate) => existsSync(candidate));
-if (!executablePath) {
-  throw new Error(
-    'Chromium is required for the worker privacy probe. Install Playwright Chromium or set BYTEQL_CHROMIUM_PATH.',
-  );
-}
+import { resolveChromiumExecutable } from './chromium.mjs';
+
+const executablePath = resolveChromiumExecutable(chromium);
 
 const webRoot = fileURLToPath(new URL('../', import.meta.url));
 const outDir = await mkdtemp(join(tmpdir(), 'byteql-worker-privacy-'));

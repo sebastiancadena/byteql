@@ -1,9 +1,15 @@
 <script lang="ts">
+  /* global __BYTEQL_E2E__ */
+
   import { createBrowserDatabase, type ByteqlDatabase } from '@byteql/db';
   import { onMount } from 'svelte';
 
   import Workbench from './components/Workbench.svelte';
+  import { createBrowserE2EHarness } from './lib/e2e-harness.js';
   import { SessionController } from './lib/session/controller.js';
+
+  const e2eHarness = __BYTEQL_E2E__ ? createBrowserE2EHarness() : null;
+  if (e2eHarness) globalThis.__byteqlE2E = e2eHarness.control;
 
   let controller = $state<SessionController | null>(null);
   let startupError = $state<string | null>(null);
@@ -29,7 +35,9 @@
           return;
         }
 
-        ownedController = new SessionController({ database });
+        ownedController = new SessionController(
+          e2eHarness ? { database, parser: e2eHarness.createParser() } : { database },
+        );
         currentController = ownedController;
         await ownedController.initialize();
         if (disposed || attempt !== generation || currentController !== ownedController) return;
@@ -77,7 +85,7 @@
 
 {#if controller}
   <div data-app-ready="true">
-    <Workbench {controller} />
+    <Workbench {controller} audioEngineFactory={e2eHarness?.audioEngineFactory} />
   </div>
 {:else}
   <main class="startup-state" aria-busy={starting}>

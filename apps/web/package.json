@@ -6,9 +6,10 @@
   "scripts": {
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "vitest --passWithNoTests && pnpm test:worker-privacy",
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "test": "vitest --passWithNoTests --exclude 'e2e/**' && pnpm test:worker-privacy",
     "test:worker-privacy": "node scripts/check-worker-privacy.mjs",
-    "test:e2e": "playwright test",
+    "test:e2e": "node scripts/run-playwright.mjs",
     "dev": "vite"
   },
   "dependencies": {

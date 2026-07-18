@@ -8,6 +8,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "check": "pnpm -r check && pnpm format:check",
+    "check:bundle": "pnpm --filter @byteql/web check:bundle",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",

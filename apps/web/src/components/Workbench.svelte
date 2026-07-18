@@ -25,7 +25,7 @@
 
   interface Props {
     controller: ControllerPort;
-    audioEngineFactory?: () => AudioEngine;
+    audioEngineFactory?: (() => AudioEngine) | undefined;
   }
 
   let { controller, audioEngineFactory }: Props = $props();
