@@ -2,6 +2,7 @@
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { tableFromArrays } from 'apache-arrow';
+import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
@@ -23,6 +24,19 @@ function fakeEngine() {
     dispose: vi.fn(),
   };
   return engine;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
+async function flushPlayResolution(): Promise<void> {
+  await Promise.resolve();
+  await tick();
 }
 
 describe('AudioViewer', () => {
@@ -96,6 +110,103 @@ describe('AudioViewer', () => {
     await vi.advanceTimersByTimeAsync(100);
 
     expect(engine.stop).toHaveBeenCalledOnce();
+  });
+
+  it('keeps Play idle when Stop invalidates a deferred play', async () => {
+    const table = tableFromArrays({
+      seconds: [0.5, 1.25],
+      note: [60, 60],
+      velocity: [127, 0],
+      kind: ['note_on', 'note_off'],
+    });
+    const pendingPlay = deferred();
+    const engine = fakeEngine();
+    vi.mocked(engine.play).mockImplementation(() => pendingPlay.promise);
+    render(AudioViewer, { table, engineFactory: () => engine, onclose: vi.fn() });
+    await vi.waitFor(() => expect(engine.load).toHaveBeenCalledOnce());
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Play' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    vi.useFakeTimers();
+    pendingPlay.resolve();
+    await flushPlayResolution();
+
+    expect(screen.getByRole('button', { name: 'Play' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
+    vi.mocked(engine.positionSeconds).mockClear();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(engine.positionSeconds).not.toHaveBeenCalled();
+  });
+
+  it('keeps Play idle when a result replacement invalidates a deferred play', async () => {
+    const firstTable = tableFromArrays({
+      seconds: [1],
+      note: [60],
+      velocity: [127],
+      kind: ['note_on'],
+    });
+    const replacementTable = tableFromArrays({
+      seconds: [2],
+      note: [72],
+      velocity: [127],
+      kind: ['note_on'],
+    });
+    const pendingPlay = deferred();
+    const engine = fakeEngine();
+    vi.mocked(engine.play).mockImplementation(() => pendingPlay.promise);
+    const view = render(AudioViewer, {
+      table: firstTable,
+      engineFactory: () => engine,
+      onclose: vi.fn(),
+    });
+    await vi.waitFor(() => expect(engine.load).toHaveBeenCalledOnce());
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Play' }));
+    await view.rerender({ table: replacementTable, engineFactory: () => engine, onclose: vi.fn() });
+    await vi.waitFor(() => expect(engine.load).toHaveBeenCalledTimes(2));
+    vi.useFakeTimers();
+    pendingPlay.resolve();
+    await flushPlayResolution();
+
+    expect(screen.getByRole('button', { name: 'Play' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
+    vi.mocked(engine.positionSeconds).mockClear();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(engine.positionSeconds).not.toHaveBeenCalled();
+  });
+
+  it('lets only the newest deferred Play update the UI and keeps it idle after Pause', async () => {
+    const table = tableFromArrays({
+      seconds: [1],
+      note: [60],
+      velocity: [127],
+      kind: ['note_on'],
+    });
+    const stalePlay = deferred();
+    const newestPlay = deferred();
+    const engine = fakeEngine();
+    vi.mocked(engine.play)
+      .mockImplementationOnce(() => stalePlay.promise)
+      .mockImplementationOnce(() => newestPlay.promise);
+    render(AudioViewer, { table, engineFactory: () => engine, onclose: vi.fn() });
+    await vi.waitFor(() => expect(engine.load).toHaveBeenCalledOnce());
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Play' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Play' }));
+    newestPlay.resolve();
+    await flushPlayResolution();
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    vi.useFakeTimers();
+    stalePlay.resolve();
+    await flushPlayResolution();
+
+    expect(screen.getByRole('button', { name: 'Play' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
+    vi.mocked(engine.positionSeconds).mockClear();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(engine.positionSeconds).not.toHaveBeenCalled();
   });
 
   it('disposes on close and component teardown without double-releasing resources', async () => {

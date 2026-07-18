@@ -21,11 +21,13 @@
   let playing = $state(false);
   let error = $state<string | null>(null);
   let ticker: ReturnType<typeof globalThis.setInterval> | null = null;
+  let playGeneration = 0;
   let disposed = false;
 
   $effect(() => {
     const parsed = parseRows(table);
     untrack(() => {
+      invalidatePendingPlay();
       rows = parsed.rows;
       invalidRows = parsed.invalidRows;
       duration = parsed.duration;
@@ -103,19 +105,21 @@
   }
 
   async function play(): Promise<void> {
+    const generation = ++playGeneration;
     error = null;
     try {
       await engine.play();
-      if (disposed) return;
+      if (disposed || generation !== playGeneration) return;
       playing = true;
       startTicker();
     } catch (reason) {
-      if (disposed) return;
+      if (disposed || generation !== playGeneration) return;
       error = message(reason, 'Playback could not start. Check browser audio permissions and try again.');
     }
   }
 
   function pause(): void {
+    invalidatePendingPlay();
     engine.pause();
     playing = false;
     elapsed = engine.positionSeconds();
@@ -123,6 +127,7 @@
   }
 
   function stop(): void {
+    invalidatePendingPlay();
     engine.stop();
     playing = false;
     elapsed = 0;
@@ -130,6 +135,7 @@
   }
 
   function seek(event: Event): void {
+    invalidatePendingPlay();
     const seconds = Number((event.currentTarget as HTMLInputElement).value);
     engine.seek(seconds);
     elapsed = seconds;
@@ -152,8 +158,13 @@
     ticker = null;
   }
 
+  function invalidatePendingPlay(): void {
+    playGeneration += 1;
+  }
+
   function disposeOnce(): void {
     if (disposed) return;
+    invalidatePendingPlay();
     disposed = true;
     stopTicker();
     engine.dispose();
