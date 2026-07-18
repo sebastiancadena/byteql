@@ -522,8 +522,11 @@ git commit -m "feat(core): compile safe projection expressions"
 - Create: `packages/core/src/projection/anchors.ts`
 - Create: `packages/core/src/projection/project.ts`
 - Create: `packages/core/src/projection/project.test.ts`
+- Modify: `packages/core/src/projection/expression.ts`
 - Modify: `packages/core/src/projection/spec.ts`
 - Modify: `packages/core/src/index.ts`
+
+Approved minimal scope correction: `expression.ts` exposes opaque AST-backed state-identifier analysis so `compileProjection` can reject references that are not declared by the table. Expression parsing and evaluation semantics remain in Task 5 scope and are otherwise unchanged.
 
 **Interfaces:**
 - Consumes: compiled expressions and validated specs from Task 5.
@@ -569,7 +572,7 @@ Run: `pnpm --filter @byteql/core test -- --run`
 Expected: PASS.
 
 ```bash
-git add packages/core/src/projection packages/core/src/index.ts
+git add packages/core/src/projection/anchors.ts packages/core/src/projection/expression.ts packages/core/src/projection/project.ts packages/core/src/projection/project.test.ts packages/core/src/projection/spec.ts packages/core/src/index.ts
 git commit -m "feat(core): project trees into provenance rows"
 ```
 

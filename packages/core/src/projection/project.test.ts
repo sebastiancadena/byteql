@@ -134,6 +134,33 @@ describe('compileProjection and projectTree', () => {
     expect(calls).toEqual([1]);
   });
 
+  it('resets all registers in a changed scope before cross-referenced updates', () => {
+    const compiled = compileProjection(
+      projection({
+        name: 'rows',
+        rows: '$.groups[*].items[*]',
+        key: 'id',
+        state: {
+          left: { scope: '$.groups[*]', init: 0, update: 'right' },
+          right: { scope: '$.groups[*]', init: 10, update: 'right + 2' },
+        },
+        columns: {
+          left: { expr: 'left', type: 'int64' },
+          right: { expr: 'right', type: 'int64' },
+        },
+      }),
+    );
+
+    const [table] = projectTree(
+      compiled,
+      { groups: [{ items: [{}] }, { items: [{}] }] },
+      { resolve: () => ({ start: 0, end: 0 }) },
+    );
+
+    expect(table!.columns.left).toEqual([10, 10]);
+    expect(table!.columns.right).toEqual([12, 12]);
+  });
+
   it('uses only own data properties and skips sparse, inherited, and accessor array entries', () => {
     let getterCalls = 0;
     const tracks: unknown[] = [];
@@ -285,11 +312,35 @@ describe('compileProjection and projectTree', () => {
   });
 
   it.each([
+    ['rows grammar', '$.tracks[]', undefined, 'tables.0.rows', 9],
+    ['state scope grammar', '$.tracks[*].events[*]', '$.tracks[*].events[', 'tables.0.state.tick.scope', 18],
+  ])('reports structured diagnostics and exact offsets for %s', (_name, rows, scope, path, offset) => {
+    expect.assertions(4);
+    try {
+      compileProjection(
+        projection({
+          name: 'rows',
+          rows,
+          key: 'id',
+          ...(scope === undefined ? {} : { state: { tick: { scope, init: 0, update: 'tick + 1' } } }),
+          columns: { value: { expr: '1', type: 'int32' } },
+        }),
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(ProjectionCompileError);
+      expect(error).toMatchObject({ code: 'PROJECTION_ANCHOR_INVALID', path });
+      expect((error as Error).message).toContain(`at offset ${offset}`);
+      expect((error as Error).message).toContain(path);
+    }
+  });
+
+  it.each([
     ['not a prefix', '$.tracks[*].other'],
     ['different fixed index', '$.tracks[1]'],
     ['longer than rows', '$.tracks[*].events[*].body'],
   ])('rejects a state scope that is %s', (_name, scope) => {
-    expect(() =>
+    expect.assertions(1);
+    try {
       compileProjection(
         projection({
           name: 'rows',
@@ -298,8 +349,13 @@ describe('compileProjection and projectTree', () => {
           state: { tick: { scope, init: 0, update: 'tick + 1' } },
           columns: { tick: { expr: 'tick', type: 'int64' } },
         }),
-      ),
-    ).toThrowError(/PROJECTION_STATE_SCOPE_INVALID.*tables\.0\.state\.tick\.scope/);
+      );
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'PROJECTION_STATE_SCOPE_INVALID',
+        path: 'tables.0.state.tick.scope',
+      });
+    }
   });
 
   it.each([

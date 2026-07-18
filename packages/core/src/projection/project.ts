@@ -202,6 +202,8 @@ const projectTable = (
         stateValues[register.name] = register.init;
         scopeIndexes.set(register.name, currentScope);
       }
+    }
+    for (const register of table.state) {
       stateValues[register.name] = evaluateExpression(
         register.update,
         expressionContext(match, root, stateValues),
