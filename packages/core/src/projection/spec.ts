@@ -35,8 +35,26 @@ export interface ParentKeySpec {
 
 export interface DissectChainLinkSpec {
   when: string;
+  parser?: string;
+  stream?: string;
+  table?: string;
+}
+
+export interface StreamMessageLinkSpec {
+  when: string;
   parser: string;
   table?: string;
+}
+
+export interface StreamSpec {
+  name: string;
+  key: string;
+  offset: string;
+  framer: string;
+  table: string;
+  segments_table: string;
+  max_buffer: number;
+  messages: StreamMessageLinkSpec[];
 }
 
 export interface DissectSpec {
@@ -56,10 +74,11 @@ export interface TableSpec {
 }
 
 export interface ProjectionSpec {
-  version: '0.1' | '0.2';
+  version: '0.1' | '0.2' | '0.3';
   format: string;
   tables: TableSpec[];
   dissect?: DissectSpec[];
+  streams?: StreamSpec[];
 }
 
 const identifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -107,11 +126,43 @@ const namedRecord = <T extends z.ZodType>(value: T) =>
   });
 
 const parentKeySpec = z.strictObject({ table: identifier, column: identifier });
-const chainLinkSpec = z.strictObject({
+const chainLinkSpec = z
+  .strictObject({
+    when: nonEmptyString,
+    parser: identifier.optional(),
+    stream: identifier.optional(),
+    table: identifier.optional(),
+  })
+  .superRefine((link, context) => {
+    if ((link.parser === undefined) === (link.stream === undefined)) {
+      context.addIssue({ code: 'custom', message: 'exactly one of parser or stream is required' });
+    }
+    if (link.stream !== undefined && link.table !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'table is not allowed on a stream link',
+        path: ['table'],
+      });
+    }
+  });
+
+const messageLinkSpec = z.strictObject({
   when: nonEmptyString,
   parser: identifier,
   table: identifier.optional(),
 });
+
+const streamSpec = z.strictObject({
+  name: identifier,
+  key: identifier,
+  offset: nonEmptyString,
+  framer: identifier,
+  table: identifier,
+  segments_table: identifier,
+  max_buffer: z.number().int().positive(),
+  messages: z.array(messageLinkSpec).min(1),
+});
+
 const dissectSpec = z.strictObject({
   from: identifier,
   payload: nonEmptyString,
@@ -130,11 +181,23 @@ const tableSpec = z.strictObject({
 
 const projectionSpec = z.strictObject({
   version: z
-    .union([z.literal('0.1'), z.literal(0.1), z.literal('0.2'), z.literal(0.2)])
-    .transform((value): '0.1' | '0.2' => (value === '0.2' || value === 0.2 ? '0.2' : '0.1')),
+    .union([
+      z.literal('0.1'),
+      z.literal(0.1),
+      z.literal('0.2'),
+      z.literal(0.2),
+      z.literal('0.3'),
+      z.literal(0.3),
+    ])
+    .transform((value): '0.1' | '0.2' | '0.3' => {
+      if (value === '0.3' || value === 0.3) return '0.3';
+      if (value === '0.2' || value === 0.2) return '0.2';
+      return '0.1';
+    }),
   format: nonEmptyString,
   tables: z.array(tableSpec).min(1),
   dissect: z.array(dissectSpec).optional(),
+  streams: z.array(streamSpec).optional(),
 });
 
 const issuePath = (path: readonly PropertyKey[]): string =>
@@ -219,6 +282,26 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
         'PROJECTION_VERSION_REQUIRED',
         `tables.${indexed}.parent_key`,
         'parent_key requires version 0.2',
+      );
+    }
+  }
+
+  if (parsed.data.version !== '0.3') {
+    if (parsed.data.streams !== undefined) {
+      throw new ProjectionCompileError(
+        'PROJECTION_VERSION_REQUIRED',
+        'streams',
+        'streams requires version 0.3',
+      );
+    }
+    const entryIndex = (parsed.data.dissect ?? []).findIndex((entry) =>
+      entry.chain.some((link) => link.stream !== undefined),
+    );
+    if (entryIndex >= 0) {
+      throw new ProjectionCompileError(
+        'PROJECTION_VERSION_REQUIRED',
+        `dissect.${entryIndex}.chain`,
+        'stream chain links require version 0.3',
       );
     }
   }

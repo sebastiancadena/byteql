@@ -260,7 +260,7 @@ export const compileProjection = (
     }
     const chain = entry.chain.map((link, linkIndex): CompiledChainLink => {
       const linkPath = `${path}.chain.${linkIndex}`;
-      const parser = registry.get(link.parser);
+      const parser = registry.get(link.parser!); // v0.3 stream links are compiled in a later change
       if (!parser) {
         throw new ProjectionCompileError(
           'PROJECTION_PARSER_UNKNOWN',
@@ -291,7 +291,7 @@ export const compileProjection = (
       if (!fromIsTable) rejectContextReferences(when, `${linkPath}.when`);
       return Object.freeze({
         when,
-        parserId: link.parser,
+        parserId: link.parser!, // v0.3 stream links are compiled in a later change
         parser,
         table,
       });
