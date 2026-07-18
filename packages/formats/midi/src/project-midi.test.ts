@@ -685,6 +685,39 @@ describe('parseAndProjectMidi', () => {
     expect(rows(errors)).toEqual([]);
   });
 
+  it('reports monotonic progress before and after every real track phase', async () => {
+    const progress: Array<{
+      stage: 'normalizing' | 'parsing' | 'projecting';
+      completed: number;
+      total: number;
+      label: string;
+    }> = [];
+
+    await parseAndProjectMidi(await loadFixture('demo.mid'), new AbortController().signal, (update) =>
+      progress.push(update),
+    );
+
+    expect(progress.map(({ stage, completed, total }) => [stage, completed, total])).toEqual([
+      ['normalizing', 0, 3],
+      ['normalizing', 1, 3],
+      ['normalizing', 2, 3],
+      ['normalizing', 3, 3],
+      ['parsing', 0, 3],
+      ['parsing', 1, 3],
+      ['parsing', 2, 3],
+      ['parsing', 3, 3],
+      ['projecting', 0, 3],
+      ['projecting', 1, 3],
+      ['projecting', 2, 3],
+      ['projecting', 3, 3],
+    ]);
+    for (const stage of ['normalizing', 'parsing', 'projecting'] as const) {
+      const labels = progress.filter((update) => update.stage === stage).map((update) => update.label);
+      expect(labels[0]).toBe(`${stage[0]!.toUpperCase()}${stage.slice(1)} MIDI tracks`);
+      expect(labels.at(-1)).toContain('track 3 of 3');
+    }
+  });
+
   it('rejects Type 2 as unsupported rather than corrupt', async () => {
     const bytes = midiFile({ format: 2, division: 480, tracks: [Uint8Array.of(0, 0xff, 0x2f, 0)] });
 

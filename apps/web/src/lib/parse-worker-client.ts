@@ -1,5 +1,7 @@
 import type { ParseResult } from '@byteql/core';
 
+import InlineParseWorker from '../workers/parse.worker.ts?worker&inline';
+
 export interface ParseProgress {
   stage: 'normalizing' | 'parsing' | 'projecting';
   completed: number;
@@ -39,8 +41,8 @@ type WorkerResponse =
 
 const abortError = (): DOMException => new DOMException('The parse was cancelled.', 'AbortError');
 
-const defaultWorkerFactory = (): WorkerPort =>
-  new Worker(new URL('../workers/parse.worker.ts', import.meta.url), { type: 'module' });
+export const createInlineParseWorker = (): WorkerPort =>
+  new InlineParseWorker({ name: 'byteql-midi-parser' });
 
 export class ParseWorkerClient implements ParseClientPort {
   private worker: WorkerPort;
@@ -49,7 +51,7 @@ export class ParseWorkerClient implements ParseClientPort {
   private active: ActiveTask | null = null;
   private disposed = false;
 
-  constructor(private readonly workerFactory: () => WorkerPort = defaultWorkerFactory) {
+  constructor(private readonly workerFactory: () => WorkerPort = createInlineParseWorker) {
     this.worker = this.createWorker();
   }
 

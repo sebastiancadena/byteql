@@ -140,6 +140,7 @@ export class SessionController {
     ++this.queryGeneration;
     this.initializationAbort.abort();
     this.subscribers.clear();
+    this.state = { ...initialSessionState, tables: [], issues: [] };
     void this.initialization?.catch(() => undefined);
     this.sampleBytes = null;
     this.retainedFile = null;

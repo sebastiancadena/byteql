@@ -1,12 +1,16 @@
 import type { ParseResult } from '@byteql/core';
-import { parseAndProjectMidi } from '@byteql/midi';
+import { parseAndProjectMidi, type MidiParseProgress } from '@byteql/midi';
 
 export interface ParseWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: unknown, transfer?: readonly Transferable[]): void;
 }
 
-type ParseMidi = (bytes: Uint8Array, signal: AbortSignal) => Promise<ParseResult>;
+type ParseMidi = (
+  bytes: Uint8Array,
+  signal: AbortSignal,
+  onProgress?: (progress: MidiParseProgress) => void,
+) => Promise<ParseResult>;
 
 type WorkerRequest =
   { type: 'parse'; taskId: number; name: string; bytes: Uint8Array } | { type: 'cancel'; taskId: number };
@@ -65,37 +69,14 @@ export function installParseWorker(
     active.set(taskId, controller);
     if (cancelled.has(taskId)) controller.abort();
 
-    scope.postMessage({
-      type: 'progress',
-      taskId,
-      stage: 'normalizing',
-      completed: 0,
-      total: null,
-      label: 'Normalizing MIDI tracks',
-    });
-    scope.postMessage({
-      type: 'progress',
-      taskId,
-      stage: 'parsing',
-      completed: 0,
-      total: null,
-      label: 'Parsing MIDI tracks',
-    });
-
-    void parseMidi(bytes, controller.signal)
+    void parseMidi(bytes, controller.signal, (progress) => {
+      scope.postMessage({ type: 'progress', taskId, ...progress });
+    })
       .then((result) => {
         if (controller.signal.aborted || cancelled.has(taskId)) {
           scope.postMessage({ type: 'cancelled', taskId });
           return;
         }
-        scope.postMessage({
-          type: 'progress',
-          taskId,
-          stage: 'projecting',
-          completed: result.tables.length,
-          total: result.tables.length,
-          label: 'Projected relational tables',
-        });
         scope.postMessage({ type: 'result', taskId, result }, ipcBuffers(result));
       })
       .catch((error: unknown) => {

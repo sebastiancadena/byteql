@@ -1,5 +1,6 @@
 import type { ParseResult, TableTransfer } from '@byteql/core';
 import type { ByteqlDatabase, QueryResult } from '@byteql/db';
+import type { MidiParseProgress } from '@byteql/midi';
 import { tableFromArrays, type Table } from 'apache-arrow';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -323,6 +324,38 @@ describe('SessionController', () => {
     expect(database.dispose).toHaveBeenCalledOnce();
   });
 
+  it('releases all state-held local data during idempotent disposal', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const opening = controller.openFile(new File([new Uint8Array([1])], 'private.mid'));
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    parser.calls[0]!.operation.resolve({
+      ...parseResult('events'),
+      issues: [
+        {
+          stage: 'parsing',
+          track: 0,
+          code: 'PARTIAL',
+          message: 'partial issue',
+          recoverable: true,
+          sourceStart: 1,
+          sourceEnd: 2,
+        },
+      ],
+    });
+    await opening;
+    await controller.runQuery('select * from events');
+    expect(controller.getState()).toMatchObject({
+      source: { name: 'private.mid', size: 1 },
+      sql: 'select * from events',
+      result: expect.anything(),
+    });
+
+    await Promise.all([controller.dispose(), controller.dispose()]);
+    expect(controller.getState()).toEqual(initialSessionState);
+    expect(database.dispose).toHaveBeenCalledOnce();
+    expect(parser.dispose).toHaveBeenCalledOnce();
+  });
+
   it('isolates a failing subscriber from later subscribers and state transitions', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
     let notifications = 0;
@@ -504,6 +537,36 @@ describe('parse worker boundary', () => {
 
     const completed = scope.posts.find((post) => (post.message as { type?: string }).type === 'result');
     expect(completed?.transfer).toEqual([result.tables[0]!.ipc.buffer, second.ipc.buffer]);
+  });
+
+  it('forwards only progress reported at real MIDI orchestrator boundaries', async () => {
+    const scope = new FakeWorkerScope();
+    const progress: MidiParseProgress[] = [
+      { stage: 'normalizing', completed: 0, total: 1, label: 'Normalizing MIDI tracks' },
+      { stage: 'normalizing', completed: 1, total: 1, label: 'Normalized track 1 of 1' },
+      { stage: 'parsing', completed: 0, total: 1, label: 'Parsing MIDI tracks' },
+      { stage: 'parsing', completed: 1, total: 1, label: 'Parsed track 1 of 1' },
+      { stage: 'projecting', completed: 0, total: 1, label: 'Projecting MIDI tracks' },
+      { stage: 'projecting', completed: 1, total: 1, label: 'Projected track 1 of 1' },
+    ];
+    installParseWorker(scope, async (_bytes, _signal, onProgress) => {
+      for (const update of progress) onProgress?.(update);
+      return parseResult('events');
+    });
+
+    scope.receive({
+      type: 'parse',
+      taskId: 8,
+      name: 'demo.mid',
+      bytes: new Uint8Array([0x4d, 0x54, 0x68, 0x64]),
+    });
+    await flush();
+
+    expect(
+      scope.posts
+        .map((post) => post.message as { type?: string })
+        .filter((message) => message.type === 'progress'),
+    ).toEqual(progress.map((update) => ({ type: 'progress', taskId: 8, ...update })));
   });
 
   it('aborts a task when its cancellation message arrives', async () => {

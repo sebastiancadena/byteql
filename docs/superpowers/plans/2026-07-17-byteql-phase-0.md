@@ -788,6 +788,19 @@ git commit -m "feat(db): add secure DuckDB-WASM client"
 - Create: `apps/web/src/workers/parse.worker.ts`
 - Create: `apps/web/src/assets/demo.mid`
 - Create: `apps/web/src/vite-env.d.ts`
+- Create: `apps/web/src/lib/session/worker-build.test.ts`
+- Create: `apps/web/src/lib/session/worker-browser-probe.ts`
+- Create: `apps/web/src/workers/kaitai-browser-stub.ts`
+- Create: `apps/web/scripts/check-worker-privacy.mjs`
+- Create: `apps/web/worker-privacy.html`
+- Modify: `apps/web/package.json`
+- Modify: `apps/web/vite.config.ts`
+- Modify: `packages/formats/midi/src/project-midi.ts`
+- Modify: `packages/formats/midi/src/project-midi.test.ts`
+- Modify: `packages/formats/midi/src/index.ts`
+- Modify: `docs/superpowers/plans/2026-07-17-byteql-phase-0.md`
+
+Approved Task 9 scope correction: production parse workers are bundled before readiness and recreated from an in-memory `data:` module URL. The narrow Vite post-transform must reject an unexpected inline-worker wrapper rather than silently falling back to a worker asset request. A real Chromium production probe covers cancellation, `error`, and `messageerror` recreation with zero post-readiness request events. MIDI orchestration also exposes an optional progress callback and performs monotonic normalize, parse, and project passes so worker progress is emitted before and after real per-track boundaries. Disposal resets the controller to a fresh inert state so it retains no source metadata, SQL, IPC, issues, or Arrow result.
 
 **Interfaces:**
 - Consumes: `parseAndProjectMidi`, `ByteqlDatabase`, and core worker protocol.
@@ -856,7 +869,19 @@ Run: `pnpm --filter @byteql/web test -- --run src/lib/session`
 Expected: all reducer and orchestration tests pass.
 
 ```bash
-git add apps/web/src/lib/session apps/web/src/lib/parse-worker-client.ts apps/web/src/workers apps/web/src/assets/demo.mid apps/web/src/vite-env.d.ts
+git add docs/superpowers/plans/2026-07-17-byteql-phase-0.md \
+  packages/formats/midi/src/project-midi.ts \
+  packages/formats/midi/src/project-midi.test.ts \
+  packages/formats/midi/src/index.ts \
+  apps/web/package.json \
+  apps/web/vite.config.ts \
+  apps/web/worker-privacy.html \
+  apps/web/scripts/check-worker-privacy.mjs \
+  apps/web/src/lib/session \
+  apps/web/src/lib/parse-worker-client.ts \
+  apps/web/src/workers \
+  apps/web/src/assets/demo.mid \
+  apps/web/src/vite-env.d.ts
 git commit -m "feat(web): orchestrate local parse and query sessions"
 ```
 

@@ -20,6 +20,15 @@ import type { MidiHeader, NormalizedEventMap, TrackChunk } from './types.js';
 
 const compiledProjection = compileProjection(parseProjectionSpec(tablesYaml));
 
+export interface MidiParseProgress {
+  stage: 'normalizing' | 'parsing' | 'projecting';
+  completed: number;
+  total: number;
+  label: string;
+}
+
+export type MidiProgressCallback = (progress: MidiParseProgress) => void;
+
 const nullability: Readonly<Record<string, ReadonlySet<string>>> = {
   header: new Set(),
   events: new Set(['channel', 'note', 'velocity', 'controller', 'value', 'program', 'pressure', 'bend']),
@@ -188,7 +197,34 @@ const throwIfAborted = (signal: AbortSignal): void => {
 
 const yieldToWorker = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-export async function parseAndProjectMidi(bytes: Uint8Array, signal: AbortSignal): Promise<ParseResult> {
+const stageLabel = (stage: MidiParseProgress['stage'], completed: number, total: number): string => {
+  const present = { normalizing: 'Normalizing', parsing: 'Parsing', projecting: 'Projecting' }[stage];
+  if (completed === 0) return `${present} MIDI tracks`;
+  const past = { normalizing: 'Normalized', parsing: 'Parsed', projecting: 'Projected' }[stage];
+  return `${past} track ${completed} of ${total}`;
+};
+
+const reportProgress = (
+  callback: MidiProgressCallback | undefined,
+  stage: MidiParseProgress['stage'],
+  completed: number,
+  total: number,
+): void => callback?.({ stage, completed, total, label: stageLabel(stage, completed, total) });
+
+interface NormalizedTrackWork {
+  track: TrackChunk;
+  normalized: ReturnType<typeof normalizeTrack>;
+}
+
+interface ParsedTrackWork extends NormalizedTrackWork {
+  safeEvents: ProjectionEvent[];
+}
+
+export async function parseAndProjectMidi(
+  bytes: Uint8Array,
+  signal: AbortSignal,
+  onProgress?: MidiProgressCallback,
+): Promise<ParseResult> {
   throwIfAborted(signal);
   const container = parseMidiContainer(bytes);
   if (container.header.format === 2) {
@@ -199,23 +235,53 @@ export async function parseAndProjectMidi(bytes: Uint8Array, signal: AbortSignal
     );
   }
 
-  const baseRoot = { hdr: headerNode(container.header), tracks: [] };
-  const baseTables = projectTree(compiledProjection, baseRoot, {
-    resolve: () => container.header.range,
-  }).map(mutableCopy);
-  const byName = new Map(baseTables.map((table) => [table.name, table]));
   const issues: ParseIssue[] = [];
+  const total = container.tracks.length;
+  const normalizedTracks: NormalizedTrackWork[] = [];
 
-  for (const track of container.tracks) {
+  reportProgress(onProgress, 'normalizing', 0, total);
+  for (const [index, track] of container.tracks.entries()) {
     throwIfAborted(signal);
     const normalized = normalizeTrack(track);
     if (normalized.error) issues.push(parseIssue('normalizing', track, normalized.error));
+    normalizedTracks.push({ track, normalized });
+    await yieldToWorker();
+    throwIfAborted(signal);
+    reportProgress(onProgress, 'normalizing', index + 1, total);
+  }
 
+  const parsedTracks: Array<ParsedTrackWork | null> = [];
+  reportProgress(onProgress, 'parsing', 0, total);
+  for (const [index, work] of normalizedTracks.entries()) {
+    throwIfAborted(signal);
+    const { track, normalized } = work;
     try {
       const parsed = parseSyntheticTrack(buildSyntheticTrackFile(container.header, normalized));
       const safeEvents = parsed.track.events.event.map((item, index) =>
         projectionEvent(item, normalized.events[index]!),
       );
+      parsedTracks.push({ ...work, safeEvents });
+    } catch (error) {
+      issues.push(parseIssue('parsing', track, error));
+      parsedTracks.push(null);
+    }
+    await yieldToWorker();
+    throwIfAborted(signal);
+    reportProgress(onProgress, 'parsing', index + 1, total);
+  }
+
+  reportProgress(onProgress, 'projecting', 0, total);
+  const baseRoot = { hdr: headerNode(container.header), tracks: [] };
+  const baseTables = projectTree(compiledProjection, baseRoot, {
+    resolve: () => container.header.range,
+  }).map(mutableCopy);
+  const byName = new Map(baseTables.map((table) => [table.name, table]));
+
+  for (const [index] of normalizedTracks.entries()) {
+    throwIfAborted(signal);
+    const parsed = parsedTracks[index];
+    if (parsed) {
+      const { track, normalized, safeEvents } = parsed;
       const tracks: unknown[] = new Array(track.index + 1);
       tracks[track.index] = { events: { event: safeEvents } };
       const root = { hdr: headerNode(container.header), tracks };
@@ -239,11 +305,10 @@ export async function parseAndProjectMidi(bytes: Uint8Array, signal: AbortSignal
       } catch (error) {
         issues.push(parseIssue('projecting', track, error));
       }
-    } catch (error) {
-      issues.push(parseIssue('parsing', track, error));
     }
-
     await yieldToWorker();
+    throwIfAborted(signal);
+    reportProgress(onProgress, 'projecting', index + 1, total);
   }
 
   throwIfAborted(signal);

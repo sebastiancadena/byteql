@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { build } from 'vite';
 
 describe('parse worker production bundle', () => {
-  it('bundles the non-tree-shaken controller and parser worker for browsers', async () => {
+  it('embeds the complete parser worker in the non-tree-shaken controller bundle', async () => {
     const webRoot = new URL('../../../', import.meta.url).pathname;
     const controllerEntry = new URL('./controller.ts', import.meta.url).pathname;
 
@@ -16,9 +16,10 @@ describe('parse worker production bundle', () => {
     });
 
     const builds = Array.isArray(output) ? output : [output];
-    const files = builds.flatMap((result) =>
-      'output' in result ? result.output.map((item) => item.fileName) : [],
-    );
-    expect(files.some((file) => /parse\.worker-.*\.js$/u.test(file))).toBe(true);
+    const artifacts = builds.flatMap((result) => ('output' in result ? result.output : []));
+    const files = artifacts.map((item) => item.fileName);
+
+    expect(files.some((file) => /parse\.worker-.*\.js$/u.test(file))).toBe(false);
+    expect(files.some((file) => /controller-.*\.js$/u.test(file))).toBe(true);
   });
 });
