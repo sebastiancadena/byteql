@@ -31,7 +31,7 @@ export interface MidiParseProgress {
 
 export type MidiProgressCallback = (progress: MidiParseProgress) => void;
 
-const nullability: Readonly<Record<string, ReadonlySet<string>>> = {
+export const midiNullability: Readonly<Record<string, ReadonlySet<string>>> = {
   header: new Set(),
   events: new Set(['channel', 'note', 'velocity', 'controller', 'value', 'program', 'pressure', 'bend']),
   tempo: new Set(),
@@ -115,7 +115,7 @@ const issueReport = (stage: string, track: TrackChunk, error: unknown): IssueRep
 };
 
 const toTransfer = (finished: FinishedTable): TableTransfer => {
-  const nullableColumns = nullability[finished.name] ?? new Set<string>();
+  const nullableColumns = midiNullability[finished.name] ?? new Set<string>();
   return {
     name: finished.name,
     ipc: tableToIpc(finished.arrow),

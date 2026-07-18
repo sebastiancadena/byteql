@@ -3,7 +3,21 @@ export const BYTEQL_CORE_VERSION = '0.1' as const;
 export { ipcToTable, projectedTableToArrow, tableToIpc } from './arrow/build.js';
 export { TableBatchBuilder } from './arrow/batch.js';
 export type { BatchBuilderOptions } from './arrow/batch.js';
-export type { FormatCapability, PackQuery, ParseIssue, ParseResult, TableTransfer } from './protocol.js';
+export type {
+  BatchTransfer,
+  FormatCapability,
+  FormatPack,
+  OpenOptions,
+  PackQuery,
+  ParseIssue,
+  ParseProgress,
+  ParseResult,
+  RecordSource,
+  SourceFinish,
+  TableColumn,
+  TableSchema,
+  TableTransfer,
+} from './protocol.js';
 
 export { IssueCollector } from './issues.js';
 export type { IssueCollectorOptions, IssueReport } from './issues.js';
