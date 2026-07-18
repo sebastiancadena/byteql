@@ -16,7 +16,7 @@ and attaches its timing and does not fail merely because a later shared runner e
 | OS                     | Linux 6.17.0-1026-nvidia, arm64                                          |
 | CPU                    | ARM Cortex-X925/Cortex-A725, 20 logical processors                       |
 | Browser                | system snap Chromium 150.0.7871.100, headless                            |
-| Delivery               | Vite production build served by `vite preview` on `127.0.0.1`            |
+| Delivery               | Vite production-format E2E build in `dist-e2e`, served on `127.0.0.1`    |
 | Browser state          | newly launched Playwright run and fresh isolated browser context         |
 | Fixture                | `demo.mid`, 98 uncompressed bytes                                        |
 | Fixture SHA-256        | `487018c42a265f4a32aeff9ccc0d32295c73ef28eb446f45b5f6c288821d7eea`       |
@@ -25,6 +25,10 @@ and attaches its timing and does not fail merely because a later shared runner e
 | Elapsed                | 285.549839 ms                                                            |
 | Target                 | under 10,000 ms                                                          |
 | Observed target result | met for this observation                                                 |
+
+The benchmark build differs from deployable `dist` only by narrowly compile-time-gated parser/audio
+instrumentation used by the recovery and audio lifecycle tests. The static-delivery regression proves
+the preview serves `dist-e2e` while normal `dist` contains none of those markers.
 
 The timer intentionally excludes initial page and DuckDB-WASM startup. That matches the Task 12
 acceptance definition: sample acceptance begins at the explicit `Try sample` action in a fresh

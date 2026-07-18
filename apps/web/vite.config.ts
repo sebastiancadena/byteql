@@ -6,6 +6,7 @@ const parseWorkerInlineSuffix = '/src/workers/parse.worker.ts?worker&inline';
 const jsContentPrefix = 'const jsContent = ';
 const zlibImportBranch = /importScripts\(([A-Za-z_$][\w$]*)\.depUrls\.zlib\),\1\.zlib=pako/gu;
 const zlibUnavailable = 'Kaitai zlib decompression is unavailable in the ByteQL browser worker.';
+const e2eBuild = process.env.BYTEQL_E2E === '1';
 
 const dataUrlParseWorker = {
   name: 'byteql-data-url-parse-worker',
@@ -45,8 +46,9 @@ export default function WorkerWrapper(options) {
 
 export default defineConfig({
   define: {
-    __BYTEQL_E2E__: JSON.stringify(process.env.BYTEQL_E2E === '1'),
+    __BYTEQL_E2E__: JSON.stringify(e2eBuild),
   },
+  build: { outDir: e2eBuild ? 'dist-e2e' : 'dist' },
   plugins: [svelte(), dataUrlParseWorker],
   resolve: {
     conditions: ['browser'],

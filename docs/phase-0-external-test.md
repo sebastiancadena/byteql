@@ -16,8 +16,9 @@ tester.
 
 ## Release-owner setup
 
-1. Publish the contents of `apps/web/dist` at one HTTPS URL with no authentication or developer
-   tooling required.
+1. Run a normal `pnpm build` and `pnpm --filter @byteql/web check:bundle`, then publish only the
+   contents of `apps/web/dist` at one HTTPS URL with no authentication or developer tooling required.
+   Never publish the instrumented `apps/web/dist-e2e` acceptance directory.
 2. Send only that URL and this checklist to the tester. Do not demonstrate the product first.
 3. Ask the tester to use a desktop Chromium browser with audio output enabled.
 

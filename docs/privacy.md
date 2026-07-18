@@ -25,10 +25,15 @@ pnpm --filter @byteql/web test:e2e -- privacy.spec.ts
 ```
 
 `check:bundle` separately rejects direct external URL/CDN references in repository runtime source,
-rejects actual jsDelivr or unpkg endpoint URLs in built JavaScript/CSS, reports all asset sizes, and
-checks that normal production assets contain no E2E hook markers. Upstream libraries can contain
-inert documentation URLs or package metadata strings; the post-readiness Chromium request test is
-authoritative for runtime network behavior.
+including CSS `@import` and `url()` text, rejects actual jsDelivr or unpkg endpoint URLs in built
+JavaScript/CSS, reports all asset sizes, and checks that normal production assets contain no E2E hook
+markers. A controlled regression creates a temporary runtime CSS import and proves that audit fails.
+Upstream libraries can contain inert documentation URLs or package metadata strings; the
+post-readiness Chromium request test is authoritative for runtime network behavior.
+
+Playwright compiles its narrowly gated test hooks into `apps/web/dist-e2e` and previews only that
+directory. Deployable `apps/web/dist` is always produced without the gate and remains the target of
+`check:bundle`; running browser acceptance does not replace it.
 
 ## Hosting and threat boundary
 

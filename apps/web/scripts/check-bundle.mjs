@@ -7,11 +7,11 @@ const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = resolve(webRoot, '../..');
 const distAssets = join(webRoot, 'dist/assets');
 const maximumJavaScriptBytes = 5 * 1024 * 1024;
-const runtimeExtensions = new Set(['.js', '.mjs', '.ts', '.svelte']);
+const runtimeExtensions = new Set(['.css', '.js', '.mjs', '.ts', '.svelte']);
 const testFile = /(?:^|[./])(?:e2e|test|tests)(?:[./]|$)|\.(?:spec|test)\.[^.]+$/u;
 const externalSourceReference = /https?:\/\/|cdn\.jsdelivr|\bunpkg\b/giu;
 const forbiddenBuiltReference = /https?:\/\/(?:cdn\.jsdelivr\.net|unpkg\.com)(?:[/:]|$)/giu;
-const e2eOnlyMarker = /__byteqlE2E|armParserCrash|E2E audio engine/gu;
+const e2eOnlyMarker = /__BYTEQL_E2E__|__byteqlE2E|armParserCrash|E2E audio engine/gu;
 
 async function walk(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
