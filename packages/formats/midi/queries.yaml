@@ -40,8 +40,11 @@ queries:
         from boundaries
         cross join header h
       )
-      select tm.seconds_at_tick
-               + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0 as seconds,
+      select case
+               when h.division > 0 then
+                 tm.seconds_at_tick
+                   + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0
+             end as seconds,
              e.note, e.velocity, e.kind, e.channel
       from events e
       asof join tempo_map tm on e.tick >= tm.tick
@@ -78,8 +81,11 @@ queries:
         from boundaries
         cross join header h
       )
-      select tm.seconds_at_tick
-               + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0 as seconds,
+      select case
+               when h.division > 0 then
+                 tm.seconds_at_tick
+                   + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0
+             end as seconds,
              e.note, e.velocity, e.kind, e.channel
       from events e
       asof join tempo_map tm on e.tick >= tm.tick
@@ -116,8 +122,11 @@ queries:
         from boundaries
         cross join header h
       )
-      select tm.seconds_at_tick
-               + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0 as seconds,
+      select case
+               when h.division > 0 then
+                 tm.seconds_at_tick
+                   + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0
+             end as seconds,
              e.note, e.velocity, e.kind, e.channel
       from events e
       asof join tempo_map tm on e.tick >= tm.tick

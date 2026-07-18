@@ -45,11 +45,22 @@ const arrowType = (type: ArrowTypeName): DataType => {
   }
 };
 
-const valuesForType = (values: readonly unknown[], type: ArrowTypeName): readonly unknown[] => {
+const valuesForType = (
+  values: readonly unknown[],
+  type: ArrowTypeName,
+  table: string,
+  column: string,
+): readonly unknown[] => {
   if (type !== 'int64' && type !== 'uint64') return values;
-  return values.map((value) =>
-    typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : value,
-  );
+  return values.map((value) => {
+    if (typeof value !== 'number') return value;
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(
+        `ARROW_UNSAFE_INT64: ${table}.${column} received the number ${value}, which cannot be represented exactly in a 64-bit integer column`,
+      );
+    }
+    return BigInt(value);
+  });
 };
 
 export const projectedTableToArrow = (table: ProjectedTable): Table => {
@@ -64,7 +75,7 @@ export const projectedTableToArrow = (table: ProjectedTable): Table => {
   const vectors: Record<string, Vector> = {};
   for (const [name, values] of Object.entries(table.columns)) {
     const type = table.types[name]!;
-    vectors[name] = vectorFromArray(valuesForType(values, type), arrowType(type));
+    vectors[name] = vectorFromArray(valuesForType(values, type, table.name, name), arrowType(type));
   }
   return new Table(vectors);
 };

@@ -293,6 +293,15 @@ describe('projection expressions', () => {
     expect(evaluate('_.left << 2', { _: { left: 3n } })).toBe(12n);
   });
 
+  it('compares bigint fields against numeric literals consistently with ordering operators', () => {
+    expect(evaluate('_.big == 5', { _: { big: 5n } })).toBe(true);
+    expect(evaluate('_.big == 5', { _: { big: 6n } })).toBe(false);
+    expect(evaluate('_.big != 5', { _: { big: 6n } })).toBe(true);
+    expect(evaluate('_.big >= 5', { _: { big: 5n } })).toBe(true);
+    expect(evaluate('_.text == "5"', { _: { text: '5' } })).toBe(true);
+    expect(evaluate('_.num == "5"', { _: { num: 5 } })).toBe(false);
+  });
+
   it('does not read inherited members or invoke property getters', () => {
     const getter = vi.fn(() => 9);
     const value = Object.create({ inherited: 7 }) as Record<string, unknown>;

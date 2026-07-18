@@ -327,7 +327,7 @@ from events e asof join tempo t on e.tick >= t.tick;
 
 ### Milestones
 
-1. **Node only.** `compile-ksy.mjs` invokes kaitai-struct-compiler (debug mode), parses a fixture `.mid`, dumps object graph + `_debug` offsets to console. De-risks the two things we don't control: the compiler toolchain and the gallery spec's correctness.
+1. **Node only.** The format pack's `compile.mjs` invokes kaitai-struct-compiler (debug mode), parses a fixture `.mid`, dumps object graph + `_debug` offsets to console. De-risks the two things we don't control: the compiler toolchain and the gallery spec's correctness.
 2. **Projection interpreter MVP** in core: anchor paths, the expression subset (~8 operators for MIDI), one accumulator, Arrow batch emit. Vitest asserts exact row output for hand-crafted 10-event MIDI fixtures — the DSL's conformance suite being born.
 3. **Browser assembly:** parse worker takes a File, streams Arrow IPC to the DuckDB worker, SqlConsole runs queries, Grid renders.
 4. **Tone.js player:** any query result with (seconds, note, velocity, channel, kind) schedules on Tone.Transport with Tone.Sampler + piano soundfont. Four query chips: note histogram, drums only (`channel = 9`), first 30 seconds, bassline only (`note < 48`). The moment someone edits the WHERE clause and the music changes, the product concept has landed.

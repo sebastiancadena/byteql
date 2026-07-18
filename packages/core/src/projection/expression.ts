@@ -73,7 +73,6 @@ const binaryOperators = new Set([
   '*',
   '/',
   '%',
-  '**',
 ]);
 const unaryOperators = new Set(['-', '+', '!', 'not', '~']);
 const builtinNames = new Set(['enum_str', 'to_i', 'len', 'u24be']);
@@ -389,8 +388,6 @@ const evaluateArithmetic = (operator: string, left: unknown, right: unknown): un
         return numericRight === 0n ? null : numericLeft / numericRight;
       case '%':
         return numericRight === 0n ? null : numericLeft % numericRight;
-      case '**':
-        return numericRight < 0n ? null : numericLeft ** numericRight;
       case '|':
         return numericLeft | numericRight;
       case '^':
@@ -421,8 +418,6 @@ const evaluateArithmetic = (operator: string, left: unknown, right: unknown): un
       return numberLeft / numberRight;
     case '%':
       return numberLeft % numberRight;
-    case '**':
-      return numberLeft ** numberRight;
     case '|':
       return numberLeft | numberRight;
     case '^':
@@ -438,6 +433,18 @@ const evaluateArithmetic = (operator: string, left: unknown, right: unknown): un
     default:
       return null;
   }
+};
+
+// Equality must agree with the ordering operators, which already compare mixed
+// bigint/number operands numerically; strict identity would make them disagree.
+const numericAwareEquals = (left: unknown, right: unknown): boolean => {
+  if (
+    (typeof left === 'bigint' && typeof right === 'number') ||
+    (typeof left === 'number' && typeof right === 'bigint')
+  ) {
+    return left == right;
+  }
+  return left === right;
 };
 
 const evaluateBinary = (node: BinaryExpression, context: ExpressionContext): unknown => {
@@ -457,10 +464,10 @@ const evaluateBinary = (node: BinaryExpression, context: ExpressionContext): unk
   switch (node.operator) {
     case '==':
     case '===':
-      return left === right;
+      return numericAwareEquals(left, right);
     case '!=':
     case '!==':
-      return left !== right;
+      return !numericAwareEquals(left, right);
     case '<':
       return left < right;
     case '>':

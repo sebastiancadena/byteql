@@ -44,11 +44,10 @@ export function installParseWorker(
     if (!request || typeof request !== 'object') return;
 
     if (request.type === 'cancel') {
-      const controller = active.get(request.taskId);
-      if (controller) {
-        cancelled.add(request.taskId);
-        controller.abort();
-      }
+      // Recorded even when the parse has not arrived yet: task ids are never
+      // reused, so a racing cancel must abort the parse that follows it.
+      cancelled.add(request.taskId);
+      active.get(request.taskId)?.abort();
       return;
     }
     if (request.type !== 'parse') return;

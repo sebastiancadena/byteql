@@ -159,11 +159,6 @@ types:
         type: u1
       - id: b2
         type: u1
-    instances:
-      bend_value:
-        value: (b2 << 7) + b1 - 0x4000
-      adj_bend_value:
-        value: bend_value - 0x4000
   sysex_event_body:
     seq:
       - id: len

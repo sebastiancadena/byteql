@@ -62,6 +62,24 @@ describe('Arrow table construction', () => {
     expect(Array.from(projected.getChild('uint64_value') ?? [])).toEqual([64n, null]);
   });
 
+  it('rejects unsafe or fractional numbers in declared 64-bit vectors', () => {
+    const unsafe: ProjectedTable = {
+      name: 'unsafe_values',
+      rowCount: 1,
+      columns: { value: [2 ** 53] },
+      types: { value: 'int64' },
+    };
+    expect(() => projectedTableToArrow(unsafe)).toThrowError(/ARROW_UNSAFE_INT64/);
+
+    const fractional: ProjectedTable = {
+      name: 'fractional_values',
+      rowCount: 1,
+      columns: { value: [1.5] },
+      types: { value: 'uint64' },
+    };
+    expect(() => projectedTableToArrow(fractional)).toThrowError(/ARROW_UNSAFE_INT64/);
+  });
+
   it('rejects a column whose length does not match rowCount', () => {
     const table = logicalTable();
     table.columns.utf8_value = ['only one'];

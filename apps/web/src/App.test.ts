@@ -12,7 +12,8 @@ const { database, databaseDispose, initialize, dispose, createBrowserDatabase, S
     const initialize = vi.fn<() => Promise<void>>();
     const dispose = vi.fn<() => Promise<void>>();
     const createBrowserDatabase = vi.fn(async () => database);
-    const SessionController = vi.fn(function (_options: { stopViewer?: () => void }) {
+    const SessionController = vi.fn(function (options: { stopViewer?: () => void }) {
+      void options;
       return {
         subscribe(listener: (state: SessionState) => void) {
           listener({

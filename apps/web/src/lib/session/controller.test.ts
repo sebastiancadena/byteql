@@ -572,6 +572,27 @@ describe('parse worker boundary', () => {
     ).toEqual(progress.map((update) => ({ type: 'progress', taskId: 8, ...update })));
   });
 
+  it('honors a cancellation that arrives before its parse request', async () => {
+    const scope = new FakeWorkerScope();
+    let signal: AbortSignal | undefined;
+    installParseWorker(scope, (_bytes, receivedSignal) => {
+      signal = receivedSignal;
+      return Promise.resolve(parseResult('events'));
+    });
+
+    scope.receive({ type: 'cancel', taskId: 3 });
+    scope.receive({
+      type: 'parse',
+      taskId: 3,
+      name: 'demo.mid',
+      bytes: new Uint8Array([0x4d, 0x54, 0x68, 0x64]),
+    });
+    await flush();
+
+    expect(signal?.aborted).toBe(true);
+    expect(scope.posts.at(-1)?.message).toMatchObject({ type: 'cancelled', taskId: 3 });
+  });
+
   it('aborts a task when its cancellation message arrives', async () => {
     const scope = new FakeWorkerScope();
     const operation = deferred<ParseResult>();

@@ -31,3 +31,17 @@ test('applies tempo events from every track to playback seconds', async ({ page 
   await expect(page.getByRole('gridcell', { name: '1', exact: true })).toBeVisible();
   await expect(page.getByRole('gridcell', { name: '0.5', exact: true })).toHaveCount(0);
 });
+
+test('reports NULL seconds for SMPTE files instead of misleading values', async ({ page }) => {
+  await page.goto('/');
+  await waitForAppReady(page);
+  await openFixture(page, 'basic-type0.mid');
+  await page.getByRole('button', { name: 'Play all notes' }).click();
+  await page.getByRole('button', { name: 'Run query' }).click();
+  await expect(page.getByRole('columnheader', { name: /seconds/u })).toBeVisible();
+
+  // SMPTE division is negative, so tick-to-seconds math is meaningless here;
+  // the query must surface NULL rather than negative pseudo-seconds.
+  await expect(page.getByRole('gridcell', { name: 'NULL' })).toHaveCount(2);
+  await expect(page.getByRole('gridcell', { name: /^-/ })).toHaveCount(0);
+});

@@ -66,12 +66,11 @@ byteql/
 │   ├── db/                          # DuckDB-WASM worker API
 │   └── formats/
 │       └── midi/                    # MIDI format pack and fixtures
-├── scripts/
-│   └── compile-ksy.mjs              # Build-time Kaitai compilation
+│           └── scripts/compile.mjs  # Build-time Kaitai compilation
 └── docs/superpowers/specs/
 ```
 
-`packages/core` runs in Node and browser workers and does not import DOM APIs. `packages/db` owns DuckDB initialization and query transport. The MIDI package contains the `.ksy`, its vendored `vlq_base128_be` import, projection YAML, canned queries, binary fixtures, and generated-code output directory. `apps/web` composes these packages and owns user interface state and trusted viewer capabilities.
+`packages/core` runs in Node and browser workers and does not import DOM APIs. `packages/db` owns DuckDB initialization and query transport. The MIDI package contains the `.ksy`, its vendored `vlq_base128_be` import, projection YAML, canned queries, binary fixtures, generated-code output directory, and its own build-time Kaitai compilation script — format packs own their compile steps rather than sharing a repository-level script. `apps/web` composes these packages and owns user interface state and trusted viewer capabilities.
 
 The dependency direction stays acyclic: the web app depends on core, database, and bundled format packs; the database package accepts Arrow and shared transport types; format packs conform to core-owned data contracts.
 
