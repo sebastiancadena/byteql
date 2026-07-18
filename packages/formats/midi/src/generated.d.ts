@@ -67,4 +67,9 @@ declare module '*StandardMidiFile.js' {
     _read(): void;
     tracks: GeneratedTrack[];
   }
+
+  const generatedModule: {
+    StandardMidiFile: typeof StandardMidiFile;
+  };
+  export default generatedModule;
 }

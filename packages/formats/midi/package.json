@@ -13,7 +13,8 @@
     "compile:ksy": "node scripts/compile.mjs",
     "build": "pnpm compile:ksy && tsc -p tsconfig.json",
     "check": "pnpm compile:ksy && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm compile:ksy && vitest"
+    "test": "pnpm compile:ksy && vitest && pnpm test:built",
+    "test:built": "pnpm build && node test/built-runtime.mjs"
   },
   "dependencies": {
     "@byteql/core": "workspace:*",

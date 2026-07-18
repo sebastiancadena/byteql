@@ -1,13 +1,13 @@
 import KaitaiStream from 'kaitai-struct/KaitaiStream.js';
 
-import {
-  StandardMidiFile,
+import generatedModule, {
   type GeneratedTrack,
   type GeneratedTrackEventsDebug,
 } from '../gen/StandardMidiFile.js';
 import type { MidiHeader, NormalizedEventMap, NormalizedTrack, SourceRange } from './types.js';
 
 const SYNTHETIC_TRACK_BODY_START = 22;
+const { StandardMidiFile } = generatedModule;
 
 export interface SyntheticTrackFile {
   bytes: Uint8Array;
@@ -65,6 +65,11 @@ function correlateDebug(
     start: range.ioOffset + range.start,
     end: range.ioOffset + range.end,
   }));
+  if (ranges.length !== events.length) {
+    throw new Error(
+      `KAITAI_EVENT_OFFSETS: expected ${events.length} event map(s), received ${ranges.length} debug range(s)`,
+    );
+  }
 
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];

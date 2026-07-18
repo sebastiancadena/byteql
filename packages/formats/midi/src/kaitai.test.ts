@@ -44,4 +44,21 @@ describe('Kaitai MIDI adapter', () => {
       { start: 26, end: 30 },
     ]);
   });
+
+  it('rejects extra generated debug ranges without normalized event mappings', () => {
+    const body = Uint8Array.from([0x00, 0x90, 0x3c, 0x40, 0x00, 0x3e, 0x41]);
+    const normalized = normalizeTrack({
+      index: 0,
+      chunkStart: 14,
+      bodyStart: 22,
+      bodyEnd: 22 + body.length,
+      body,
+    });
+    const synthetic = buildSyntheticTrackFile(header, normalized);
+    synthetic.events = synthetic.events.slice(0, 1);
+
+    expect(() => parseSyntheticTrack(synthetic)).toThrowError(
+      'KAITAI_EVENT_OFFSETS: expected 1 event map(s), received 2 debug range(s)',
+    );
+  });
 });
