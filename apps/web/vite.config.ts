@@ -46,6 +46,7 @@ export default function WorkerWrapper(options) {
 export default defineConfig({
   plugins: [svelte(), dataUrlParseWorker],
   resolve: {
+    conditions: ['browser'],
     alias: [
       { find: 'iconv-lite', replacement: kaitaiBrowserStub },
       { find: 'zlib', replacement: kaitaiBrowserStub },

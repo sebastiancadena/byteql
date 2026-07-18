@@ -1,0 +1,233 @@
+<script lang="ts">
+  /* global File */
+
+  import { onMount } from 'svelte';
+
+  import { initialSessionState, type SessionState } from '../lib/session/state.js';
+  import AppHeader from './AppHeader.svelte';
+  import EmptyState from './EmptyState.svelte';
+  import Explorer from './Explorer.svelte';
+  import Inspector from './Inspector.svelte';
+  import ResultGrid from './ResultGrid.svelte';
+  import SqlEditor from './SqlEditor.svelte';
+  import StatusBar from './StatusBar.svelte';
+
+  interface QueryDefinition {
+    id: string;
+    title: string;
+    sql: string;
+  }
+
+  interface ControllerPort {
+    subscribe(listener: (state: SessionState) => void): () => void;
+    openFile(file: File): Promise<void>;
+    openSample(): Promise<void>;
+    runQuery(sql: string): Promise<void>;
+    cancel(): Promise<void>;
+    selectResultRow(row: number | null): void;
+  }
+
+  interface Props {
+    controller: ControllerPort;
+    queries?: readonly QueryDefinition[];
+  }
+
+  let { controller, queries = [] }: Props = $props();
+  let session = $state<SessionState>(initialSessionState);
+  let draftSql = $state('');
+  let actionError = $state<string | null>(null);
+  let explorerCollapsed = $state(false);
+  let inspectorCollapsed = $state(false);
+  let mobileTab = $state<'results' | 'inspector'>('results');
+  let overviewSource: string | null = null;
+
+  const intakeBusy = $derived(
+    ['opening', 'normalizing', 'parsing', 'projecting', 'registering'].includes(session.phase),
+  );
+
+  onMount(() =>
+    controller.subscribe((next) => {
+      session = next;
+      if (next.sql && next.sql !== draftSql) draftSql = next.sql;
+      if (next.phase === 'opening') overviewSource = null;
+
+      const overview = queries[0];
+      const sourceKey = next.source ? `${next.source.name}:${next.source.size}` : null;
+      if (
+        overview &&
+        sourceKey &&
+        next.phase === 'ready' &&
+        next.sql === '' &&
+        next.result === null &&
+        next.queryError === null &&
+        overviewSource !== sourceKey
+      ) {
+        overviewSource = sourceKey;
+        draftSql = overview.sql;
+        perform(() => controller.runQuery(overview.sql));
+      }
+    }),
+  );
+
+  function message(error: unknown): string {
+    return error instanceof Error && error.message ? error.message : 'The action could not be completed.';
+  }
+
+  function perform(action: () => Promise<void>): void {
+    actionError = null;
+    void action().catch((error: unknown) => {
+      actionError = message(error);
+    });
+  }
+
+  function loadQuery(sql: string): void {
+    draftSql = sql;
+  }
+
+  function run(sql: string): void {
+    if (!sql.trim()) return;
+    draftSql = sql;
+    perform(() => controller.runQuery(sql));
+  }
+</script>
+
+<div
+  class:explorer-collapsed={explorerCollapsed}
+  class:inspector-collapsed={inspectorCollapsed}
+  class:show-mobile-inspector={mobileTab === 'inspector'}
+  class="app-shell"
+>
+  <AppHeader
+    sourceName={session.source?.name ?? null}
+    {explorerCollapsed}
+    {inspectorCollapsed}
+    ontoggleexplorer={() => (explorerCollapsed = !explorerCollapsed)}
+    ontoggleinspector={() => (inspectorCollapsed = !inspectorCollapsed)}
+  />
+
+  {#if session.phase === 'idle' || session.phase === 'failed'}
+    <main class="empty-main">
+      <EmptyState
+        busy={intakeBusy}
+        error={actionError ?? session.fatalError}
+        onopen={(file) => perform(() => controller.openFile(file))}
+        onsample={() => perform(() => controller.openSample())}
+      />
+    </main>
+  {:else}
+    <Explorer state={session} {queries} collapsed={explorerCollapsed} onquery={loadQuery} />
+
+    <main class="workbench-main">
+      <div class="mobile-tabs" role="tablist" aria-label="Workbench views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mobileTab === 'results'}
+          onclick={() => (mobileTab = 'results')}>Results</button
+        >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mobileTab === 'inspector'}
+          onclick={() => (mobileTab = 'inspector')}>Inspector</button
+        >
+      </div>
+
+      <section class="sql-workspace" aria-label="SQL workspace">
+        <div class="editor-heading">
+          <div>
+            <p class="eyebrow">Query</p>
+            <h1>SQL workspace</h1>
+          </div>
+          <div class="query-actions">
+            <span class="shortcut" aria-hidden="true">⌘ Enter</span>
+            {#if session.phase === 'querying'}
+              <button
+                class="button button-secondary"
+                type="button"
+                onclick={() => perform(() => controller.cancel())}
+              >
+                Cancel query
+              </button>
+            {:else}
+              <button
+                class="button button-primary button-compact"
+                type="button"
+                onclick={() => run(draftSql)}
+              >
+                Run query
+              </button>
+            {/if}
+          </div>
+        </div>
+
+        <SqlEditor
+          sql={draftSql}
+          disabled={session.phase === 'querying'}
+          onrun={run}
+          onchange={(sql) => (draftSql = sql)}
+        />
+
+        {#if session.queryError || actionError}
+          <div class="query-diagnostic" role="alert">
+            <strong>Query diagnostic</strong>
+            <span>{session.queryError ?? actionError}</span>
+          </div>
+        {/if}
+
+        <div class="results-heading">
+          <div>
+            <p class="eyebrow">Output</p>
+            <h2>Results</h2>
+          </div>
+          {#if session.result}
+            <span class="result-count">{session.result.numRows.toLocaleString()} rows</span>
+          {/if}
+        </div>
+
+        <div class="results-panel">
+          {#if session.result}
+            {#key session.result}
+              <ResultGrid
+                table={session.result}
+                selectedRow={session.selectedRow}
+                onselect={(row) => controller.selectResultRow(row)}
+              />
+            {/key}
+          {:else if intakeBusy}
+            <div class="activity-state" aria-live="polite">
+              <span class="activity-spinner" aria-hidden="true"></span>
+              <strong>{session.progress?.label ?? 'Preparing local tables'}</strong>
+              {#if session.progress?.total}
+                <progress value={session.progress.completed} max={session.progress.total}>
+                  {session.progress.completed} of {session.progress.total}
+                </progress>
+              {/if}
+              <button
+                class="button button-secondary"
+                type="button"
+                onclick={() => perform(() => controller.cancel())}
+              >
+                Cancel
+              </button>
+            </div>
+          {:else}
+            <div class="results-placeholder">
+              <span aria-hidden="true">▦</span>
+              <p>Choose a saved query or write SQL to populate the grid.</p>
+            </div>
+          {/if}
+        </div>
+      </section>
+    </main>
+
+    <Inspector
+      table={session.result}
+      selectedRow={session.selectedRow}
+      collapsed={inspectorCollapsed}
+      mobileOpen={mobileTab === 'inspector'}
+    />
+  {/if}
+
+  <StatusBar state={session} />
+</div>
