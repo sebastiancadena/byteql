@@ -1,0 +1,27 @@
+{
+  "name": "@byteql/pcap",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "compile:ksy": "node scripts/compile.mjs",
+    "generate:pack": "node scripts/generate-pack.mjs",
+    "build": "pnpm compile:ksy && pnpm generate:pack && tsc -p tsconfig.json",
+    "check": "pnpm --filter @byteql/core build && pnpm compile:ksy && pnpm generate:pack && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm --filter @byteql/core build && pnpm compile:ksy && pnpm generate:pack && vitest"
+  },
+  "dependencies": {
+    "@byteql/core": "workspace:*",
+    "kaitai-struct": "^0.11.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "kaitai-struct-compiler": "^0.11.0"
+  }
+}

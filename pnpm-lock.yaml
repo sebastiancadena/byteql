@@ -153,6 +153,22 @@ importers:
         specifier: ^0.11.0
         version: 0.11.0
 
+  packages/formats/pcap:
+    dependencies:
+      '@byteql/core':
+        specifier: workspace:*
+        version: link:../../core
+      kaitai-struct:
+        specifier: ^0.11.0
+        version: 0.11.0
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
+    devDependencies:
+      kaitai-struct-compiler:
+        specifier: ^0.11.0
+        version: 0.11.0
+
 packages:
 
   '@asamuzakjp/css-color@5.1.11':
