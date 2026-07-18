@@ -178,6 +178,7 @@ tables:
     'and',
     'or',
     'not',
+    'this',
     'globalThis',
   ])('rejects evaluator-reserved state name %s', (name) => {
     expect(() =>

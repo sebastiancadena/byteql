@@ -75,7 +75,7 @@ const binaryOperators = new Set([
 const unaryOperators = new Set(['-', '+', '!', 'not', '~']);
 const builtinNames = new Set(['enum_str', 'to_i', 'len', 'u24be']);
 const contextIdentifierNames = new Set(['_', '_root', '_parent']);
-const expressionTokenNames = new Set(['true', 'false', 'null', 'and', 'or', 'not']);
+const expressionTokenNames = new Set(['true', 'false', 'null', 'and', 'or', 'not', 'this']);
 const forbiddenIdentifiers = new Set([
   '__proto__',
   'Array',
