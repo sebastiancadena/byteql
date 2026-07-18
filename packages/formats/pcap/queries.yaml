@@ -1,0 +1,36 @@
+version: '0.1'
+format: pcap
+queries:
+  - id: overview
+    title: Table overview
+    kind: grid
+    sql: |
+      select 'packets' as table_name, count(*) as row_count from packets
+      union all select 'ip', count(*) from ip
+      union all select 'tcp', count(*) from tcp
+      union all select 'udp', count(*) from udp
+      union all select 'dns', count(*) from dns
+      union all select 'icmp', count(*) from icmp
+      union all select 'tls', count(*) from tls
+      order by table_name
+      limit 100;
+
+  - id: protocols
+    title: Protocol histogram
+    kind: grid
+    sql: |
+      select proto, count(*)
+      from ip
+      group by proto
+      order by 2 desc
+      limit 100;
+
+  - id: dns_join
+    title: DNS queries by time
+    kind: grid
+    sql: |
+      select p.ts, d.query_name, d.query_type
+      from dns d
+      join packets p using (packet_id)
+      order by p.ts
+      limit 100;
