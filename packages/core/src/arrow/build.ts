@@ -1,10 +1,12 @@
 import {
+  Binary,
   Bool,
   Int8,
   Int16,
   Int32,
   Int64,
   Table,
+  TimestampMicrosecond,
   Uint8,
   Uint16,
   Uint32,
@@ -42,6 +44,10 @@ const arrowType = (type: ArrowTypeName): DataType => {
       return new Bool();
     case 'utf8':
       return new Utf8();
+    case 'timestamp_us':
+      return new TimestampMicrosecond();
+    case 'binary':
+      return new Binary();
   }
 };
 
@@ -51,6 +57,18 @@ const valuesForType = (
   table: string,
   column: string,
 ): readonly unknown[] => {
+  if (type === 'timestamp_us') {
+    return values.map((value) => {
+      if (value === null || value === undefined) return null;
+      if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+        throw new Error(
+          `ARROW_UNSAFE_INT64: ${table}.${column} received the number ${value}, which cannot be represented exactly in a 64-bit integer column`,
+        );
+      }
+      if (typeof value !== 'number' && typeof value !== 'bigint') return value;
+      return Number(value) / 1000;
+    });
+  }
   if (type !== 'int64' && type !== 'uint64') return values;
   return values.map((value) => {
     if (typeof value !== 'number') return value;

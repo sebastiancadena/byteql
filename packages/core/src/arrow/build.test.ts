@@ -89,3 +89,43 @@ describe('Arrow table construction', () => {
     );
   });
 });
+
+describe('timestamp_us columns', () => {
+  it('round-trips microsecond timestamps through arrow IPC', () => {
+    const table: ProjectedTable = {
+      name: 'packets',
+      rowCount: 2,
+      types: { ts: 'timestamp_us' },
+      columns: { ts: [1_500_500n, null] },
+    };
+    const arrow = ipcToTable(tableToIpc(projectedTableToArrow(table)));
+    expect(String(arrow.schema.fields[0]!.type)).toMatch(/Timestamp/u);
+    // apache-arrow JS reads timestamp vectors back as epoch milliseconds.
+    expect(arrow.getChildAt(0)!.get(0)).toBe(1500.5);
+    expect(arrow.getChildAt(0)!.get(1)).toBeNull();
+  });
+
+  it('rejects unsafe numeric microsecond values', () => {
+    const table: ProjectedTable = {
+      name: 'packets',
+      rowCount: 1,
+      types: { ts: 'timestamp_us' },
+      columns: { ts: [Number.MAX_SAFE_INTEGER + 2] },
+    };
+    expect(() => projectedTableToArrow(table)).toThrow(/ARROW_UNSAFE_INT64/u);
+  });
+});
+
+describe('binary columns', () => {
+  it('round-trips byte blobs through arrow IPC', () => {
+    const table: ProjectedTable = {
+      name: 'packets',
+      rowCount: 2,
+      types: { payload: 'binary' },
+      columns: { payload: [Uint8Array.of(1, 2, 3), null] },
+    };
+    const arrow = ipcToTable(tableToIpc(projectedTableToArrow(table)));
+    expect(Array.from(arrow.getChildAt(0)!.get(0) as Uint8Array)).toEqual([1, 2, 3]);
+    expect(arrow.getChildAt(0)!.get(1)).toBeNull();
+  });
+});

@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { ProjectionCompileError, isProjectionStateName } from './expression.js';
 
 export type ArrowTypeName =
-  'int8' | 'uint8' | 'int16' | 'uint16' | 'int32' | 'uint32' | 'int64' | 'uint64' | 'bool' | 'utf8';
+  | 'int8' | 'uint8' | 'int16' | 'uint16' | 'int32' | 'uint32' | 'int64' | 'uint64'
+  | 'bool' | 'utf8' | 'timestamp_us' | 'binary';
 
 export interface ProjectionStateSpec {
   scope: string;
@@ -48,6 +49,8 @@ const arrowType = z.enum([
   'uint64',
   'bool',
   'utf8',
+  'timestamp_us',
+  'binary',
 ]);
 
 const stateSpec = z.strictObject({
