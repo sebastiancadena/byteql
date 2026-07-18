@@ -66,7 +66,7 @@ const mergeBatches = (pack: FormatPack, batches: readonly BatchTransfer[]): Tabl
     const columns: TableColumn[] = arrow.schema.fields.map((field) => ({
       name: field.name,
       type: field.type.toString(),
-      nullable: nullable?.get(field.name) ?? false,
+      nullable: nullable?.get(field.name) ?? field.nullable,
     }));
     return { name, ipc, rowCount: parts.reduce((sum, part) => sum + part.rowCount, 0), columns };
   });

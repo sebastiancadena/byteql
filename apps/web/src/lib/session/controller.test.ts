@@ -580,11 +580,17 @@ describe('parse worker boundary', () => {
 
   it('merges multiple batches for the same table into one transfer, in arrival order', async () => {
     const scope = new FakeWorkerScope();
+    // `flag` is absent from the fake pack's schemas() below, so its reported nullability must come
+    // from the merged Arrow field itself; it carries a null in every batch so Arrow infers it true.
     const firstBatch = tableToIpc(
-      tableFromArrays({ id: Int32Array.from([1, 2]), value: Int32Array.from([10, 20]) }),
+      tableFromArrays({
+        id: Int32Array.from([1, 2]),
+        value: Int32Array.from([10, 20]),
+        flag: [1, null],
+      }),
     );
     const secondBatch = tableToIpc(
-      tableFromArrays({ id: Int32Array.from([3]), value: Int32Array.from([30]) }),
+      tableFromArrays({ id: Int32Array.from([3]), value: Int32Array.from([30]), flag: [null] }),
     );
     const batches: BatchTransfer[] = [
       { table: 'notes', ipc: firstBatch, rowCount: 2 },
@@ -626,6 +632,7 @@ describe('parse worker boundary', () => {
     expect(notes?.columns).toEqual([
       { name: 'id', type: 'Int32', nullable: false },
       { name: 'value', type: 'Int32', nullable: true },
+      { name: 'flag', type: 'Float64', nullable: true },
     ]);
     const merged = ipcToTable(notes!.ipc);
     expect(merged.getChild('id')?.toArray()).toEqual(Int32Array.from([1, 2, 3]));

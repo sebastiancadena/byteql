@@ -88,9 +88,15 @@ export const midiFormatPack: FormatPack = {
     let cursor = 0;
     let result: ParseResult | null = null;
     let drained = false;
+    let failure: unknown;
+    let failed = false;
     return {
       async nextBatch(): Promise<BatchTransfer | null> {
-        parsed ??= parseAndProjectMidi(bytes, opts.signal, opts.onProgress);
+        parsed ??= parseAndProjectMidi(bytes, opts.signal, opts.onProgress).catch((error: unknown) => {
+          failed = true;
+          failure = error;
+          throw error;
+        });
         result ??= await parsed;
         if (cursor >= result.tables.length) {
           drained = true;
@@ -101,6 +107,7 @@ export const midiFormatPack: FormatPack = {
         return { table: table.name, ipc: table.ipc, rowCount: table.rowCount };
       },
       finish(): SourceFinish {
+        if (failed) throw failure;
         if (!drained || !result)
           throw new Error('RECORD_SOURCE_NOT_DRAINED: call nextBatch() until null before finish()');
         return { issues: result.issues, capabilities: result.capabilities };

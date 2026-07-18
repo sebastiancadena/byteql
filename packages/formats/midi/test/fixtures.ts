@@ -42,6 +42,33 @@ export function midiFile({
   return concat([chunk('MThd', header), ...tracks.map((track) => chunk('MTrk', track))]);
 }
 
+export interface LargeMidiFixture {
+  bytes: Uint8Array;
+  eventRowCount: number;
+}
+
+// The events table flushes an Arrow record batch every 65_536 rows (see
+// packages/core/src/arrow/batch.ts). `pairCount` note_on/note_off pairs (delta 1 tick each) plus one
+// end-of-track meta event all land on a single type-0 track; every event, including the end-of-track
+// meta, projects to exactly one `events` row, so `eventRowCount` is the exact expected row count.
+export function largeMidiFixture(pairCount: number): LargeMidiFixture {
+  const noteOn = Uint8Array.of(0x01, 0x90, 60, 100);
+  const noteOff = Uint8Array.of(0x01, 0x80, 60, 0);
+  const endOfTrack = Uint8Array.of(0x00, 0xff, 0x2f, 0x00);
+
+  const body = new Uint8Array(pairCount * (noteOn.length + noteOff.length) + endOfTrack.length);
+  let offset = 0;
+  for (let index = 0; index < pairCount; index += 1) {
+    body.set(noteOn, offset);
+    offset += noteOn.length;
+    body.set(noteOff, offset);
+    offset += noteOff.length;
+  }
+  body.set(endOfTrack, offset);
+
+  return { bytes: midiFile({ format: 0, division: 480, tracks: [body] }), eventRowCount: pairCount * 2 + 1 };
+}
+
 export function vlq(value: number): Uint8Array {
   if (!Number.isInteger(value) || value < 0 || value > 0x0fffffff) {
     throw new RangeError('MIDI VLQ values must be integers from 0 to 0x0fffffff');

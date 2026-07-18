@@ -4,7 +4,7 @@ import { ipcToTable, parseProjectionSpec, type TableTransfer } from '@byteql/cor
 import { parse as parseYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
-import { midiFile } from '../test/fixtures.js';
+import { largeMidiFixture, midiFile } from '../test/fixtures.js';
 import midiQueries from './midi-queries.generated.js';
 import { parseAndProjectMidi } from './project-midi.js';
 
@@ -754,6 +754,22 @@ describe('parseAndProjectMidi', () => {
       code: 'UNSUPPORTED_MIDI_TYPE',
       offset: 8,
     });
+  });
+
+  it('crosses the 64 Ki Arrow flush threshold and yields at least two events record batches', async () => {
+    // 33_000 note_on/note_off pairs + 1 end-of-track meta = 66_001 events rows, past the 65_536-row
+    // flush threshold in packages/core/src/arrow/batch.ts, so the events table must seal at least
+    // twice: proof, at the pack boundary, that multi-batch IPC is genuinely produced (not simulated).
+    const { bytes, eventRowCount } = largeMidiFixture(33_000);
+    expect(eventRowCount).toBe(66_001);
+
+    const result = await parseAndProjectMidi(bytes, new AbortController().signal);
+
+    expect(result.issues).toEqual([]);
+    const events = transfer(result.tables, 'events');
+    expect(events.rowCount).toBe(eventRowCount);
+    expect(ipcToTable(events.ipc).numRows).toBe(eventRowCount);
+    expect(ipcToTable(events.ipc).batches.length).toBeGreaterThanOrEqual(2);
   });
 
   it('observes AbortSignal after yielding between tracks', async () => {

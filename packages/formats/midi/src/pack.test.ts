@@ -51,6 +51,24 @@ describe('midiFormatPack', () => {
     await expect(source.nextBatch()).rejects.toThrow();
   });
 
+  it('has finish() rethrow the original parse error instead of masking it as NOT_DRAINED', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const source = midiFormatPack.open(await validMidiBytes(), { signal: controller.signal });
+    const rejection = await source.nextBatch().catch((error: unknown) => error);
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error).name).toBe('AbortError');
+
+    let thrown: unknown;
+    try {
+      source.finish();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBe(rejection);
+    expect((thrown as Error).message).not.toMatch(/RECORD_SOURCE_NOT_DRAINED/);
+  });
+
   it('rejects finish() after only a partial drain', async () => {
     const source = midiFormatPack.open(await validMidiBytes(), { signal: new AbortController().signal });
     const first = await source.nextBatch();
