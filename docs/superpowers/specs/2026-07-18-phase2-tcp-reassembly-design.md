@@ -125,9 +125,11 @@ Contributions insert sorted by offset. Exact duplicates (same offset + length) d
 silently. A partial overlap marks the stream `error` (one issue row,
 reassembly stops, emitted messages kept). Cap overflow stops the stream with status `truncated`.
 
-**Framing loop.** After each contribution, run the framer over the unconsumed contiguous prefix:
-while it returns a length, cut the message, advance the consumed watermark, fire the `messages`
-chain. A framer throw or a non-positive/over-cap length marks the stream `error`.
+**Framing loop.** After each contribution (unless framing is stalled), run the framer over the
+unconsumed contiguous prefix: while it returns a determinable length that fits the available
+contiguous bytes, cut the message, advance the consumed watermark, fire the `messages` chain. A
+framer throw or a non-positive length stalls framing (see the framer contract above); a stream
+still stalled at `finish()` is status `error`.
 
 **Message emission.** Framed messages run the ordinary chain-link path (`projectChildTable`) with
 two twists: the parent-key context is the **completing contribution's** `keysSnapshot` — the packet
