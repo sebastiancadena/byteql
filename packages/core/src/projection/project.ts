@@ -1,10 +1,4 @@
-import {
-  compileAnchor,
-  isAnchorPrefix,
-  traverseAnchor,
-  type AnchorMatch,
-  type CompiledAnchor,
-} from './anchors.js';
+import { compileAnchor, isAnchorPrefix, type AnchorMatch, type CompiledAnchor } from './anchors.js';
 import {
   ProjectionCompileError,
   compileExpression,
@@ -13,6 +7,7 @@ import {
   type CompiledExpression,
 } from './expression.js';
 import type { ArrowTypeName, ProjectionSpec } from './spec.js';
+import { buildMatcher, walkMatcher } from './walk.js';
 
 export interface SourceRange {
   readonly start: number;
@@ -178,69 +173,113 @@ const expressionContext = (match: AnchorMatch, root: unknown, state: Readonly<Re
   state,
 });
 
-const projectTable = (
+export interface RowSink {
+  push(table: string, row: Record<string, unknown>): void;
+}
+
+export interface TableRuntime {
+  nextKey: bigint;
+  readonly stateValues: Record<string, unknown>;
+  readonly scopeIndexes: Map<string, readonly number[]>;
+}
+
+export const createRuntimes = (compiled: CompiledProjection): Map<string, TableRuntime> =>
+  new Map(
+    compiled.tables.map((table) => [
+      table.name,
+      { nextKey: 1n, stateValues: Object.create(null) as Record<string, unknown>, scopeIndexes: new Map() },
+    ]),
+  );
+
+const emitRow = (
   table: CompiledProjectionTable,
+  runtime: TableRuntime,
+  match: AnchorMatch,
   root: unknown,
   provenance: ProvenanceResolver,
-): ProjectedTable => {
-  const outputColumns: Record<string, unknown[]> = {};
-  const types: Record<string, ArrowTypeName> = {};
-  outputColumns[table.key] = [];
-  types[table.key] = 'int64';
+  sink: RowSink,
+): void => {
+  for (const register of table.state) {
+    const currentScope = match.indexes.slice(0, register.scope.wildcardCount);
+    const previousScope = runtime.scopeIndexes.get(register.name);
+    if (!previousScope || !sameIndexes(previousScope, currentScope)) {
+      runtime.stateValues[register.name] = register.init;
+      runtime.scopeIndexes.set(register.name, currentScope);
+    }
+  }
+  for (const register of table.state) {
+    runtime.stateValues[register.name] = evaluateExpression(
+      register.update,
+      expressionContext(match, root, runtime.stateValues),
+    );
+  }
+
+  const context = expressionContext(match, root, runtime.stateValues);
+  if (table.where && !evaluateExpression(table.where, context)) return;
+
+  const row: Record<string, unknown> = { [table.key]: runtime.nextKey };
+  runtime.nextKey += 1n;
   for (const column of table.columns) {
     if (column.name === table.key || column.name === '_src_start' || column.name === '_src_end') continue;
-    outputColumns[column.name] = [];
+    row[column.name] =
+      column.when && !evaluateExpression(column.when, context)
+        ? null
+        : (evaluateExpression(column.expr, context) ?? null);
+  }
+  const range = provenance.resolve(table.name, match);
+  row._src_start = BigInt(range.start);
+  row._src_end = BigInt(range.end);
+  sink.push(table.name, row);
+};
+
+export const tableOutputTypes = (table: CompiledProjectionTable): Record<string, ArrowTypeName> => {
+  const types: Record<string, ArrowTypeName> = { [table.key]: 'int64' };
+  for (const column of table.columns) {
+    if (column.name === table.key || column.name === '_src_start' || column.name === '_src_end') continue;
     types[column.name] = column.type;
   }
-  outputColumns._src_start = [];
-  outputColumns._src_end = [];
   types._src_start = 'uint64';
   types._src_end = 'uint64';
+  return types;
+};
 
-  const stateValues = Object.create(null) as Record<string, unknown>;
-  const scopeIndexes = new Map<string, readonly number[]>();
-  let nextKey = 1n;
-
-  for (const match of traverseAnchor(table.rows, root)) {
-    for (const register of table.state) {
-      const currentScope = match.indexes.slice(0, register.scope.wildcardCount);
-      const previousScope = scopeIndexes.get(register.name);
-      if (!previousScope || !sameIndexes(previousScope, currentScope)) {
-        stateValues[register.name] = register.init;
-        scopeIndexes.set(register.name, currentScope);
-      }
-    }
-    for (const register of table.state) {
-      stateValues[register.name] = evaluateExpression(
-        register.update,
-        expressionContext(match, root, stateValues),
-      );
-    }
-
-    const context = expressionContext(match, root, stateValues);
-    if (table.where && !evaluateExpression(table.where, context)) continue;
-
-    outputColumns[table.key]!.push(nextKey);
-    nextKey += 1n;
-    for (const column of table.columns) {
-      if (column.name === table.key || column.name === '_src_start' || column.name === '_src_end') continue;
-      const value =
-        column.when && !evaluateExpression(column.when, context)
-          ? null
-          : evaluateExpression(column.expr, context);
-      outputColumns[column.name]!.push(value ?? null);
-    }
-    const range = provenance.resolve(table.name, match);
-    outputColumns._src_start!.push(BigInt(range.start));
-    outputColumns._src_end!.push(BigInt(range.end));
-  }
-
-  const rowCount = outputColumns[table.key]!.length;
-  return { name: table.name, columns: outputColumns, types, rowCount };
+export const projectInto = (
+  compiled: CompiledProjection,
+  root: unknown,
+  provenance: ProvenanceResolver,
+  sink: RowSink,
+  runtimes: Map<string, TableRuntime>,
+  subset: ReadonlySet<string> | null,
+): void => {
+  const active = compiled.tables.filter((table) => !subset || subset.has(table.name));
+  const matcher = buildMatcher(active.map((table) => table.rows));
+  walkMatcher(root, matcher, (anchorIndex, match) => {
+    const table = active[anchorIndex]!;
+    emitRow(table, runtimes.get(table.name)!, match, root, provenance, sink);
+  });
 };
 
 export const projectTree = (
   compiled: CompiledProjection,
   root: unknown,
   provenance: ProvenanceResolver,
-): ProjectedTable[] => compiled.tables.map((table) => projectTable(table, root, provenance));
+): ProjectedTable[] => {
+  const columnsByTable = new Map<string, Record<string, unknown[]>>(
+    compiled.tables.map((table) => [
+      table.name,
+      Object.fromEntries(Object.keys(tableOutputTypes(table)).map((name) => [name, []])),
+    ]),
+  );
+  const sink: RowSink = {
+    push(tableName, row) {
+      const columns = columnsByTable.get(tableName)!;
+      for (const name of Object.keys(columns)) columns[name]!.push(row[name] ?? null);
+    },
+  };
+  projectInto(compiled, root, provenance, sink, createRuntimes(compiled), null);
+  return compiled.tables.map((table) => {
+    const columns = columnsByTable.get(table.name)!;
+    const types = tableOutputTypes(table);
+    return { name: table.name, columns, types, rowCount: columns[table.key]!.length };
+  });
+};

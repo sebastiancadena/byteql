@@ -47,4 +47,12 @@ describe('createProjectionSession', () => {
     expect(finished.map((table) => table.name)).toEqual(['items', 'meta']);
     expect(finished.every((table) => table.rowCount === 0)).toBe(true);
   });
+
+  it('flushes incremental batches at the configured threshold', () => {
+    const session = createProjectionSession(compiled, { flushRowThreshold: 2 });
+    session.project({ items: [{ value: 1 }, { value: 2 }, { value: 3 }] }, resolver);
+    const items = session.finish().find((table) => table.name === 'items')!;
+    expect(items.arrow.batches.length).toBe(2);
+    expect(items.rowCount).toBe(3);
+  });
 });

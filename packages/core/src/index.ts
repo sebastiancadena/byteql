@@ -32,4 +32,9 @@ export type {
   SourceRange,
 } from './projection/project.js';
 export { createProjectionSession } from './projection/session.js';
-export type { FinishedTable, ProjectCallOptions, ProjectionSession } from './projection/session.js';
+export type {
+  FinishedTable,
+  ProjectCallOptions,
+  ProjectionSession,
+  ProjectionSessionOptions,
+} from './projection/session.js';
