@@ -19,10 +19,9 @@ queries:
       with tempo_points as (
         select tick, us_per_quarter, tempo_id
         from tempo
-        where track = 0
         union all
         select 0, 500000, 0
-        where not exists (select 1 from tempo where track = 0 and tick = 0)
+        where not exists (select 1 from tempo where tick = 0)
       ), deduped as (
         select tick, us_per_quarter
         from tempo_points
@@ -58,10 +57,9 @@ queries:
       with tempo_points as (
         select tick, us_per_quarter, tempo_id
         from tempo
-        where track = 0
         union all
         select 0, 500000, 0
-        where not exists (select 1 from tempo where track = 0 and tick = 0)
+        where not exists (select 1 from tempo where tick = 0)
       ), deduped as (
         select tick, us_per_quarter
         from tempo_points
@@ -97,10 +95,9 @@ queries:
       with tempo_points as (
         select tick, us_per_quarter, tempo_id
         from tempo
-        where track = 0
         union all
         select 0, 500000, 0
-        where not exists (select 1 from tempo where track = 0 and tick = 0)
+        where not exists (select 1 from tempo where tick = 0)
       ), deduped as (
         select tick, us_per_quarter
         from tempo_points
