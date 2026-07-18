@@ -55,4 +55,29 @@ describe('createProjectionSession', () => {
     expect(items.arrow.batches.length).toBe(2);
     expect(items.rowCount).toBe(3);
   });
+
+  it('accumulates file-scoped ($) state across project() calls instead of resetting per call', () => {
+    // A ProjectionSession models one source document: state registers persist across
+    // project() calls, and resets stay scope-index-driven. A `$`-scoped register's scope
+    // index never changes across calls, so it must keep accumulating rather than
+    // restarting from `init` on every call.
+    const statefulSpec = parseProjectionSpec(`
+version: '0.1'
+format: fixture
+tables:
+  - name: items
+    rows: $.items[*]
+    key: item_id
+    state:
+      total: { scope: '$', init: 0, update: 'total + 1' }
+    columns:
+      total: { expr: 'total', type: int32 }
+`);
+    const statefulCompiled = compileProjection(statefulSpec);
+    const session = createProjectionSession(statefulCompiled);
+    session.project({ items: [{ value: 1 }] }, resolver);
+    session.project({ items: [{ value: 2 }] }, resolver);
+    const items = session.finish().find((table) => table.name === 'items')!;
+    expect(items.arrow.getChild('total')!.toArray()).toEqual(new Int32Array([1, 2]));
+  });
 });

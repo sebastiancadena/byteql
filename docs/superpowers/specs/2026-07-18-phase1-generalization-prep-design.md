@@ -208,3 +208,14 @@ implementation and review:
   `track` for MIDI).
 - `projectTree` and `ProjectionSession` share the single-pass engine, so both execute dissect
   chains and populate dissect-only tables.
+- Nested dissect payloads: a payload's `start` is relative to the coordinate space its expression
+  is evaluated in — absolute for chains fired from the file tree, payload-relative for chains
+  evaluated against a child parse tree; the engine composes absolute provenance by threading the
+  enclosing base offset down the chain.
+- A `ProjectionSession` models one source document: state registers persist across `project()`
+  calls and resets stay scope-index-driven, so callers projecting per-record roots must advance
+  wildcard indexes across calls (sparse arrays, as the MIDI pack does) for per-record scopes to
+  reset. File-scoped (`$`) registers deliberately accumulate across calls.
+- Session emission is streaming, not transactional: a throw inside `project()` can leave that
+  call's earlier rows in the table builders. Packs treat a failed record as partially projected
+  and record the failure through `IssueCollector`; there is no rollback API.

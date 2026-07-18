@@ -114,6 +114,54 @@ describe('timestamp_us columns', () => {
     };
     expect(() => projectedTableToArrow(table)).toThrow(/ARROW_UNSAFE_INT64/u);
   });
+
+  it('rejects a bigint microsecond value that does not fit in int64', () => {
+    const table: ProjectedTable = {
+      name: 'packets',
+      rowCount: 1,
+      types: { ts: 'timestamp_us' },
+      columns: { ts: [2n ** 63n] },
+    };
+    expect(() => projectedTableToArrow(table)).toThrow(/ARROW_UNSAFE_INT64/u);
+  });
+
+  // Read the exact physical int64 back out of a vector's underlying data buffer, bypassing
+  // apache-arrow's Vector#get() (which returns a lossy epoch-millisecond float for Timestamp
+  // columns). Handles both representations a Timestamp Data's `values` buffer might carry:
+  // a BigInt64Array directly, or an Int32Array of little-endian [low, high] word pairs.
+  const readExactMicros = (values: ArrayLike<number> | ArrayLike<bigint>, index: number): bigint => {
+    if (values instanceof BigInt64Array) return values[index]!;
+    const int32 = values as unknown as Int32Array;
+    const low = BigInt(int32[index * 2]! >>> 0);
+    const high = BigInt(int32[index * 2 + 1]!);
+    return (high << 32n) | low;
+  };
+
+  it('builds a safe-integer microsecond value (number) without throwing and stores it exactly', () => {
+    const micros = 4_492_512_256_312_222;
+    const table: ProjectedTable = {
+      name: 'packets',
+      rowCount: 1,
+      types: { ts: 'timestamp_us' },
+      columns: { ts: [micros] },
+    };
+    const arrow = ipcToTable(tableToIpc(projectedTableToArrow(table)));
+    const values = arrow.getChildAt(0)!.data[0]!.values;
+    expect(readExactMicros(values, 0)).toBe(BigInt(micros));
+  });
+
+  it('builds a bigint microsecond value beyond safe-integer range without throwing and stores it exactly', () => {
+    const micros = 4_492_512_256_312_222n;
+    const table: ProjectedTable = {
+      name: 'packets',
+      rowCount: 1,
+      types: { ts: 'timestamp_us' },
+      columns: { ts: [micros] },
+    };
+    const arrow = ipcToTable(tableToIpc(projectedTableToArrow(table)));
+    const values = arrow.getChildAt(0)!.data[0]!.values;
+    expect(readExactMicros(values, 0)).toBe(micros);
+  });
 });
 
 describe('binary columns', () => {

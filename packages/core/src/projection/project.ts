@@ -434,6 +434,10 @@ const emitRow = (
   sink: RowSink,
   keysByTable: ReadonlyMap<string, bigint>,
   emitContext: EmitContext,
+  // Absolute file offset of the coordinate space `root` (and thus this row's dissect
+  // payload expressions) are evaluated in: 0 for the file tree, or the enclosing payload's
+  // absolute start for a child parse tree. See asPayloadRange / fireDissect.
+  baseOffset: number,
   parentKey?: { name: string; value: bigint | null },
 ): void => {
   for (const register of table.state) {
@@ -473,7 +477,7 @@ const emitRow = (
   const childKeys = new Map(keysByTable);
   childKeys.set(table.name, key);
   for (const dissect of emitContext.compiled.dissectByFrom.get(table.name) ?? []) {
-    fireDissect(dissect, context, childKeys, emitContext, range);
+    fireDissect(dissect, context, childKeys, emitContext, range, baseOffset);
   }
 };
 
@@ -491,6 +495,10 @@ export const tableOutputTypes = (table: CompiledProjectionTable): Record<string,
 
 interface PayloadRange {
   readonly bytes: Uint8Array;
+  // Relative to the coordinate space `dissect.payload` was evaluated in: absolute (file
+  // offset) for chains fired from the file tree, payload-relative for chains evaluated
+  // against a child parse tree. Callers must add the enclosing `baseOffset` to get an
+  // absolute file offset — see fireDissect.
   readonly start: number;
 }
 
@@ -515,6 +523,10 @@ const fireDissect = (
   keysByTable: ReadonlyMap<string, bigint>,
   emitContext: EmitContext,
   parentRange: SourceRange,
+  // Absolute file offset of the coordinate space `context` (and thus dissect.payload) was
+  // evaluated in. 0 for dissects fired from the file tree; the enclosing absolute payload
+  // start for dissects evaluated against a child parse tree.
+  baseOffset: number,
 ): void => {
   const payload = asPayloadRange(evaluateExpression(dissect.payload, context));
   if (!payload) {
@@ -529,6 +541,11 @@ const fireDissect = (
     return;
   }
 
+  // The engine composes absolute provenance here: `payload.start` is only ever meaningful
+  // relative to the coordinate space `context` was evaluated in (see PayloadRange), so it
+  // must be added to the enclosing `baseOffset` before it means anything file-absolute.
+  const absoluteStart = baseOffset + payload.start;
+
   for (const link of dissect.chain) {
     if (!evaluateExpression(link.when, context)) continue;
 
@@ -541,20 +558,28 @@ const fireDissect = (
         code: 'DISSECT_PARSE_FAILED',
         recoverable: true,
         message: error instanceof Error ? error.message : String(error),
-        sourceStart: payload.start,
-        sourceEnd: payload.start + payload.bytes.length,
+        sourceStart: absoluteStart,
+        sourceEnd: absoluteStart + payload.bytes.length,
       });
       return;
     }
 
-    if (link.table) projectChildTable(link.table, parsed, payload, keysByTable, emitContext);
+    if (link.table)
+      projectChildTable(link.table, parsed, payload.bytes, absoluteStart, keysByTable, emitContext);
 
     const childContext: ExpressionContext = { _: parsed.root, _root: parsed.root };
     for (const deeper of emitContext.compiled.dissectByFrom.get(link.parserId) ?? []) {
-      fireDissect(deeper, childContext, keysByTable, emitContext, {
-        start: payload.start,
-        end: payload.start + payload.bytes.length,
-      });
+      // The deeper chain's payload is evaluated against `parsed.root` — a tree the child
+      // parser built purely from `payload.bytes` — so its own payload.start (if any) is
+      // relative to *this* payload; that's `absoluteStart`, not `baseOffset`.
+      fireDissect(
+        deeper,
+        childContext,
+        keysByTable,
+        emitContext,
+        { start: absoluteStart, end: absoluteStart + payload.bytes.length },
+        absoluteStart,
+      );
     }
     return; // first matching guard wins
   }
@@ -563,15 +588,18 @@ const fireDissect = (
 const projectChildTable = (
   table: CompiledProjectionTable,
   parsed: ParsedRecord,
-  payload: PayloadRange,
+  payloadBytes: Uint8Array,
+  absolutePayloadStart: number,
   keysByTable: ReadonlyMap<string, bigint>,
   emitContext: EmitContext,
 ): void => {
   const resolver: ProvenanceResolver = {
     resolve(tableName, match) {
-      if (!parsed.resolve) return { start: payload.start, end: payload.start + payload.bytes.length };
+      if (!parsed.resolve) {
+        return { start: absolutePayloadStart, end: absolutePayloadStart + payloadBytes.length };
+      }
       const relative = parsed.resolve(tableName, match);
-      return { start: payload.start + relative.start, end: payload.start + relative.end };
+      return { start: absolutePayloadStart + relative.start, end: absolutePayloadStart + relative.end };
     },
   };
   const parentKeyValue = keysByTable.get(table.parentKey!.table) ?? null;
@@ -585,10 +613,21 @@ const projectChildTable = (
     delete runtime.stateValues[register.name];
   }
   for (const match of traverseAnchor(table.rows, parsed.root)) {
-    emitRow(table, runtime, match, parsed.root, resolver, emitContext.sink, keysByTable, emitContext, {
-      name: table.parentKey!.column,
-      value: parentKeyValue,
-    });
+    // The child rows' own dissect chains (if any) evaluate against `parsed.root`, so they
+    // need this payload's absolute start as their base — this is how chains fired from a
+    // chain-fed table compose correctly.
+    emitRow(
+      table,
+      runtime,
+      match,
+      parsed.root,
+      resolver,
+      emitContext.sink,
+      keysByTable,
+      emitContext,
+      absolutePayloadStart,
+      { name: table.parentKey!.column, value: parentKeyValue },
+    );
   }
 };
 
@@ -607,7 +646,9 @@ export const projectInto = (
   const emptyKeys: ReadonlyMap<string, bigint> = new Map();
   walkMatcher(root, matcher, (anchorIndex, match) => {
     const table = active[anchorIndex]!;
-    emitRow(table, runtimes.get(table.name)!, match, root, provenance, sink, emptyKeys, emitContext);
+    // The file tree is the root coordinate space: base offset 0, so payload.start is
+    // absolute unchanged for chains fired directly off root-table rows.
+    emitRow(table, runtimes.get(table.name)!, match, root, provenance, sink, emptyKeys, emitContext, 0);
   });
 };
 

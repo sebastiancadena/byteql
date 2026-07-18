@@ -12,11 +12,13 @@ import {
   Uint32,
   Uint64,
   Utf8,
+  Vector,
+  makeData,
   tableFromIPC,
   tableToIPC,
+  util,
   vectorFromArray,
   type DataType,
-  type Vector,
 } from 'apache-arrow';
 
 import type { ProjectedTable } from '../projection/project.js';
@@ -57,18 +59,6 @@ const valuesForType = (
   table: string,
   column: string,
 ): readonly unknown[] => {
-  if (type === 'timestamp_us') {
-    return values.map((value) => {
-      if (value === null || value === undefined) return null;
-      if (typeof value === 'number' && !Number.isSafeInteger(value)) {
-        throw new Error(
-          `ARROW_UNSAFE_INT64: ${table}.${column} received the number ${value}, which cannot be represented exactly in a 64-bit integer column`,
-        );
-      }
-      if (typeof value !== 'number' && typeof value !== 'bigint') return value;
-      return Number(value) / 1000;
-    });
-  }
   if (type !== 'int64' && type !== 'uint64') return values;
   return values.map((value) => {
     if (typeof value !== 'number') return value;
@@ -81,12 +71,71 @@ const valuesForType = (
   });
 };
 
+// int64 range: [-2^63, 2^63).
+const MIN_INT64 = -(2n ** 63n);
+const MAX_INT64_EXCLUSIVE = 2n ** 63n;
+
+// Convert a projected timestamp_us value into exact int64 microseconds, with no float
+// detour: `Number(value)/1000` followed by arrow's internal `BigInt(ms * 1000)` both loses
+// bigint precision above 2^53 and can throw a raw RangeError when the millisecond float
+// isn't an exact integer multiple of 1000 (e.g. a µs value ending in *222 produces
+// `...222.5` ms, and `...222.5 * 1000` isn't representable as an exact integer).
+const toTimestampMicros = (value: unknown, table: string, column: string): bigint | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(
+        `ARROW_UNSAFE_INT64: ${table}.${column} received the number ${value}, which cannot be represented exactly in a 64-bit integer column`,
+      );
+    }
+    return BigInt(value);
+  }
+  if (typeof value === 'bigint') {
+    if (value < MIN_INT64 || value >= MAX_INT64_EXCLUSIVE) {
+      throw new Error(
+        `ARROW_UNSAFE_INT64: ${table}.${column} received the bigint ${value}, which does not fit in a 64-bit integer column`,
+      );
+    }
+    return value;
+  }
+  throw new Error(
+    `ARROW_UNSAFE_INT64: ${table}.${column} received ${JSON.stringify(value)}, expected a number, bigint, or null for timestamp_us`,
+  );
+};
+
+// Builds the TimestampMicrosecond vector directly from an exact BigInt64Array of
+// microsecond values, sidestepping vectorFromArray's millisecond/float path entirely.
+const timestampMicrosecondVector = (values: readonly unknown[], table: string, column: string): Vector => {
+  const length = values.length;
+  const data = new BigInt64Array(length);
+  const validity = new Array<boolean>(length);
+  let nullCount = 0;
+  for (let index = 0; index < length; index += 1) {
+    const micros = toTimestampMicros(values[index], table, column);
+    const valid = micros !== null;
+    validity[index] = valid;
+    if (!valid) nullCount += 1;
+    data[index] = micros ?? 0n;
+  }
+  const vectorData = makeData({
+    type: new TimestampMicrosecond(),
+    length,
+    nullCount,
+    nullBitmap: util.packBools(validity),
+    data,
+  });
+  return new Vector([vectorData]);
+};
+
 export const columnVector = (
   values: readonly unknown[],
   type: ArrowTypeName,
   table: string,
   column: string,
-): Vector => vectorFromArray(valuesForType(values, type, table, column), arrowType(type));
+): Vector =>
+  type === 'timestamp_us'
+    ? timestampMicrosecondVector(values, table, column)
+    : vectorFromArray(valuesForType(values, type, table, column), arrowType(type));
 
 export const projectedTableToArrow = (table: ProjectedTable): Table => {
   for (const [name, values] of Object.entries(table.columns)) {
