@@ -50,9 +50,18 @@ importers:
       '@codemirror/lang-sql':
         specifier: ^6.10.0
         version: 6.10.0
+      '@codemirror/language':
+        specifier: ^6.12.4
+        version: 6.12.4
+      '@codemirror/state':
+        specifier: ^6.7.1
+        version: 6.7.1
       '@codemirror/view':
         specifier: ^6.43.6
         version: 6.43.6
+      '@lezer/highlight':
+        specifier: ^1.2.3
+        version: 1.2.3
       '@tanstack/svelte-virtual':
         specifier: ^3.13.32
         version: 3.13.32(svelte@5.56.6(@typescript-eslint/types@8.64.0))

@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global File */
+  /* global File, HTMLButtonElement, KeyboardEvent */
 
   import { onMount } from 'svelte';
 
@@ -12,12 +12,6 @@
   import SqlEditor from './SqlEditor.svelte';
   import StatusBar from './StatusBar.svelte';
 
-  interface QueryDefinition {
-    id: string;
-    title: string;
-    sql: string;
-  }
-
   interface ControllerPort {
     subscribe(listener: (state: SessionState) => void): () => void;
     openFile(file: File): Promise<void>;
@@ -29,16 +23,17 @@
 
   interface Props {
     controller: ControllerPort;
-    queries?: readonly QueryDefinition[];
   }
 
-  let { controller, queries = [] }: Props = $props();
+  let { controller }: Props = $props();
   let session = $state<SessionState>(initialSessionState);
   let draftSql = $state('');
   let actionError = $state<string | null>(null);
   let explorerCollapsed = $state(false);
   let inspectorCollapsed = $state(false);
   let mobileTab = $state<'results' | 'inspector'>('results');
+  let resultsTabElement = $state<HTMLButtonElement>();
+  let inspectorTabElement = $state<HTMLButtonElement>();
   let overviewSource: string | null = null;
 
   const intakeBusy = $derived(
@@ -51,7 +46,7 @@
       if (next.sql && next.sql !== draftSql) draftSql = next.sql;
       if (next.phase === 'opening') overviewSource = null;
 
-      const overview = queries[0];
+      const overview = next.queries.find((query) => query.id === 'overview');
       const sourceKey = next.source ? `${next.source.name}:${next.source.size}` : null;
       if (
         overview &&
@@ -89,6 +84,22 @@
     draftSql = sql;
     perform(() => controller.runQuery(sql));
   }
+
+  function selectTab(tab: 'results' | 'inspector', moveFocus = false): void {
+    mobileTab = tab;
+    if (moveFocus) (tab === 'results' ? resultsTabElement : inspectorTabElement)?.focus();
+  }
+
+  function navigateTabs(event: KeyboardEvent): void {
+    let next: 'results' | 'inspector' | null = null;
+    if (event.key === 'Home') next = 'results';
+    if (event.key === 'End') next = 'inspector';
+    if (event.key === 'ArrowRight') next = mobileTab === 'results' ? 'inspector' : 'results';
+    if (event.key === 'ArrowLeft') next = mobileTab === 'results' ? 'inspector' : 'results';
+    if (!next) return;
+    event.preventDefault();
+    selectTab(next, true);
+  }
 </script>
 
 <div
@@ -115,24 +126,40 @@
       />
     </main>
   {:else}
-    <Explorer state={session} {queries} collapsed={explorerCollapsed} onquery={loadQuery} />
+    <Explorer state={session} collapsed={explorerCollapsed} onquery={loadQuery} />
 
-    <main class="workbench-main">
-      <div class="mobile-tabs" role="tablist" aria-label="Workbench views">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mobileTab === 'results'}
-          onclick={() => (mobileTab = 'results')}>Results</button
-        >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mobileTab === 'inspector'}
-          onclick={() => (mobileTab = 'inspector')}>Inspector</button
-        >
-      </div>
+    <div class="mobile-tabs" role="tablist" aria-label="Workbench views">
+      <button
+        bind:this={resultsTabElement}
+        id="workbench-tab-results"
+        type="button"
+        role="tab"
+        aria-controls="workbench-panel-results"
+        aria-selected={mobileTab === 'results'}
+        tabindex={mobileTab === 'results' ? 0 : -1}
+        onclick={() => selectTab('results')}
+        onkeydown={navigateTabs}>Results</button
+      >
+      <button
+        bind:this={inspectorTabElement}
+        id="workbench-tab-inspector"
+        type="button"
+        role="tab"
+        aria-controls="workbench-panel-inspector"
+        aria-selected={mobileTab === 'inspector'}
+        tabindex={mobileTab === 'inspector' ? 0 : -1}
+        onclick={() => selectTab('inspector')}
+        onkeydown={navigateTabs}>Inspector</button
+      >
+    </div>
 
+    <div
+      id="workbench-panel-results"
+      class="workbench-main"
+      role="tabpanel"
+      aria-labelledby="workbench-tab-results"
+      tabindex="0"
+    >
       <section class="sql-workspace" aria-label="SQL workspace">
         <div class="editor-heading">
           <div>
@@ -219,14 +246,22 @@
           {/if}
         </div>
       </section>
-    </main>
+    </div>
 
-    <Inspector
-      table={session.result}
-      selectedRow={session.selectedRow}
-      collapsed={inspectorCollapsed}
-      mobileOpen={mobileTab === 'inspector'}
-    />
+    <div
+      id="workbench-panel-inspector"
+      class="inspector-panel"
+      role="tabpanel"
+      aria-labelledby="workbench-tab-inspector"
+      tabindex="0"
+    >
+      <Inspector
+        table={session.result}
+        selectedRow={session.selectedRow}
+        collapsed={inspectorCollapsed}
+        mobileOpen={mobileTab === 'inspector'}
+      />
+    </div>
   {/if}
 
   <StatusBar state={session} />

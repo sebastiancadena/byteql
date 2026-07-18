@@ -251,8 +251,16 @@ button {
 }
 
 .inspector {
-  grid-area: inspector;
+  height: 100%;
   border-left: 1px solid var(--color-border);
+}
+
+.inspector-panel {
+  grid-area: inspector;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  outline: none;
 }
 
 .explorer.collapsed,
@@ -861,6 +869,11 @@ button {
   white-space: nowrap;
 }
 
+.empty-actions label:focus-within {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 .drop-hint {
   margin: 1rem 0 0;
   font-size: 0.7rem;
@@ -940,12 +953,14 @@ button {
 
   .workbench-main {
     position: relative;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    padding-top: 2.9rem;
   }
 
   .mobile-tabs {
+    z-index: 6;
+    grid-area: workbench;
     display: flex;
+    align-self: start;
     padding: 0.45rem 0.75rem;
     border-bottom: 1px solid var(--color-border);
     background: var(--color-surface);
@@ -966,16 +981,22 @@ button {
     color: var(--color-text);
   }
 
-  .inspector {
+  .inspector-panel {
     z-index: 5;
     grid-area: workbench;
     display: none;
     margin-top: 2.9rem;
+  }
+
+  .inspector-panel .inspector {
     border-left: 0;
   }
 
-  .show-mobile-inspector .inspector.mobile-open {
+  .show-mobile-inspector .inspector-panel {
     display: block;
+  }
+
+  .show-mobile-inspector .inspector.mobile-open {
     visibility: visible;
     opacity: 1;
   }

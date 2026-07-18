@@ -14,6 +14,7 @@ import type { GeneratedEventBody, GeneratedTrackEvent } from '../gen/StandardMid
 import { parseMidiContainer } from './container.js';
 import { MidiParseError } from './errors.js';
 import { buildSyntheticTrackFile, parseSyntheticTrack } from './kaitai.js';
+import midiQueries from './midi-queries.generated.js';
 import tablesYaml from './midi-tables.generated.js';
 import { normalizeTrack } from './normalize-track.js';
 import type { MidiHeader, NormalizedEventMap, TrackChunk } from './types.js';
@@ -318,6 +319,7 @@ export async function parseAndProjectMidi(
     format: { id: 'standard_midi_file', title: 'Standard MIDI file' },
     tables,
     issues,
+    queries: midiQueries,
     capabilities: {
       audio: smpte
         ? {

@@ -5,6 +5,7 @@ import { parse as parseYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 import { midiFile } from '../test/fixtures.js';
+import midiQueries from './midi-queries.generated.js';
 import { parseAndProjectMidi } from './project-midi.js';
 
 const fixtureUrl = (name: string): URL => new URL(`../test/fixtures/${name}`, import.meta.url);
@@ -124,6 +125,7 @@ describe('MIDI format pack', () => {
     }
     expect(pack.queries.find((query) => query.id === 'drums')!.sql).toContain('e.channel = 9');
     expect(pack.queries.find((query) => query.id === 'bassline')!.sql).toContain('e.note < 48');
+    expect(midiQueries).toEqual(pack.queries);
   });
 });
 
@@ -138,6 +140,7 @@ describe('parseAndProjectMidi', () => {
       enabled: false,
       reason: 'SMPTE time division is not supported by the Phase 0 player.',
     });
+    expect(result.queries).toEqual(midiQueries);
     expect(rows(transfer(result.tables, 'header'))).toEqual([expectedHeader(0, 1, -6360)]);
     expect(rows(transfer(result.tables, 'events'))).toEqual([
       event({

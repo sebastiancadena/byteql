@@ -46,6 +46,7 @@ const parseResult = (name: string, values: readonly number[] = [1, 2, 3]): Parse
   format: { id: 'standard_midi_file', title: 'Standard MIDI file' },
   tables: [transfer(name, values)],
   issues: [],
+  queries: [{ id: 'overview', title: 'Overview', kind: 'grid', sql: 'select 1 limit 1;' }],
   capabilities: { audio: { enabled: true, reason: null } },
 });
 
@@ -149,6 +150,7 @@ describe('SessionController', () => {
     unsubscribe();
     parser.calls[0]!.operation.resolve(parseResult('events'));
     await opening;
+    expect(controller.getState().queries).toEqual(parseResult('events').queries);
   });
 
   it('cancels parse, query, and viewer immediately and ignores stale replacement results', async () => {

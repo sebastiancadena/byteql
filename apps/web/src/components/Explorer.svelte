@@ -1,20 +1,13 @@
 <script lang="ts">
   import type { SessionState } from '../lib/session/state.js';
 
-  interface QueryDefinition {
-    id: string;
-    title: string;
-    sql: string;
-  }
-
   interface Props {
     state: SessionState;
-    queries?: readonly QueryDefinition[];
     collapsed?: boolean;
     onquery: (sql: string) => void;
   }
 
-  let { state, queries = [], collapsed = false, onquery }: Props = $props();
+  let { state, collapsed = false, onquery }: Props = $props();
 </script>
 
 <nav class:collapsed class="explorer" aria-label="Data explorer">
@@ -70,11 +63,11 @@
     </section>
   {/if}
 
-  {#if queries.length > 0}
+  {#if state.queries.length > 0}
     <section class="explorer-section query-section" aria-labelledby="queries-heading">
       <h3 id="queries-heading">Saved queries</h3>
       <ul class="query-list">
-        {#each queries as query (query.id)}
+        {#each state.queries as query (query.id)}
           <li>
             <button type="button" onclick={() => onquery(query.sql)}>
               <span aria-hidden="true">↗</span>

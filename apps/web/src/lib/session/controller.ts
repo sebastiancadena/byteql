@@ -230,7 +230,12 @@ export class SessionController {
   }
 
   private dispatchReady(result: ParseResult): void {
-    this.dispatch({ type: 'ready', tables: result.tables, issues: result.issues });
+    this.dispatch({
+      type: 'ready',
+      tables: result.tables,
+      issues: result.issues,
+      queries: result.queries,
+    });
   }
 
   private dispatch(event: SessionEvent): void {

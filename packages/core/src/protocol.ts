@@ -15,9 +15,17 @@ export interface ParseIssue {
   sourceEnd: number | null;
 }
 
+export interface PackQuery {
+  id: string;
+  title: string;
+  kind: 'grid' | 'playback';
+  sql: string;
+}
+
 export interface ParseResult {
   format: { id: 'standard_midi_file'; title: 'Standard MIDI file' };
   tables: readonly TableTransfer[];
   issues: readonly ParseIssue[];
+  queries: readonly PackQuery[];
   capabilities: { audio: { enabled: boolean; reason: string | null } };
 }

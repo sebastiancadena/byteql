@@ -1,3 +1,5 @@
+/* global clearTimeout, document, getComputedStyle, setTimeout */
+
 import console from 'node:console';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -36,7 +38,12 @@ try {
     build: {
       outDir,
       emptyOutDir: false,
-      rollupOptions: { input: join(webRoot, 'worker-privacy.html') },
+      rollupOptions: {
+        input: {
+          app: join(webRoot, 'index.html'),
+          workerPrivacy: join(webRoot, 'worker-privacy.html'),
+        },
+      },
     },
   });
   previewServer = await preview({
@@ -78,7 +85,108 @@ try {
   if (!result.initial.includes('Standard MIDI File header')) throw new Error(result.initial);
   if (!result.recreated.includes('Standard MIDI File header')) throw new Error(result.recreated);
 
-  console.log(JSON.stringify({ postReadyRequests: requests, ...result }));
+  await page.close();
+
+  const appPage = await browser.newPage({ viewport: { width: 760, height: 800 } });
+  const appRequests = [];
+  let releaseWasm;
+  const wasmBlocked = new Promise((resolve) => {
+    releaseWasm = resolve;
+  });
+  let wasmRequested = false;
+  await appPage.route(/duckdb.*\.wasm/u, async (route) => {
+    wasmRequested = true;
+    await wasmBlocked;
+    await route.continue();
+  });
+  appPage.on('request', (request) => appRequests.push(request.url()));
+  await appPage.goto(origin);
+  await appPage.waitForFunction(() => document.querySelector('.startup-state') !== null);
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const deadline = setTimeout(() => {
+      settled = true;
+      reject(new Error('The production app did not request DuckDB WASM.'));
+    }, 10_000);
+    const check = () => {
+      if (settled) return;
+      if (wasmRequested) {
+        settled = true;
+        clearTimeout(deadline);
+        resolve();
+      } else {
+        setTimeout(check, 10);
+      }
+    };
+    check();
+  });
+  if ((await appPage.locator('[data-app-ready="true"]').count()) !== 0) {
+    throw new Error('The production app published readiness before the DuckDB WASM dependency resolved.');
+  }
+
+  releaseWasm();
+  await appPage.locator('[data-app-ready="true"]').waitFor();
+  const readyRequestCount = appRequests.length;
+  await appPage.waitForTimeout(150);
+  const postAppReadyRequests = appRequests.slice(readyRequestCount);
+  if (postAppReadyRequests.length > 0) {
+    throw new Error(`The production app made requests after readiness:\n${postAppReadyRequests.join('\n')}`);
+  }
+
+  await appPage.getByLabel('Open file').focus();
+  const openFileFocus = await appPage.getByText('Open file', { exact: true }).evaluate((label) => {
+    const style = getComputedStyle(label);
+    return { outlineStyle: style.outlineStyle, outlineWidth: Number.parseFloat(style.outlineWidth) };
+  });
+  if (openFileFocus.outlineStyle === 'none' || openFileFocus.outlineWidth < 2) {
+    throw new Error(`Open file focus is not visibly outlined: ${JSON.stringify(openFileFocus)}`);
+  }
+
+  await appPage.getByRole('button', { name: 'Try sample' }).click();
+  await appPage.getByRole('textbox', { name: 'SQL query' }).waitFor();
+  await appPage.waitForFunction(() => document.querySelectorAll('.sql-editor .cm-content span').length >= 3);
+  const editorContrast = await appPage.locator('.sql-editor').evaluate((editor) => {
+    const channel = (value) => {
+      const normalized = value / 255;
+      return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = (color) => {
+      const values =
+        color
+          .match(/[\d.]+/gu)
+          ?.slice(0, 3)
+          .map(Number) ?? [];
+      return 0.2126 * channel(values[0]) + 0.7152 * channel(values[1]) + 0.0722 * channel(values[2]);
+    };
+    const background = getComputedStyle(editor).backgroundColor;
+    const backgroundLuminance = luminance(background);
+    const colors = [
+      ...new Set(
+        Array.from(editor.querySelectorAll('.cm-content span'), (span) => getComputedStyle(span).color),
+      ),
+    ];
+    const ratios = colors.map((color) => {
+      const foreground = luminance(color);
+      return (
+        (Math.max(foreground, backgroundLuminance) + 0.05) /
+        (Math.min(foreground, backgroundLuminance) + 0.05)
+      );
+    });
+    return { background, colors, ratios };
+  });
+  if (editorContrast.colors.length < 3 || editorContrast.ratios.some((ratio) => ratio < 4.5)) {
+    throw new Error(`SQL syntax contrast is below 4.5:1: ${JSON.stringify(editorContrast)}`);
+  }
+
+  console.log(
+    JSON.stringify({
+      postReadyRequests: requests,
+      postAppReadyRequests,
+      openFileFocus,
+      editorContrast,
+      ...result,
+    }),
+  );
 } finally {
   await browser?.close();
   if (previewServer) {

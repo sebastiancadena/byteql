@@ -1,4 +1,4 @@
-import type { ParseIssue, TableTransfer } from '@byteql/core';
+import type { PackQuery, ParseIssue, TableTransfer } from '@byteql/core';
 import type { Table } from 'apache-arrow';
 
 export type SessionPhase =
@@ -19,6 +19,7 @@ export interface SessionState {
   progress: { completed: number; total: number | null; label: string } | null;
   tables: readonly TableTransfer[];
   issues: readonly ParseIssue[];
+  queries: readonly PackQuery[];
   sql: string;
   result: Table | null;
   queryElapsedMs: number | null;
@@ -37,7 +38,12 @@ export type SessionEvent =
       label: string;
     }
   | { type: 'registering'; format: { id: string; title: string } }
-  | { type: 'ready'; tables: readonly TableTransfer[]; issues: readonly ParseIssue[] }
+  | {
+      type: 'ready';
+      tables: readonly TableTransfer[];
+      issues: readonly ParseIssue[];
+      queries: readonly PackQuery[];
+    }
   | { type: 'queryStarted'; sql: string }
   | { type: 'querySucceeded'; result: Table; elapsedMs: number }
   | { type: 'queryFailed'; message: string }
@@ -52,6 +58,7 @@ export const initialSessionState: SessionState = {
   progress: null,
   tables: [],
   issues: [],
+  queries: [],
   sql: '',
   result: null,
   queryElapsedMs: null,
@@ -83,6 +90,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         phase: 'ready',
         tables: event.tables,
         issues: event.issues,
+        queries: event.queries,
         progress: null,
         fatalError: null,
       };
@@ -125,6 +133,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         progress: null,
         tables: [],
         issues: [],
+        queries: [],
         result: null,
         queryElapsedMs: null,
         queryError: null,

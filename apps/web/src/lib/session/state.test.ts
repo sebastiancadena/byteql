@@ -1,4 +1,4 @@
-import type { ParseIssue, TableTransfer } from '@byteql/core';
+import type { PackQuery, ParseIssue, TableTransfer } from '@byteql/core';
 import type { Table } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
@@ -6,6 +6,9 @@ import { initialSessionState, reduceSession } from './state.js';
 
 const tables: readonly TableTransfer[] = [
   { name: 'events', ipc: new Uint8Array([1, 2, 3]), rowCount: 1, columns: [] },
+];
+const queries: readonly PackQuery[] = [
+  { id: 'overview', title: 'Overview', kind: 'grid', sql: 'select 1 limit 1;' },
 ];
 
 const issue: ParseIssue = {
@@ -67,18 +70,19 @@ describe('reduceSession', () => {
     state = reduceSession(state, { type: 'registering', format: { id: 'midi', title: 'MIDI' } });
     expect(state).toMatchObject({ phase: 'registering', format: { id: 'midi', title: 'MIDI' } });
 
-    state = reduceSession(state, { type: 'ready', tables, issues: [issue] });
+    state = reduceSession(state, { type: 'ready', tables, issues: [issue], queries });
     expect(state).toMatchObject({
       phase: 'ready',
       tables,
       issues: [issue],
+      queries,
       progress: null,
       fatalError: null,
     });
   });
 
   it('starts and completes a query while resetting selection and prior errors', () => {
-    const ready = reduceSession(initialSessionState, { type: 'ready', tables, issues: [] });
+    const ready = reduceSession(initialSessionState, { type: 'ready', tables, issues: [], queries });
     const querying = reduceSession(
       { ...ready, queryError: 'old error', selectedRow: 3 },
       { type: 'queryStarted', sql: 'select 1' },

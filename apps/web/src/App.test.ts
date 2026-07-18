@@ -1,45 +1,48 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionState } from './lib/session/state.js';
 
-const { database, initialize, dispose, createBrowserDatabase, SessionController } = vi.hoisted(() => {
-  const database = { marker: 'browser database' };
-  const initialize = vi.fn<() => Promise<void>>();
-  const dispose = vi.fn<() => Promise<void>>();
-  const createBrowserDatabase = vi.fn(async () => database);
-  const SessionController = vi.fn(function () {
-    return {
-      subscribe(listener: (state: SessionState) => void) {
-        listener({
-          phase: 'idle',
-          source: null,
-          format: null,
-          progress: null,
-          tables: [],
-          issues: [],
-          sql: '',
-          result: null,
-          queryElapsedMs: null,
-          queryError: null,
-          selectedRow: null,
-          fatalError: null,
-        });
-        return () => undefined;
-      },
-      openFile: vi.fn(),
-      openSample: vi.fn(),
-      runQuery: vi.fn(),
-      cancel: vi.fn(),
-      selectResultRow: vi.fn(),
-      initialize,
-      dispose,
-    };
+const { database, databaseDispose, initialize, dispose, createBrowserDatabase, SessionController } =
+  vi.hoisted(() => {
+    const databaseDispose = vi.fn<() => Promise<void>>();
+    const database = { marker: 'browser database', dispose: databaseDispose };
+    const initialize = vi.fn<() => Promise<void>>();
+    const dispose = vi.fn<() => Promise<void>>();
+    const createBrowserDatabase = vi.fn(async () => database);
+    const SessionController = vi.fn(function () {
+      return {
+        subscribe(listener: (state: SessionState) => void) {
+          listener({
+            phase: 'idle',
+            source: null,
+            format: null,
+            progress: null,
+            tables: [],
+            issues: [],
+            queries: [],
+            sql: '',
+            result: null,
+            queryElapsedMs: null,
+            queryError: null,
+            selectedRow: null,
+            fatalError: null,
+          });
+          return () => undefined;
+        },
+        openFile: vi.fn(),
+        openSample: vi.fn(),
+        runQuery: vi.fn(),
+        cancel: vi.fn(),
+        selectResultRow: vi.fn(),
+        initialize,
+        dispose,
+      };
+    });
+    return { database, databaseDispose, initialize, dispose, createBrowserDatabase, SessionController };
   });
-  return { database, initialize, dispose, createBrowserDatabase, SessionController };
-});
 
 vi.mock('@byteql/db', () => ({ createBrowserDatabase }));
 vi.mock('./lib/session/controller.js', () => ({ SessionController }));
@@ -53,18 +56,60 @@ describe('App lifecycle', () => {
     vi.clearAllMocks();
     initialize.mockResolvedValue(undefined);
     dispose.mockResolvedValue(undefined);
+    databaseDispose.mockResolvedValue(undefined);
   });
 
-  it('creates the browser database, initializes one session controller, and disposes it on teardown', async () => {
+  it('does not publish a ready Workbench until controller initialization resolves', async () => {
+    let resolveInitialization!: () => void;
+    initialize.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveInitialization = resolve;
+      }),
+    );
     const view = render(App);
 
     await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
     expect(createBrowserDatabase).toHaveBeenCalledOnce();
     expect(SessionController).toHaveBeenCalledWith({ database });
-    expect(screen.getByText(/files stay on this device/i)).toBeTruthy();
+    expect(screen.queryByText(/files stay on this device/i)).toBeNull();
+    expect(view.container.querySelector('[data-app-ready="true"]')).toBeNull();
+
+    resolveInitialization();
+    expect(await screen.findByText(/files stay on this device/i)).toBeTruthy();
+    expect(view.container.querySelector('[data-app-ready="true"]')).not.toBeNull();
 
     view.unmount();
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('disposes an initializing controller when the app unmounts', async () => {
+    let resolveInitialization!: () => void;
+    initialize.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveInitialization = resolve;
+      }),
+    );
+    const view = render(App);
+    await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
+
+    view.unmount();
+    resolveInitialization();
+    await vi.waitFor(() => expect(dispose).toHaveBeenCalledOnce());
+  });
+
+  it('cleans up after initialization failure and retries without exposing the Workbench', async () => {
+    initialize.mockRejectedValueOnce(new Error('WASM startup failed'));
+    const view = render(App);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('WASM startup failed');
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(view.container.querySelector('[data-app-ready="true"]')).toBeNull();
+    expect(screen.queryByText(/files stay on this device/i)).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: /retry startup/i }));
+    expect(await screen.findByText(/files stay on this device/i)).toBeTruthy();
+    expect(initialize).toHaveBeenCalledTimes(2);
+    expect(view.container.querySelector('[data-app-ready="true"]')).not.toBeNull();
   });
 
   it('shows a safe startup diagnostic when the database cannot be created', async () => {
@@ -72,5 +117,7 @@ describe('App lifecycle', () => {
     render(App);
 
     expect((await screen.findByRole('alert')).textContent).toContain('Database worker unavailable');
+    expect(screen.getByRole('button', { name: /retry startup/i })).toBeTruthy();
+    expect(dispose).not.toHaveBeenCalled();
   });
 });
