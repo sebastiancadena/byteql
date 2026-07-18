@@ -7,3 +7,9 @@ coverage/
 playwright-report/
 test-results/
 packages/formats/*/gen/
+
+# Rust
+crates/*/target/
+
+# rumdl markdown formatter cache
+.rumdl_cache/

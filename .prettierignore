@@ -5,6 +5,8 @@ coverage/
 playwright-report/
 test-results/
 packages/formats/*/gen/
+crates/
+.rumdl_cache/
 pnpm-lock.yaml
 PRD.md
 docs/superpowers/
