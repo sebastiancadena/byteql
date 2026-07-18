@@ -94,6 +94,7 @@
 
 **Files:**
 - Create: `.gitignore`
+- Create: `.prettierignore`
 - Create: `package.json`
 - Create: `pnpm-workspace.yaml`
 - Create: `tsconfig.base.json`
@@ -206,7 +207,7 @@ Run: `pnpm check && pnpm test && pnpm build`
 Expected: all commands exit 0 and Vite emits `apps/web/dist`.
 
 ```bash
-git add .gitignore package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json eslint.config.js prettier.config.js packages/core packages/db/package.json packages/formats/midi/package.json apps/web
+git add .gitignore .prettierignore package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json eslint.config.js prettier.config.js packages/core packages/db/package.json packages/formats/midi/package.json apps/web
 git commit -m "build: scaffold ByteQL workspace"
 ```
 
