@@ -81,6 +81,13 @@ const valuesForType = (
   });
 };
 
+export const columnVector = (
+  values: readonly unknown[],
+  type: ArrowTypeName,
+  table: string,
+  column: string,
+): Vector => vectorFromArray(valuesForType(values, type, table, column), arrowType(type));
+
 export const projectedTableToArrow = (table: ProjectedTable): Table => {
   for (const [name, values] of Object.entries(table.columns)) {
     if (values.length !== table.rowCount) {
@@ -93,7 +100,7 @@ export const projectedTableToArrow = (table: ProjectedTable): Table => {
   const vectors: Record<string, Vector> = {};
   for (const [name, values] of Object.entries(table.columns)) {
     const type = table.types[name]!;
-    vectors[name] = vectorFromArray(valuesForType(values, type, table.name, name), arrowType(type));
+    vectors[name] = columnVector(values, type, table.name, name);
   }
   return new Table(vectors);
 };
