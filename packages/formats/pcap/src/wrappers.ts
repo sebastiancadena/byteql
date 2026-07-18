@@ -102,7 +102,7 @@ export const ipv6Packet: RecordParser = (bytes) => {
       version: 6,
       l4_proto: parsed.nextHeaderType,
       hop_limit: parsed.hopLimit,
-      length: parsed.payloadLength,
+      length: parsed.payloadLength + 40,
       is_v4: false,
       src_addr: parsed.srcIpv6Addr,
       dst_addr: parsed.dstIpv6Addr,

@@ -129,12 +129,19 @@ describe('pcapParserRegistry', () => {
     });
     const root = parseWith<Ipv6Root>('ipv6_packet', bytes);
     expect(root).toMatchObject({ version: 6, l4_proto: 6, is_v4: false, hop_limit: 64 });
-    expect(root.length).toBe(4); // payload_length
+    expect(root.length).toBe(44); // payload_length + 40
     expect(root.src_addr.length).toBe(16);
     expect(root.dst_addr.length).toBe(16);
     expect([...root.src_addr.slice(14)]).toEqual([0, 1]);
     expect(root.body.start).toBe(40);
     expect([...root.body.bytes]).toEqual([7, 8, 9, 10]);
+  });
+
+  it('ipv6 wrapper reports total on-wire length (payload_length + 40)', () => {
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    const bytes = ipv6({ nextHeader: 6, src: '::', dst: '::', payload });
+    const { root } = pcapParserRegistry.get('ipv6_packet')!(bytes);
+    expect(root.length).toBe(payload.length + 40); // 4 + 40 = 44
   });
 
   it('tcp wrapper renders flags and exposes a 20-byte body range', () => {
