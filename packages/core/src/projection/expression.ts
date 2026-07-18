@@ -123,6 +123,31 @@ jsep.addBinaryOp('or', 1);
 jsep.addBinaryOp('and', 2);
 jsep.addUnaryOp('not');
 
+const hexDigitPattern = /[0-9a-fA-F]/u;
+
+interface JsepParserState {
+  readonly expr: string;
+  index: number;
+  throwError(message: string): never;
+}
+
+// jsep does not parse 0x literals; gobble them before its number tokenizer runs.
+jsep.hooks.add('gobble-token', function (this: JsepParserState, env: { node?: unknown }) {
+  if (this.expr.charAt(this.index) !== '0') return;
+  const marker = this.expr.charAt(this.index + 1);
+  if (marker !== 'x' && marker !== 'X') return;
+
+  let cursor = this.index + 2;
+  while (cursor < this.expr.length && hexDigitPattern.test(this.expr.charAt(cursor))) cursor += 1;
+  if (cursor === this.index + 2) this.throwError('Expected hexadecimal digits after 0x');
+
+  const raw = this.expr.slice(this.index, cursor);
+  this.index = cursor;
+  const wide = BigInt(raw);
+  const value = wide <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(wide) : wide;
+  env.node = { type: 'Literal', value, raw } as unknown as Literal;
+});
+
 const expressionError = (code: ProjectionCompileErrorCode, detail: string): ProjectionCompileError =>
   new ProjectionCompileError(code, 'expression', detail);
 
@@ -196,6 +221,7 @@ const validateNode = (node: Expression): void => {
         value !== null &&
         typeof value !== 'boolean' &&
         typeof value !== 'number' &&
+        typeof value !== 'bigint' &&
         typeof value !== 'string'
       ) {
         throw expressionError(

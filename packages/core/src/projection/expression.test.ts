@@ -340,4 +340,34 @@ describe('projection expressions', () => {
       /EXPRESSION_NODE_FORBIDDEN/,
     );
   });
+
+  describe('hex literals', () => {
+    it('evaluates a hex literal', () => {
+      expect(evaluateExpression(compileExpression('0x0800'), { _: null })).toBe(2048);
+    });
+
+    it('evaluates an uppercase-marker hex literal', () => {
+      expect(evaluateExpression(compileExpression('0XFF'), { _: null })).toBe(255);
+    });
+
+    it('compares a field against a hex literal', () => {
+      const expr = compileExpression('_.ether_type == 0x0800');
+      expect(evaluateExpression(expr, { _: { ether_type: 2048 } })).toBe(true);
+      expect(evaluateExpression(expr, { _: { ether_type: 2049 } })).toBe(false);
+    });
+
+    it('promotes hex literals beyond the safe integer range to bigint', () => {
+      // 0x20000000000000 === 2 ** 53, one above MAX_SAFE_INTEGER.
+      expect(evaluateExpression(compileExpression('0x20000000000000'), { _: null })).toBe(9007199254740992n);
+    });
+
+    it('mixes hex literals with arithmetic and bitwise operators', () => {
+      expect(evaluateExpression(compileExpression('(0xF0 & 0x9F) >> 4'), { _: null })).toBe(9);
+    });
+
+    it('rejects a hex marker with no digits', () => {
+      expect(() => compileExpression('0x')).toThrow(ProjectionCompileError);
+      expect(() => compileExpression('0x == 1')).toThrow(ProjectionCompileError);
+    });
+  });
 });
