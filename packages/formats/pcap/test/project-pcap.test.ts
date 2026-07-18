@@ -37,10 +37,14 @@ describe('parseAndProjectPcap', () => {
     // i.e. its parent_key equals that row's key — which holds at the engine-true 1n.
     expect(packetRow.packet_id).toBe(1n);
     expect(row.packet_id).toBe(packetRow.packet_id); // parented to packets row 0
-    // Non-null root columns catch a broken camelCase → snake_case mapping.
-    expect(packetRow.ts).not.toBeNull();
-    expect(packetRow.caplen).not.toBeNull();
-    expect(packetRow.len).not.toBeNull();
+    // Concrete root-column values catch a transposed camelCase → snake_case remap
+    // (e.g. ts_sec ← incl_len would still be non-null). The fixture has tsSec 1,
+    // tsFrac 0, and a 64-byte packet body.
+    // ts = ts_sec * 1e6 + ts_frac_us = 1_000_000 us; Arrow reads timestamp_us as ms → 1000.
+    expect(packetRow.ts).toBe(1000);
+    expect(packetRow.caplen).toBe(pkt.length); // incl_len = 64
+    expect(packetRow.len).toBe(pkt.length); // orig_len = 64
+    expect(packetRow.linktype).toBe(1);
   });
 
   it('carries absolute provenance into the original file for a dns row', async () => {
