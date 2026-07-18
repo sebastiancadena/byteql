@@ -221,6 +221,7 @@ git commit -m "build: scaffold ByteQL workspace"
 - Create: `packages/formats/midi/test/fixtures.ts`
 - Create: `packages/formats/midi/src/container.test.ts`
 - Modify: `packages/formats/midi/src/index.ts`
+- Modify: `packages/formats/midi/tsconfig.json`
 
 **Interfaces:**
 - Produces: `decodeVlq(bytes, offset): { value: number; next: number }`.
@@ -295,7 +296,7 @@ Run: `pnpm --filter @byteql/midi test -- --run`
 Expected: all MIDI framing tests pass.
 
 ```bash
-git add packages/formats/midi/src packages/formats/midi/test
+git add docs/superpowers/plans/2026-07-17-byteql-phase-0.md packages/formats/midi/src packages/formats/midi/test packages/formats/midi/tsconfig.json
 git commit -m "feat(midi): frame containers and decode VLQs"
 ```
 
