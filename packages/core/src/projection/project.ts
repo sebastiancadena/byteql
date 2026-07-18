@@ -106,6 +106,13 @@ export const compileProjection = (spec: ProjectionSpec): CompiledProjection => {
       );
     }
     for (const name of Object.keys(table.columns)) {
+      if (name === table.key) {
+        throw new ProjectionCompileError(
+          'PROJECTION_SPEC_INVALID',
+          `${tablePath}.columns.${name}`,
+          `column ${JSON.stringify(name)} collides with the table's synthetic key`,
+        );
+      }
       if (reservedOutputNames.has(name)) {
         throw new ProjectionCompileError(
           'PROJECTION_SPEC_INVALID',

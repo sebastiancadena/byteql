@@ -417,6 +417,30 @@ describe('compileProjection and projectTree', () => {
     ).not.toThrow();
   });
 
+  it('rejects a declared column that collides with the synthetic key', () => {
+    expect.assertions(4);
+    try {
+      compileProjection(
+        projection({
+          name: 'events',
+          rows: '$.events[*]',
+          key: 'event_id',
+          columns: {
+            event_id: { expr: '_index(0)', type: 'int64' },
+          },
+        }),
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(ProjectionCompileError);
+      expect(error).toMatchObject({
+        code: 'PROJECTION_SPEC_INVALID',
+        path: 'tables.0.columns.event_id',
+      });
+      expect((error as Error).message).toContain('synthetic key');
+      expect((error as Error).message).toContain('event_id');
+    }
+  });
+
   it.each([
     ['reserved key', '_src_start', { value: { expr: '1', type: 'int32' as const } }, 'key'],
     ['reserved column', 'id', { _src_end: { expr: '1', type: 'uint64' as const } }, 'columns._src_end'],
