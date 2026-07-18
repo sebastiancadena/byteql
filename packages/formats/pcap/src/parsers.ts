@@ -10,6 +10,7 @@ import type { ParserRegistry, RecordParser } from '@byteql/core';
 
 import {
   dnsPacket,
+  dnsTcpMessage,
   ethernetFrame,
   icmpPacket,
   ipv4Packet,
@@ -26,6 +27,7 @@ export const pcapParserRegistry: ParserRegistry = new Map<string, RecordParser>(
   ['tcp_segment', tcpSegment],
   ['udp_datagram', udpDatagram],
   ['dns_packet', dnsPacket],
+  ['dns_tcp_message', dnsTcpMessage],
   ['icmp_packet', icmpPacket],
   ['tls_client_hello', tlsClientHello],
 ]);

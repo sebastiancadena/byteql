@@ -2,7 +2,7 @@ import { ipcToTable } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
 import { parseAndProjectPcap } from '../src/project-pcap.js';
-import { buildPcap, dnsQuery, ethFrame, ipv4, udp } from './build-pcap.js';
+import { buildPcap, dnsOverTcp, dnsQuery, ethFrame, ipv4, tcp, udp } from './build-pcap.js';
 
 const dns = dnsQuery({ txId: 0x1234, name: 'a.ru', type: 1 });
 const pkt = ethFrame({
@@ -96,6 +96,47 @@ describe('parseAndProjectPcap', () => {
     expect(row.qd_count).toBe(0);
     expect(row.query_name).toBeNull();
     expect(row.query_type).toBeNull();
+  });
+
+  it('projects a dns row from a single-segment DNS-over-TCP query', async () => {
+    const pkt = ethFrame({
+      etherType: 0x0800,
+      payload: ipv4({
+        protocol: 6,
+        src: '1.1.1.1',
+        dst: '2.2.2.2',
+        payload: tcp({
+          srcPort: 5000,
+          dstPort: 53,
+          flags: 0,
+          payload: dnsOverTcp({ txId: 9, name: 'a.ru', type: 1 }),
+        }),
+      }),
+    });
+    const p = buildPcap({ magic: 'be_us', linktype: 1, packets: [{ tsSec: 1, tsFrac: 0, data: pkt }] });
+    const result = await parseAndProjectPcap(p, new AbortController().signal);
+    const dnsTable = findTable(result, 'dns');
+    expect(dnsTable.get(0)!.query_name).toBe('a.ru');
+  });
+
+  it('projects NO dns row for a tcp:53 handshake segment', async () => {
+    const pkt = ethFrame({
+      etherType: 0x0800,
+      payload: ipv4({
+        protocol: 6,
+        src: '1.1.1.1',
+        dst: '2.2.2.2',
+        payload: tcp({
+          srcPort: 5000,
+          dstPort: 53,
+          flags: 0x02 /* SYN */,
+          payload: new Uint8Array(0),
+        }),
+      }),
+    });
+    const p = buildPcap({ magic: 'be_us', linktype: 1, packets: [{ tsSec: 1, tsFrac: 0, data: pkt }] });
+    const result = await parseAndProjectPcap(p, new AbortController().signal);
+    expect(findTable(result, 'dns').numRows).toBe(0);
   });
 
   it('turns a poison transport payload into an errors row, not a throw', async () => {

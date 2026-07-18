@@ -148,23 +148,39 @@ export const udpDatagram: RecordParser = (bytes) => {
   };
 };
 
-export const dnsPacket: RecordParser = (bytes) => {
-  const parsed = parse(DnsPacket, bytes);
+/** Flattens a parsed `DnsPacket` into the fields the `dns` table's `$.message` anchor reads. */
+const flattenDns = (parsed: InstanceType<typeof DnsPacket>) => {
   const { qr, opcode, rcode } = dnsFlags(parsed.flags.flag);
   const qdcount = parsed.qdcount ?? 0;
   const firstQuery = qdcount > 0 ? parsed.queries?.[0] : undefined;
   return {
-    root: {
-      transaction_id: parsed.transactionId,
-      qr,
-      opcode,
-      rcode,
-      qdcount,
-      ancount: parsed.ancount ?? 0,
-      query_name: firstQuery ? dnsName(firstQuery.name) : null,
-      query_type: firstQuery ? firstQuery.type : null,
-    },
+    transaction_id: parsed.transactionId,
+    qr,
+    opcode,
+    rcode,
+    qdcount,
+    ancount: parsed.ancount ?? 0,
+    query_name: firstQuery ? dnsName(firstQuery.name) : null,
+    query_type: firstQuery ? firstQuery.type : null,
   };
+};
+
+export const dnsPacket: RecordParser = (bytes) => ({
+  root: { message: flattenDns(parse(DnsPacket, bytes)) },
+});
+
+/**
+ * DNS-over-TCP, single segment only: a 2-byte BE length prefix followed by the
+ * DNS message. Conditional emission (`{ root: {} }`, per the `tlsClientHello`
+ * pattern above) for empty/handshake segments and for a declared length that
+ * doesn't fit in the available bytes (i.e. the message spans TCP segments —
+ * TCP reassembly across segments is out of scope for this wrapper).
+ */
+export const dnsTcpMessage: RecordParser = (bytes) => {
+  if (bytes.length < 2) return { root: {} };
+  const declaredLen = (bytes[0]! << 8) | bytes[1]!;
+  if (declaredLen === 0 || 2 + declaredLen > bytes.length) return { root: {} };
+  return { root: { message: flattenDns(parse(DnsPacket, bytes.subarray(2, 2 + declaredLen))) } };
 };
 
 export const icmpPacket: RecordParser = (bytes) => {

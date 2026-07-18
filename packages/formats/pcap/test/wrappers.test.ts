@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import { pcapParserRegistry } from '../src/parsers.js';
-import { dnsQuery, ethFrame, icmpEcho, ipv4, ipv6, tcp, tlsClientHello, udp } from './build-pcap.js';
+import {
+  dnsOverTcp,
+  dnsQuery,
+  ethFrame,
+  icmpEcho,
+  ipv4,
+  ipv6,
+  tcp,
+  tlsClientHello,
+  udp,
+} from './build-pcap.js';
 
 interface BodyRange {
   bytes: Uint8Array;
@@ -54,10 +64,11 @@ function parseWith<T>(id: string, bytes: Uint8Array): T {
 }
 
 describe('pcapParserRegistry', () => {
-  it('registers all eight layer parsers', () => {
+  it('registers all nine layer parsers', () => {
     expect([...pcapParserRegistry.keys()].sort()).toEqual(
       [
         'dns_packet',
+        'dns_tcp_message',
         'ethernet_frame',
         'icmp_packet',
         'ipv4_packet',
@@ -173,23 +184,25 @@ describe('pcapParserRegistry', () => {
   it('dns wrapper flattens the first query name/type and decodes flags', () => {
     const bytes = dnsQuery({ txId: 0x1234, name: 'example.com', type: 1 });
     const root = parseWith<{
-      transaction_id: number;
-      qr: number;
-      opcode: number;
-      rcode: number;
-      qdcount: number;
-      ancount: number;
-      query_name: string | null;
-      query_type: number | null;
+      message: {
+        transaction_id: number;
+        qr: number;
+        opcode: number;
+        rcode: number;
+        qdcount: number;
+        ancount: number;
+        query_name: string | null;
+        query_type: number | null;
+      };
     }>('dns_packet', bytes);
-    expect(root.transaction_id).toBe(0x1234);
-    expect(root.qr).toBe(0);
-    expect(root.opcode).toBe(0);
-    expect(root.rcode).toBe(0);
-    expect(root.qdcount).toBe(1);
-    expect(root.ancount).toBe(0);
-    expect(root.query_name).toBe('example.com');
-    expect(root.query_type).toBe(1);
+    expect(root.message.transaction_id).toBe(0x1234);
+    expect(root.message.qr).toBe(0);
+    expect(root.message.opcode).toBe(0);
+    expect(root.message.rcode).toBe(0);
+    expect(root.message.qdcount).toBe(1);
+    expect(root.message.ancount).toBe(0);
+    expect(root.message.query_name).toBe('example.com');
+    expect(root.message.query_type).toBe(1);
   });
 
   it('icmp wrapper surfaces echo id/seq for an echo request', () => {
@@ -216,6 +229,23 @@ describe('pcapParserRegistry', () => {
     expect(root.icmp_type).toBe(3); // destination unreachable
     expect(root.echo_id).toBeNull();
     expect(root.echo_seq).toBeNull();
+  });
+
+  it('dns_tcp_message emits a message for a length-prefixed DNS query', () => {
+    const bytes = dnsOverTcp({ txId: 0x1234, name: 'a.ru', type: 1 });
+    const { root } = pcapParserRegistry.get('dns_tcp_message')!(bytes);
+    expect(root.message.query_name).toBe('a.ru');
+  });
+
+  it('dns_tcp_message emits nothing for an empty/handshake segment', () => {
+    expect(pcapParserRegistry.get('dns_tcp_message')!(new Uint8Array(0)).root).toEqual({});
+    expect(pcapParserRegistry.get('dns_tcp_message')!(new Uint8Array([0, 0])).root).toEqual({});
+  });
+
+  it('dns_tcp_message emits nothing when the message spans segments (over-length prefix)', () => {
+    const full = dnsOverTcp({ txId: 1, name: 'a.ru', type: 1 });
+    const truncated = full.subarray(0, full.length - 1); // declared length now exceeds available
+    expect(pcapParserRegistry.get('dns_tcp_message')!(truncated).root).toEqual({});
   });
 
   it('tls wrapper emits client_hello only for a ClientHello and extracts SNI', () => {

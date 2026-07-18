@@ -40,7 +40,7 @@ tables:
       dst_port: { expr: _.dst_port, type: uint16 }
       length: { expr: _.length, type: uint16 }
   - name: dns
-    rows: $
+    rows: $.message
     key: dns_id
     parent_key: { table: packets, column: packet_id }
     columns:
@@ -92,6 +92,7 @@ dissect:
     payload: _.body
     chain:
       - { when: _.dst_port == 443 or _.src_port == 443, parser: tls_client_hello, table: tls }
+      - { when: _.dst_port == 53 or _.src_port == 53, parser: dns_tcp_message, table: dns }
   - from: udp_datagram
     payload: _.body
     chain:

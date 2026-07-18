@@ -335,6 +335,18 @@ export function dnsQuery({ txId, name, type }: DnsQueryOptions): Uint8Array {
   return bytes;
 }
 
+/**
+ * Builds a single-segment DNS-over-TCP payload: a 2-byte BE length prefix
+ * followed by a `dnsQuery` message, per RFC 1035 §4.2.2.
+ */
+export function dnsOverTcp(opts: DnsQueryOptions): Uint8Array {
+  const msg = dnsQuery(opts);
+  const out = new Uint8Array(2 + msg.length);
+  new DataView(out.buffer).setUint16(0, msg.length, false); // 2-byte BE length prefix
+  out.set(msg, 2);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // ICMP echo (network/icmp_packet.ksy)
 // ---------------------------------------------------------------------------
