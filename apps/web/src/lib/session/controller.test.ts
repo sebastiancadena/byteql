@@ -1,6 +1,13 @@
-import type { ParseResult, TableTransfer } from '@byteql/core';
+import {
+  ipcToTable,
+  tableToIpc,
+  type BatchTransfer,
+  type FormatPack,
+  type ParseProgress as PackProgress,
+  type ParseResult,
+  type TableTransfer,
+} from '@byteql/core';
 import type { ByteqlDatabase, QueryResult } from '@byteql/db';
-import type { MidiParseProgress } from '@byteql/midi';
 import { tableFromArrays, type Table } from 'apache-arrow';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -30,9 +37,10 @@ const deferred = <T>(): Deferred<T> => {
   return { promise, resolve, reject };
 };
 
+// 8 ticks: the worker's run() awaits nextBatch() in a loop (one microtask hop per batch, plus the
+// terminal null) before its .then() posts a message, which 2 ticks no longer covers.
 const flush = async (): Promise<void> => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
 };
 
 const transfer = (name: string, values: readonly number[]): TableTransfer => ({
@@ -506,29 +514,57 @@ class FakeWorkerScope implements ParseWorkerScope {
   }
 }
 
+const arrowIpc = (values: readonly number[]): Uint8Array => tableToIpc(tableFromArrays({ value: values }));
+
+const fakePack = (overrides: Partial<FormatPack> = {}): FormatPack => ({
+  id: 'fake_format',
+  title: 'Fake format',
+  probe: () => 1,
+  schemas: () => [],
+  queries: [],
+  open: () => ({
+    nextBatch: async () => null,
+    finish: () => ({ issues: [], capabilities: {} }),
+  }),
+  ...overrides,
+});
+
 describe('parse worker boundary', () => {
-  it('rejects non-MIDI headers before invoking the parser', async () => {
+  it('rejects unrecognized formats before opening a source', async () => {
     const scope = new FakeWorkerScope();
-    const parse = vi.fn();
-    installParseWorker(scope, parse);
+    const open = vi.fn(fakePack().open);
+    const pack = fakePack({ probe: () => null, open });
+    installParseWorker(scope, [pack]);
     scope.receive({ type: 'parse', taskId: 1, name: 'bad.mid', bytes: new Uint8Array([1, 2, 3, 4]) });
     await flush();
 
-    expect(parse).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
     expect(scope.posts.at(-1)?.message).toMatchObject({
       type: 'error',
       taskId: 1,
-      code: 'INVALID_MIDI_HEADER',
+      code: 'UNRECOGNIZED_FORMAT',
       stage: 'framing',
     });
   });
 
   it('transfers every distinct IPC ArrayBuffer with the completed result', async () => {
     const scope = new FakeWorkerScope();
-    const result = parseResult('events');
-    const second = transfer('tempo', [4, 5]);
-    const parse = vi.fn().mockResolvedValue({ ...result, tables: [...result.tables, second] });
-    installParseWorker(scope, parse);
+    const eventsIpc = arrowIpc([1, 2, 3]);
+    const tempoIpc = arrowIpc([4, 5]);
+    const batches: BatchTransfer[] = [
+      { table: 'events', ipc: eventsIpc, rowCount: 3 },
+      { table: 'tempo', ipc: tempoIpc, rowCount: 2 },
+    ];
+    const pack = fakePack({
+      open: () => {
+        let index = 0;
+        return {
+          nextBatch: async () => (index < batches.length ? batches[index++]! : null),
+          finish: () => ({ issues: [], capabilities: {} }),
+        };
+      },
+    });
+    installParseWorker(scope, [pack]);
 
     scope.receive({
       type: 'parse',
@@ -539,12 +575,66 @@ describe('parse worker boundary', () => {
     await flush();
 
     const completed = scope.posts.find((post) => (post.message as { type?: string }).type === 'result');
-    expect(completed?.transfer).toEqual([result.tables[0]!.ipc.buffer, second.ipc.buffer]);
+    expect(completed?.transfer).toEqual([eventsIpc.buffer, tempoIpc.buffer]);
   });
 
-  it('forwards only progress reported at real MIDI orchestrator boundaries', async () => {
+  it('merges multiple batches for the same table into one transfer, in arrival order', async () => {
     const scope = new FakeWorkerScope();
-    const progress: MidiParseProgress[] = [
+    const firstBatch = tableToIpc(
+      tableFromArrays({ id: Int32Array.from([1, 2]), value: Int32Array.from([10, 20]) }),
+    );
+    const secondBatch = tableToIpc(
+      tableFromArrays({ id: Int32Array.from([3]), value: Int32Array.from([30]) }),
+    );
+    const batches: BatchTransfer[] = [
+      { table: 'notes', ipc: firstBatch, rowCount: 2 },
+      { table: 'notes', ipc: secondBatch, rowCount: 1 },
+    ];
+    const pack = fakePack({
+      schemas: () => [
+        {
+          name: 'notes',
+          columns: [
+            { name: 'id', type: 'int32', nullable: false },
+            { name: 'value', type: 'int32', nullable: true },
+          ],
+        },
+      ],
+      open: () => {
+        let index = 0;
+        return {
+          nextBatch: async () => (index < batches.length ? batches[index++]! : null),
+          finish: () => ({ issues: [], capabilities: {} }),
+        };
+      },
+    });
+    installParseWorker(scope, [pack]);
+
+    scope.receive({
+      type: 'parse',
+      taskId: 12,
+      name: 'demo.mid',
+      bytes: new Uint8Array([0x4d, 0x54, 0x68, 0x64]),
+    });
+    await flush();
+
+    const completed = scope.posts.find((post) => (post.message as { type?: string }).type === 'result');
+    const result = (completed?.message as { result?: ParseResult } | undefined)?.result;
+    const notes = result?.tables.find((table) => table.name === 'notes');
+
+    expect(notes?.rowCount).toBe(3);
+    expect(notes?.columns).toEqual([
+      { name: 'id', type: 'Int32', nullable: false },
+      { name: 'value', type: 'Int32', nullable: true },
+    ]);
+    const merged = ipcToTable(notes!.ipc);
+    expect(merged.getChild('id')?.toArray()).toEqual(Int32Array.from([1, 2, 3]));
+    expect(merged.getChild('value')?.toArray()).toEqual(Int32Array.from([10, 20, 30]));
+  });
+
+  it('forwards progress reported by the format pack', async () => {
+    const scope = new FakeWorkerScope();
+    const progress: PackProgress[] = [
       { stage: 'normalizing', completed: 0, total: 1, label: 'Normalizing MIDI tracks' },
       { stage: 'normalizing', completed: 1, total: 1, label: 'Normalized track 1 of 1' },
       { stage: 'parsing', completed: 0, total: 1, label: 'Parsing MIDI tracks' },
@@ -552,10 +642,16 @@ describe('parse worker boundary', () => {
       { stage: 'projecting', completed: 0, total: 1, label: 'Projecting MIDI tracks' },
       { stage: 'projecting', completed: 1, total: 1, label: 'Processed track 1 of 1' },
     ];
-    installParseWorker(scope, async (_bytes, _signal, onProgress) => {
-      for (const update of progress) onProgress?.(update);
-      return parseResult('events');
+    const pack = fakePack({
+      open: (_bytes, opts) => ({
+        nextBatch: async () => {
+          for (const update of progress) opts.onProgress?.(update);
+          return null;
+        },
+        finish: () => ({ issues: [], capabilities: {} }),
+      }),
     });
+    installParseWorker(scope, [pack]);
 
     scope.receive({
       type: 'parse',
@@ -575,10 +671,13 @@ describe('parse worker boundary', () => {
   it('honors a cancellation that arrives before its parse request', async () => {
     const scope = new FakeWorkerScope();
     let signal: AbortSignal | undefined;
-    installParseWorker(scope, (_bytes, receivedSignal) => {
-      signal = receivedSignal;
-      return Promise.resolve(parseResult('events'));
+    const pack = fakePack({
+      open: (_bytes, opts) => {
+        signal = opts.signal;
+        return { nextBatch: async () => null, finish: () => ({ issues: [], capabilities: {} }) };
+      },
     });
+    installParseWorker(scope, [pack]);
 
     scope.receive({ type: 'cancel', taskId: 3 });
     scope.receive({
@@ -595,12 +694,15 @@ describe('parse worker boundary', () => {
 
   it('aborts a task when its cancellation message arrives', async () => {
     const scope = new FakeWorkerScope();
-    const operation = deferred<ParseResult>();
+    const operation = deferred<BatchTransfer | null>();
     let signal: AbortSignal | undefined;
-    installParseWorker(scope, (_bytes, receivedSignal) => {
-      signal = receivedSignal;
-      return operation.promise;
+    const pack = fakePack({
+      open: (_bytes, opts) => {
+        signal = opts.signal;
+        return { nextBatch: () => operation.promise, finish: () => ({ issues: [], capabilities: {} }) };
+      },
     });
+    installParseWorker(scope, [pack]);
 
     scope.receive({
       type: 'parse',

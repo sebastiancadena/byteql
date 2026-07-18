@@ -72,8 +72,9 @@ try {
   if (!result.cancellation.startsWith('AbortError:')) throw new Error(result.cancellation);
   if (!result.crash.includes('worker stopped unexpectedly')) throw new Error(result.crash);
   if (!result.messageError.includes('worker stopped unexpectedly')) throw new Error(result.messageError);
-  if (!result.initial.includes('Standard MIDI File header')) throw new Error(result.initial);
-  if (!result.recreated.includes('Standard MIDI File header')) throw new Error(result.recreated);
+  if (!result.initial.includes('No registered format recognizes this file')) throw new Error(result.initial);
+  if (!result.recreated.includes('No registered format recognizes this file'))
+    throw new Error(result.recreated);
 
   await page.close();
 
