@@ -7,7 +7,8 @@ const types = { item_id: 'int64', value: 'int32' } as const;
 describe('TableBatchBuilder', () => {
   it('seals a record batch at the flush threshold', () => {
     const builder = new TableBatchBuilder('items', types, { flushRowThreshold: 2 });
-    for (let index = 0; index < 5; index += 1) builder.appendRow({ item_id: BigInt(index + 1), value: index });
+    for (let index = 0; index < 5; index += 1)
+      builder.appendRow({ item_id: BigInt(index + 1), value: index });
     const table = builder.finish();
     expect(builder.rowCount).toBe(5);
     expect(table.numRows).toBe(5);

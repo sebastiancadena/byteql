@@ -19,7 +19,11 @@ export class TableBatchBuilder {
   #chunks: Table[] = [];
   #rowCount = 0;
 
-  constructor(name: string, types: Readonly<Record<string, ArrowTypeName>>, options: BatchBuilderOptions = {}) {
+  constructor(
+    name: string,
+    types: Readonly<Record<string, ArrowTypeName>>,
+    options: BatchBuilderOptions = {},
+  ) {
     this.#name = name;
     this.#types = types;
     this.#columnNames = Object.keys(types);
