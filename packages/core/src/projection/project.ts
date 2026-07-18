@@ -1,4 +1,10 @@
-import { compileAnchor, isAnchorPrefix, traverseAnchor, type AnchorMatch, type CompiledAnchor } from './anchors.js';
+import {
+  compileAnchor,
+  isAnchorPrefix,
+  traverseAnchor,
+  type AnchorMatch,
+  type CompiledAnchor,
+} from './anchors.js';
 import {
   ProjectionCompileError,
   compileExpression,
@@ -320,7 +326,15 @@ export const compileProjection = (
   // by walking from-ancestors of the dissect entry, so the key value exists at runtime.
   // Ancestors are computed as a fixpoint over the (now acyclic) from -> parser graph: a parser
   // id's ancestors are the union, over every entry whose chain contains it, of that entry's
-  // ancestors plus the table (if any) that the matching chain link itself feeds.
+  // ancestors, plus that entry's `from` when it is a table (folded in by ancestorsOfEntry below).
+  // A chain link's own table is deliberately NOT added to its parser's ancestor set: at runtime,
+  // dissect entries keyed off a PARSER id run in fireDissect's `deeper` loop with the OUTER
+  // keysByTable, so they never observe the row key of a sibling link's table. Admitting a
+  // chain-fed table here would accept specs whose parent_key the runtime can only fill with
+  // null. The still-legitimate way to parent a table onto an intermediate table's per-row key is
+  // to chain `from: <table>` instead of `from: <parser>` — chains fired from emitRow extend
+  // keysByTable with that table's own key before dispatching, so that table (and its ancestors)
+  // are genuinely reachable.
   const ancestorsByParser = new Map<string, Set<string>>();
   const ancestorsOfEntry = (entry: CompiledDissect): ReadonlySet<string> => {
     if (tableByName.has(entry.from)) return new Set([entry.from]);
@@ -335,7 +349,6 @@ export const compileProjection = (
         const existing = ancestorsByParser.get(link.parserId) ?? new Set<string>();
         const before = existing.size;
         for (const ancestor of entryAncestors) existing.add(ancestor);
-        if (link.table) existing.add(link.table.name);
         if (existing.size !== before) changed = true;
         ancestorsByParser.set(link.parserId, existing);
       }
@@ -485,7 +498,12 @@ const asPayloadRange = (value: unknown): PayloadRange | null => {
   if (value === null || typeof value !== 'object') return null;
   const bytes = (value as { bytes?: unknown }).bytes;
   const start = (value as { start?: unknown }).start;
-  if (!(bytes instanceof Uint8Array) || typeof start !== 'number' || !Number.isSafeInteger(start) || start < 0) {
+  if (
+    !(bytes instanceof Uint8Array) ||
+    typeof start !== 'number' ||
+    !Number.isSafeInteger(start) ||
+    start < 0
+  ) {
     return null;
   }
   return { bytes, start };
@@ -557,18 +575,20 @@ const projectChildTable = (
     },
   };
   const parentKeyValue = keysByTable.get(table.parentKey!.table) ?? null;
+  const runtime = emitContext.runtimes.get(table.name)!;
+  // Each dissected payload is a fresh document: every scope ancestor for this table's state
+  // registers has just advanced (a new parent row fired this dissect), so state must restart
+  // from `init` on the first match, matching the DSL's scope-reset semantics. `nextKey` is left
+  // untouched — keys stay globally monotonic per table across every dissected payload.
+  for (const register of table.state) {
+    runtime.scopeIndexes.delete(register.name);
+    delete runtime.stateValues[register.name];
+  }
   for (const match of traverseAnchor(table.rows, parsed.root)) {
-    emitRow(
-      table,
-      emitContext.runtimes.get(table.name)!,
-      match,
-      parsed.root,
-      resolver,
-      emitContext.sink,
-      keysByTable,
-      emitContext,
-      { name: table.parentKey!.column, value: parentKeyValue },
-    );
+    emitRow(table, runtime, match, parsed.root, resolver, emitContext.sink, keysByTable, emitContext, {
+      name: table.parentKey!.column,
+      value: parentKeyValue,
+    });
   }
 };
 

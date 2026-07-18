@@ -143,4 +143,32 @@ dissect:
       /PROJECTION_PARENT_KEY_INVALID/u,
     );
   });
+
+  it('rejects a parent_key on a table only reachable through a chain-fed sibling, not through a parser id (rule 7 matches runtime reachability)', () => {
+    // `inner` is chain-fed via `inner_parser` (from: records), and `deep` chains off
+    // `from: inner_parser` itself. At runtime, fireDissect's `deeper` loop for entries keyed
+    // off a parser id runs with the OUTER keysByTable, which never gained inner's row key
+    // (only chains keyed `from: inner` — a table — would extend keysByTable with it via
+    // emitRow). So deep.parent_key pointing at inner must be rejected at compile time, even
+    // though inner is fed by the same dissect graph.
+    const yaml =
+      baseYaml.replace(
+        'dissect:',
+        `  - name: deep
+    rows: $.parts[*]
+    key: deep_id
+    parent_key: { table: inner, column: inner_id }
+    columns:
+      flag: { expr: '_.flag', type: bool }
+dissect:`,
+      ) +
+      `  - from: inner_parser
+    payload: _.trailer
+    chain:
+      - { when: 'true', parser: deep_parser, table: deep }
+`;
+    expect(() => compileProjection(parseProjectionSpec(yaml), registry)).toThrowError(
+      /PROJECTION_PARENT_KEY_INVALID/u,
+    );
+  });
 });
