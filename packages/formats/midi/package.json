@@ -11,9 +11,10 @@
   },
   "scripts": {
     "compile:ksy": "node scripts/compile.mjs",
-    "build": "pnpm compile:ksy && tsc -p tsconfig.json",
-    "check": "pnpm compile:ksy && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm compile:ksy && vitest && pnpm test:built",
+    "generate:pack": "node scripts/generate-pack.mjs",
+    "build": "pnpm compile:ksy && pnpm generate:pack && tsc -p tsconfig.json",
+    "check": "pnpm --filter @byteql/core build && pnpm compile:ksy && pnpm generate:pack && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm --filter @byteql/core build && pnpm compile:ksy && pnpm generate:pack && vitest && pnpm test:built",
     "test:built": "pnpm build && node test/built-runtime.mjs"
   },
   "dependencies": {

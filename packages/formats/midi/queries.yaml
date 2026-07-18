@@ -1,0 +1,141 @@
+version: '0.1'
+format: standard_midi_file
+queries:
+  - id: overview
+    title: Table overview
+    kind: grid
+    sql: |
+      select 'header' as table_name, count(*) as row_count from header
+      union all select 'events', count(*) from events
+      union all select 'tempo', count(*) from tempo
+      union all select 'errors', count(*) from errors
+      order by table_name
+      limit 100;
+
+  - id: play_all
+    title: Play all notes
+    kind: playback
+    sql: |
+      with tempo_points as (
+        select tick, us_per_quarter, tempo_id
+        from tempo
+        where track = 0
+        union all
+        select 0, 500000, 0
+        where not exists (select 1 from tempo where track = 0 and tick = 0)
+      ), deduped as (
+        select tick, us_per_quarter
+        from tempo_points
+        qualify row_number() over (partition by tick order by tempo_id desc) = 1
+      ), boundaries as (
+        select tick,
+               us_per_quarter,
+               lag(tick, 1, 0) over (order by tick) as previous_tick,
+               lag(us_per_quarter, 1, 500000) over (order by tick) as previous_tempo
+        from deduped
+      ), tempo_map as (
+        select tick,
+               us_per_quarter,
+               sum((tick - previous_tick) * previous_tempo / h.division / 1000000.0)
+                 over (order by tick rows unbounded preceding) as seconds_at_tick
+        from boundaries
+        cross join header h
+      )
+      select tm.seconds_at_tick
+               + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0 as seconds,
+             e.note, e.velocity, e.kind, e.channel
+      from events e
+      asof join tempo_map tm on e.tick >= tm.tick
+      cross join header h
+      where e.note is not null
+      order by seconds, e.event_id
+      limit 100000;
+
+  - id: drums
+    title: Percussion channel
+    kind: playback
+    sql: |
+      with tempo_points as (
+        select tick, us_per_quarter, tempo_id
+        from tempo
+        where track = 0
+        union all
+        select 0, 500000, 0
+        where not exists (select 1 from tempo where track = 0 and tick = 0)
+      ), deduped as (
+        select tick, us_per_quarter
+        from tempo_points
+        qualify row_number() over (partition by tick order by tempo_id desc) = 1
+      ), boundaries as (
+        select tick,
+               us_per_quarter,
+               lag(tick, 1, 0) over (order by tick) as previous_tick,
+               lag(us_per_quarter, 1, 500000) over (order by tick) as previous_tempo
+        from deduped
+      ), tempo_map as (
+        select tick,
+               us_per_quarter,
+               sum((tick - previous_tick) * previous_tempo / h.division / 1000000.0)
+                 over (order by tick rows unbounded preceding) as seconds_at_tick
+        from boundaries
+        cross join header h
+      )
+      select tm.seconds_at_tick
+               + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0 as seconds,
+             e.note, e.velocity, e.kind, e.channel
+      from events e
+      asof join tempo_map tm on e.tick >= tm.tick
+      cross join header h
+      where e.note is not null and e.channel = 9
+      order by seconds, e.event_id
+      limit 100000;
+
+  - id: bassline
+    title: Low notes
+    kind: playback
+    sql: |
+      with tempo_points as (
+        select tick, us_per_quarter, tempo_id
+        from tempo
+        where track = 0
+        union all
+        select 0, 500000, 0
+        where not exists (select 1 from tempo where track = 0 and tick = 0)
+      ), deduped as (
+        select tick, us_per_quarter
+        from tempo_points
+        qualify row_number() over (partition by tick order by tempo_id desc) = 1
+      ), boundaries as (
+        select tick,
+               us_per_quarter,
+               lag(tick, 1, 0) over (order by tick) as previous_tick,
+               lag(us_per_quarter, 1, 500000) over (order by tick) as previous_tempo
+        from deduped
+      ), tempo_map as (
+        select tick,
+               us_per_quarter,
+               sum((tick - previous_tick) * previous_tempo / h.division / 1000000.0)
+                 over (order by tick rows unbounded preceding) as seconds_at_tick
+        from boundaries
+        cross join header h
+      )
+      select tm.seconds_at_tick
+               + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0 as seconds,
+             e.note, e.velocity, e.kind, e.channel
+      from events e
+      asof join tempo_map tm on e.tick >= tm.tick
+      cross join header h
+      where e.note is not null and e.note < 48
+      order by seconds, e.event_id
+      limit 100000;
+
+  - id: note_histogram
+    title: Note histogram
+    kind: grid
+    sql: |
+      select note, count(*) as event_count
+      from events
+      where kind = 'note_on' and note is not null
+      group by note
+      order by event_count desc, note
+      limit 128;

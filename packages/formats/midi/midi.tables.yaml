@@ -1,0 +1,81 @@
+version: '0.1'
+format: standard_midi_file
+tables:
+  - name: header
+    rows: $.hdr
+    key: header_id
+    columns:
+      format: { expr: '_.format', type: uint16 }
+      num_tracks: { expr: '_.num_tracks', type: uint16 }
+      division: { expr: '_.division', type: int16 }
+
+  - name: events
+    rows: $.tracks[*].events.event[*]
+    key: event_id
+    state:
+      tick:
+        scope: $.tracks[*]
+        init: 0
+        update: 'tick + _.v_time.value'
+    columns:
+      track: { expr: '_index(0)', type: int32 }
+      event_index: { expr: '_index(1)', type: int32 }
+      delta_time: { expr: '_.v_time.value', type: int64 }
+      tick: { expr: 'tick', type: int64 }
+      kind:
+        type: utf8
+        expr: >-
+          (_.event_header & 240) == 128 ? "note_off" :
+          (_.event_header & 240) == 144 ? (_.event_body.velocity == 0 ? "note_off" : "note_on") :
+          (_.event_header & 240) == 160 ? "polyphonic_pressure" :
+          (_.event_header & 240) == 176 ? "controller" :
+          (_.event_header & 240) == 192 ? "program_change" :
+          (_.event_header & 240) == 208 ? "channel_pressure" :
+          (_.event_header & 240) == 224 ? "pitch_bend" :
+          _.event_header == 255 ? "meta" : "sysex"
+      channel:
+        expr: '_.event_header & 15'
+        type: uint8
+        when: '(_.event_header & 240) != 240'
+      note:
+        expr: '_.event_body.note'
+        type: uint8
+        when: '(_.event_header & 240) == 128 or (_.event_header & 240) == 144 or (_.event_header & 240) == 160'
+      velocity:
+        expr: '_.event_body.velocity'
+        type: uint8
+        when: '(_.event_header & 240) == 128 or (_.event_header & 240) == 144'
+      controller:
+        expr: '_.event_body.controller'
+        type: uint8
+        when: '(_.event_header & 240) == 176'
+      value:
+        expr: '_.event_body.value'
+        type: uint8
+        when: '(_.event_header & 240) == 176'
+      program:
+        expr: '_.event_body.program'
+        type: uint8
+        when: '(_.event_header & 240) == 192'
+      pressure:
+        expr: '_.event_body.pressure'
+        type: uint8
+        when: '(_.event_header & 240) == 160 or (_.event_header & 240) == 208'
+      bend:
+        expr: '(_.event_body.b2 << 7) + _.event_body.b1 - 16384'
+        type: int16
+        when: '(_.event_header & 240) == 224'
+
+  - name: tempo
+    rows: $.tracks[*].events.event[*]
+    where: '_.event_header == 255 and _.meta_event_body.meta_type == 81'
+    key: tempo_id
+    state:
+      tick:
+        scope: $.tracks[*]
+        init: 0
+        update: 'tick + _.v_time.value'
+    columns:
+      track: { expr: '_index(0)', type: int32 }
+      tick: { expr: 'tick', type: int64 }
+      us_per_quarter: { expr: 'u24be(_.meta_event_body.body)', type: uint32 }

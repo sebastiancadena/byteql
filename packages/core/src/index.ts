@@ -1,5 +1,8 @@
 export const BYTEQL_CORE_VERSION = '0.1' as const;
 
+export { ipcToTable, projectedTableToArrow, tableToIpc } from './arrow/build.js';
+export type { ParseIssue, ParseResult, TableTransfer } from './protocol.js';
+
 export { ProjectionCompileError, compileExpression, evaluateExpression } from './projection/expression.js';
 export type {
   CompiledExpression,
