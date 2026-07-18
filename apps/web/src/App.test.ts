@@ -23,6 +23,7 @@ const { database, databaseDispose, initialize, dispose, createBrowserDatabase, S
             tables: [],
             issues: [],
             queries: [],
+            capabilities: null,
             sql: '',
             result: null,
             queryElapsedMs: null,

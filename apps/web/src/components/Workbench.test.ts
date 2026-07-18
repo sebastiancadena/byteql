@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorView } from 'codemirror';
 import { midiQueries } from '@byteql/midi';
 
-import type { SessionState } from '../lib/session/state.js';
+import { initialSessionState, type SessionState } from '../lib/session/state.js';
+import type { AudioEngine } from '../lib/viewers/tone-engine.js';
 import Workbench from './Workbench.svelte';
 
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
@@ -21,6 +22,14 @@ const result = tableFromArrays({
   optional: [null, 'available'],
   _src_start: [12n, 28n],
   _src_end: [20n, 41n],
+});
+
+const audioResult = tableFromArrays({
+  seconds: [0.5, 1.25],
+  note: [60, 60],
+  velocity: [64, 0],
+  kind: ['note_on', 'note_off'],
+  channel: [0, 0],
 });
 
 const readyState = (): SessionState => ({
@@ -42,6 +51,7 @@ const readyState = (): SessionState => ({
   ],
   issues: [],
   queries,
+  capabilities: { audio: { enabled: true, reason: null } },
   sql: 'select * from records limit 100',
   result,
   queryElapsedMs: 4.2,
@@ -78,6 +88,16 @@ class FakeController {
     for (const listener of this.listeners) listener(state);
   }
 }
+
+const fakeAudioEngine = (): AudioEngine => ({
+  load: vi.fn(async () => undefined),
+  play: vi.fn(async () => undefined),
+  pause: vi.fn(),
+  stop: vi.fn(),
+  seek: vi.fn(),
+  positionSeconds: vi.fn(() => 0),
+  dispose: vi.fn(),
+});
 
 const queries = [
   {
@@ -255,6 +275,67 @@ describe('Inspector Workbench', () => {
         .getAllByRole('button')
         .map((button) => button.textContent?.trim()),
     ).toEqual(midiQueries.map((query) => `↗ ${query.title}`));
+  });
+
+  it('selects the pack play_all query through the saved-query path', async () => {
+    const controller = new FakeController({ ...readyState(), queries: midiQueries });
+    render(Workbench, { controller });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Play all notes' }));
+    expect(textOf(screen.getByRole('textbox', { name: 'SQL query' }))).toContain('as seconds');
+    await fireEvent.click(screen.getByRole('button', { name: 'Run query' }));
+    expect(controller.runQuery).toHaveBeenCalledWith(midiQueries.find(({ id }) => id === 'play_all')!.sql);
+  });
+
+  it('offers the trusted audio viewer only for compatible enabled results', async () => {
+    const enabled = new FakeController({ ...readyState(), result: audioResult });
+    const enabledView = render(Workbench, { controller: enabled });
+    await fireEvent.click(screen.getByRole('button', { name: 'Open in…' }));
+    expect(screen.getByRole('menuitem', { name: 'Audio playback' })).toBeTruthy();
+    enabledView.unmount();
+
+    const aggregate = new FakeController(readyState());
+    const aggregateView = render(Workbench, { controller: aggregate });
+    expect(screen.queryByRole('button', { name: 'Open in…' })).toBeNull();
+    aggregateView.unmount();
+
+    const smpte = new FakeController({
+      ...readyState(),
+      result: audioResult,
+      capabilities: {
+        audio: { enabled: false, reason: 'SMPTE time division is not supported.' },
+      },
+    });
+    render(Workbench, { controller: smpte });
+    expect(screen.queryByRole('button', { name: 'Open in…' })).toBeNull();
+  });
+
+  it('disposes the contextual viewer on close, result replacement, and session replacement', async () => {
+    const engines = [fakeAudioEngine(), fakeAudioEngine(), fakeAudioEngine()];
+    const engineFactory = vi.fn(() => engines.shift()!);
+    const controller = new FakeController({ ...readyState(), result: audioResult });
+    render(Workbench, { controller, audioEngineFactory: engineFactory });
+
+    async function openAudio(): Promise<AudioEngine> {
+      await fireEvent.click(screen.getByRole('button', { name: 'Open in…' }));
+      await fireEvent.click(screen.getByRole('menuitem', { name: 'Audio playback' }));
+      expect(await screen.findByRole('heading', { name: 'Audio playback' })).toBeTruthy();
+      return engineFactory.mock.results.at(-1)!.value;
+    }
+
+    const closed = await openAudio();
+    await fireEvent.click(screen.getByRole('button', { name: 'Close audio viewer' }));
+    expect(closed.dispose).toHaveBeenCalledOnce();
+
+    const replaced = await openAudio();
+    controller.publish({ ...controller.state, result: tableFromArrays({ value: [1] }) });
+    await vi.waitFor(() => expect(replaced.dispose).toHaveBeenCalledOnce());
+
+    controller.publish({ ...controller.state, result: audioResult });
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Open in…' })).toBeTruthy());
+    const sessionReplaced = await openAudio();
+    controller.publish({ ...initialSessionState, phase: 'opening', source: { name: 'next.mid', size: 8 } });
+    await vi.waitFor(() => expect(sessionReplaced.dispose).toHaveBeenCalledOnce());
   });
 
   it('uses desktop landmarks without hidden tab widgets and removes its media listener', () => {

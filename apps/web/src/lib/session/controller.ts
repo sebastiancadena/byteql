@@ -235,6 +235,7 @@ export class SessionController {
       tables: result.tables,
       issues: result.issues,
       queries: result.queries,
+      capabilities: result.capabilities,
     });
   }
 

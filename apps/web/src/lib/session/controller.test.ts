@@ -151,6 +151,7 @@ describe('SessionController', () => {
     parser.calls[0]!.operation.resolve(parseResult('events'));
     await opening;
     expect(controller.getState().queries).toEqual(parseResult('events').queries);
+    expect(controller.getState().capabilities).toEqual(parseResult('events').capabilities);
   });
 
   it('cancels parse, query, and viewer immediately and ignores stale replacement results', async () => {

@@ -972,8 +972,15 @@ git commit -m "feat(web): build format-neutral query workbench"
 - Create: `apps/web/src/components/ViewerMenu.svelte`
 - Create: `apps/web/src/components/AudioViewer.svelte`
 - Create: `apps/web/src/components/AudioViewer.test.ts`
+- Modify: `apps/web/src/App.test.ts`
+- Modify: `apps/web/scripts/check-worker-privacy.mjs`
 - Modify: `apps/web/src/components/Inspector.svelte`
 - Modify: `apps/web/src/components/Workbench.svelte`
+- Modify: `apps/web/src/components/Workbench.test.ts`
+- Modify: `apps/web/src/lib/session/controller.ts`
+- Modify: `apps/web/src/lib/session/controller.test.ts`
+- Modify: `apps/web/src/lib/session/state.ts`
+- Modify: `apps/web/src/lib/session/state.test.ts`
 
 **Interfaces:**
 - Produces: `ViewerCapability { id, label, accepts, component }`.
@@ -1029,7 +1036,7 @@ Run: `pnpm --filter @byteql/web test -- --run src/lib/viewers src/components/Aud
 Expected: all capability and audio tests pass without creating a real `AudioContext`.
 
 ```bash
-git add apps/web/src/lib/viewers apps/web/src/components/ViewerMenu.svelte apps/web/src/components/AudioViewer.svelte apps/web/src/components/AudioViewer.test.ts apps/web/src/components/Inspector.svelte apps/web/src/components/Workbench.svelte
+git add apps/web/src/lib/viewers apps/web/src/components/ViewerMenu.svelte apps/web/src/components/AudioViewer.svelte apps/web/src/components/AudioViewer.test.ts apps/web/src/components/Inspector.svelte apps/web/src/components/Workbench.svelte apps/web/src/components/Workbench.test.ts apps/web/src/lib/session/controller.ts apps/web/src/lib/session/controller.test.ts apps/web/src/lib/session/state.ts apps/web/src/lib/session/state.test.ts apps/web/src/App.test.ts apps/web/scripts/check-worker-privacy.mjs docs/superpowers/plans/2026-07-17-byteql-phase-0.md
 git commit -m "feat(web): add contextual MIDI audio viewer"
 ```
 

@@ -10,6 +10,7 @@ const tables: readonly TableTransfer[] = [
 const queries: readonly PackQuery[] = [
   { id: 'overview', title: 'Overview', kind: 'grid', sql: 'select 1 limit 1;' },
 ];
+const capabilities = { audio: { enabled: false, reason: 'SMPTE timing is unsupported.' } } as const;
 
 const issue: ParseIssue = {
   stage: 'parsing',
@@ -70,19 +71,26 @@ describe('reduceSession', () => {
     state = reduceSession(state, { type: 'registering', format: { id: 'midi', title: 'MIDI' } });
     expect(state).toMatchObject({ phase: 'registering', format: { id: 'midi', title: 'MIDI' } });
 
-    state = reduceSession(state, { type: 'ready', tables, issues: [issue], queries });
+    state = reduceSession(state, { type: 'ready', tables, issues: [issue], queries, capabilities });
     expect(state).toMatchObject({
       phase: 'ready',
       tables,
       issues: [issue],
       queries,
+      capabilities,
       progress: null,
       fatalError: null,
     });
   });
 
   it('starts and completes a query while resetting selection and prior errors', () => {
-    const ready = reduceSession(initialSessionState, { type: 'ready', tables, issues: [], queries });
+    const ready = reduceSession(initialSessionState, {
+      type: 'ready',
+      tables,
+      issues: [],
+      queries,
+      capabilities,
+    });
     const querying = reduceSession(
       { ...ready, queryError: 'old error', selectedRow: 3 },
       { type: 'queryStarted', sql: 'select 1' },
@@ -160,6 +168,7 @@ describe('reduceSession', () => {
       queryError: 'old error',
       selectedRow: 2,
       fatalError: 'old fatal',
+      capabilities,
     };
 
     expect(reduceSession(previous, { type: 'opening', source: { name: 'new.mid', size: 20 } })).toEqual({
@@ -167,5 +176,6 @@ describe('reduceSession', () => {
       phase: 'opening',
       source: { name: 'new.mid', size: 20 },
     });
+    expect(initialSessionState.capabilities).toBeNull();
   });
 });

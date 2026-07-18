@@ -1,14 +1,33 @@
 <script lang="ts">
   import type { Table } from 'apache-arrow';
 
+  import type { AudioEngine } from '../lib/viewers/tone-engine.js';
+  import type { ViewerCapability } from '../lib/viewers/registry.js';
+  import ViewerMenu from './ViewerMenu.svelte';
+
   interface Props {
     table?: Table | null;
     selectedRow?: number | null;
     collapsed?: boolean;
     mobileOpen?: boolean;
+    viewers?: readonly ViewerCapability[];
+    activeViewer?: ViewerCapability | null;
+    audioEngineFactory?: (() => AudioEngine) | undefined;
+    onopenviewer?: (viewer: ViewerCapability) => void;
+    oncloseviewer?: () => void;
   }
 
-  let { table = null, selectedRow = null, collapsed = false, mobileOpen = false }: Props = $props();
+  let {
+    table = null,
+    selectedRow = null,
+    collapsed = false,
+    mobileOpen = false,
+    viewers = [],
+    activeViewer = null,
+    audioEngineFactory,
+    onopenviewer = () => undefined,
+    oncloseviewer = () => undefined,
+  }: Props = $props();
 
   const provenanceNames = new Set(['_src_start', '_src_end']);
 
@@ -34,12 +53,20 @@
       <p class="eyebrow">Context</p>
       <h2>Inspector</h2>
     </div>
-    {#if selectedRow !== null}
-      <span class="selection-chip">Row {selectedRow + 1}</span>
-    {/if}
+    <div class="inspector-actions">
+      {#if selectedRow !== null}
+        <span class="selection-chip">Row {selectedRow + 1}</span>
+      {/if}
+      {#if viewers.length > 0}
+        <ViewerMenu {viewers} onselect={onopenviewer} />
+      {/if}
+    </div>
   </div>
 
-  {#if table && selectedRow !== null}
+  {#if table && activeViewer}
+    {@const Viewer = activeViewer.component}
+    <Viewer {table} engineFactory={audioEngineFactory} onclose={oncloseviewer} />
+  {:else if table && selectedRow !== null}
     <section class="inspector-section" aria-labelledby="values-heading">
       <h3 id="values-heading">Values</h3>
       <dl class="value-list">
@@ -88,3 +115,11 @@
     </div>
   {/if}
 </aside>
+
+<style>
+  .inspector-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+</style>

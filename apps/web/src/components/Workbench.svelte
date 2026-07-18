@@ -4,6 +4,8 @@
   import { onMount } from 'svelte';
 
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
+  import type { AudioEngine } from '../lib/viewers/tone-engine.js';
+  import { compatibleViewers, type ViewerCapability } from '../lib/viewers/registry.js';
   import AppHeader from './AppHeader.svelte';
   import EmptyState from './EmptyState.svelte';
   import Explorer from './Explorer.svelte';
@@ -23,9 +25,10 @@
 
   interface Props {
     controller: ControllerPort;
+    audioEngineFactory?: () => AudioEngine;
   }
 
-  let { controller }: Props = $props();
+  let { controller, audioEngineFactory }: Props = $props();
   let session = $state<SessionState>(initialSessionState);
   let draftSql = $state('');
   let actionError = $state<string | null>(null);
@@ -36,10 +39,19 @@
   let resultsTabElement = $state<HTMLButtonElement>();
   let inspectorTabElement = $state<HTMLButtonElement>();
   let overviewSource: string | null = null;
+  let activeViewerId = $state<string | null>(null);
 
   const intakeBusy = $derived(
     ['opening', 'normalizing', 'parsing', 'projecting', 'registering'].includes(session.phase),
   );
+  const viewers = $derived.by((): ViewerCapability[] => {
+    if (!session.result || !session.capabilities) return [];
+    return compatibleViewers(
+      session.result.schema.fields.map((field) => ({ name: field.name, type: field.type.toString() })),
+      session.capabilities,
+    );
+  });
+  const activeViewer = $derived(viewers.find(({ id }) => id === activeViewerId) ?? null);
 
   onMount(() => {
     const compactQuery = window.matchMedia('(max-width: 1099px)');
@@ -50,6 +62,14 @@
     compactQuery.addEventListener('change', syncCompactMode);
 
     const unsubscribe = controller.subscribe((next) => {
+      if (
+        activeViewerId &&
+        (next.result !== session.result ||
+          next.source !== session.source ||
+          next.capabilities !== session.capabilities)
+      ) {
+        activeViewerId = null;
+      }
       session = next;
       if (next.sql && next.sql !== draftSql) draftSql = next.sql;
       if (next.phase === 'opening') overviewSource = null;
@@ -280,6 +300,11 @@
         selectedRow={session.selectedRow}
         collapsed={inspectorCollapsed}
         mobileOpen={mobileTab === 'inspector'}
+        {viewers}
+        {activeViewer}
+        {audioEngineFactory}
+        onopenviewer={(viewer) => (activeViewerId = viewer.id)}
+        oncloseviewer={() => (activeViewerId = null)}
       />
     </div>
   {/if}

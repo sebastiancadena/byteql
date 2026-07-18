@@ -88,6 +88,15 @@ try {
   await page.close();
 
   const appPage = await browser.newPage({ viewport: { width: 980, height: 800 } });
+  await appPage.addInitScript(() => {
+    globalThis.__byteqlAudioResumeCalls = 0;
+    const audioContext = globalThis.AudioContext;
+    if (!audioContext) return;
+    audioContext.prototype.resume = function resume() {
+      globalThis.__byteqlAudioResumeCalls += 1;
+      return Promise.resolve();
+    };
+  });
   const appRequests = [];
   let releaseWasm;
   const wasmBlocked = new Promise((resolve) => {
@@ -203,6 +212,35 @@ try {
     throw new Error('Compact mode did not restore Results as the sole exposed panel.');
   }
 
+  await appPage.setViewportSize({ width: 1440, height: 900 });
+  await appPage.getByRole('button', { name: 'Play all notes' }).click();
+  await appPage.getByRole('button', { name: 'Run query' }).click();
+  await appPage.getByRole('columnheader', { name: /seconds/u }).waitFor();
+  await appPage.getByRole('button', { name: 'Open in…' }).click();
+  await appPage.getByRole('menuitem', { name: 'Audio playback' }).click();
+  if ((await appPage.evaluate(() => globalThis.__byteqlAudioResumeCalls)) !== 0) {
+    throw new Error('The audio context resumed before the explicit Play gesture.');
+  }
+  await appPage.getByRole('button', { name: 'Play', exact: true }).click();
+  await appPage.waitForTimeout(100);
+  const audioResumeCalls = await appPage.evaluate(() => globalThis.__byteqlAudioResumeCalls);
+  if (audioResumeCalls < 1) {
+    const audioAlert = await appPage
+      .getByRole('alert')
+      .last()
+      .textContent()
+      .catch(() => null);
+    throw new Error(
+      `Expected the Play gesture to resume the audio context; received ${audioResumeCalls} resume calls. Viewer alert: ${audioAlert ?? 'none'}`,
+    );
+  }
+  const postInteractionRequests = appRequests.slice(readyRequestCount);
+  if (postInteractionRequests.length > 0) {
+    throw new Error(
+      `Local sample, query, inspection, or playback made requests after readiness:\n${postInteractionRequests.join('\n')}`,
+    );
+  }
+
   const editorContrast = await appPage.locator('.sql-editor').evaluate((editor) => {
     const channel = (value) => {
       const normalized = value / 255;
@@ -240,6 +278,8 @@ try {
     JSON.stringify({
       postReadyRequests: requests,
       postAppReadyRequests,
+      postInteractionRequests,
+      audioResumeCalls,
       openFileFocus,
       compactInitial,
       desktopSemantics,
