@@ -14,10 +14,19 @@ exact source bytes. Product requirements, differentiators, and the projection DS
   **"Implementation notes"** before touching the projection engine; they document the payload
   offset convention, session state semantics, non-transactional emission, and the
   `RecordSource` drain-before-finish contract.
-- **Next: Phase 1 proper** (pcap pack, streaming framer, worker streaming + DuckDB append,
-  OPFS/Parquet spill, File System Access intake, hex-provenance UI). Start with a pre-task
-  batching the review-deferred cleanups listed in `.superpowers/sdd/progress.md` (git-ignored
-  scratch; recover from `git log` and `.superpowers/sdd/task-*-report.md` if cleaned).
+- **Phase 1, slice 1 of 3 (pcap pack): shipped.** `packages/formats/pcap` — vendored + patched
+  Kaitai network `.ksy` (`network/PROVENANCE.md`, `PATCHES.md`), classic-pcap streaming framer,
+  the 8-parser dissect registry (ethernet → ipv4/ipv6 → tcp/udp → dns/icmp/tls), the
+  `pcap.tables.yaml` projection spec (7-table union + dissect graph), and the `FormatPack`
+  façade wired into the web app's probe registry, canned queries, and e2e (`pcap.spec.ts`).
+  Full-workspace gate (`pnpm -r check`, unit tests incl. MIDI regression, `check:bundle`, e2e)
+  is green.
+- **Next: Phase 1 slice 2 of 3 (scale & intake)** — worker-protocol streaming, DuckDB
+  incremental append, OPFS/Parquet spill (revisit the DuckDB hardening PRAGMAs deliberately),
+  File System Access intake with size-tiering. **Then slice 3 of 3**: hex-provenance UI and
+  polish. Start slice 2 with a pre-task batching any review-deferred cleanups listed in
+  `.superpowers/sdd/progress.md` (git-ignored scratch; recover from `git log` and
+  `.superpowers/sdd/task-*-report.md` if cleaned).
 
 ## Repo map
 
