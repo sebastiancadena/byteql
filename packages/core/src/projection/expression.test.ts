@@ -1,0 +1,225 @@
+import { describe, expect, it, vi } from 'vitest';
+import { ProjectionCompileError, compileExpression, evaluateExpression } from './expression.js';
+import { parseProjectionSpec } from './spec.js';
+
+const evaluate = (source: string, context: Parameters<typeof evaluateExpression>[1] = { _: null }) =>
+  evaluateExpression(compileExpression(source), context);
+
+describe('parseProjectionSpec', () => {
+  it('parses a valid projection with explicit Arrow types', () => {
+    const spec = parseProjectionSpec(`
+version: '0.1'
+format: midi
+tables:
+  - name: events
+    rows: $.tracks[*].events[*]
+    key: event_id
+    state:
+      tick:
+        scope: $.tracks[*]
+        init: 0
+        update: tick + _.delta_time
+    columns:
+      event_id:
+        expr: _index(1)
+        type: int64
+      delta_time:
+        expr: _.delta_time
+        type: uint32
+        when: _.delta_time != null
+`);
+
+    expect(spec).toEqual({
+      version: '0.1',
+      format: 'midi',
+      tables: [
+        {
+          name: 'events',
+          rows: '$.tracks[*].events[*]',
+          key: 'event_id',
+          state: {
+            tick: {
+              scope: '$.tracks[*]',
+              init: 0,
+              update: 'tick + _.delta_time',
+            },
+          },
+          columns: {
+            event_id: { expr: '_index(1)', type: 'int64' },
+            delta_time: {
+              expr: '_.delta_time',
+              type: 'uint32',
+              when: '_.delta_time != null',
+            },
+          },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ['wrong version', "version: '1.0'\nformat: midi\ntables: []", 'version'],
+    ['empty tables', "version: '0.1'\nformat: midi\ntables: []", 'tables'],
+    [
+      'unsafe table name',
+      "version: '0.1'\nformat: midi\ntables:\n  - name: bad-name\n    rows: $\n    key: id\n    columns:\n      id: { expr: '1', type: int32 }",
+      'tables.0.name',
+    ],
+    [
+      'unsafe key name',
+      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: bad-key\n    columns:\n      id: { expr: '1', type: int32 }",
+      'tables.0.key',
+    ],
+    [
+      'unsafe column name',
+      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    columns:\n      bad-name: { expr: '1', type: int32 }",
+      'tables.0.columns.bad-name',
+    ],
+    [
+      'unsafe state name',
+      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    state:\n      bad-name: { scope: $, init: 0, update: '1' }\n    columns:\n      id: { expr: '1', type: int32 }",
+      'tables.0.state.bad-name',
+    ],
+    [
+      'prototype-pollution state name',
+      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    state:\n      constructor: { scope: $, init: 0, update: '1' }\n    columns:\n      id: { expr: '1', type: int32 }",
+      'tables.0.state.constructor',
+    ],
+    [
+      'missing column type',
+      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    columns:\n      id: { expr: '1' }",
+      'tables.0.columns.id.type',
+    ],
+    [
+      'unknown column type',
+      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    columns:\n      id: { expr: '1', type: float64 }",
+      'tables.0.columns.id.type',
+    ],
+  ])('rejects %s with a stable structured error', (_name, yaml, path) => {
+    expect.assertions(4);
+
+    try {
+      parseProjectionSpec(yaml);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ProjectionCompileError);
+      expect(error).toMatchObject({ code: 'PROJECTION_SPEC_INVALID', path });
+      expect((error as Error).message).toContain('PROJECTION_SPEC_INVALID');
+      expect((error as Error).message).toContain(path);
+    }
+  });
+
+  it('rejects duplicate table names', () => {
+    expect(() =>
+      parseProjectionSpec(`
+version: '0.1'
+format: midi
+tables:
+  - name: rows
+    rows: $
+    key: id
+    columns:
+      id: { expr: '1', type: int32 }
+  - name: rows
+    rows: $.other
+    key: id
+    columns:
+      id: { expr: '2', type: int32 }
+`),
+    ).toThrowError(/PROJECTION_TABLE_DUPLICATE.*tables\.1\.name/);
+  });
+
+  it('wraps malformed YAML in a structured error', () => {
+    expect(() => parseProjectionSpec('version: [')).toThrowError(/PROJECTION_YAML_INVALID/);
+  });
+});
+
+describe('projection expressions', () => {
+  it('evaluates arithmetic paths and snake-case aliases', () => {
+    expect(
+      evaluate('_.delta_time * 2 + _parent.offset', {
+        _: { deltaTime: 6 },
+        _parent: { offset: 3 },
+      }),
+    ).toBe(15);
+  });
+
+  it('evaluates word booleans, unary not, ternaries, and bitwise operators', () => {
+    expect(evaluate('not false and (true or false) ? (5 << 2) | 3 : 0')).toBe(23);
+  });
+
+  it('evaluates the closed builtin set and wildcard indexes', () => {
+    expect(evaluate('_index(1)', { _: null, indexes: [4, 7] })).toBe(7);
+    expect(evaluate('_index(3)', { _: null, indexes: [4, 7] })).toBeNull();
+    expect(evaluate('enum_str(_.kind)', { _: { kind: 9 } })).toBe('9');
+    expect(evaluate('to_i(_.value)', { _: { value: '42' } })).toBe(42);
+    expect(evaluate('len(_.bytes)', { _: { bytes: new Uint8Array(3) } })).toBe(3);
+    expect(
+      evaluate('u24be(_.bytes)', {
+        _: { bytes: Uint8Array.of(0x12, 0x34, 0x56) },
+      }),
+    ).toBe(0x123456);
+  });
+
+  it('propagates null through member, arithmetic, unary, and builtin operations', () => {
+    expect(evaluate('_.missing.value + 1', { _: {} })).toBeNull();
+    expect(evaluate('_.present', { _: { present: undefined } })).toBeNull();
+    expect(evaluate('-_.missing', { _: {} })).toBeNull();
+    expect(evaluate('enum_str(_.missing)', { _: {} })).toBeNull();
+    expect(evaluate('u24be(_.short)', { _: { short: Uint8Array.of(1, 2) } })).toBeNull();
+  });
+
+  it('short-circuits boolean operators without evaluating the other operand', () => {
+    expect(evaluate('false and _.missing.value', { _: {} })).toBe(false);
+    expect(evaluate('true or _.missing.value', { _: {} })).toBe(true);
+    expect(evaluate('null or 8')).toBe(8);
+  });
+
+  it('reads declared state only from the own state map', () => {
+    const inherited = Object.create({ hidden: 5 }) as Record<string, unknown>;
+    inherited.tick = 12;
+
+    expect(evaluate('tick + 1', { _: null, state: inherited })).toBe(13);
+    expect(evaluate('hidden', { _: null, state: inherited })).toBeNull();
+  });
+
+  it('preserves bigint arithmetic and bitwise results', () => {
+    expect(evaluate('_.left + _.right', { _: { left: 7n, right: 5n } })).toBe(12n);
+    expect(evaluate('_.left << 2', { _: { left: 3n } })).toBe(12n);
+  });
+
+  it('does not read inherited members or invoke property getters', () => {
+    const getter = vi.fn(() => 9);
+    const value = Object.create({ inherited: 7 }) as Record<string, unknown>;
+    Object.defineProperty(value, 'danger', { enumerable: true, get: getter });
+
+    expect(evaluate('_.inherited', { _: value })).toBeNull();
+    expect(evaluate('_.danger', { _: value })).toBeNull();
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'value = 1',
+    '[1, 2]',
+    '{ value: 1 }',
+    '_.body.constructor("return 1")()',
+    '_.body["value"]',
+    'unknown_call(1)',
+    '_.method()',
+    'this.value',
+    'globalThis.value',
+    '__proto__',
+    '_.constructor',
+    '_.prototype',
+    '_.__proto__',
+  ])('rejects forbidden syntax: %s', (source) => {
+    expect(() => compileExpression(source)).toThrowError(
+      /EXPRESSION_(?:PARSE_ERROR|NODE_FORBIDDEN|CALL_FORBIDDEN|IDENTIFIER_FORBIDDEN|MEMBER_FORBIDDEN)/,
+    );
+  });
+
+  it('rejects executable member calls with the stable node error code', () => {
+    expect(() => compileExpression('_.body.constructor("return 1")()')).toThrowError(
+      /EXPRESSION_NODE_FORBIDDEN/,
+    );
+  });
+});
