@@ -89,6 +89,16 @@ const PCAP_TABLE_SCHEMAS: readonly TableSchema[] = [
     ['_src_start', 'uint64'],
     ['_src_end', 'uint64'],
   ]),
+  columns('icmpv6', [
+    ['icmpv6_id', 'int64'],
+    ['packet_id', 'int64'],
+    ['type', 'int16'],
+    ['code', 'int16'],
+    ['echo_id', 'uint16'],
+    ['echo_seq', 'uint16'],
+    ['_src_start', 'uint64'],
+    ['_src_end', 'uint64'],
+  ]),
   columns('tls', [
     ['tls_id', 'int64'],
     ['packet_id', 'int64'],

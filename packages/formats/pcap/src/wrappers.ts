@@ -26,6 +26,7 @@ import type { RecordParser } from '@byteql/core';
 import dnsModule from '../gen/DnsPacket.js';
 import ethernetModule from '../gen/EthernetFrame.js';
 import icmpModule from '../gen/IcmpPacket.js';
+import icmpv6Module from '../gen/Icmpv6Packet.js';
 import ipv4Module from '../gen/Ipv4Packet.js';
 import ipv6Module from '../gen/Ipv6Packet.js';
 import tcpModule from '../gen/TcpSegment.js';
@@ -36,6 +37,7 @@ import { dnsFlags, dnsName, tcpFlags, tlsSni } from './flatten.js';
 const { DnsPacket } = dnsModule;
 const { EthernetFrame } = ethernetModule;
 const { IcmpPacket } = icmpModule;
+const { Icmpv6Packet } = icmpv6Module;
 const { Ipv4Packet } = ipv4Module;
 const { Ipv6Packet } = ipv6Module;
 const { TcpSegment } = tcpModule;
@@ -189,6 +191,19 @@ export const icmpPacket: RecordParser = (bytes) => {
   return {
     root: {
       icmp_type: parsed.icmpType,
+      echo_id: echo ? echo.identifier : null,
+      echo_seq: echo ? echo.seqNum : null,
+    },
+  };
+};
+
+export const icmpv6Packet: RecordParser = (bytes) => {
+  const parsed = parse(Icmpv6Packet, bytes);
+  const echo = parsed.echo;
+  return {
+    root: {
+      icmp_type: parsed.icmpType,
+      code: parsed.code,
       echo_id: echo ? echo.identifier : null,
       echo_seq: echo ? echo.seqNum : null,
     },

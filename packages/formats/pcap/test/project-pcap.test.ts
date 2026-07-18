@@ -2,7 +2,7 @@ import { ipcToTable } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
 import { parseAndProjectPcap } from '../src/project-pcap.js';
-import { buildPcap, dnsOverTcp, dnsQuery, ethFrame, ipv4, tcp, udp } from './build-pcap.js';
+import { buildPcap, dnsOverTcp, dnsQuery, ethFrame, icmpv6Echo, ipv4, ipv6, tcp, udp } from './build-pcap.js';
 
 const dns = dnsQuery({ txId: 0x1234, name: 'a.ru', type: 1 });
 const pkt = ethFrame({
@@ -137,6 +137,23 @@ describe('parseAndProjectPcap', () => {
     const p = buildPcap({ magic: 'be_us', linktype: 1, packets: [{ tsSec: 1, tsFrac: 0, data: pkt }] });
     const result = await parseAndProjectPcap(p, new AbortController().signal);
     expect(findTable(result, 'dns').numRows).toBe(0);
+  });
+
+  it('projects an icmpv6 row for ipv6 next-header 58', async () => {
+    const pkt = ethFrame({
+      etherType: 0x86dd,
+      payload: ipv6({
+        nextHeader: 58,
+        src: '::1',
+        dst: '::2',
+        payload: icmpv6Echo({ id: 5, seq: 9 }),
+      }),
+    });
+    const p = buildPcap({ magic: 'be_us', linktype: 1, packets: [{ tsSec: 1, tsFrac: 0, data: pkt }] });
+    const result = await parseAndProjectPcap(p, new AbortController().signal);
+    const t = findTable(result, 'icmpv6');
+    expect(t.get(0)!.type).toBe(128);
+    expect(t.get(0)!.packet_id).toBe(1n); // parented to the packet
   });
 
   it('turns a poison transport payload into an errors row, not a throw', async () => {

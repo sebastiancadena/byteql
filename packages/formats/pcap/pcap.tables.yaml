@@ -58,6 +58,15 @@ tables:
       type: { expr: _.icmp_type, type: int16 }
       echo_id: { expr: _.echo_id, type: uint16 }
       echo_seq: { expr: _.echo_seq, type: uint16 }
+  - name: icmpv6
+    rows: $
+    key: icmpv6_id
+    parent_key: { table: packets, column: packet_id }
+    columns:
+      type: { expr: _.icmp_type, type: int16 }
+      code: { expr: _.code, type: int16 }
+      echo_id: { expr: _.echo_id, type: uint16 }
+      echo_seq: { expr: _.echo_seq, type: uint16 }
   - name: tls
     rows: $.client_hello
     key: tls_id
@@ -88,6 +97,7 @@ dissect:
     chain:
       - { when: _.l4_proto == 6, parser: tcp_segment, table: tcp }
       - { when: _.l4_proto == 17, parser: udp_datagram, table: udp }
+      - { when: _.l4_proto == 58, parser: icmpv6_packet, table: icmpv6 }
   - from: tcp_segment
     payload: _.body
     chain:

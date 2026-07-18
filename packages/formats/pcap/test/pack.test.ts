@@ -16,7 +16,7 @@ describe('pcapFormatPack', () => {
     expect(pcapFormatPack.probe(new Uint8Array([0xa1, 0xb2, 0xc3]))).toBeNull();
   });
 
-  it('declares schemas for all seven pcap tables plus errors', () => {
+  it('declares schemas for all eight pcap tables plus errors', () => {
     expect(pcapFormatPack.schemas().map((schema) => schema.name)).toEqual([
       'packets',
       'ip',
@@ -24,6 +24,7 @@ describe('pcapFormatPack', () => {
       'udp',
       'dns',
       'icmp',
+      'icmpv6',
       'tls',
       'errors',
     ]);

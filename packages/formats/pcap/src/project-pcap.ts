@@ -48,6 +48,7 @@ export const pcapNullability: Readonly<Record<string, ReadonlySet<string>>> = {
   udp: new Set(['_src_start', '_src_end']),
   dns: new Set(['_src_start', '_src_end', 'query_name', 'query_type']),
   icmp: new Set(['_src_start', '_src_end', 'echo_id', 'echo_seq']),
+  icmpv6: new Set(['_src_start', '_src_end', 'echo_id', 'echo_seq']),
   tls: new Set(['_src_start', '_src_end', 'sni']),
   errors: new Set(['record', '_src_start', '_src_end']),
 };

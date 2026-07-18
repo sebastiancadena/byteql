@@ -142,6 +142,22 @@ declare module '*IcmpPacket.js' {
   export default generatedModule;
 }
 
+declare module '*Icmpv6Packet.js' {
+  export interface Icmpv6Echo {
+    identifier: number;
+    seqNum: number;
+  }
+  export class Icmpv6Packet {
+    constructor(stream: unknown);
+    _read(): void;
+    icmpType: number;
+    code: number;
+    echo?: Icmpv6Echo;
+  }
+  const generatedModule: { Icmpv6Packet: typeof Icmpv6Packet };
+  export default generatedModule;
+}
+
 declare module '*TlsClientHello.js' {
   export interface TlsVersion {
     major: number;

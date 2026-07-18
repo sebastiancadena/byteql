@@ -373,6 +373,41 @@ export function icmpEcho({ id, seq }: IcmpEchoOptions): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
+// ICMPv6 (ksy/icmpv6.ksy, byteql-authored)
+// ---------------------------------------------------------------------------
+
+export interface Icmpv6TypeOptions {
+  type: number;
+  code: number;
+}
+
+/** Builds a non-echo ICMPv6 message: icmp_type(1) + code(1) + checksum(2, unvalidated). */
+export function icmpv6Type({ type, code }: Icmpv6TypeOptions): Uint8Array {
+  const bytes = new Uint8Array(4);
+  bytes[0] = type;
+  bytes[1] = code;
+  // checksum bytes 2..3 left 0 (unvalidated by the parser)
+  return bytes;
+}
+
+export interface Icmpv6EchoOptions {
+  id: number;
+  seq: number;
+}
+
+/** Builds an ICMPv6 echo request (type 128): icmp_type + code(0) + checksum(0) + identifier + seq_num. */
+export function icmpv6Echo({ id, seq }: Icmpv6EchoOptions): Uint8Array {
+  const bytes = new Uint8Array(8);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = 128; // icmp_type: echo request
+  bytes[1] = 0x00; // code
+  view.setUint16(2, 0, false); // checksum (unvalidated by the parser)
+  view.setUint16(4, id, false); // identifier
+  view.setUint16(6, seq, false); // seq_num
+  return bytes;
+}
+
+// ---------------------------------------------------------------------------
 // TLS ClientHello (network/tls_client_hello.ksy)
 // ---------------------------------------------------------------------------
 

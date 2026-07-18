@@ -1,5 +1,5 @@
 /**
- * The pcap dissect parser registry: the eight layer wrappers keyed by the
+ * The pcap dissect parser registry: the ten layer wrappers keyed by the
  * parser ids the projection YAML references in its `dissect` chains. The
  * projection engine looks each id up here, calls the `RecordParser` with the
  * enclosing layer's payload bytes, and projects the flattened `root` (see
@@ -13,6 +13,7 @@ import {
   dnsTcpMessage,
   ethernetFrame,
   icmpPacket,
+  icmpv6Packet,
   ipv4Packet,
   ipv6Packet,
   tcpSegment,
@@ -29,5 +30,6 @@ export const pcapParserRegistry: ParserRegistry = new Map<string, RecordParser>(
   ['dns_packet', dnsPacket],
   ['dns_tcp_message', dnsTcpMessage],
   ['icmp_packet', icmpPacket],
+  ['icmpv6_packet', icmpv6Packet],
   ['tls_client_hello', tlsClientHello],
 ]);

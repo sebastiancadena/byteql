@@ -135,8 +135,20 @@ seq:
     size: payload_length
 ```
 
+## `icmpv6.ksy`
+
+Byteql-authored, not vendored: as of the pinned upstream commit,
+`kaitai-io/kaitai_struct_formats`'s `network/` directory has no ICMPv6 spec,
+so there is nothing to copy or patch. `ksy/icmpv6.ksy` lives only under
+`ksy/` and has no `network/` counterpart. It mirrors `icmp_packet.ksy`'s
+shape (an `echo_msg` subtype for echo request/reply) but adds a `code` field
+alongside `icmp_type`, matching RFC 4443.
+
 ## Re-vendoring
 
 If `network/` is ever re-fetched from a newer upstream commit, re-apply these
 same three edits to the corresponding files in `ksy/` (diff the new
 `network/*.ksy` against the old to spot any additional upstream drift first).
+Re-check upstream for an ICMPv6 spec too; if one now exists, evaluate
+replacing the byteql-authored `icmpv6.ksy` with a vendored+patched version
+for consistency with the other seven files.

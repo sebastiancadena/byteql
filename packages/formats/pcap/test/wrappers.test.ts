@@ -6,6 +6,8 @@ import {
   dnsQuery,
   ethFrame,
   icmpEcho,
+  icmpv6Echo,
+  icmpv6Type,
   ipv4,
   ipv6,
   tcp,
@@ -64,13 +66,14 @@ function parseWith<T>(id: string, bytes: Uint8Array): T {
 }
 
 describe('pcapParserRegistry', () => {
-  it('registers all nine layer parsers', () => {
+  it('registers all ten layer parsers', () => {
     expect([...pcapParserRegistry.keys()].sort()).toEqual(
       [
         'dns_packet',
         'dns_tcp_message',
         'ethernet_frame',
         'icmp_packet',
+        'icmpv6_packet',
         'ipv4_packet',
         'ipv6_packet',
         'tcp_segment',
@@ -229,6 +232,18 @@ describe('pcapParserRegistry', () => {
     expect(root.icmp_type).toBe(3); // destination unreachable
     expect(root.echo_id).toBeNull();
     expect(root.echo_seq).toBeNull();
+  });
+
+  it('icmpv6 wrapper flattens an echo request', () => {
+    const bytes = icmpv6Echo({ id: 0xabcd, seq: 7 }); // type 128
+    const { root } = pcapParserRegistry.get('icmpv6_packet')!(bytes);
+    expect(root).toMatchObject({ icmp_type: 128, code: 0, echo_id: 0xabcd, echo_seq: 7 });
+  });
+
+  it('icmpv6 wrapper leaves echo fields null for a non-echo type', () => {
+    const bytes = icmpv6Type({ type: 1, code: 0 }); // destination unreachable
+    const { root } = pcapParserRegistry.get('icmpv6_packet')!(bytes);
+    expect(root).toMatchObject({ icmp_type: 1, echo_id: null, echo_seq: null });
   });
 
   it('dns_tcp_message emits a message for a length-prefixed DNS query', () => {
