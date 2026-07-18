@@ -16,11 +16,18 @@ exact source bytes. Product requirements, differentiators, and the projection DS
   `RecordSource` drain-before-finish contract.
 - **Phase 1, slice 1 of 3 (pcap pack): shipped.** `packages/formats/pcap` — vendored + patched
   Kaitai network `.ksy` (`network/PROVENANCE.md`, `PATCHES.md`), classic-pcap streaming framer,
-  the 8-parser dissect registry (ethernet → ipv4/ipv6 → tcp/udp → dns/icmp/tls), the
-  `pcap.tables.yaml` projection spec (7-table union + dissect graph), and the `FormatPack`
+  the 10-parser dissect registry (ethernet → ipv4/ipv6 → tcp/udp → dns/icmp/icmpv6/tls), the
+  `pcap.tables.yaml` projection spec (8-table union + dissect graph), and the `FormatPack`
   façade wired into the web app's probe registry, canned queries, and e2e (`pcap.spec.ts`).
   Full-workspace gate (`pnpm -r check`, unit tests incl. MIDI regression, `check:bundle`, e2e)
   is green.
+- **Phase 1, slice A (pcap dissect extensions): shipped.** Three targeted extensions to the
+  pack's wrappers/dissect graph, no new engine capability or container:
+  `ip.length` normalized to total on-wire IP datagram length (v4/v6 comparable), single-segment
+  DNS-over-TCP (`dns_tcp_message` parser feeding the existing `dns` table), and ICMPv6 as its
+  own `icmpv6` table (byteql-authored `icmpv6.ksy`, `ipv6` `next_header == 58`). Still deferred:
+  TCP stream reassembly (a PRD-designated Phase-2 engine feature) and anything depending on it
+  — multi-segment TLS ClientHello and multi-segment DNS-over-TCP — plus pcapng container support.
 - **Next: Phase 1 slice 2 of 3 (scale & intake)** — worker-protocol streaming, DuckDB
   incremental append, OPFS/Parquet spill (revisit the DuckDB hardening PRAGMAs deliberately),
   File System Access intake with size-tiering. **Then slice 3 of 3**: hex-provenance UI and
