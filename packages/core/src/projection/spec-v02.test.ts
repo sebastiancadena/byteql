@@ -41,9 +41,89 @@ describe('spec v0.2', () => {
     });
   });
 
+  it('parses an unquoted numeric version: 0.2 the same as the quoted string', () => {
+    const yaml = baseYaml.replace("version: '0.2'", 'version: 0.2');
+    const compiled = compileProjection(parseProjectionSpec(yaml), registry);
+    expect(compiled.dissectByFrom.get('records')).toHaveLength(1);
+  });
+
   it('rejects dissect under version 0.1', () => {
     const yaml = baseYaml.replace("version: '0.2'", "version: '0.1'");
     expect(() => parseProjectionSpec(yaml)).toThrowError(/PROJECTION_VERSION_REQUIRED/u);
+  });
+
+  it('rejects parent_key under version 0.1 even without a dissect block', () => {
+    // parent_key is a version-0.2 feature on its own, independent of whether a dissect block
+    // is present — this pins the second (parent_key-scanning) branch of parseProjectionSpec's
+    // version-0.1 guard, distinct from the dissect-block branch covered above.
+    const yaml = `
+version: '0.1'
+format: plain
+tables:
+  - name: records
+    rows: $.records[*]
+    key: record_id
+    columns:
+      kind: { expr: '_.kind', type: uint8 }
+  - name: inner
+    rows: $.items[*]
+    key: inner_id
+    parent_key: { table: records, column: record_id }
+    columns:
+      label: { expr: '_.label', type: utf8 }
+`;
+    expect(() => parseProjectionSpec(yaml)).toThrowError(/PROJECTION_VERSION_REQUIRED/u);
+  });
+
+  it('rejects a parent_key.table that names an undeclared table', () => {
+    const yaml = baseYaml.replace('table: records, column: record_id', 'table: nowhere, column: record_id');
+    expect(() => compileProjection(parseProjectionSpec(yaml), registry)).toThrowError(
+      /PROJECTION_PARENT_KEY_INVALID/u,
+    );
+  });
+
+  it('rejects a table that declares parent_key but is not fed by any dissect chain link', () => {
+    // Unlike "rejects a chain table without parent_key" above (inner keeps its chain slot but
+    // loses parent_key), this drops the chain's `table: inner` reference while inner keeps its
+    // parent_key — rule 3's dissect-fed check, not rule 2's parent_key-shape check.
+    const yaml = baseYaml.replace(', table: inner', '');
+    expect(() => compileProjection(parseProjectionSpec(yaml), registry)).toThrowError(
+      /PROJECTION_DISSECT_INVALID/u,
+    );
+  });
+
+  it('rejects a state-like identifier referenced in a dissect payload or when', () => {
+    // Dissect payload/when expressions always compile against an empty declared-state set
+    // (compileProjection passes `new Set()` for both), so any bare identifier that isn't a
+    // context name (_, _root, _parent) is treated as an undeclared state reference — this
+    // pins that existing branch and records which code it actually throws.
+    const yaml = baseYaml.replace("when: '_.kind == 0x01'", "when: '_.kind == 0x01 && counter == 1'");
+    expect(() => compileProjection(parseProjectionSpec(yaml), registry)).toThrowError(
+      /EXPRESSION_STATE_UNDECLARED/u,
+    );
+  });
+
+  it('rejects _index in a parser-rooted dissect when clause', () => {
+    // A dissect entry chained off a parser id (from: inner_parser) evaluates its when/payload
+    // against a bare { _, _root } context with no anchor match, so _index has nothing to read.
+    const yaml = `${baseYaml}  - from: inner_parser
+    payload: _.next
+    chain:
+      - { when: '_index(0) == 0', parser: deep_parser }
+`;
+    expect(() => compileProjection(parseProjectionSpec(yaml), registry)).toThrowError(
+      /PROJECTION_DISSECT_INVALID/u,
+    );
+  });
+
+  it('allows _parent and _index in a table-rooted dissect when clause', () => {
+    // from: records is a declared table, so its chain fires from emitRow's full row context,
+    // where _parent and _index are legitimate — the guard must not reject this shape.
+    const yaml = baseYaml.replace(
+      "when: '_.kind == 0x01'",
+      "when: '_.kind == 0x01 && _index(0) == 0 && _parent == null'",
+    );
+    expect(() => compileProjection(parseProjectionSpec(yaml), registry)).not.toThrow();
   });
 
   it('rejects a parent_key column that is not the parent key', () => {

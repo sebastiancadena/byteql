@@ -342,6 +342,68 @@ export const getExpressionStateReferences = (expression: CompiledExpression): Re
   return references;
 };
 
+// Row context (`_parent`, `_index`) is only meaningful when an expression is evaluated
+// against an anchor match walked from a table's own `rows` (see expressionContext in
+// project.ts): `_parent` comes from the match's parent chain, and `_index` reads
+// match.indexes. Dissect entries chained off a *parser* id (rather than a declared table)
+// evaluate their `payload`/`when` against a bare `{ _, _root }` child context that carries
+// neither, so a reference to either would silently read as `null` at runtime. This helper
+// lets callers (compileProjection) reject that statically instead.
+export type ExpressionContextReference = '_parent' | '_index';
+
+const collectContextReferences = (node: Expression, references: Set<ExpressionContextReference>): void => {
+  switch (node.type) {
+    case 'Literal':
+      return;
+    case 'Identifier': {
+      if ((node as Identifier).name === '_parent') references.add('_parent');
+      return;
+    }
+    case 'MemberExpression':
+      collectContextReferences((node as MemberExpression).object, references);
+      return;
+    case 'UnaryExpression':
+      collectContextReferences((node as UnaryExpression).argument, references);
+      return;
+    case 'BinaryExpression': {
+      const binary = node as BinaryExpression;
+      collectContextReferences(binary.left, references);
+      collectContextReferences(binary.right, references);
+      return;
+    }
+    case 'ConditionalExpression': {
+      const conditional = node as ConditionalExpression;
+      collectContextReferences(conditional.test, references);
+      collectContextReferences(conditional.consequent, references);
+      collectContextReferences(conditional.alternate, references);
+      return;
+    }
+    case 'CallExpression': {
+      const call = node as CallExpression;
+      if (call.callee.type === 'Identifier' && (call.callee as Identifier).name === '_index') {
+        references.add('_index');
+      }
+      for (const argument of call.arguments) collectContextReferences(argument, references);
+      return;
+    }
+    default:
+      return;
+  }
+};
+
+export const getExpressionContextReferences = (
+  expression: CompiledExpression,
+): ReadonlySet<ExpressionContextReference> => {
+  const ast = compiledAsts.get(expression);
+  if (!ast) {
+    throw expressionError('EXPRESSION_NODE_FORBIDDEN', 'expression was not produced by compileExpression');
+  }
+
+  const references = new Set<ExpressionContextReference>();
+  collectContextReferences(ast, references);
+  return references;
+};
+
 const hasOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key);
 
 const missingProperty = Symbol('missing property');

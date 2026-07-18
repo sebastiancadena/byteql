@@ -130,8 +130,8 @@ const tableSpec = z.strictObject({
 
 const projectionSpec = z.strictObject({
   version: z
-    .union([z.literal('0.1'), z.literal(0.1), z.literal('0.2')])
-    .transform((value): '0.1' | '0.2' => (value === '0.2' ? '0.2' : '0.1')),
+    .union([z.literal('0.1'), z.literal(0.1), z.literal('0.2'), z.literal(0.2)])
+    .transform((value): '0.1' | '0.2' => (value === '0.2' || value === 0.2 ? '0.2' : '0.1')),
   format: nonEmptyString,
   tables: z.array(tableSpec).min(1),
   dissect: z.array(dissectSpec).optional(),

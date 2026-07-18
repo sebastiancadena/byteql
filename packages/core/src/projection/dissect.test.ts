@@ -52,6 +52,16 @@ const innerParser = (bytes: Uint8Array) => ({
   }),
 });
 
+// The trailer above (start: 900) is legitimately far past its 1-byte input: this fixture's
+// records carry a wide body so trailer stays within the enclosing payload's byte length.
+// (`bodyBytes`'s only observed byte is index 0 — everything else exists purely to keep the
+// nested-payload containment check in project.ts from flagging this pre-existing trailer.)
+const bodyBytes = (kind: number): Uint8Array => {
+  const bytes = new Uint8Array(1000);
+  bytes[0] = kind;
+  return bytes;
+};
+
 const registry: ParserRegistry = new Map([
   ['inner_parser', innerParser],
   ['never_parser', () => ({ root: {} })],
@@ -70,8 +80,8 @@ const project = (records: unknown[], issues = new IssueCollector()) => {
 describe('dissect execution', () => {
   it('projects chained child tables with parent keys and composed provenance', () => {
     const { finished } = project([
-      { kind: 1, body: { bytes: Uint8Array.of(7), start: 100 } },
-      { kind: 1, body: { bytes: Uint8Array.of(7), start: 200 } },
+      { kind: 1, body: { bytes: bodyBytes(7), start: 100 } },
+      { kind: 1, body: { bytes: bodyBytes(7), start: 200 } },
     ]);
     const inner = finished.find((table) => table.name === 'inner')!;
     expect(inner.rowCount).toBe(4);
@@ -106,13 +116,40 @@ describe('dissect execution', () => {
 
   it('fires only the first matching guard', () => {
     // kind 1 matches link 0; never_parser (link 1) must not run (it would throw the deep row count off).
-    const { finished } = project([{ kind: 1, body: { bytes: Uint8Array.of(2), start: 0 } }]);
+    const { finished } = project([{ kind: 1, body: { bytes: bodyBytes(2), start: 0 } }]);
     expect(finished.find((table) => table.name === 'deep')!.rowCount).toBe(0);
   });
 
   it('reports an issue and continues when the payload is not a byte range', () => {
     const { finished, issues } = project([{ kind: 1, body: 'not-a-range' }]);
     expect(finished.find((table) => table.name === 'records')!.rowCount).toBe(1);
+    expect(issues.issues()).toEqual([
+      expect.objectContaining({ stage: 'dissecting', code: 'DISSECT_PAYLOAD_INVALID', recoverable: true }),
+    ]);
+  });
+
+  it('reports a containment issue and skips the chain when a nested payload overruns its enclosing payload, leaving the parent tables unaffected', () => {
+    // inner_parser's trailer here (start: 5000) is far beyond the 1-byte enclosing payload
+    // (the record's own body), unlike the wide-body fixture above: this is what a genuinely
+    // broken nested payload looks like, and the engine must catch it without throwing.
+    const overrunInnerParser = (bytes: Uint8Array) => {
+      const base = innerParser(bytes);
+      return { ...base, root: { ...base.root, trailer: { bytes: Uint8Array.of(9), start: 5000 } } };
+    };
+    const overrunRegistry = new Map(registry);
+    overrunRegistry.set('inner_parser', overrunInnerParser);
+    const compiled = compileProjection(parseProjectionSpec(yaml), overrunRegistry);
+    const issues = new IssueCollector();
+    const session = createProjectionSession(compiled, { issues });
+    session.project({ records: [{ kind: 1, body: { bytes: Uint8Array.of(7), start: 100 } }] }, resolver);
+    const finished = session.finish();
+
+    // records and inner (fed directly off the record's own body, not the trailer) are
+    // unaffected — only the deeper chain that would have read the overrunning trailer is
+    // skipped, leaving deep childless for this record.
+    expect(finished.find((table) => table.name === 'records')!.rowCount).toBe(1);
+    expect(finished.find((table) => table.name === 'inner')!.rowCount).toBe(2);
+    expect(finished.find((table) => table.name === 'deep')!.rowCount).toBe(0);
     expect(issues.issues()).toEqual([
       expect.objectContaining({ stage: 'dissecting', code: 'DISSECT_PAYLOAD_INVALID', recoverable: true }),
     ]);

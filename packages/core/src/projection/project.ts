@@ -9,6 +9,7 @@ import {
   ProjectionCompileError,
   compileExpression,
   evaluateExpression,
+  getExpressionContextReferences,
   getExpressionStateReferences,
   type CompiledExpression,
   type ExpressionContext,
@@ -113,6 +114,21 @@ const compileCheckedExpression = (
   const expression = compileAtPath(source, path);
   requireDeclaredState(expression, declaredState, path);
   return expression;
+};
+
+// A dissect entry chained off a parser id (rather than a declared table) evaluates its
+// payload/when against a bare `{ _, _root }` context (see fireDissect's childContext):
+// there is no anchor match to source `_parent` or `indexes` from, so both would silently
+// read as null/undefined at runtime. Table-rooted entries fire from emitRow's full row
+// context, where both are legitimate, so this guard only applies to the parser-rooted case.
+const rejectContextReferences = (expression: CompiledExpression, path: string): void => {
+  const references = getExpressionContextReferences(expression);
+  if (references.size === 0) return;
+  throw new ProjectionCompileError(
+    'PROJECTION_DISSECT_INVALID',
+    path,
+    `${[...references].join(' and ')} ${references.size === 1 ? 'is' : 'are'} not available in a parser-rooted dissect expression (no row context)`,
+  );
 };
 
 const validateParentKey = (
@@ -234,7 +250,8 @@ export const compileProjection = (
   const dissectTables = new Set<string>();
   const dissects = (spec.dissect ?? []).map((entry, entryIndex): CompiledDissect => {
     const path = `dissect.${entryIndex}`;
-    if (!tableByName.has(entry.from) && !parserIds.has(entry.from)) {
+    const fromIsTable = tableByName.has(entry.from);
+    if (!fromIsTable && !parserIds.has(entry.from)) {
       throw new ProjectionCompileError(
         'PROJECTION_DISSECT_INVALID',
         `${path}.from`,
@@ -270,16 +287,20 @@ export const compileProjection = (
         }
         dissectTables.add(link.table); // multiple links may feed the same table (pcap: ipv4 and ipv6 -> ip)
       }
+      const when = compileCheckedExpression(link.when, new Set(), `${linkPath}.when`);
+      if (!fromIsTable) rejectContextReferences(when, `${linkPath}.when`);
       return Object.freeze({
-        when: compileCheckedExpression(link.when, new Set(), `${linkPath}.when`),
+        when,
         parserId: link.parser,
         parser,
         table,
       });
     });
+    const payload = compileCheckedExpression(entry.payload, new Set(), `${path}.payload`);
+    if (!fromIsTable) rejectContextReferences(payload, `${path}.payload`);
     return Object.freeze({
       from: entry.from,
-      payload: compileCheckedExpression(entry.payload, new Set(), `${path}.payload`),
+      payload,
       chain: Object.freeze(chain),
     });
   });
@@ -438,6 +459,12 @@ const emitRow = (
   // payload expressions) are evaluated in: 0 for the file tree, or the enclosing payload's
   // absolute start for a child parse tree. See asPayloadRange / fireDissect.
   baseOffset: number,
+  // Byte length of the payload buffer `root` was parsed from, or null at the file root
+  // (unchecked — see fireDissect's containment check). Threaded through unchanged to this
+  // row's own outgoing dissects: `table`'s rows live inside the same buffer as `root`
+  // itself, whether `table` is a root table (null) or was itself dissected out of a parent
+  // payload (that payload's byte length).
+  enclosingLength: number | null,
   parentKey?: { name: string; value: bigint | null },
 ): void => {
   for (const register of table.state) {
@@ -477,7 +504,7 @@ const emitRow = (
   const childKeys = new Map(keysByTable);
   childKeys.set(table.name, key);
   for (const dissect of emitContext.compiled.dissectByFrom.get(table.name) ?? []) {
-    fireDissect(dissect, context, childKeys, emitContext, range, baseOffset);
+    fireDissect(dissect, context, childKeys, emitContext, range, baseOffset, enclosingLength);
   }
 };
 
@@ -527,6 +554,14 @@ const fireDissect = (
   // evaluated in. 0 for dissects fired from the file tree; the enclosing absolute payload
   // start for dissects evaluated against a child parse tree.
   baseOffset: number,
+  // Byte length of the payload buffer `context` was built from, or null when `context` is
+  // the file root. A root-table dissect's own payload is a file-absolute offset the engine
+  // never validates — it has no idea how long the file is, so `null` here means "unchecked".
+  // A dissect fired from a child parse tree (a "deeper" chain, below) DOES know its bound:
+  // the byte length of the payload that produced that tree. `payload.start` is relative to
+  // that same payload (see PayloadRange), so a range this dissect's own `payload` evaluates
+  // to that runs past `enclosingLength` is provably broken, not merely suspicious.
+  enclosingLength: number | null,
 ): void => {
   const payload = asPayloadRange(evaluateExpression(dissect.payload, context));
   if (!payload) {
@@ -535,6 +570,19 @@ const fireDissect = (
       code: 'DISSECT_PAYLOAD_INVALID',
       recoverable: true,
       message: `dissect from ${JSON.stringify(dissect.from)}: payload did not evaluate to { bytes, start }`,
+      sourceStart: parentRange.start,
+      sourceEnd: parentRange.end,
+    });
+    return;
+  }
+
+  const payloadEnd = payload.start + payload.bytes.length;
+  if (enclosingLength !== null && payloadEnd > enclosingLength) {
+    emitContext.issues?.report({
+      stage: 'dissecting',
+      code: 'DISSECT_PAYLOAD_INVALID',
+      recoverable: true,
+      message: `dissect from ${JSON.stringify(dissect.from)}: payload [${payload.start}, ${payloadEnd}) overruns the enclosing ${enclosingLength}-byte payload`,
       sourceStart: parentRange.start,
       sourceEnd: parentRange.end,
     });
@@ -571,7 +619,8 @@ const fireDissect = (
     for (const deeper of emitContext.compiled.dissectByFrom.get(link.parserId) ?? []) {
       // The deeper chain's payload is evaluated against `parsed.root` — a tree the child
       // parser built purely from `payload.bytes` — so its own payload.start (if any) is
-      // relative to *this* payload; that's `absoluteStart`, not `baseOffset`.
+      // relative to *this* payload; that's `absoluteStart`, not `baseOffset`. Likewise, this
+      // payload's own byte length is now the enclosing bound for whatever it dissects.
       fireDissect(
         deeper,
         childContext,
@@ -579,6 +628,7 @@ const fireDissect = (
         emitContext,
         { start: absoluteStart, end: absoluteStart + payload.bytes.length },
         absoluteStart,
+        payload.bytes.length,
       );
     }
     return; // first matching guard wins
@@ -615,7 +665,8 @@ const projectChildTable = (
   for (const match of traverseAnchor(table.rows, parsed.root)) {
     // The child rows' own dissect chains (if any) evaluate against `parsed.root`, so they
     // need this payload's absolute start as their base — this is how chains fired from a
-    // chain-fed table compose correctly.
+    // chain-fed table compose correctly. `payloadBytes.length` is likewise their enclosing
+    // bound: `parsed.root` was built purely from this buffer.
     emitRow(
       table,
       runtime,
@@ -626,6 +677,7 @@ const projectChildTable = (
       keysByTable,
       emitContext,
       absolutePayloadStart,
+      payloadBytes.length,
       { name: table.parentKey!.column, value: parentKeyValue },
     );
   }
@@ -647,8 +699,10 @@ export const projectInto = (
   walkMatcher(root, matcher, (anchorIndex, match) => {
     const table = active[anchorIndex]!;
     // The file tree is the root coordinate space: base offset 0, so payload.start is
-    // absolute unchanged for chains fired directly off root-table rows.
-    emitRow(table, runtimes.get(table.name)!, match, root, provenance, sink, emptyKeys, emitContext, 0);
+    // absolute unchanged for chains fired directly off root-table rows. enclosingLength is
+    // null here — the engine never sees the file's byte length, so root-level dissect
+    // payloads are unchecked; only payloads nested inside another payload can be validated.
+    emitRow(table, runtimes.get(table.name)!, match, root, provenance, sink, emptyKeys, emitContext, 0, null);
   });
 };
 
