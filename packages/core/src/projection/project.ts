@@ -6,7 +6,8 @@ import {
   getExpressionStateReferences,
   type CompiledExpression,
 } from './expression.js';
-import type { ArrowTypeName, ProjectionSpec } from './spec.js';
+import type { ParserRegistry, RecordParser } from './parsers.js';
+import type { ArrowTypeName, ProjectionSpec, TableSpec } from './spec.js';
 import { buildMatcher, walkMatcher } from './walk.js';
 
 export interface SourceRange {
@@ -39,11 +40,27 @@ interface CompiledProjectionTable {
   readonly key: string;
   readonly state: readonly CompiledState[];
   readonly columns: readonly CompiledColumn[];
+  readonly parentKey: { table: string; column: string } | null;
+}
+
+export interface CompiledChainLink {
+  readonly when: CompiledExpression;
+  readonly parserId: string;
+  readonly parser: RecordParser;
+  readonly table: CompiledProjectionTable | null;
+}
+
+export interface CompiledDissect {
+  readonly from: string;
+  readonly payload: CompiledExpression;
+  readonly chain: readonly CompiledChainLink[];
 }
 
 export interface CompiledProjection {
   readonly format: string;
   readonly tables: readonly CompiledProjectionTable[];
+  readonly rootTables: readonly CompiledProjectionTable[];
+  readonly dissectByFrom: ReadonlyMap<string, readonly CompiledDissect[]>;
 }
 
 export interface ProjectedTable {
@@ -90,7 +107,51 @@ const compileCheckedExpression = (
   return expression;
 };
 
-export const compileProjection = (spec: ProjectionSpec): CompiledProjection => {
+const validateParentKey = (
+  table: TableSpec,
+  tablePath: string,
+  specTableByName: ReadonlyMap<string, TableSpec>,
+): { table: string; column: string } | null => {
+  if (!table.parent_key) return null;
+  const parentTable = specTableByName.get(table.parent_key.table);
+  if (!parentTable) {
+    throw new ProjectionCompileError(
+      'PROJECTION_PARENT_KEY_INVALID',
+      `${tablePath}.parent_key.table`,
+      `table ${JSON.stringify(table.parent_key.table)} is not declared`,
+    );
+  }
+  if (table.parent_key.column !== parentTable.key) {
+    throw new ProjectionCompileError(
+      'PROJECTION_PARENT_KEY_INVALID',
+      `${tablePath}.parent_key.column`,
+      `column ${JSON.stringify(table.parent_key.column)} must equal parent table ${JSON.stringify(
+        table.parent_key.table,
+      )}'s key ${JSON.stringify(parentTable.key)}`,
+    );
+  }
+  if (table.key === table.parent_key.column) {
+    throw new ProjectionCompileError(
+      'PROJECTION_PARENT_KEY_INVALID',
+      `${tablePath}.key`,
+      `key ${JSON.stringify(table.key)} collides with parent_key.column ${JSON.stringify(table.parent_key.column)}`,
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(table.columns, table.parent_key.column)) {
+    throw new ProjectionCompileError(
+      'PROJECTION_PARENT_KEY_INVALID',
+      `${tablePath}.columns.${table.parent_key.column}`,
+      `column ${JSON.stringify(table.parent_key.column)} collides with parent_key.column`,
+    );
+  }
+  return { table: table.parent_key.table, column: table.parent_key.column };
+};
+
+export const compileProjection = (
+  spec: ProjectionSpec,
+  registry: ParserRegistry = new Map(),
+): CompiledProjection => {
+  const specTableByName = new Map(spec.tables.map((table) => [table.name, table]));
   const tables = spec.tables.map((table, tableIndex): CompiledProjectionTable => {
     const tablePath = `tables.${tableIndex}`;
     if (reservedOutputNames.has(table.key)) {
@@ -156,10 +217,161 @@ export const compileProjection = (spec: ProjectionSpec): CompiledProjection => {
       key: table.key,
       state: Object.freeze(state),
       columns: Object.freeze(columns),
+      parentKey: validateParentKey(table, tablePath, specTableByName),
     });
   });
 
-  return Object.freeze({ format: spec.format, tables: Object.freeze(tables) });
+  const tableByName = new Map(tables.map((table) => [table.name, table]));
+  const parserIds = new Set((spec.dissect ?? []).flatMap((entry) => entry.chain.map((link) => link.parser)));
+  const dissectTables = new Set<string>();
+  const dissects = (spec.dissect ?? []).map((entry, entryIndex): CompiledDissect => {
+    const path = `dissect.${entryIndex}`;
+    if (!tableByName.has(entry.from) && !parserIds.has(entry.from)) {
+      throw new ProjectionCompileError(
+        'PROJECTION_DISSECT_INVALID',
+        `${path}.from`,
+        `from ${JSON.stringify(entry.from)} is neither a declared table nor a chained parser`,
+      );
+    }
+    const chain = entry.chain.map((link, linkIndex): CompiledChainLink => {
+      const linkPath = `${path}.chain.${linkIndex}`;
+      const parser = registry.get(link.parser);
+      if (!parser) {
+        throw new ProjectionCompileError(
+          'PROJECTION_PARSER_UNKNOWN',
+          `${linkPath}.parser`,
+          `parser ${JSON.stringify(link.parser)} is not registered`,
+        );
+      }
+      let table: CompiledProjectionTable | null = null;
+      if (link.table !== undefined) {
+        table = tableByName.get(link.table) ?? null;
+        if (!table) {
+          throw new ProjectionCompileError(
+            'PROJECTION_DISSECT_INVALID',
+            `${linkPath}.table`,
+            `table ${JSON.stringify(link.table)} is not declared`,
+          );
+        }
+        if (!table.parentKey) {
+          throw new ProjectionCompileError(
+            'PROJECTION_DISSECT_INVALID',
+            `${linkPath}.table`,
+            `table ${JSON.stringify(link.table)} must declare parent_key to receive dissected rows`,
+          );
+        }
+        dissectTables.add(link.table); // multiple links may feed the same table (pcap: ipv4 and ipv6 -> ip)
+      }
+      return Object.freeze({
+        when: compileCheckedExpression(link.when, new Set(), `${linkPath}.when`),
+        parserId: link.parser,
+        parser,
+        table,
+      });
+    });
+    return Object.freeze({
+      from: entry.from,
+      payload: compileCheckedExpression(entry.payload, new Set(), `${path}.payload`),
+      chain: Object.freeze(chain),
+    });
+  });
+
+  // Rule 3: every table with parent_key must be fed by at least one chain link, and is
+  // therefore dissect-only (excluded from rootTables).
+  for (const [tableIndex, table] of tables.entries()) {
+    if (table.parentKey && !dissectTables.has(table.name)) {
+      throw new ProjectionCompileError(
+        'PROJECTION_DISSECT_INVALID',
+        `tables.${tableIndex}.parent_key`,
+        `table ${JSON.stringify(table.name)} declares parent_key but is not fed by any dissect chain link`,
+      );
+    }
+  }
+
+  // Rule 5: the graph over nodes (table names ∪ parser ids) with edges from -> chain[].parser
+  // must be acyclic.
+  const edges = new Map<string, string[]>();
+  for (const entry of dissects) {
+    const parserList = edges.get(entry.from) ?? [];
+    for (const link of entry.chain) parserList.push(link.parserId);
+    edges.set(entry.from, parserList);
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const detectCycle = (node: string): void => {
+    if (visited.has(node)) return;
+    if (visiting.has(node)) {
+      throw new ProjectionCompileError(
+        'PROJECTION_DISSECT_CYCLE',
+        'dissect',
+        `dissect graph has a cycle involving ${JSON.stringify(node)}`,
+      );
+    }
+    visiting.add(node);
+    for (const next of edges.get(node) ?? []) detectCycle(next);
+    visiting.delete(node);
+    visited.add(node);
+  };
+  for (const node of edges.keys()) detectCycle(node);
+
+  // Rule 7: for each chain link with a table, that table's parent_key.table must be reachable
+  // by walking from-ancestors of the dissect entry, so the key value exists at runtime.
+  // Ancestors are computed as a fixpoint over the (now acyclic) from -> parser graph: a parser
+  // id's ancestors are the union, over every entry whose chain contains it, of that entry's
+  // ancestors plus the table (if any) that the matching chain link itself feeds.
+  const ancestorsByParser = new Map<string, Set<string>>();
+  const ancestorsOfEntry = (entry: CompiledDissect): ReadonlySet<string> => {
+    if (tableByName.has(entry.from)) return new Set([entry.from]);
+    return ancestorsByParser.get(entry.from) ?? new Set();
+  };
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const entry of dissects) {
+      const entryAncestors = ancestorsOfEntry(entry);
+      for (const link of entry.chain) {
+        const existing = ancestorsByParser.get(link.parserId) ?? new Set<string>();
+        const before = existing.size;
+        for (const ancestor of entryAncestors) existing.add(ancestor);
+        if (link.table) existing.add(link.table.name);
+        if (existing.size !== before) changed = true;
+        ancestorsByParser.set(link.parserId, existing);
+      }
+    }
+  }
+  for (const [entryIndex, entry] of dissects.entries()) {
+    const entryAncestors = ancestorsOfEntry(entry);
+    for (const [linkIndex, link] of entry.chain.entries()) {
+      if (!link.table?.parentKey) continue;
+      if (!entryAncestors.has(link.table.parentKey.table)) {
+        throw new ProjectionCompileError(
+          'PROJECTION_PARENT_KEY_INVALID',
+          `dissect.${entryIndex}.chain.${linkIndex}.table`,
+          `table ${JSON.stringify(link.table.name)}'s parent_key.table ${JSON.stringify(
+            link.table.parentKey.table,
+          )} is not reachable from ${JSON.stringify(entry.from)}`,
+        );
+      }
+    }
+  }
+
+  const rootTables = tables.filter((table) => !dissectTables.has(table.name));
+  const dissectListsByFrom = new Map<string, CompiledDissect[]>();
+  for (const entry of dissects) {
+    const list = dissectListsByFrom.get(entry.from) ?? [];
+    list.push(entry);
+    dissectListsByFrom.set(entry.from, list);
+  }
+  const dissectByFrom: ReadonlyMap<string, readonly CompiledDissect[]> = new Map(
+    [...dissectListsByFrom].map(([from, list]) => [from, Object.freeze(list)]),
+  );
+
+  return Object.freeze({
+    format: spec.format,
+    tables: Object.freeze(tables),
+    rootTables: Object.freeze(rootTables),
+    dissectByFrom,
+  });
 };
 
 const sameIndexes = (left: readonly number[], right: readonly number[]): boolean =>
@@ -251,7 +463,7 @@ export const projectInto = (
   runtimes: Map<string, TableRuntime>,
   subset: ReadonlySet<string> | null,
 ): void => {
-  const active = compiled.tables.filter((table) => !subset || subset.has(table.name));
+  const active = compiled.rootTables.filter((table) => !subset || subset.has(table.name));
   const matcher = buildMatcher(active.map((table) => table.rows));
   walkMatcher(root, matcher, (anchorIndex, match) => {
     const table = active[anchorIndex]!;

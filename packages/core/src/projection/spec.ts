@@ -3,8 +3,18 @@ import { z } from 'zod';
 import { ProjectionCompileError, isProjectionStateName } from './expression.js';
 
 export type ArrowTypeName =
-  | 'int8' | 'uint8' | 'int16' | 'uint16' | 'int32' | 'uint32' | 'int64' | 'uint64'
-  | 'bool' | 'utf8' | 'timestamp_us' | 'binary';
+  | 'int8'
+  | 'uint8'
+  | 'int16'
+  | 'uint16'
+  | 'int32'
+  | 'uint32'
+  | 'int64'
+  | 'uint64'
+  | 'bool'
+  | 'utf8'
+  | 'timestamp_us'
+  | 'binary';
 
 export interface ProjectionStateSpec {
   scope: string;
@@ -18,6 +28,23 @@ export interface ProjectionColumnSpec {
   when?: string;
 }
 
+export interface ParentKeySpec {
+  table: string;
+  column: string;
+}
+
+export interface DissectChainLinkSpec {
+  when: string;
+  parser: string;
+  table?: string;
+}
+
+export interface DissectSpec {
+  from: string;
+  payload: string;
+  chain: DissectChainLinkSpec[];
+}
+
 export interface TableSpec {
   name: string;
   rows: string;
@@ -25,12 +52,14 @@ export interface TableSpec {
   key: string;
   state?: Record<string, ProjectionStateSpec>;
   columns: Record<string, ProjectionColumnSpec>;
+  parent_key?: ParentKeySpec;
 }
 
 export interface ProjectionSpec {
-  version: '0.1';
+  version: '0.1' | '0.2';
   format: string;
   tables: TableSpec[];
+  dissect?: DissectSpec[];
 }
 
 const identifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -77,6 +106,18 @@ const namedRecord = <T extends z.ZodType>(value: T) =>
     }
   });
 
+const parentKeySpec = z.strictObject({ table: identifier, column: identifier });
+const chainLinkSpec = z.strictObject({
+  when: nonEmptyString,
+  parser: identifier,
+  table: identifier.optional(),
+});
+const dissectSpec = z.strictObject({
+  from: identifier,
+  payload: nonEmptyString,
+  chain: z.array(chainLinkSpec).min(1),
+});
+
 const tableSpec = z.strictObject({
   name: identifier,
   rows: nonEmptyString,
@@ -84,12 +125,16 @@ const tableSpec = z.strictObject({
   key: identifier,
   state: namedRecord(stateSpec).optional(),
   columns: namedRecord(columnSpec),
+  parent_key: parentKeySpec.optional(),
 });
 
 const projectionSpec = z.strictObject({
-  version: z.union([z.literal('0.1'), z.literal(0.1)]).transform((): '0.1' => '0.1'),
+  version: z
+    .union([z.literal('0.1'), z.literal(0.1), z.literal('0.2')])
+    .transform((value): '0.1' | '0.2' => (value === '0.2' ? '0.2' : '0.1')),
   format: nonEmptyString,
   tables: z.array(tableSpec).min(1),
+  dissect: z.array(dissectSpec).optional(),
 });
 
 const issuePath = (path: readonly PropertyKey[]): string =>
@@ -158,6 +203,24 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
       );
     }
     names.add(table.name);
+  }
+
+  if (parsed.data.version === '0.1') {
+    if (parsed.data.dissect !== undefined) {
+      throw new ProjectionCompileError(
+        'PROJECTION_VERSION_REQUIRED',
+        'dissect',
+        'dissect requires version 0.2',
+      );
+    }
+    const indexed = parsed.data.tables.findIndex((table) => table.parent_key !== undefined);
+    if (indexed >= 0) {
+      throw new ProjectionCompileError(
+        'PROJECTION_VERSION_REQUIRED',
+        `tables.${indexed}.parent_key`,
+        'parent_key requires version 0.2',
+      );
+    }
   }
 
   return parsed.data as ProjectionSpec;

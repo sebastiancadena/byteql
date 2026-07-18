@@ -17,6 +17,9 @@ export type {
 export { parseProjectionSpec } from './projection/spec.js';
 export type {
   ArrowTypeName,
+  DissectChainLinkSpec,
+  DissectSpec,
+  ParentKeySpec,
   ProjectionColumnSpec,
   ProjectionSpec,
   ProjectionStateSpec,
@@ -24,8 +27,11 @@ export type {
 } from './projection/spec.js';
 export { compileAnchor, traverseAnchor } from './projection/anchors.js';
 export type { AnchorMatch, AnchorStep, CompiledAnchor } from './projection/anchors.js';
+export type { ParsedRecord, ParserRegistry, RecordParser } from './projection/parsers.js';
 export { compileProjection, projectTree } from './projection/project.js';
 export type {
+  CompiledChainLink,
+  CompiledDissect,
   CompiledProjection,
   ProjectedTable,
   ProvenanceResolver,
