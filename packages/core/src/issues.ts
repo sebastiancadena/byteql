@@ -17,12 +17,28 @@ export interface IssueCollectorOptions {
 
 const toBigIntOrNull = (value: number | null): bigint | null => (value === null ? null : BigInt(value));
 
+const reservedOrdinalColumns = new Set([
+  'error_id',
+  'stage',
+  'code',
+  'message',
+  'recoverable',
+  '_src_start',
+  '_src_end',
+]);
+
 export class IssueCollector {
   private readonly ordinalColumn: string;
   private readonly reported: ParseIssue[] = [];
 
   constructor(options: IssueCollectorOptions = {}) {
-    this.ordinalColumn = options.ordinalColumn ?? 'record';
+    const ordinalColumn = options.ordinalColumn ?? 'record';
+    if (reservedOrdinalColumns.has(ordinalColumn)) {
+      throw new Error(
+        `ISSUE_ORDINAL_COLUMN_RESERVED: ordinalColumn ${JSON.stringify(ordinalColumn)} collides with a fixed issues-table column`,
+      );
+    }
+    this.ordinalColumn = ordinalColumn;
   }
 
   report(issue: IssueReport): void {

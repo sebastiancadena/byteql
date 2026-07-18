@@ -29,4 +29,16 @@ describe('TableBatchBuilder', () => {
     expect(table.numRows).toBe(0);
     expect(table.schema.fields.map((field) => field.name)).toEqual(['item_id', 'value']);
   });
+
+  it('clamps a non-positive flush threshold to 1, sealing every row into its own batch', () => {
+    const builder = new TableBatchBuilder('items', types, { flushRowThreshold: 0 });
+    for (let index = 0; index < 3; index += 1)
+      builder.appendRow({ item_id: BigInt(index + 1), value: index });
+    const table = builder.finish();
+    expect(table.numRows).toBe(3);
+    expect(table.batches.length).toBe(3);
+    const roundTrip = ipcToTable(tableToIpc(table));
+    expect(roundTrip.getChild('item_id')!.toArray()).toEqual(new BigInt64Array([1n, 2n, 3n]));
+    expect(roundTrip.getChild('value')!.toArray()).toEqual(new Int32Array([0, 1, 2]));
+  });
 });

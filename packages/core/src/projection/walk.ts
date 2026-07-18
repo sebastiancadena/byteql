@@ -1,3 +1,4 @@
+import { missingProperty, readOwnDataProperty } from './anchors.js';
 import type { AnchorMatch, CompiledAnchor } from './anchors.js';
 
 export interface MatcherNode {
@@ -41,14 +42,6 @@ export const buildMatcher = (anchors: readonly CompiledAnchor[]): MatcherNode =>
     node.terminals.push(anchorIndex);
   });
   return root;
-};
-
-const missingProperty = Symbol('missing property');
-
-const readOwnDataProperty = (value: unknown, key: string): unknown | typeof missingProperty => {
-  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return missingProperty;
-  const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  return descriptor && 'value' in descriptor ? descriptor.value : missingProperty;
 };
 
 export type MatchVisitor = (anchorIndex: number, match: AnchorMatch) => void;

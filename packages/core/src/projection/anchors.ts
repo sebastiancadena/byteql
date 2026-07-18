@@ -94,9 +94,9 @@ export const isAnchorPrefix = (prefix: CompiledAnchor, anchor: CompiledAnchor): 
   });
 };
 
-const missingProperty = Symbol('missing property');
+export const missingProperty = Symbol('missing property');
 
-const readOwnDataProperty = (value: unknown, key: string): unknown | typeof missingProperty => {
+export const readOwnDataProperty = (value: unknown, key: string): unknown | typeof missingProperty => {
   if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
     return missingProperty;
   }

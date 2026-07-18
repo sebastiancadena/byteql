@@ -70,4 +70,13 @@ describe('IssueCollector', () => {
     expect(Object.keys(collector.table().columns)).toContain('track');
     expect(collector.table().types.track).toBe('int32');
   });
+
+  it('rejects an ordinal column that collides with a fixed issues-table column', () => {
+    expect(() => new IssueCollector({ ordinalColumn: 'code' })).toThrow(/ISSUE_ORDINAL_COLUMN_RESERVED/);
+  });
+
+  it('still allows the default and other non-reserved ordinal column names', () => {
+    expect(() => new IssueCollector({ ordinalColumn: 'record' })).not.toThrow();
+    expect(() => new IssueCollector({ ordinalColumn: 'track' })).not.toThrow();
+  });
 });

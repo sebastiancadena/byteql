@@ -4,6 +4,7 @@ import type {
   CallExpression,
   ConditionalExpression,
   Expression,
+  HookScope,
   Identifier,
   Literal,
   MemberExpression,
@@ -128,16 +129,10 @@ jsep.addBinaryOp('or', 1);
 jsep.addBinaryOp('and', 2);
 jsep.addUnaryOp('not');
 
-const hexDigitPattern = /[0-9a-fA-F]/u;
-
-interface JsepParserState {
-  readonly expr: string;
-  index: number;
-  throwError(message: string): never;
-}
+const hexDigitPattern = /[0-9a-fA-F]/;
 
 // jsep does not parse 0x literals; gobble them before its number tokenizer runs.
-jsep.hooks.add('gobble-token', function (this: JsepParserState, env: { node?: unknown }) {
+jsep.hooks.add('gobble-token', function (this: HookScope, env: { node?: unknown }) {
   if (this.expr.charAt(this.index) !== '0') return;
   const marker = this.expr.charAt(this.index + 1);
   if (marker !== 'x' && marker !== 'X') return;

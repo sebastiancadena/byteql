@@ -27,7 +27,7 @@ export class TableBatchBuilder {
     this.#name = name;
     this.#types = types;
     this.#columnNames = Object.keys(types);
-    this.#threshold = options.flushRowThreshold ?? DEFAULT_FLUSH_ROW_THRESHOLD;
+    this.#threshold = Math.max(1, options.flushRowThreshold ?? DEFAULT_FLUSH_ROW_THRESHOLD);
     this.#pending = this.#emptyPending();
   }
 
