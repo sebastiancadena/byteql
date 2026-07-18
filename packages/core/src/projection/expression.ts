@@ -74,6 +74,8 @@ const binaryOperators = new Set([
 ]);
 const unaryOperators = new Set(['-', '+', '!', 'not', '~']);
 const builtinNames = new Set(['enum_str', 'to_i', 'len', 'u24be']);
+const contextIdentifierNames = new Set(['_', '_root', '_parent']);
+const expressionTokenNames = new Set(['true', 'false', 'null', 'and', 'or', 'not']);
 const forbiddenIdentifiers = new Set([
   '__proto__',
   'Array',
@@ -107,6 +109,14 @@ const forbiddenIdentifiers = new Set([
 const forbiddenMemberNames = new Set(['__proto__', 'constructor', 'prototype']);
 const identifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
+export const isProjectionStateName = (name: string): boolean =>
+  identifierPattern.test(name) &&
+  !forbiddenIdentifiers.has(name) &&
+  !contextIdentifierNames.has(name) &&
+  !expressionTokenNames.has(name) &&
+  !builtinNames.has(name) &&
+  name !== '_index';
+
 jsep.addBinaryOp('or', 1);
 jsep.addBinaryOp('and', 2);
 jsep.addUnaryOp('not');
@@ -121,10 +131,13 @@ const validateIdentifier = (node: Identifier, asCallee = false): void => {
       `identifier ${JSON.stringify(node.name)} is not available`,
     );
   }
-  if (!asCallee && builtinNames.has(node.name)) {
+  if (
+    !asCallee &&
+    (builtinNames.has(node.name) || expressionTokenNames.has(node.name) || node.name === '_index')
+  ) {
     throw expressionError(
       'EXPRESSION_IDENTIFIER_FORBIDDEN',
-      `function ${JSON.stringify(node.name)} is only available as a direct call`,
+      `identifier ${JSON.stringify(node.name)} is reserved by the expression evaluator`,
     );
   }
 };
@@ -448,12 +461,20 @@ const evaluateCall = (node: CallExpression, context: ExpressionContext): unknown
   const argument = evaluateNode(node.arguments[0]!, context);
 
   if (callee === '_index') {
-    const numericIndex =
-      typeof argument === 'bigint' && argument <= BigInt(Number.MAX_SAFE_INTEGER)
-        ? Number(argument)
-        : argument;
-    if (typeof numericIndex !== 'number' || !Number.isInteger(numericIndex)) return null;
-    return context.indexes?.[numericIndex] ?? null;
+    const indexes = context.indexes;
+    if (
+      !Array.isArray(indexes) ||
+      typeof argument !== 'number' ||
+      !Number.isSafeInteger(argument) ||
+      argument < 0
+    ) {
+      return null;
+    }
+
+    const length = readOwnDataProperty(indexes, 'length');
+    if (typeof length !== 'number' || argument >= length) return null;
+    const value = readOwnDataProperty(indexes, String(argument));
+    return value === missingProperty ? null : (value ?? null);
   }
 
   return builtins[callee as keyof typeof builtins](argument);

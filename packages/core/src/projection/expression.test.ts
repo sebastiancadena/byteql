@@ -131,6 +131,76 @@ tables:
   it('wraps malformed YAML in a structured error', () => {
     expect(() => parseProjectionSpec('version: [')).toThrowError(/PROJECTION_YAML_INVALID/);
   });
+
+  it.each(['__proto__', 'constructor', 'prototype'])(
+    'rejects raw prototype-pollution key %s in state and columns',
+    (name) => {
+      for (const section of ['state', 'columns'] as const) {
+        const mapping =
+          section === 'state'
+            ? `${name}: { scope: $, init: 0, update: '1' }`
+            : `${name}: { expr: '1', type: int32 }`;
+        const yaml = `
+version: '0.1'
+format: midi
+tables:
+  - name: rows
+    rows: $
+    key: id
+    ${section}:
+      ${mapping}
+    ${section === 'state' ? "columns:\n      id: { expr: '1', type: int32 }" : ''}
+`;
+
+        expect(() => parseProjectionSpec(yaml)).toThrowError(
+          new ProjectionCompileError(
+            'PROJECTION_SPEC_INVALID',
+            `tables.0.${section}.${name}`,
+            'must be an identifier-safe name',
+          ),
+        );
+      }
+    },
+  );
+
+  it.each([
+    '_',
+    '_root',
+    '_parent',
+    '_index',
+    'enum_str',
+    'to_i',
+    'len',
+    'u24be',
+    'true',
+    'false',
+    'null',
+    'and',
+    'or',
+    'not',
+    'globalThis',
+  ])('rejects evaluator-reserved state name %s', (name) => {
+    expect(() =>
+      parseProjectionSpec(`
+version: '0.1'
+format: midi
+tables:
+  - name: rows
+    rows: $
+    key: id
+    state:
+      ${JSON.stringify(name)}: { scope: $, init: 0, update: '1' }
+    columns:
+      id: { expr: '1', type: int32 }
+`),
+    ).toThrowError(
+      new ProjectionCompileError(
+        'PROJECTION_SPEC_INVALID',
+        `tables.0.state.${name}`,
+        'state name is reserved by the expression evaluator',
+      ),
+    );
+  });
 });
 
 describe('projection expressions', () => {
@@ -158,6 +228,41 @@ describe('projection expressions', () => {
         _: { bytes: Uint8Array.of(0x12, 0x34, 0x56) },
       }),
     ).toBe(0x123456);
+  });
+
+  it('reads wildcard indexes only from own data properties', () => {
+    const inherited = new Array<number>(1);
+    Object.setPrototypeOf(inherited, { 0: 9 });
+    const getter = vi.fn(() => 9);
+    const accessor = new Array<number>(1);
+    Object.defineProperty(accessor, '0', { configurable: true, get: getter });
+
+    expect(evaluate('_index(0)', { _: null, indexes: inherited })).toBeNull();
+    expect(evaluate('_index(0)', { _: null, indexes: accessor })).toBeNull();
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid and out-of-range wildcard index arguments before lookup', () => {
+    const indexes = [4, 7];
+    Object.defineProperties(indexes, {
+      '-1': { value: 91 },
+      '0.5': { value: 92 },
+      '9007199254740992': { value: 93 },
+    });
+    const inheritedGetter = vi.fn(() => 94);
+    Object.setPrototypeOf(
+      indexes,
+      Object.create(Array.prototype, {
+        2: { get: inheritedGetter },
+      }),
+    );
+
+    expect(evaluate('_index(-1)', { _: null, indexes })).toBeNull();
+    expect(evaluate('_index(0.5)', { _: null, indexes })).toBeNull();
+    expect(evaluate('_index(9007199254740992)', { _: null, indexes })).toBeNull();
+    expect(evaluate('_index(2)', { _: null, indexes })).toBeNull();
+    expect(evaluate('_index(_.position)', { _: { position: 1n }, indexes })).toBeNull();
+    expect(inheritedGetter).not.toHaveBeenCalled();
   });
 
   it('propagates null through member, arithmetic, unary, and builtin operations', () => {
@@ -208,6 +313,9 @@ describe('projection expressions', () => {
     'this.value',
     'globalThis.value',
     '__proto__',
+    '_index',
+    'and',
+    'or',
     '_.constructor',
     '_.prototype',
     '_.__proto__',

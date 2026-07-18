@@ -1,6 +1,6 @@
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import { ProjectionCompileError } from './expression.js';
+import { ProjectionCompileError, isProjectionStateName } from './expression.js';
 
 export type ArrowTypeName =
   'int8' | 'uint8' | 'int16' | 'uint16' | 'int32' | 'uint32' | 'int64' | 'uint64' | 'bool' | 'utf8';
@@ -80,6 +80,41 @@ const projectionSpec = z.strictObject({
 const issuePath = (path: readonly PropertyKey[]): string =>
   path.length === 0 ? '$' : path.map(String).join('.');
 
+const readOwnDataProperty = (value: unknown, key: string): unknown => {
+  if (value === null || typeof value !== 'object') return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+};
+
+const validateRawMappingNames = (yamlValue: unknown): void => {
+  const tables = readOwnDataProperty(yamlValue, 'tables');
+  if (!Array.isArray(tables)) return;
+
+  for (const [tableIndex, table] of tables.entries()) {
+    for (const section of ['state', 'columns'] as const) {
+      const mapping = readOwnDataProperty(table, section);
+      if (mapping === null || typeof mapping !== 'object' || Array.isArray(mapping)) continue;
+
+      for (const name of Object.keys(mapping)) {
+        if (!isSafeIdentifier(name)) {
+          throw new ProjectionCompileError(
+            'PROJECTION_SPEC_INVALID',
+            `tables.${tableIndex}.${section}.${name}`,
+            'must be an identifier-safe name',
+          );
+        }
+        if (section === 'state' && !isProjectionStateName(name)) {
+          throw new ProjectionCompileError(
+            'PROJECTION_SPEC_INVALID',
+            `tables.${tableIndex}.state.${name}`,
+            'state name is reserved by the expression evaluator',
+          );
+        }
+      }
+    }
+  }
+};
+
 export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
   let parsedYaml: unknown;
   try {
@@ -88,6 +123,8 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
     const detail = error instanceof Error ? error.message : String(error);
     throw new ProjectionCompileError('PROJECTION_YAML_INVALID', '$', detail);
   }
+
+  validateRawMappingNames(parsedYaml);
 
   const parsed = projectionSpec.safeParse(parsedYaml);
   if (!parsed.success) {
