@@ -132,8 +132,9 @@ engine-synthesized `segments_table`: `{ segment_id, stream_id, <feed-table>_id (
 offset, _src_start, _src_end }`. The hex UI joins through it for precise multi-range highlighting.
 
 **Flush.** `finish()` first flushes one flow row per stream into the declared `table`, projected
-from a synthetic root: the key extractor's metadata plus engine counters — `segment_count`,
-`byte_count`, `message_count`, `pending_bytes` (contiguous-but-unframed remainder, e.g. capture cut
+from a synthetic root: the key extractor's metadata plus engine counters — `segment_count` and
+`byte_count` (contributed segments/bytes after dedup — dropped duplicates and skipped empties do
+not count), `message_count`, `pending_bytes` (contiguous-but-unframed remainder, e.g. capture cut
 mid-message), and `status` (`ok` | `gap` | `truncated` | `error`; `gap` = a discontiguity that
 never filled). Flow rows use the eagerly-reserved keys; their `_src_*` is the flow's coarse span.
 Then the existing finish path runs.
