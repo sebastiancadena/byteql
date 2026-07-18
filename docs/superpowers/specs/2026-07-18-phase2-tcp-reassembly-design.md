@@ -55,12 +55,19 @@ first match wins:
 
 ```yaml
 dissect:
-  - from: tcp_segment
+  - from: tcp
     payload: _.body
     chain:
       - { when: _.dst_port == 443 or _.src_port == 443, stream: tls_stream }
       - { when: _.dst_port == 53 or _.src_port == 53, stream: dns_tcp_stream }
 ```
+
+A `stream:` link is only legal in a dissect entry whose `from` is a **table** — chains rooted
+at a parser id run with the outer `keysByTable` and never see the feeding table's row key,
+which the segments link table records. All entries feeding one stream must share the same
+`from` table (the stream's *feed table*); its key column (e.g. `tcp_id`) becomes the segments
+table's reference column. This also implicitly forbids nested reassembly: dissect entries
+rooted at a message parser are parser-rooted and therefore cannot contain stream links.
 
 **2. A top-level `streams:` section**, one declaration per protocol (two declarations feeding the
 same flow table is precedented — ipv4/ipv6 both feed `ip`):
@@ -85,8 +92,11 @@ streams:
   reaches the IP layer's addresses. `key` is the directional flow key
   (`"10.0.0.1:443→10.0.0.2:5555"`); `root` is flow metadata merged into the flow row's projection
   root (first contribution wins). `null` → segment skipped with an issue.
-- **Framer** — `(buffer: Uint8Array) => number | null`. Byte length of the first complete message
-  at position 0, or `null` if more data is needed. The engine loops it over the contiguous prefix.
+- **Framer** — `(buffer) => number | null`. Total byte length of the first message once
+  determinable from the header — the returned length MAY exceed `buffer.length`, in which case
+  the engine waits for more contiguous bytes; `null` when it cannot be determined yet. A throw
+  or a non-positive length *stalls* the stream's framing: the stall clears only when a rebase
+  (below) changes byte 0, and a stream still stalled at `finish()` is status `error`.
 
 **Message chain context**: `when` sees `{ offset, length }` (stream-relative), so TLS guards
 `_.offset == 0` instead of framing-parsing every app-data record; the parser receives the framed
@@ -106,9 +116,13 @@ buffer. `keysSnapshot` is the current `keysByTable` — this is what makes paren
 with zero new machinery. A new flow eagerly reserves the next `streams`-table key, so `stream_id`
 exists from first contribution. Empty payloads (pure ACKs, SYN/FIN) contribute nothing.
 
-**Ordering and dedup.** The first contribution's offset is the stream base; offsets become
-base-relative. Contributions insert sorted by offset. Exact duplicates (same offset + length) drop
-silently. A below-base segment or a partial overlap marks the stream `error` (one issue row,
+**Ordering and dedup.** The stream base is the lowest offset seen so far: while nothing has been consumed, a
+contribution below the current base *rebases* the stream downward (shifting buffered data)
+and clears any framing stall — this is how an out-of-order first segment (captured before the
+true stream start) reassembles instead of erroring. Once a message has been framed
+(`consumed > 0`) the base is locked and a below-base segment marks the stream `error`.
+Contributions insert sorted by offset. Exact duplicates (same offset + length) drop
+silently. A partial overlap marks the stream `error` (one issue row,
 reassembly stops, emitted messages kept). Cap overflow stops the stream with status `truncated`.
 
 **Framing loop.** After each contribution, run the framer over the unconsumed contiguous prefix:
@@ -121,6 +135,7 @@ whose arrival allowed framing, matching Wireshark's "reassembled in frame N" (in
 out-of-order case where an earlier-offset segment completes) — and the engine injects a `stream_id`
 int64 column into every message-fed table (same mechanism as the `parent_key` column injection).
 `dns` is also fed from the UDP path, so `stream_id` is null on UDP rows.
+A message parser's optional `resolve` is ignored — stream messages use the coarse contributing-segment span; deeper dissects chained off a message parser likewise compose against the coarse span start.
 
 **Provenance.** Each contribution's absolute file range is kept, so a message spanning `[s, e)` in
 stream space maps back to exact per-segment ranges. The message row's `_src_start/_src_end` is the
@@ -141,7 +156,7 @@ Then the existing finish path runs.
 
 ### pcap pack changes
 
-- **`pcap.tables.yaml`**: the two single-segment `from: tcp_segment` chain links are **replaced**
+- **`pcap.tables.yaml`**: the two single-segment `from: tcp` chain links are **replaced**
   by the stream links above — single-segment is the degenerate case (first contribution frames
   immediately), so the old path would be dead code. Two stream declarations (`tls_stream`,
   `dns_tcp_stream`) share the flow table. Two new tables: `streams` (`stream_id` key; `src_addr`,
