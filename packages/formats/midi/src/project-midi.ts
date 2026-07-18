@@ -1,13 +1,13 @@
 import {
   IssueCollector,
   compileProjection,
+  createProjectionSession,
   parseProjectionSpec,
-  projectTree,
   projectedTableToArrow,
   tableToIpc,
+  type FinishedTable,
   type IssueReport,
   type ParseResult,
-  type ProjectedTable,
   type TableTransfer,
 } from '@byteql/core';
 
@@ -37,11 +37,6 @@ const nullability: Readonly<Record<string, ReadonlySet<string>>> = {
   tempo: new Set(),
   errors: new Set(['track', '_src_start', '_src_end']),
 };
-
-interface MutableProjectedTable extends ProjectedTable {
-  columns: Record<string, unknown[]>;
-  rowCount: number;
-}
 
 interface ProjectionEventBody {
   note: number | null;
@@ -92,37 +87,6 @@ const headerNode = (header: MidiHeader) => ({
   division: header.division,
 });
 
-const mutableCopy = (table: ProjectedTable): MutableProjectedTable => ({
-  name: table.name,
-  columns: Object.fromEntries(
-    Object.entries(table.columns).map(([name, values]) => [name, Array.from(values)]),
-  ),
-  types: { ...table.types },
-  rowCount: table.rowCount,
-});
-
-const tableKey = (table: MutableProjectedTable): string => {
-  const name = Object.keys(table.columns).find((column) => column.endsWith('_id'));
-  if (!name) throw new Error(`PROJECTION_KEY_MISSING: table ${table.name} has no synthetic key`);
-  return name;
-};
-
-const appendProjected = (target: MutableProjectedTable, source: ProjectedTable): void => {
-  const key = tableKey(target);
-  for (const [name, values] of Object.entries(source.columns)) {
-    const output = target.columns[name];
-    if (!output) throw new Error(`PROJECTION_SCHEMA_MISMATCH: ${target.name}.${name}`);
-    if (name === key) {
-      for (let index = 0; index < values.length; index += 1) {
-        output.push(BigInt(target.rowCount + index + 1));
-      }
-    } else {
-      output.push(...values);
-    }
-  }
-  target.rowCount += source.rowCount;
-};
-
 const issueReport = (stage: string, track: TrackChunk, error: unknown): IssueReport => {
   if (error instanceof MidiParseError) {
     return {
@@ -150,14 +114,13 @@ const issueReport = (stage: string, track: TrackChunk, error: unknown): IssueRep
   };
 };
 
-const toTransfer = (table: ProjectedTable): TableTransfer => {
-  const arrow = projectedTableToArrow(table);
-  const nullableColumns = nullability[table.name] ?? new Set<string>();
+const toTransfer = (finished: FinishedTable): TableTransfer => {
+  const nullableColumns = nullability[finished.name] ?? new Set<string>();
   return {
-    name: table.name,
-    ipc: tableToIpc(arrow),
-    rowCount: table.rowCount,
-    columns: arrow.schema.fields.map((field) => ({
+    name: finished.name,
+    ipc: tableToIpc(finished.arrow),
+    rowCount: finished.rowCount,
+    columns: finished.arrow.schema.fields.map((field) => ({
       name: field.name,
       type: field.type.toString(),
       nullable: nullableColumns.has(field.name),
@@ -247,11 +210,11 @@ export async function parseAndProjectMidi(
   }
 
   reportProgress(onProgress, 'projecting', 0, total);
-  const baseRoot = { hdr: headerNode(container.header), tracks: [] };
-  const baseTables = projectTree(compiledProjection, baseRoot, {
-    resolve: () => container.header.range,
-  }).map(mutableCopy);
-  const byName = new Map(baseTables.map((table) => [table.name, table]));
+  const session = createProjectionSession(compiledProjection);
+  session.project(
+    { hdr: headerNode(container.header), tracks: [] },
+    { resolve: () => container.header.range },
+  );
 
   for (const [index] of normalizedTracks.entries()) {
     throwIfAborted(signal);
@@ -261,23 +224,20 @@ export async function parseAndProjectMidi(
       const tracks: unknown[] = new Array(track.index + 1);
       tracks[track.index] = { events: { event: safeEvents } };
       const root = { hdr: headerNode(container.header), tracks };
-
       try {
-        const projected = projectTree(compiledProjection, root, {
-          resolve(tableName, anchor) {
-            if (tableName === 'header') return container.header.range;
-            const eventIndex = anchor.indexes[1];
-            const source = eventIndex === undefined ? undefined : normalized.events[eventIndex];
-            if (!source) throw new Error(`PROVENANCE_EVENT_MISSING: ${track.index}:${eventIndex}`);
-            return { start: source.sourceStart, end: source.sourceEnd };
+        session.project(
+          root,
+          {
+            resolve(tableName, anchor) {
+              if (tableName === 'header') return container.header.range;
+              const eventIndex = anchor.indexes[1];
+              const source = eventIndex === undefined ? undefined : normalized.events[eventIndex];
+              if (!source) throw new Error(`PROVENANCE_EVENT_MISSING: ${track.index}:${eventIndex}`);
+              return { start: source.sourceStart, end: source.sourceEnd };
+            },
           },
-        });
-        for (const table of projected) {
-          if (table.name === 'header') continue;
-          const target = byName.get(table.name);
-          if (!target) throw new Error(`PROJECTION_TABLE_MISSING: ${table.name}`);
-          appendProjected(target, table);
-        }
+          { tables: ['events', 'tempo'] },
+        );
       } catch (error) {
         collector.report(issueReport('projecting', track, error));
       }
@@ -288,7 +248,11 @@ export async function parseAndProjectMidi(
   }
 
   throwIfAborted(signal);
-  const tables = [...baseTables, collector.table()].map(toTransfer);
+  const errors = collector.table();
+  const tables = [
+    ...session.finish(),
+    { name: errors.name, arrow: projectedTableToArrow(errors), rowCount: errors.rowCount },
+  ].map(toTransfer);
   const smpte = container.header.divisionMode === 'smpte';
   return {
     format: { id: 'standard_midi_file', title: 'Standard MIDI file' },

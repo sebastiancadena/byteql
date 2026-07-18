@@ -29,3 +29,5 @@ export type {
   ProvenanceResolver,
   SourceRange,
 } from './projection/project.js';
+export { createProjectionSession } from './projection/session.js';
+export type { FinishedTable, ProjectCallOptions, ProjectionSession } from './projection/session.js';
