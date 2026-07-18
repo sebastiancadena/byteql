@@ -14,11 +14,14 @@ export type ProjectionCompileErrorCode =
   | 'PROJECTION_YAML_INVALID'
   | 'PROJECTION_SPEC_INVALID'
   | 'PROJECTION_TABLE_DUPLICATE'
+  | 'PROJECTION_ANCHOR_INVALID'
+  | 'PROJECTION_STATE_SCOPE_INVALID'
   | 'EXPRESSION_PARSE_ERROR'
   | 'EXPRESSION_NODE_FORBIDDEN'
   | 'EXPRESSION_CALL_FORBIDDEN'
   | 'EXPRESSION_IDENTIFIER_FORBIDDEN'
-  | 'EXPRESSION_MEMBER_FORBIDDEN';
+  | 'EXPRESSION_MEMBER_FORBIDDEN'
+  | 'EXPRESSION_STATE_UNDECLARED';
 
 export class ProjectionCompileError extends Error {
   readonly code: ProjectionCompileErrorCode;
@@ -263,6 +266,55 @@ export const compileExpression = (source: string): CompiledExpression => {
   const compiled = Object.freeze({ source });
   compiledAsts.set(compiled, ast);
   return compiled;
+};
+
+const collectStateReferences = (node: Expression, references: Set<string>): void => {
+  switch (node.type) {
+    case 'Literal':
+      return;
+    case 'Identifier': {
+      const name = (node as Identifier).name;
+      if (!contextIdentifierNames.has(name)) references.add(name);
+      return;
+    }
+    case 'MemberExpression':
+      collectStateReferences((node as MemberExpression).object, references);
+      return;
+    case 'UnaryExpression':
+      collectStateReferences((node as UnaryExpression).argument, references);
+      return;
+    case 'BinaryExpression': {
+      const binary = node as BinaryExpression;
+      collectStateReferences(binary.left, references);
+      collectStateReferences(binary.right, references);
+      return;
+    }
+    case 'ConditionalExpression': {
+      const conditional = node as ConditionalExpression;
+      collectStateReferences(conditional.test, references);
+      collectStateReferences(conditional.consequent, references);
+      collectStateReferences(conditional.alternate, references);
+      return;
+    }
+    case 'CallExpression':
+      for (const argument of (node as CallExpression).arguments) {
+        collectStateReferences(argument, references);
+      }
+      return;
+    default:
+      return;
+  }
+};
+
+export const getExpressionStateReferences = (expression: CompiledExpression): ReadonlySet<string> => {
+  const ast = compiledAsts.get(expression);
+  if (!ast) {
+    throw expressionError('EXPRESSION_NODE_FORBIDDEN', 'expression was not produced by compileExpression');
+  }
+
+  const references = new Set<string>();
+  collectStateReferences(ast, references);
+  return references;
 };
 
 const hasOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key);

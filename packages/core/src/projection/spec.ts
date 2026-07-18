@@ -5,13 +5,25 @@ import { ProjectionCompileError, isProjectionStateName } from './expression.js';
 export type ArrowTypeName =
   'int8' | 'uint8' | 'int16' | 'uint16' | 'int32' | 'uint32' | 'int64' | 'uint64' | 'bool' | 'utf8';
 
+export interface ProjectionStateSpec {
+  scope: string;
+  init: number;
+  update: string;
+}
+
+export interface ProjectionColumnSpec {
+  expr: string;
+  type: ArrowTypeName;
+  when?: string;
+}
+
 export interface TableSpec {
   name: string;
   rows: string;
   where?: string;
   key: string;
-  state?: Record<string, { scope: string; init: number; update: string }>;
-  columns: Record<string, { expr: string; type: ArrowTypeName; when?: string }>;
+  state?: Record<string, ProjectionStateSpec>;
+  columns: Record<string, ProjectionColumnSpec>;
 }
 
 export interface ProjectionSpec {

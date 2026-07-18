@@ -7,4 +7,19 @@ export type {
   ProjectionCompileErrorCode,
 } from './projection/expression.js';
 export { parseProjectionSpec } from './projection/spec.js';
-export type { ArrowTypeName, ProjectionSpec, TableSpec } from './projection/spec.js';
+export type {
+  ArrowTypeName,
+  ProjectionColumnSpec,
+  ProjectionSpec,
+  ProjectionStateSpec,
+  TableSpec,
+} from './projection/spec.js';
+export { compileAnchor, traverseAnchor } from './projection/anchors.js';
+export type { AnchorMatch, AnchorStep, CompiledAnchor } from './projection/anchors.js';
+export { compileProjection, projectTree } from './projection/project.js';
+export type {
+  CompiledProjection,
+  ProjectedTable,
+  ProvenanceResolver,
+  SourceRange,
+} from './projection/project.js';
