@@ -139,7 +139,7 @@
     stopTicker();
     ticker = globalThis.setInterval(() => {
       elapsed = Math.min(duration, engine.positionSeconds());
-      if (duration > 0 && elapsed >= duration) {
+      if (rows.length > 0 && elapsed >= duration) {
         engine.stop();
         playing = false;
         stopTicker();

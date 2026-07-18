@@ -80,9 +80,9 @@ describe('AudioViewer', () => {
     expect(engine.seek).toHaveBeenCalledWith(0.75);
   });
 
-  it('stops the engine at the result duration so an unmatched attack cannot leak', async () => {
+  it('stops zero-duration scheduled rows so an unmatched attack cannot leak', async () => {
     const table = tableFromArrays({
-      seconds: [1],
+      seconds: [0],
       note: [60],
       velocity: [127],
       kind: ['note_on'],
@@ -92,9 +92,6 @@ describe('AudioViewer', () => {
     await vi.waitFor(() => expect(engine.load).toHaveBeenCalledOnce());
     vi.useFakeTimers();
     await fireEvent.click(screen.getByRole('button', { name: 'Play' }));
-    await fireEvent.input(screen.getByRole('slider', { name: 'Seek playback' }), {
-      target: { value: '1' },
-    });
 
     await vi.advanceTimersByTimeAsync(100);
 

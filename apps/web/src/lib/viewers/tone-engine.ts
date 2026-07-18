@@ -38,7 +38,7 @@ export interface SynthPort {
 
 export interface ToneEngineDependencies {
   startAudio(): Promise<void>;
-  createSynth(): SynthPort;
+  createSynth(channel: number | null): SynthPort;
   transport: TransportPort;
 }
 
@@ -55,8 +55,9 @@ export class ToneAudioEngine implements AudioEngine {
   private rows: readonly AudioRow[] = [];
   private readonly scheduledIds = new Set<number>();
   private readonly activeNotes = new Map<string, number>();
-  private synth: SynthPort | null = null;
+  private readonly synths = new Map<number | null, SynthPort>();
   private audioStarted: Promise<void> | null = null;
+  private operationGeneration = 0;
   private playing = false;
   private disposed = false;
 
@@ -67,19 +68,21 @@ export class ToneAudioEngine implements AudioEngine {
   async load(rows: readonly AudioRow[]): Promise<void> {
     this.assertUsable();
     this.stop();
+    this.disposeSynths();
     this.rows = [...rows];
   }
 
   async play(): Promise<void> {
     this.assertUsable();
     if (this.playing) return;
+    const operation = ++this.operationGeneration;
     this.audioStarted ??= this.dependencies.startAudio().catch((error: unknown) => {
       this.audioStarted = null;
       throw error;
     });
     await this.audioStarted;
-    this.assertUsable();
-    this.synth ??= this.dependencies.createSynth();
+    if (!this.isCurrent(operation)) return;
+    this.ensureSynths();
     this.scheduleFrom(this.positionSeconds());
     this.dependencies.transport.start();
     this.playing = true;
@@ -87,6 +90,7 @@ export class ToneAudioEngine implements AudioEngine {
 
   pause(): void {
     if (this.disposed) return;
+    this.invalidatePendingPlay();
     this.dependencies.transport.pause();
     this.releaseAndClear();
     this.playing = false;
@@ -94,6 +98,7 @@ export class ToneAudioEngine implements AudioEngine {
 
   stop(): void {
     if (this.disposed) return;
+    this.invalidatePendingPlay();
     this.dependencies.transport.stop();
     this.releaseAndClear();
     this.playing = false;
@@ -101,6 +106,7 @@ export class ToneAudioEngine implements AudioEngine {
 
   seek(seconds: number): void {
     if (this.disposed) return;
+    this.invalidatePendingPlay();
     const resume = this.playing;
     if (resume) this.dependencies.transport.pause();
     this.releaseAndClear();
@@ -119,8 +125,7 @@ export class ToneAudioEngine implements AudioEngine {
   dispose(): void {
     if (this.disposed) return;
     this.stop();
-    this.synth?.dispose();
-    this.synth = null;
+    this.disposeSynths();
     this.rows = [];
     this.audioStarted = null;
     this.disposed = true;
@@ -134,11 +139,12 @@ export class ToneAudioEngine implements AudioEngine {
       let id = 0;
       id = this.dependencies.transport.schedule((time) => {
         this.scheduledIds.delete(id);
-        if (this.disposed || !this.synth) return;
+        const synth = this.synths.get(row.channel);
+        if (this.disposed || !synth) return;
         const key = keyFor(row);
         if (row.kind === 'note_on') {
           this.activeNotes.set(key, (this.activeNotes.get(key) ?? 0) + 1);
-          this.synth.triggerAttack(row.note, time, Math.min(127, Math.max(0, row.velocity)) / 127);
+          synth.triggerAttack(row.note, time, Math.min(127, Math.max(0, row.velocity)) / 127);
           return;
         }
 
@@ -146,7 +152,7 @@ export class ToneAudioEngine implements AudioEngine {
         if (count === 0) return;
         if (count === 1) this.activeNotes.delete(key);
         else this.activeNotes.set(key, count - 1);
-        this.synth.triggerRelease(row.note, time);
+        synth.triggerRelease(row.note, time);
       }, row.seconds);
       this.scheduledIds.add(id);
     }
@@ -156,7 +162,28 @@ export class ToneAudioEngine implements AudioEngine {
     for (const id of this.scheduledIds) this.dependencies.transport.clear(id);
     this.scheduledIds.clear();
     this.activeNotes.clear();
-    this.synth?.releaseAll();
+    for (const synth of this.synths.values()) synth.releaseAll();
+  }
+
+  private ensureSynths(): void {
+    for (const row of this.rows) {
+      if (!this.synths.has(row.channel)) {
+        this.synths.set(row.channel, this.dependencies.createSynth(row.channel));
+      }
+    }
+  }
+
+  private disposeSynths(): void {
+    for (const synth of this.synths.values()) synth.dispose();
+    this.synths.clear();
+  }
+
+  private invalidatePendingPlay(): void {
+    this.operationGeneration += 1;
+  }
+
+  private isCurrent(operation: number): boolean {
+    return !this.disposed && operation === this.operationGeneration;
   }
 
   private assertUsable(): void {
