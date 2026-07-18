@@ -1,3 +1,5 @@
+import type { MidiParseError } from './errors.js';
+
 export interface SourceRange {
   start: number;
   end: number;
@@ -22,4 +24,19 @@ export interface TrackChunk {
 export interface MidiContainer {
   header: MidiHeader;
   tracks: TrackChunk[];
+}
+
+export interface NormalizedEventMap {
+  index: number;
+  normalizedStart: number;
+  normalizedEnd: number;
+  sourceStart: number;
+  sourceEnd: number;
+  deltaTime: number;
+}
+
+export interface NormalizedTrack {
+  bytes: Uint8Array;
+  events: NormalizedEventMap[];
+  error?: MidiParseError;
 }
