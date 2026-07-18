@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { vlq } from '../test/fixtures.js';
 import { normalizeTrack } from './index.js';
 import type { TrackChunk } from './index.js';
 
@@ -12,6 +13,15 @@ function trackChunk(bodyStart: number, body: Uint8Array): TrackChunk {
     bodyEnd: bodyStart + body.length,
     body,
   };
+}
+
+function largeSystemEvent(status: 0xf0 | 0xff, payloadLength: number): Uint8Array {
+  const prefix = status === 0xff ? u8(0, status, 0x01) : u8(0, status);
+  const length = vlq(payloadLength);
+  const body = new Uint8Array(prefix.length + length.length + payloadLength);
+  body.set(prefix);
+  body.set(length, prefix.length);
+  return body;
 }
 
 describe('normalizeTrack', () => {
@@ -102,6 +112,29 @@ describe('normalizeTrack', () => {
         normalizedEnd: 133,
         sourceStart: 100,
         sourceEnd: 233,
+      },
+    ]);
+  });
+
+  it.each([
+    ['meta', 0xff],
+    ['SysEx', 0xf0],
+  ] as const)('normalizes a large %s payload without losing end-exclusive ranges', (_label, status) => {
+    const bodyStart = 600;
+    const body = largeSystemEvent(status, 200_000);
+
+    const result = normalizeTrack(trackChunk(bodyStart, body));
+
+    expect(result.error).toBeUndefined();
+    expect(result.bytes).toEqual(body);
+    expect(result.events).toEqual([
+      {
+        index: 0,
+        deltaTime: 0,
+        normalizedStart: 0,
+        normalizedEnd: body.length,
+        sourceStart: bodyStart,
+        sourceEnd: bodyStart + body.length,
       },
     ]);
   });

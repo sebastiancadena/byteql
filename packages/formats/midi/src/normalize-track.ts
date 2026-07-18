@@ -32,7 +32,9 @@ function appendCompletedEvent(
   sourceEnd: number,
 ): void {
   const normalizedStart = normalized.length;
-  normalized.push(...eventBytes);
+  for (const byte of eventBytes) {
+    normalized.push(byte);
+  }
   events.push({
     index: events.length,
     deltaTime,
