@@ -280,31 +280,33 @@ Compile the spec once per file-load into a small IR: anchor selectors become a s
 
 ```
 byteql/
-├── pnpm-workspace.yaml              # pnpm
-├── scripts/
-│   └── compile-ksy.mjs              # build step: .ksy → JS parsers (debug mode on)
+├── pnpm-workspace.yaml              # pnpm: apps/*, packages/*, packages/formats/*
 ├── packages/
 │   ├── core/                        # zero-DOM, runs in Node and workers
 │   │   └── src/
 │   │       ├── projection/
 │   │       │   ├── spec.ts          # YAML schema types + zod validation
-│   │       │   ├── compile.ts       # spec → IR, static checks vs ksy
-│   │       │   └── eval.ts          # tree walk, state registers, row emit
-│   │       ├── arrow/builder.ts     # per-table Arrow batch builders
-│   │       ├── kaitai/run.ts        # runtime glue + _debug offset extraction
+│   │       │   ├── expression.ts    # safe expression parse/validate/evaluate
+│   │       │   ├── anchors.ts       # anchor-path compile + deterministic traversal
+│   │       │   └── project.ts       # state registers, row emit, keys, provenance
+│   │       ├── arrow/build.ts       # per-table Arrow vectors + IPC serialization
+│   │       ├── protocol.ts          # worker/table-transfer contracts shared with the app
 │   │       └── index.ts
 │   ├── formats/
 │   │   └── midi/
-│   │       ├── standard_midi_file.ksy   # vendored, likely patched (gotchas)
+│   │       ├── standard_midi_file.ksy   # vendored, patched (gotchas)
 │   │       ├── midi.tables.yaml
 │   │       ├── queries.yaml             # canned queries (double as LLM few-shots)
+│   │       ├── scripts/compile.mjs      # build step: .ksy → JS parsers (debug mode on)
 │   │       └── gen/                     # ksc output, gitignored
-│   ├── db/src/duck.worker.ts        # duckdb-wasm wrapper: init, registerArrow, query
-│   └── app/                         # Vite + Solid
+│   ├── db/src/browser.ts            # duckdb-wasm wrapper: init, registerArrow, query
+│   └── ...
+├── apps/
+│   └── web/                         # Vite + Svelte
 │       └── src/
 │           ├── workers/parse.worker.ts  # framer→kaitai→projection→Arrow IPC out
-│           ├── components/          # FileDrop, Grid, SqlConsole, QueryChips
-│           └── audio/player.ts      # Tone.js scheduler from result rows
+│           ├── components/          # explorer, grid, SQL editor, inspector, viewers
+│           └── lib/viewers/tone-engine.ts  # Tone.js scheduler from result rows
 ```
 
 Dependency direction is the architecture in miniature: `app → db → core ← formats`. `core` never imports DOM types — that keeps it worker-reusable and Node-testable (projection tests run against fixture `.mid` files in plain vitest, no browser).
