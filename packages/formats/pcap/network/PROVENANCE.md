@@ -3,12 +3,12 @@
 These `.ksy` files are **byte-identical, unmodified** copies vendored from the
 upstream Kaitai format gallery for the ByteQL pcap pack (PRD Phase 1).
 
-| Field | Value |
-|---|---|
-| Source repo | <https://github.com/kaitai-io/kaitai_struct_formats> (`network/`) |
-| Web gallery | <https://formats.kaitai.io/> |
-| Pinned commit | `1818b5447c1aaf51084999f1ce2c6c40b57b752e` (`master`) |
-| Fetched | 2026-07-18 |
+| Field         | Value                                                             |
+| ------------- | ----------------------------------------------------------------- |
+| Source repo   | <https://github.com/kaitai-io/kaitai_struct_formats> (`network/`) |
+| Web gallery   | <https://formats.kaitai.io/>                                      |
+| Pinned commit | `1818b5447c1aaf51084999f1ce2c6c40b57b752e` (`master`)             |
+| Fetched       | 2026-07-18                                                        |
 
 Kept unmodified on purpose: this directory is the clean provenance baseline.
 The byteql-specific patching (see **Phase 1 patch notes** below) happens on top
@@ -28,21 +28,21 @@ The SPDX id is declared in each file's `meta.license`.
 
 ### ByteQL dissect chain (PRD Appendix A worked example)
 
-| File | License | Role in byteql |
-|---|---|---|
-| `pcap.ksy` | CC0-1.0 | Container. **Not** compiled as an eager Kaitai root — a thin streaming framer replaces it (see notes). Source of the linktype/magic enums. |
-| `ethernet_frame.ksy` | CC0-1.0 | L2 dissector. `ether_type` selects ipv4/ipv6. |
-| `ipv4_packet.ksy` | CC0-1.0 | L3 dissector. `protocol` selects tcp/udp/icmp. |
-| `ipv6_packet.ksy` | CC0-1.0 | L3 dissector. `next_header_type` selects tcp/udp/icmp. |
-| `tcp_segment.ksy` | CC0-1.0 | L4 dissector. Port selects dns/tls. |
-| `udp_datagram.ksy` | CC0-1.0 | L4 dissector. Port 53 selects dns. |
-| `dns_packet.ksy` | CC0-1.0 | Leaf parser (application layer). |
+| File                 | License | Role in byteql                                                                                                                             |
+| -------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pcap.ksy`           | CC0-1.0 | Container. **Not** compiled as an eager Kaitai root — a thin streaming framer replaces it (see notes). Source of the linktype/magic enums. |
+| `ethernet_frame.ksy` | CC0-1.0 | L2 dissector. `ether_type` selects ipv4/ipv6.                                                                                              |
+| `ipv4_packet.ksy`    | CC0-1.0 | L3 dissector. `protocol` selects tcp/udp/icmp.                                                                                             |
+| `ipv6_packet.ksy`    | CC0-1.0 | L3 dissector. `next_header_type` selects tcp/udp/icmp.                                                                                     |
+| `tcp_segment.ksy`    | CC0-1.0 | L4 dissector. Port selects dns/tls.                                                                                                        |
+| `udp_datagram.ksy`   | CC0-1.0 | L4 dissector. Port 53 selects dns.                                                                                                         |
+| `dns_packet.ksy`     | CC0-1.0 | Leaf parser (application layer).                                                                                                           |
 
 ### Explicit v1-scope extra
 
-| File | License | Role |
-|---|---|---|
-| `tls_client_hello.ksy` | MIT | Leaf parser. PRD scopes TLS to "ClientHello fits in one segment"; reassembly is Phase 2+. |
+| File                   | License | Role                                                                                      |
+| ---------------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `tls_client_hello.ksy` | MIT     | Leaf parser. PRD scopes TLS to "ClientHello fits in one segment"; reassembly is Phase 2+. |
 
 ### Pulled in only to keep the upstream set self-contained & compilable
 
@@ -51,11 +51,11 @@ declarative dissect registry supersedes Kaitai's auto-descent, so these become
 unused once the `body` fields below are patched to raw blobs — candidates for
 removal in Phase 1.
 
-| File | License | Why present |
-|---|---|---|
+| File                | License | Why present                                                                                     |
+| ------------------- | ------- | ----------------------------------------------------------------------------------------------- |
 | `protocol_body.ksy` | CC0-1.0 | Kaitai's protocol-number "router" imported by ipv4/ipv6. ByteQL's dissect registry replaces it. |
-| `icmp_packet.ksy` | CC0-1.0 | Imported by `protocol_body`; also a legitimate future L4 dissector target. |
-| `packet_ppi.ksy` | CC0-1.0 | PPI linktype, imported by `pcap.ksy`. Only relevant if we support DLT 192. |
+| `icmp_packet.ksy`   | CC0-1.0 | Imported by `protocol_body`; also a legitimate future L4 dissector target.                      |
+| `packet_ppi.ksy`    | CC0-1.0 | PPI linktype, imported by `pcap.ksy`. Only relevant if we support DLT 192.                      |
 
 ## Import graph (upstream, as vendored)
 
