@@ -240,8 +240,47 @@ describe('projection expressions', () => {
   });
 
   it('ip6_str compresses the longest zero run', () => {
-    const addr = new Uint8Array(16); addr[0] = 0x20; addr[1] = 0x01; addr[15] = 0x01;
+    const addr = new Uint8Array(16);
+    addr[0] = 0x20;
+    addr[1] = 0x01;
+    addr[15] = 0x01;
     expect(evaluate('ip6_str(_.a)', { _: { a: addr } })).toBe('2001::1');
+  });
+
+  it('ip6_str formats all-zero address as ::', () => {
+    const addr = new Uint8Array(16);
+    expect(evaluate('ip6_str(_.a)', { _: { a: addr } })).toBe('::');
+  });
+
+  it('ip6_str compresses a leading zero run', () => {
+    const addr = new Uint8Array(16);
+    addr[12] = 0x12;
+    addr[13] = 0x34;
+    addr[14] = 0x56;
+    addr[15] = 0x78;
+    expect(evaluate('ip6_str(_.a)', { _: { a: addr } })).toBe('::1234:5678');
+  });
+
+  it('ip6_str compresses a trailing zero run', () => {
+    const addr = new Uint8Array(16);
+    addr[0] = 0x12;
+    addr[1] = 0x34;
+    addr[2] = 0x56;
+    addr[3] = 0x78;
+    expect(evaluate('ip6_str(_.a)', { _: { a: addr } })).toBe('1234:5678::');
+  });
+
+  it('ip6_str does not compress single zero group', () => {
+    const addr = new Uint8Array(16);
+    addr[0] = 0x12;
+    addr[1] = 0x34;
+    addr[4] = 0x56;
+    addr[5] = 0x78;
+    addr[8] = 0x9a;
+    addr[9] = 0xbc;
+    addr[12] = 0xde;
+    addr[13] = 0xf0;
+    expect(evaluate('ip6_str(_.a)', { _: { a: addr } })).toBe('1234:0:5678:0:9abc:0:def0:0');
   });
 
   it('reads wildcard indexes only from own data properties', () => {

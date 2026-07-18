@@ -610,18 +610,30 @@ const builtins = {
     const groups: number[] = [];
     for (let i = 0; i < 16; i += 2) groups.push((value[i]! << 8) | value[i + 1]!);
     // RFC 5952: compress the longest run (length >= 2) of zero groups to "::".
-    let bestStart = -1, bestLen = 0, curStart = -1, curLen = 0;
+    let bestStart = -1,
+      bestLen = 0,
+      curStart = -1,
+      curLen = 0;
     for (let i = 0; i < 8; i += 1) {
       if (groups[i] === 0) {
         if (curStart < 0) curStart = i;
         curLen += 1;
-        if (curLen > bestLen) { bestLen = curLen; bestStart = curStart; }
-      } else { curStart = -1; curLen = 0; }
+        if (curLen > bestLen) {
+          bestLen = curLen;
+          bestStart = curStart;
+        }
+      } else {
+        curStart = -1;
+        curLen = 0;
+      }
     }
     const hex = (g: number): string => g.toString(16);
     if (bestLen < 2) return groups.map(hex).join(':');
     const head = groups.slice(0, bestStart).map(hex).join(':');
-    const tail = groups.slice(bestStart + bestLen).map(hex).join(':');
+    const tail = groups
+      .slice(bestStart + bestLen)
+      .map(hex)
+      .join(':');
     return `${head}::${tail}`;
   },
 } as const;
