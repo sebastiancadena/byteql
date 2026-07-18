@@ -188,3 +188,23 @@ it this milestone.
   field only offers a copied `Uint8Array`, the pack's resolver must supply the range.
 - The streaming seam deliberately stops at the core boundary; worker streaming, DuckDB append,
   and intake changes are Phase 1 proper.
+
+## Implementation notes (recorded at milestone completion)
+
+The milestone landed per this design with the following clarifications discovered during
+implementation and review:
+
+- `RecordSource.finish()` enforces its "only after `nextBatch()` returned null" contract with an
+  explicit drained flag; a partial drain throws `RECORD_SOURCE_NOT_DRAINED`.
+- Rule 7 (parent-key reachability): tables fed by a chain link are NOT ancestors of that link's
+  parser. Parenting onto an intermediate table's per-row key is expressed by chaining
+  `from: <table>` instead of `from: <parser>`; a `parent_key` onto a parser-fed sibling table
+  fails at load with `PROJECTION_PARENT_KEY_INVALID`.
+- Child-table state registers reset at the start of every dissected payload (each payload is a
+  fresh document, so every scope ancestor has advanced); synthetic keys stay globally monotonic
+  per table across payloads.
+- The `ParseIssue` ordinal field keeps its historical name `track` at the protocol level;
+  `IssueCollector`'s `ordinalColumn` option names the errors-table column (`record` by default,
+  `track` for MIDI).
+- `projectTree` and `ProjectionSession` share the single-pass engine, so both execute dissect
+  chains and populate dissect-only tables.
