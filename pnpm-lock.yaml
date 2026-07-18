@@ -47,6 +47,9 @@ importers:
       '@byteql/midi':
         specifier: workspace:*
         version: link:../../packages/formats/midi
+      '@byteql/pcap':
+        specifier: workspace:*
+        version: link:../../packages/formats/pcap
       '@codemirror/lang-sql':
         specifier: ^6.10.0
         version: 6.10.0

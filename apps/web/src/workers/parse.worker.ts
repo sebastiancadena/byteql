@@ -8,6 +8,7 @@ import {
   type TableTransfer,
 } from '@byteql/core';
 import { midiFormatPack } from '@byteql/midi';
+import { pcapFormatPack } from '@byteql/pcap';
 import { Table } from 'apache-arrow';
 
 export interface ParseWorkerScope {
@@ -90,7 +91,7 @@ const ipcBuffers = (result: ParseResult): ArrayBuffer[] => {
 
 export function installParseWorker(
   scope: ParseWorkerScope,
-  packs: readonly FormatPack[] = [midiFormatPack],
+  packs: readonly FormatPack[] = [midiFormatPack, pcapFormatPack],
 ): void {
   const active = new Map<number, AbortController>();
   const cancelled = new Set<number>();

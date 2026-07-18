@@ -16,6 +16,7 @@
     "@byteql/core": "workspace:*",
     "@byteql/db": "workspace:*",
     "@byteql/midi": "workspace:*",
+    "@byteql/pcap": "workspace:*",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/language": "^6.12.4",
     "@codemirror/state": "^6.7.1",
