@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
+import userEvent from '@testing-library/user-event';
 import { tableFromArrays } from 'apache-arrow';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorView } from 'codemirror';
 import { midiQueries } from '@byteql/midi';
 
@@ -93,10 +94,29 @@ const queries = [
   },
 ];
 
+let compactMode = false;
+const addMediaListener = vi.fn();
+const removeMediaListener = vi.fn();
+
 describe('Inspector Workbench', () => {
+  beforeEach(() => {
+    compactMode = false;
+    addMediaListener.mockClear();
+    removeMediaListener.mockClear();
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({
+        matches: compactMode,
+        addEventListener: addMediaListener,
+        removeEventListener: removeMediaListener,
+      })),
+    );
+  });
+
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('explains local processing and exposes accessible source actions in the empty state', async () => {
@@ -134,7 +154,7 @@ describe('Inspector Workbench', () => {
       (within(navigation).getByRole('button', { name: 'Recent records' }) as HTMLButtonElement).disabled,
     ).toBe(false);
 
-    const workspace = screen.getByRole('tabpanel', { name: 'Results' });
+    const workspace = screen.getByRole('main', { name: 'Results' });
     expect(workspace).toBeTruthy();
     expect(screen.getByRole('textbox', { name: 'SQL query' })).toBeTruthy();
     expect(within(workspace).getByText('2 rows')).toBeTruthy();
@@ -162,7 +182,7 @@ describe('Inspector Workbench', () => {
     const labels = [
       screen.getByRole('banner').textContent,
       screen.getByRole('navigation', { name: 'Data explorer' }).getAttribute('aria-label'),
-      screen.getByRole('tabpanel', { name: 'Results' }).getAttribute('aria-label'),
+      screen.getByRole('main', { name: 'Results' }).getAttribute('aria-label'),
       screen.getByRole('complementary', { name: 'Inspector' }).getAttribute('aria-label'),
       screen.getByRole('contentinfo').textContent,
     ].join(' ');
@@ -219,7 +239,7 @@ describe('Inspector Workbench', () => {
     const controller = new FakeController({ ...readyState(), queryError: 'Unexpected token near FROM' });
     render(Workbench, { controller });
 
-    const workspace = screen.getByRole('tabpanel', { name: 'Results' });
+    const workspace = screen.getByRole('main', { name: 'Results' });
     expect(textOf(within(workspace).getByRole('alert'))).toContain('Unexpected token near FROM');
     expect(within(workspace).getByRole('grid', { name: 'Query results' })).toBeTruthy();
     expect(within(workspace).getByText('2 rows')).toBeTruthy();
@@ -237,27 +257,62 @@ describe('Inspector Workbench', () => {
     ).toEqual(midiQueries.map((query) => `↗ ${query.title}`));
   });
 
-  it('implements roving keyboard navigation and complete tab relationships', async () => {
+  it('uses desktop landmarks without hidden tab widgets and removes its media listener', () => {
+    const controller = new FakeController(readyState());
+    const view = render(Workbench, { controller });
+
+    expect(screen.queryByRole('tablist')).toBeNull();
+    expect(screen.queryAllByRole('tabpanel')).toEqual([]);
+    expect(screen.getByRole('main', { name: 'Results' })).toBeTruthy();
+    expect(screen.getByRole('complementary', { name: 'Inspector' })).toBeTruthy();
+    expect(addMediaListener).toHaveBeenCalledWith('change', expect.any(Function));
+
+    const listener = addMediaListener.mock.calls[0]![1];
+    view.unmount();
+    expect(removeMediaListener).toHaveBeenCalledWith('change', listener);
+  });
+
+  it('exposes only the active compact panel and tabs into that panel', async () => {
+    compactMode = true;
+    const user = userEvent.setup();
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
 
     const resultsTab = screen.getByRole('tab', { name: 'Results' });
     const inspectorTab = screen.getByRole('tab', { name: 'Inspector' });
     const resultsPanel = screen.getByRole('tabpanel', { name: 'Results' });
-    const inspectorPanel = screen.getByRole('tabpanel', { name: 'Inspector' });
+    const inspectorPanel = document.getElementById('workbench-panel-inspector')!;
 
     expect(resultsTab.getAttribute('aria-controls')).toBe(resultsPanel.id);
     expect(inspectorTab.getAttribute('aria-controls')).toBe(inspectorPanel.id);
+    expect(inspectorPanel.getAttribute('role')).toBe('tabpanel');
+    expect(inspectorPanel.getAttribute('aria-labelledby')).toBe(inspectorTab.id);
+    expect(screen.queryByRole('tabpanel', { name: 'Inspector' })).toBeNull();
     expect(resultsTab.getAttribute('aria-selected')).toBe('true');
     expect(resultsTab.getAttribute('tabindex')).toBe('0');
     expect(inspectorTab.getAttribute('tabindex')).toBe('-1');
+    expect((resultsPanel as HTMLElement).hidden).toBe(false);
+    expect(resultsPanel.getAttribute('tabindex')).toBe('0');
+    expect((inspectorPanel as HTMLElement).hidden).toBe(true);
+    expect(inspectorPanel.getAttribute('tabindex')).toBe('-1');
+
+    resultsTab.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(resultsPanel);
 
     resultsTab.focus();
     await fireEvent.keyDown(resultsTab, { key: 'ArrowRight' });
     expect(inspectorTab.getAttribute('aria-selected')).toBe('true');
     expect(inspectorTab.getAttribute('tabindex')).toBe('0');
     expect(document.activeElement).toBe(inspectorTab);
+    expect((resultsPanel as HTMLElement).hidden).toBe(true);
+    expect(resultsPanel.getAttribute('tabindex')).toBe('-1');
+    expect((inspectorPanel as HTMLElement).hidden).toBe(false);
+    expect(inspectorPanel.getAttribute('tabindex')).toBe('0');
+    await user.tab();
+    expect(document.activeElement).toBe(inspectorPanel);
 
+    inspectorTab.focus();
     await fireEvent.keyDown(inspectorTab, { key: 'Home' });
     expect(resultsTab.getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(resultsTab);

@@ -23,30 +23,48 @@
 
   const darkTheme = EditorView.theme(
     {
-      '&': { color: '#edf3f7', backgroundColor: '#0b1016' },
-      '.cm-content': { caretColor: '#ffca68' },
-      '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#ffca68' },
+      '&': {
+        color: 'var(--color-editor-text)',
+        backgroundColor: 'var(--color-editor-background)',
+      },
+      '.cm-content': { caretColor: 'var(--color-editor-caret)' },
+      '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--color-editor-caret)' },
       '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
-        backgroundColor: '#24514f',
+        backgroundColor: 'var(--color-editor-selection)',
       },
       '.cm-gutters': {
-        color: '#aebdca',
-        backgroundColor: '#111820',
-        borderRightColor: '#465b6d',
+        color: 'var(--color-editor-gutter-text)',
+        backgroundColor: 'var(--color-editor-gutter-background)',
+        borderRightColor: 'var(--color-editor-border)',
       },
-      '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: '#17212b' },
+      '.cm-activeLine, .cm-activeLineGutter': {
+        backgroundColor: 'var(--color-editor-active-line)',
+      },
     },
     { dark: true },
   );
 
   const sqlHighlightStyle = HighlightStyle.define([
-    { tag: [tags.keyword, tags.controlKeyword, tags.operatorKeyword], color: '#7dd3fc' },
-    { tag: [tags.string, tags.special(tags.string)], color: '#a7f3d0' },
-    { tag: [tags.number, tags.bool, tags.null], color: '#fde68a' },
-    { tag: [tags.comment, tags.lineComment, tags.blockComment], color: '#aebdca' },
-    { tag: [tags.operator, tags.punctuation], color: '#f0abfc' },
-    { tag: [tags.name, tags.variableName, tags.propertyName], color: '#edf3f7' },
-    { tag: tags.invalid, color: '#ffb4aa', textDecoration: 'underline' },
+    {
+      tag: [tags.keyword, tags.controlKeyword, tags.operatorKeyword],
+      color: 'var(--color-syntax-keyword)',
+    },
+    { tag: [tags.string, tags.special(tags.string)], color: 'var(--color-syntax-string)' },
+    { tag: [tags.number, tags.bool, tags.null], color: 'var(--color-syntax-number)' },
+    {
+      tag: [tags.comment, tags.lineComment, tags.blockComment],
+      color: 'var(--color-syntax-comment)',
+    },
+    { tag: [tags.operator, tags.punctuation], color: 'var(--color-syntax-operator)' },
+    {
+      tag: [tags.name, tags.variableName, tags.propertyName],
+      color: 'var(--color-syntax-name)',
+    },
+    {
+      tag: tags.invalid,
+      color: 'var(--color-syntax-invalid)',
+      textDecoration: 'underline',
+    },
   ]);
 
   onMount(() => {

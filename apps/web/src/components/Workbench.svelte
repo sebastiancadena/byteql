@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global File, HTMLButtonElement, KeyboardEvent */
+  /* global File, HTMLButtonElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
 
   import { onMount } from 'svelte';
 
@@ -32,6 +32,7 @@
   let explorerCollapsed = $state(false);
   let inspectorCollapsed = $state(false);
   let mobileTab = $state<'results' | 'inspector'>('results');
+  let compactMode = $state(false);
   let resultsTabElement = $state<HTMLButtonElement>();
   let inspectorTabElement = $state<HTMLButtonElement>();
   let overviewSource: string | null = null;
@@ -40,8 +41,15 @@
     ['opening', 'normalizing', 'parsing', 'projecting', 'registering'].includes(session.phase),
   );
 
-  onMount(() =>
-    controller.subscribe((next) => {
+  onMount(() => {
+    const compactQuery = window.matchMedia('(max-width: 1099px)');
+    const syncCompactMode = (event: MediaQueryListEvent | MediaQueryList): void => {
+      compactMode = event.matches;
+    };
+    syncCompactMode(compactQuery);
+    compactQuery.addEventListener('change', syncCompactMode);
+
+    const unsubscribe = controller.subscribe((next) => {
       session = next;
       if (next.sql && next.sql !== draftSql) draftSql = next.sql;
       if (next.phase === 'opening') overviewSource = null;
@@ -61,8 +69,13 @@
         draftSql = overview.sql;
         perform(() => controller.runQuery(overview.sql));
       }
-    }),
-  );
+    });
+
+    return () => {
+      compactQuery.removeEventListener('change', syncCompactMode);
+      unsubscribe();
+    };
+  });
 
   function message(error: unknown): string {
     return error instanceof Error && error.message ? error.message : 'The action could not be completed.';
@@ -128,37 +141,42 @@
   {:else}
     <Explorer state={session} collapsed={explorerCollapsed} onquery={loadQuery} />
 
-    <div class="mobile-tabs" role="tablist" aria-label="Workbench views">
-      <button
-        bind:this={resultsTabElement}
-        id="workbench-tab-results"
-        type="button"
-        role="tab"
-        aria-controls="workbench-panel-results"
-        aria-selected={mobileTab === 'results'}
-        tabindex={mobileTab === 'results' ? 0 : -1}
-        onclick={() => selectTab('results')}
-        onkeydown={navigateTabs}>Results</button
-      >
-      <button
-        bind:this={inspectorTabElement}
-        id="workbench-tab-inspector"
-        type="button"
-        role="tab"
-        aria-controls="workbench-panel-inspector"
-        aria-selected={mobileTab === 'inspector'}
-        tabindex={mobileTab === 'inspector' ? 0 : -1}
-        onclick={() => selectTab('inspector')}
-        onkeydown={navigateTabs}>Inspector</button
-      >
-    </div>
+    {#if compactMode}
+      <div class="mobile-tabs" role="tablist" aria-label="Workbench views">
+        <button
+          bind:this={resultsTabElement}
+          id="workbench-tab-results"
+          type="button"
+          role="tab"
+          aria-controls="workbench-panel-results"
+          aria-selected={mobileTab === 'results'}
+          tabindex={mobileTab === 'results' ? 0 : -1}
+          onclick={() => selectTab('results')}
+          onkeydown={navigateTabs}>Results</button
+        >
+        <button
+          bind:this={inspectorTabElement}
+          id="workbench-tab-inspector"
+          type="button"
+          role="tab"
+          aria-controls="workbench-panel-inspector"
+          aria-selected={mobileTab === 'inspector'}
+          tabindex={mobileTab === 'inspector' ? 0 : -1}
+          onclick={() => selectTab('inspector')}
+          onkeydown={navigateTabs}>Inspector</button
+        >
+      </div>
+    {/if}
 
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div
       id="workbench-panel-results"
       class="workbench-main"
-      role="tabpanel"
-      aria-labelledby="workbench-tab-results"
-      tabindex="0"
+      role={compactMode ? 'tabpanel' : 'main'}
+      aria-labelledby={compactMode ? 'workbench-tab-results' : undefined}
+      aria-label={compactMode ? undefined : 'Results'}
+      tabindex={compactMode ? (mobileTab === 'results' ? 0 : -1) : undefined}
+      hidden={compactMode && mobileTab !== 'results'}
     >
       <section class="sql-workspace" aria-label="SQL workspace">
         <div class="editor-heading">
@@ -248,12 +266,14 @@
       </section>
     </div>
 
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div
       id="workbench-panel-inspector"
       class="inspector-panel"
-      role="tabpanel"
-      aria-labelledby="workbench-tab-inspector"
-      tabindex="0"
+      role={compactMode ? 'tabpanel' : undefined}
+      aria-labelledby={compactMode ? 'workbench-tab-inspector' : undefined}
+      tabindex={compactMode ? (mobileTab === 'inspector' ? 0 : -1) : undefined}
+      hidden={compactMode && mobileTab !== 'inspector'}
     >
       <Inspector
         table={session.result}

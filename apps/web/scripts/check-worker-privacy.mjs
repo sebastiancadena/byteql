@@ -87,7 +87,7 @@ try {
 
   await page.close();
 
-  const appPage = await browser.newPage({ viewport: { width: 760, height: 800 } });
+  const appPage = await browser.newPage({ viewport: { width: 980, height: 800 } });
   const appRequests = [];
   let releaseWasm;
   const wasmBlocked = new Promise((resolve) => {
@@ -145,6 +145,64 @@ try {
   await appPage.getByRole('button', { name: 'Try sample' }).click();
   await appPage.getByRole('textbox', { name: 'SQL query' }).waitFor();
   await appPage.waitForFunction(() => document.querySelectorAll('.sql-editor .cm-content span').length >= 3);
+
+  const resultsTab = appPage.getByRole('tab', { name: 'Results' });
+  const inspectorTab = appPage.getByRole('tab', { name: 'Inspector' });
+  await resultsTab.waitFor();
+  const compactInitial = await appPage.evaluate(() => ({
+    tablists: document.querySelectorAll('[role="tablist"]').length,
+    panels: Array.from(document.querySelectorAll('[role="tabpanel"]'), (panel) => ({
+      id: panel.id,
+      hidden: panel.hidden,
+      tabIndex: panel.tabIndex,
+    })),
+  }));
+  if (
+    compactInitial.tablists !== 1 ||
+    compactInitial.panels.length !== 2 ||
+    compactInitial.panels.filter((panel) => !panel.hidden && panel.tabIndex === 0).length !== 1 ||
+    compactInitial.panels.filter((panel) => panel.hidden && panel.tabIndex === -1).length !== 1
+  ) {
+    throw new Error(`980px compact semantics are incomplete: ${JSON.stringify(compactInitial)}`);
+  }
+
+  await resultsTab.focus();
+  await appPage.keyboard.press('Tab');
+  if ((await appPage.evaluate(() => document.activeElement?.id)) !== 'workbench-panel-results') {
+    throw new Error('Tab from the Results tab did not enter the active Results panel.');
+  }
+  await resultsTab.focus();
+  await appPage.keyboard.press('ArrowRight');
+  await appPage.keyboard.press('Tab');
+  if ((await appPage.evaluate(() => document.activeElement?.id)) !== 'workbench-panel-inspector') {
+    throw new Error('Tab from the Inspector tab did not skip the inactive Results panel.');
+  }
+
+  await appPage.setViewportSize({ width: 1440, height: 900 });
+  await appPage.waitForFunction(() => document.querySelector('[role="tablist"]') === null);
+  const desktopSemantics = await appPage.evaluate(() => ({
+    tablists: document.querySelectorAll('[role="tablist"]').length,
+    tabpanels: document.querySelectorAll('[role="tabpanel"]').length,
+    mains: document.querySelectorAll('[role="main"][aria-label="Results"]').length,
+    inspectors: document.querySelectorAll('aside[aria-label="Inspector"]').length,
+  }));
+  if (
+    desktopSemantics.tablists !== 0 ||
+    desktopSemantics.tabpanels !== 0 ||
+    desktopSemantics.mains !== 1 ||
+    desktopSemantics.inspectors !== 1
+  ) {
+    throw new Error(`1440px desktop semantics are incomplete: ${JSON.stringify(desktopSemantics)}`);
+  }
+
+  await appPage.setViewportSize({ width: 980, height: 800 });
+  await appPage.getByRole('tablist', { name: 'Workbench views' }).waitFor();
+  await inspectorTab.focus();
+  await appPage.keyboard.press('Home');
+  if ((await appPage.getByRole('tabpanel').getAttribute('id')) !== 'workbench-panel-results') {
+    throw new Error('Compact mode did not restore Results as the sole exposed panel.');
+  }
+
   const editorContrast = await appPage.locator('.sql-editor').evaluate((editor) => {
     const channel = (value) => {
       const normalized = value / 255;
@@ -183,6 +241,8 @@ try {
       postReadyRequests: requests,
       postAppReadyRequests,
       openFileFocus,
+      compactInitial,
+      desktopSemantics,
       editorContrast,
       ...result,
     }),

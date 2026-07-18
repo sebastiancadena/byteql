@@ -893,6 +893,7 @@ git commit -m "feat(web): orchestrate local parse and query sessions"
 - Create: `apps/web/src/components/EmptyState.svelte`
 - Create: `apps/web/src/components/Explorer.svelte`
 - Create: `apps/web/src/components/SqlEditor.svelte`
+- Create: `apps/web/src/components/SqlEditor.theme.test.ts`
 - Create: `apps/web/src/components/ResultGrid.svelte`
 - Create: `apps/web/src/components/Inspector.svelte`
 - Create: `apps/web/src/components/StatusBar.svelte`
@@ -901,6 +902,7 @@ git commit -m "feat(web): orchestrate local parse and query sessions"
 - Modify: `apps/web/src/App.svelte`
 - Create: `apps/web/src/App.test.ts`
 - Modify: `apps/web/package.json`
+- Modify: `apps/web/vite.config.ts`
 - Modify: `apps/web/scripts/check-worker-privacy.mjs`
 - Modify: `apps/web/src/lib/session/state.ts`
 - Modify: `apps/web/src/lib/session/state.test.ts`
@@ -937,11 +939,11 @@ Expected: FAIL because components do not exist.
 
 - [ ] **Step 2: Implement the responsive three-region shell**
 
-Use semantic landmarks and CSS grid columns `minmax(12rem, 18rem) minmax(28rem, 1fr) minmax(16rem, 22rem)`. Explorer and inspector can collapse; below 1100px the inspector becomes a workbench tab. Implement linked `tablist`/`tab`/`tabpanel` semantics, roving tabindex, and ArrowLeft/ArrowRight/Home/End navigation. Keep all colors as CSS custom properties and meet visible focus and 4.5:1 text contrast.
+Use semantic landmarks and CSS grid columns `minmax(12rem, 18rem) minmax(28rem, 1fr) minmax(16rem, 22rem)`. Explorer and inspector can collapse; below 1100px the inspector becomes a workbench tab. Use `matchMedia` to render linked `tablist`/`tab`/`tabpanel` semantics only in compact mode, expose and focus only the selected panel, implement roving tabindex plus ArrowLeft/ArrowRight/Home/End navigation, and restore desktop main/complementary semantics at wider widths. Keep all colors as CSS custom properties and meet visible focus and 4.5:1 text contrast.
 
 - [ ] **Step 3: Integrate CodeMirror 6 with explicit teardown**
 
-`SqlEditor.svelte` creates one `EditorView` on mount with `basicSetup`, `sql()`, an explicit dark theme and syntax `HighlightStyle`, an update listener, and a `Mod-Enter` key binding that invokes `onrun(view.state.doc.toString())`. Reconfigure editability through a CodeMirror `Compartment` when query state changes. Update external SQL through a transaction only when it differs. Call `view.destroy()` on component teardown.
+`SqlEditor.svelte` creates one `EditorView` on mount with `basicSetup`, `sql()`, an explicit dark theme and syntax `HighlightStyle`, an update listener, and a `Mod-Enter` key binding that invokes `onrun(view.state.doc.toString())`. Every CodeMirror editor and token color references a custom property defined in `app.css`. Reconfigure editability through a CodeMirror `Compartment` when query state changes. Update external SQL through a transaction only when it differs. Call `view.destroy()` on component teardown.
 
 Pack queries are format data, not App literals. Generate a deterministic typed module from all entries in `packages/formats/midi/queries.yaml`, carry them through `ParseResult`, `SessionState`, and `SessionController`, and render the active pack generically.
 
@@ -956,7 +958,7 @@ Run: `pnpm --filter @byteql/web test -- --run && pnpm --filter @byteql/web check
 Expected: tests, Svelte checks, and production build pass.
 
 ```bash
-git add apps/web/package.json apps/web/scripts/check-worker-privacy.mjs apps/web/src packages/core/src/index.ts packages/core/src/protocol.ts packages/formats/midi/scripts/generate-pack.mjs packages/formats/midi/src/index.ts packages/formats/midi/src/midi-queries.generated.ts packages/formats/midi/src/project-midi.test.ts packages/formats/midi/src/project-midi.ts pnpm-lock.yaml docs/superpowers/plans/2026-07-17-byteql-phase-0.md
+git add apps/web/package.json apps/web/vite.config.ts apps/web/scripts/check-worker-privacy.mjs apps/web/src packages/core/src/index.ts packages/core/src/protocol.ts packages/formats/midi/scripts/generate-pack.mjs packages/formats/midi/src/index.ts packages/formats/midi/src/midi-queries.generated.ts packages/formats/midi/src/project-midi.test.ts packages/formats/midi/src/project-midi.ts pnpm-lock.yaml docs/superpowers/plans/2026-07-17-byteql-phase-0.md
 git commit -m "feat(web): build format-neutral query workbench"
 ```
 

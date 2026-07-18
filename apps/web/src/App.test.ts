@@ -50,10 +50,21 @@ vi.mock('./lib/session/controller.js', () => ({ SessionController }));
 import App from './App.svelte';
 
 describe('App lifecycle', () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
     initialize.mockResolvedValue(undefined);
     dispose.mockResolvedValue(undefined);
     databaseDispose.mockResolvedValue(undefined);
