@@ -38,7 +38,10 @@ export function parseMidiContainer(bytes: Uint8Array): MidiContainer {
     );
   }
 
-  const format = view.getUint16(8, false) as MidiHeader['format'];
+  const format = view.getUint16(8, false);
+  if (format !== 0 && format !== 1 && format !== 2) {
+    throw new MidiParseError('UNSUPPORTED_FORMAT', 8, `expected MIDI format 0, 1, or 2, received ${format}`);
+  }
   const numTracks = view.getUint16(10, false);
   const division = view.getInt16(12, false);
   const header: MidiHeader = {

@@ -37,6 +37,12 @@ describe('parseMidiContainer', () => {
     expect(parsed.header).toMatchObject({ division: -6360, divisionMode: 'smpte' });
   });
 
+  it.each([3, 0xffff])('rejects unsupported MIDI format %i at the format field', (format) => {
+    const bytes = midiFile({ format, division: 480, tracks: [u8(0, 0xff, 0x2f, 0)] });
+
+    expect(() => parseMidiContainer(bytes)).toThrowError(/UNSUPPORTED_FORMAT at offset 8/);
+  });
+
   it('accepts a header body longer than six bytes', () => {
     const headerBody = u8(0, 0, 0, 1, 1, 224, 0, 0);
     const bytes = new Uint8Array([...chunk('MThd', headerBody), ...chunk('MTrk', u8(0, 0xff, 0x2f, 0))]);
