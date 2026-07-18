@@ -77,7 +77,7 @@ types:
         if: event_header == 0xff
       - id: sysex_body
         type: sysex_event_body
-        if: event_header == 0xf0
+        if: event_header == 0xf0 or event_header == 0xf7
       - id: event_body
         type:
           switch-on: event_type

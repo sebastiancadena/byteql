@@ -584,6 +584,8 @@ git commit -m "feat(core): project trees into provenance rows"
 - Create: `packages/core/src/protocol.ts`
 - Create: `packages/formats/midi/midi.tables.yaml`
 - Create: `packages/formats/midi/queries.yaml`
+- Create: `packages/formats/midi/scripts/generate-pack.mjs`
+- Create: `packages/formats/midi/src/midi-tables.generated.ts`
 - Create: `packages/formats/midi/src/project-midi.ts`
 - Create: `packages/formats/midi/src/project-midi.test.ts`
 - Create: `packages/formats/midi/test/fixtures/basic-type0.mid`
@@ -592,7 +594,12 @@ git commit -m "feat(core): project trees into provenance rows"
 - Create: `packages/formats/midi/test/fixtures/demo.mid`
 - Create: `packages/formats/midi/test/fixtures/manifest.md`
 - Modify: `packages/core/src/index.ts`
+- Modify: `packages/formats/midi/package.json`
 - Modify: `packages/formats/midi/src/index.ts`
+- Modify: `packages/formats/midi/standard_midi_file.ksy`
+- Modify: `packages/formats/midi/test/built-runtime.mjs`
+
+Approved Task 7 scope correction: the MIDI package scripts generate a deterministic TypeScript string module from the authored table YAML so built Node and browser consumers never require a runtime YAML loader. The built-runtime check covers the public entrypoint. The existing Kaitai schema is also in scope because escaped `0xF7` SysEx events must consume the same VLQ length and payload as `0xF0` before projection.
 
 **Interfaces:**
 - Produces: `projectedTableToArrow(table): Table`.
@@ -696,7 +703,7 @@ Run: `pnpm --filter @byteql/core test -- --run && pnpm --filter @byteql/midi tes
 Expected: all Arrow and MIDI conformance tests pass.
 
 ```bash
-git add packages/core/src/arrow packages/core/src/protocol.ts packages/core/src/index.ts packages/formats/midi/midi.tables.yaml packages/formats/midi/queries.yaml packages/formats/midi/src packages/formats/midi/test/fixtures
+git add docs/superpowers/plans/2026-07-17-byteql-phase-0.md packages/core/src/arrow packages/core/src/protocol.ts packages/core/src/index.ts packages/formats/midi/package.json packages/formats/midi/midi.tables.yaml packages/formats/midi/queries.yaml packages/formats/midi/scripts/generate-pack.mjs packages/formats/midi/src packages/formats/midi/standard_midi_file.ksy packages/formats/midi/test/built-runtime.mjs packages/formats/midi/test/fixtures
 git commit -m "feat: emit MIDI format pack as Arrow IPC"
 ```
 

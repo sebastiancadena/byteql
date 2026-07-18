@@ -360,6 +360,14 @@ describe('parseAndProjectMidi', () => {
           0x00,
           0x40,
           0x00,
+          0xe5,
+          0x00,
+          0x00,
+          0x00,
+          0xe6,
+          0x7f,
+          0x7f,
+          0x00,
           0xff,
           0x2f,
           0x00,
@@ -428,7 +436,7 @@ describe('parseAndProjectMidi', () => {
         tick: 0n,
         kind: 'pitch_bend',
         channel: 4,
-        bend: -8192,
+        bend: 0,
         start: 37n,
         end: 41n,
       }),
@@ -438,11 +446,119 @@ describe('parseAndProjectMidi', () => {
         event_index: 5,
         delta_time: 0n,
         tick: 0n,
-        kind: 'meta',
+        kind: 'pitch_bend',
+        channel: 5,
+        bend: -8192,
         start: 41n,
         end: 45n,
       }),
+      event({
+        event_id: 7n,
+        track: 0,
+        event_index: 6,
+        delta_time: 0n,
+        tick: 0n,
+        kind: 'pitch_bend',
+        channel: 6,
+        bend: 8191,
+        start: 45n,
+        end: 49n,
+      }),
+      event({
+        event_id: 8n,
+        track: 0,
+        event_index: 7,
+        delta_time: 0n,
+        tick: 0n,
+        kind: 'meta',
+        start: 49n,
+        end: 53n,
+      }),
     ]);
+  });
+
+  it('parses escaped F7 SysEx through its payload and preserves following-event provenance', async () => {
+    const bytes = midiFile({
+      format: 0,
+      division: 480,
+      tracks: [Uint8Array.of(0x00, 0xf7, 0x03, 0x01, 0x02, 0x03, 0x00, 0xff, 0x2f, 0x00)],
+    });
+
+    const result = await parseAndProjectMidi(bytes, new AbortController().signal);
+
+    expect(result.issues).toEqual([]);
+    expect(rows(transfer(result.tables, 'events'))).toEqual([
+      event({
+        event_id: 1n,
+        track: 0,
+        event_index: 0,
+        delta_time: 0n,
+        tick: 0n,
+        kind: 'sysex',
+        start: 22n,
+        end: 28n,
+      }),
+      event({
+        event_id: 2n,
+        track: 0,
+        event_index: 1,
+        delta_time: 0n,
+        tick: 0n,
+        kind: 'meta',
+        start: 28n,
+        end: 32n,
+      }),
+    ]);
+  });
+
+  it('keeps invalid-length tempo metadata as an event but omits it from the tempo table', async () => {
+    const bytes = midiFile({
+      format: 0,
+      division: 480,
+      tracks: [
+        Uint8Array.of(0x00, 0xff, 0x51, 0x02, 0x07, 0xa1, 0x00, 0x90, 0x3c, 0x40, 0x00, 0xff, 0x2f, 0x00),
+      ],
+    });
+
+    const result = await parseAndProjectMidi(bytes, new AbortController().signal);
+
+    expect(result.issues).toEqual([]);
+    expect(rows(transfer(result.tables, 'events'))).toEqual([
+      event({
+        event_id: 1n,
+        track: 0,
+        event_index: 0,
+        delta_time: 0n,
+        tick: 0n,
+        kind: 'meta',
+        start: 22n,
+        end: 28n,
+      }),
+      event({
+        event_id: 2n,
+        track: 0,
+        event_index: 1,
+        delta_time: 0n,
+        tick: 0n,
+        kind: 'note_on',
+        channel: 0,
+        note: 60,
+        velocity: 64,
+        start: 28n,
+        end: 32n,
+      }),
+      event({
+        event_id: 3n,
+        track: 0,
+        event_index: 2,
+        delta_time: 0n,
+        tick: 0n,
+        kind: 'meta',
+        start: 32n,
+        end: 36n,
+      }),
+    ]);
+    expect(rows(transfer(result.tables, 'tempo'))).toEqual([]);
   });
 
   it('keeps a malformed track prefix, continues with the next track, and emits one exact error row', async () => {

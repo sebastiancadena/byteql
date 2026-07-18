@@ -62,13 +62,13 @@ tables:
         type: uint8
         when: '(_.event_header & 240) == 160 or (_.event_header & 240) == 208'
       bend:
-        expr: '(_.event_body.b2 << 7) + _.event_body.b1 - 16384'
+        expr: '(_.event_body.b2 << 7) + _.event_body.b1 - 8192'
         type: int16
         when: '(_.event_header & 240) == 224'
 
   - name: tempo
     rows: $.tracks[*].events.event[*]
-    where: '_.event_header == 255 and _.meta_event_body.meta_type == 81'
+    where: '_.event_header == 255 and _.meta_event_body.meta_type == 81 and len(_.meta_event_body.body) == 3'
     key: tempo_id
     state:
       tick:
