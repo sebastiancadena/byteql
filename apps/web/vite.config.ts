@@ -50,6 +50,14 @@ export default defineConfig({
   },
   build: { outDir: e2eBuild ? 'dist-e2e' : 'dist' },
   plugins: [svelte(), dataUrlParseWorker],
+  // The format packs' compiled Kaitai parsers (`gen/*.js`) are UMD files reached through the
+  // packs' tsc-built dist. Production builds interop them via Rollup's CJS plugin, but the dev
+  // server serves them verbatim — an ESM default-import of a UMD file then fails module-graph
+  // evaluation inside the parse worker (crash loop: "The parser worker stopped unexpectedly").
+  // Pre-bundling the linked packs makes esbuild apply the same interop in dev.
+  optimizeDeps: {
+    include: ['@byteql/midi', '@byteql/pcap'],
+  },
   resolve: {
     conditions: ['browser'],
     alias: [
