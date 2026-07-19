@@ -19,6 +19,15 @@ test('opens a pcap and runs the DNS-join query', async ({ page }) => {
   await page.getByLabel('Open file').setInputFiles(samplePcapPath);
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 
+  // C1 regression: the sample fixture is a single eth -> ipv4 -> udp -> dns packet, so only
+  // packets/ip/udp/dns (and errors) receive any rows — tcp, icmp, icmpv6, tls, streams, and
+  // stream_segments all finalize as empty tables. The "overview" query auto-runs (Workbench,
+  // fired on `ready`) the instant the session is ready and is a UNION ALL over every pcap table;
+  // before the fix, the zero-row tables did not exist in DuckDB at all and the auto-run failed
+  // with a Catalog Error instead of rendering a grid with those tables at 0 rows.
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('gridcell', { name: 'tcp', exact: true })).toBeVisible();
+
   await runSql(page, 'select query_name from dns join packets using (packet_id)');
   await expect(page.getByRole('gridcell', { name: 'a.ru' })).toBeVisible();
 });
