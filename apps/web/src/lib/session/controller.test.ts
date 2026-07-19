@@ -132,6 +132,7 @@ class FakeIngestSession implements IngestSession {
   finalizeCalls = 0;
   abortCalls = 0;
   finalizeResult: readonly TableSummary[] = [];
+  private finalizeGate: Deferred<void> | null = null;
 
   constructor(readonly options: IngestOptions) {}
 
@@ -141,8 +142,15 @@ class FakeIngestSession implements IngestSession {
     });
   }
 
+  /** Test hook: block `finalize()` from resolving until the returned deferred is resolved. */
+  holdFinalize(): Deferred<void> {
+    this.finalizeGate = deferred<void>();
+    return this.finalizeGate;
+  }
+
   async finalize(): Promise<readonly TableSummary[]> {
     this.finalizeCalls += 1;
+    if (this.finalizeGate) await this.finalizeGate.promise;
     return this.finalizeResult;
   }
 
@@ -601,6 +609,85 @@ describe('SessionController', () => {
 
     expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'new.mid', size: 1 } });
     expect(newSession.finalizeCalls).toBe(1);
+  });
+
+  it('aborts (never finalizes) a superseded generation whose straggling append was still pending', async () => {
+    // Regression: a generation superseded while `Promise.all(pendingAppends)` is still in flight
+    // must never reach `finalize()` — committing a superseded generation's staging tables would
+    // clobber catalog state the new generation assumes.
+    const controller = new SessionController({ database, parser, stopViewer });
+    const first = controller.openFile(new File([new Uint8Array([1])], 'first.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const firstSession = sessions[0]!;
+
+    const emit = parser.calls[0]!.emitBatch({
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array([9]),
+      rowCount: 1,
+    });
+    await vi.waitFor(() => expect(firstSession.appendCalls).toHaveLength(1));
+
+    // `finish` races ahead of the still-pending append (mirrors the real client's behavior,
+    // exercised in "waits for a straggling append to settle..." above).
+    firstSession.finalizeResult = [{ name: 'first', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('first', 1));
+    await flush();
+    expect(firstSession.finalizeCalls).toBe(0);
+
+    // Supersede while the append is still pending.
+    const second = controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+
+    // Now let the straggling append settle.
+    firstSession.appendCalls[0]!.resolve();
+    await emit;
+    await first;
+
+    expect(firstSession.finalizeCalls).toBe(0);
+    expect(firstSession.abortCalls).toBe(1);
+
+    sessions[1]!.finalizeResult = [{ name: 'second', rowCount: 1 }];
+    parser.calls[1]!.finish(streamedResult('second', 1));
+    await second;
+    expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'second.mid', size: 1 } });
+  });
+
+  it('suppresses a stale ready dispatch when finalize resolves after supersession, without aborting the committed ingest', async () => {
+    // Regression: a generation superseded while `finalize()` is still in flight has already
+    // committed its staging tables by the time it resolves — aborting it would be wrong (nothing
+    // left to roll back) but dispatching `ready` for it would clobber the new generation's state
+    // with the stale file's tables.
+    const controller = new SessionController({ database, parser, stopViewer });
+    const first = controller.openFile(new File([new Uint8Array([1])], 'first.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const firstSession = sessions[0]!;
+    const finalizeGate = firstSession.holdFinalize();
+    firstSession.finalizeResult = [{ name: 'first', rowCount: 1 }];
+
+    parser.calls[0]!.finish(streamedResult('first', 1));
+    await vi.waitFor(() => expect(firstSession.finalizeCalls).toBe(1));
+    expect(controller.getState().phase).not.toBe('ready');
+
+    const second = controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    const secondSession = sessions[1]!;
+    expect(controller.getState()).toMatchObject({
+      phase: 'opening',
+      source: { name: 'second.mid', size: 1 },
+    });
+
+    finalizeGate.resolve();
+    await first;
+
+    expect(controller.getState()).toMatchObject({ source: { name: 'second.mid', size: 1 } });
+    expect(controller.getState().tables).not.toEqual(streamedResult('first', 1).tables);
+    expect(firstSession.abortCalls).toBe(0);
+
+    secondSession.finalizeResult = [{ name: 'second', rowCount: 1 }];
+    parser.calls[1]!.finish(streamedResult('second', 1));
+    await second;
+    expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'second.mid', size: 1 } });
   });
 
   it('parse failure and quota failure abort the ingest session', async () => {

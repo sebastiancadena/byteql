@@ -264,7 +264,14 @@ export class SessionController {
       }
 
       await Promise.all(pendingAppends);
+      if (!this.isCurrent(generation)) {
+        await ingest.abort().catch(() => undefined);
+        return;
+      }
+
       const summaries = await ingest.finalize();
+      if (!this.isCurrent(generation)) return;
+
       const rowCounts = new Map(summaries.map((summary) => [summary.name, summary.rowCount]));
       this.dispatch({
         type: 'ready',
