@@ -170,9 +170,22 @@ export function openPcapSource(
       throwIfAborted(opts.signal);
       const packet = await state.framer.next();
       if (packet === null) {
-        // Seed framing issues before materializing the errors table.
+        // session.finish() must run before we read back the pump collector's issues:
+        // finish() -> flushStreams is where flush-time stream issues (STREAM_GAP, stall
+        // STREAM_ERROR) get reported, and they have to land after the packet-order dissect
+        // issues already reported during the pump.
+        const finished = state.session.finish();
+
+        // Truncation is only discovered here, at EOF — but the errors table (and
+        // finish().issues) must still present framing issues *first*, matching the
+        // pre-incremental eager path (framing -> dissect -> stream-flush). Rebuild that
+        // order by replaying into a fresh collector: framing issues (framer order), then
+        // the pump collector's accumulated dissect + flush issues (already in that
+        // relative order). `ordinal: issue.track` carries the `record` column value
+        // through the replay losslessly.
+        const ordered = new IssueCollector({ ordinalColumn: 'record' });
         for (const issue of state.framer.issues()) {
-          state.collector.report({
+          ordered.report({
             stage: 'framing',
             code: issue.code,
             message: issue.message,
@@ -181,11 +194,20 @@ export function openPcapSource(
             sourceEnd: issue.sourceEnd,
           });
         }
-        // session.finish() must run before collector.table(): finish() -> flushStreams is
-        // where flush-time stream issues (STREAM_GAP, stall STREAM_ERROR) are reported, and
-        // the errors table has to include them.
-        const finished = state.session.finish();
-        const errors = state.collector.table();
+        for (const issue of state.collector.issues()) {
+          ordered.report({
+            stage: issue.stage,
+            code: issue.code,
+            message: issue.message,
+            recoverable: issue.recoverable,
+            ordinal: issue.track,
+            sourceStart: issue.sourceStart,
+            sourceEnd: issue.sourceEnd,
+          });
+        }
+        collector = ordered;
+
+        const errors = ordered.table();
         const errorsFinished: FinishedTable = {
           name: errors.name,
           arrow: projectedTableToArrow(errors),

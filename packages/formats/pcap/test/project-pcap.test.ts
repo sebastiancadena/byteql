@@ -2,6 +2,7 @@ import { ipcToTable, memoryByteSource, type BatchTransfer, type ParseProgress } 
 import { Table } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
+import { pcapFormatPack } from '../src/pack.js';
 import { openPcapSource, parseAndProjectPcap } from '../src/project-pcap.js';
 import {
   buildPcap,
@@ -441,5 +442,50 @@ describe('openPcapSource (incremental)', () => {
     expect(first?.table).toBe('packets');
     controller.abort();
     await expect(source.nextBatch()).rejects.toThrow();
+  });
+
+  it('orders the errors table framing-first even when framing is only discovered at EOF', async () => {
+    // Packet 0 dissects fine at the container level but poisons the tcp parser (1-byte
+    // payload, same fixture as "turns a poison transport payload into an errors row"
+    // above), so it reports a *dissecting* issue during the pump, well before EOF.
+    const poisoned = ethFrame({
+      etherType: 0x0800,
+      payload: ipv4({ protocol: 6, src: '1.1.1.1', dst: '2.2.2.2', payload: new Uint8Array([0]) }),
+    });
+    const full = buildPcap({
+      magic: 'be_us',
+      linktype: 1,
+      packets: [
+        { tsSec: 0, tsFrac: 0, data: poisoned },
+        { tsSec: 1, tsFrac: 0, data: pkt }, // well-formed DNS/UDP packet
+      ],
+    });
+    // Drop the last body byte of the *second* record only: the framer emits the
+    // TRUNCATED_RECORD framing issue only once it hits EOF trying to read that record —
+    // i.e. strictly after the first packet's dissect issue was already reported.
+    const truncated = full.subarray(0, full.length - 1);
+
+    const source = pcapFormatPack.open(memoryByteSource(truncated), { signal: new AbortController().signal });
+    const batches = await drainAll(source);
+    const finish = source.finish();
+
+    const errorsBatches = batches.filter((b) => b.table === 'errors');
+    const errors = mergeIpc(errorsBatches);
+    expect(errors.numRows).toBe(2);
+
+    const rows = Array.from({ length: errors.numRows }, (_unused, i) => rowObject(errors, i));
+    // Pre-Task-5 eager ordering: framing issues first, then dissect (packet order), then
+    // stream-flush issues — with error_id sequential 1..N in that order.
+    expect(rows[0]!.stage).toBe('framing');
+    expect(rows[0]!.code).toBe('TRUNCATED_RECORD');
+    expect(rows[0]!.error_id).toBe(1n);
+    expect(rows[1]!.stage).not.toBe('framing');
+    expect(rows[1]!.error_id).toBe(2n);
+
+    // finish().issues must present the same order as the materialized errors table.
+    expect(finish.issues).toHaveLength(2);
+    expect(finish.issues[0]!.stage).toBe('framing');
+    expect(finish.issues[0]!.code).toBe('TRUNCATED_RECORD');
+    expect(finish.issues[1]!.stage).not.toBe('framing');
   });
 });
