@@ -1,8 +1,7 @@
 <script lang="ts">
-  /* global Blob, HTMLCanvasElement, HTMLDivElement, HTMLInputElement, KeyboardEvent,
-     PointerEvent, WheelEvent, getComputedStyle, localStorage, navigator,
-     requestAnimationFrame, cancelAnimationFrame, setTimeout, clearTimeout, window,
-     devicePixelRatio */
+  /* global Blob, CSSStyleDeclaration, HTMLCanvasElement, HTMLDivElement, HTMLElement,
+     HTMLInputElement, KeyboardEvent, MouseEvent, PointerEvent, WheelEvent, getComputedStyle,
+     localStorage, navigator, requestAnimationFrame, setTimeout, clearTimeout, window */
   import { untrack } from 'svelte';
 
   import { ByteCache } from '../lib/hex/byte-cache.js';

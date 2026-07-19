@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global DragEvent, File, HTMLButtonElement, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
+  /* global Blob, DragEvent, Event, File, HTMLButtonElement, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
 
   import { onMount } from 'svelte';
 

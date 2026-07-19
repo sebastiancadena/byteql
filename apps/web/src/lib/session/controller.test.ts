@@ -799,7 +799,7 @@ describe('SessionController', () => {
 
     // Open B while A's finalize is pending. B's `completeOpen` is now blocked waiting on A's
     // `ingestSettlement` to resolve (it awaits ingestSettlement before calling beginIngest).
-    const openB = controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
+    void controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
     expect(controller.getState().source?.name).toBe('second.mid');
     expect(sessions).toHaveLength(1);
 
