@@ -138,9 +138,13 @@ export async function parseAndProjectPcap(
   }
 
   throwIfAborted(signal);
+  // session.finish() must run before collector.table(): finish() -> flushStreams is where
+  // flush-time stream issues (STREAM_GAP, stall STREAM_ERROR) are reported, and the errors
+  // table has to include them.
+  const finished = session.finish();
   const errors = collector.table();
   const tables = [
-    ...session.finish(),
+    ...finished,
     { name: errors.name, arrow: projectedTableToArrow(errors), rowCount: errors.rowCount },
   ].map(toTransfer);
 

@@ -271,6 +271,13 @@ describe('tcp stream reassembly', () => {
     expect(result.issues).toEqual([expect.objectContaining({ code: 'STREAM_GAP' })]);
     expect(findTable(result, 'dns').numRows).toBe(0);
     expect(findTable(result, 'streams').get(0)!.status).toBe('gap');
+
+    // The flush-time STREAM_GAP issue (reported by session.finish() -> flushStreams) must also
+    // land in the SQL-queryable errors table, not just result.issues.
+    const errors = findTable(result, 'errors');
+    expect(errors.numRows).toBe(1);
+    expect(errors.get(0)!.code).toBe('STREAM_GAP');
+    expect(errors.get(0)!.stage).toBe('reassembling');
   });
 
   it('keeps udp dns rows with a null stream_id', async () => {

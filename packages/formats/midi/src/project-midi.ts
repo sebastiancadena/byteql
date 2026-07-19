@@ -248,9 +248,12 @@ export async function parseAndProjectMidi(
   }
 
   throwIfAborted(signal);
+  // session.finish() must run before collector.table() so any flush-time issues it reports
+  // land in the errors table (mirrors the pcap pack; latent-only here today).
+  const finished = session.finish();
   const errors = collector.table();
   const tables = [
-    ...session.finish(),
+    ...finished,
     { name: errors.name, arrow: projectedTableToArrow(errors), rowCount: errors.rowCount },
   ].map(toTransfer);
   const smpte = container.header.divisionMode === 'smpte';
