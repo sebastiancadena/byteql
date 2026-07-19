@@ -30,29 +30,26 @@ globalThis.runByteqlWorkerProbe = async () => {
     workers.push(worker);
     return worker;
   });
-  const invalid = (): Uint8Array => new Uint8Array([1, 2, 3, 4]);
-  const parseable = (): Uint8Array => new Uint8Array([0x4d, 0x54, 0x68, 0x64]);
+  const invalid = (): Blob => new Blob([new Uint8Array([1, 2, 3, 4])]);
+  const parseable = (): Blob => new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]);
+  const noop = { onProgress: () => undefined, onBatch: async () => undefined };
 
-  const initial = await rejectMessage(
-    client.parse({ name: 'initial.mid', bytes: invalid() }, () => undefined),
-  );
+  const initial = await rejectMessage(client.parse({ name: 'initial.mid', blob: invalid() }, noop));
   await globalThis.markByteqlWorkerReady();
 
-  const cancelled = client.parse({ name: 'cancelled.mid', bytes: parseable() }, () => undefined);
+  const cancelled = client.parse({ name: 'cancelled.mid', blob: parseable() }, noop);
   client.cancel();
   const cancellation = await rejectMessage(cancelled);
 
-  const crashed = client.parse({ name: 'crashed.mid', bytes: parseable() }, () => undefined);
+  const crashed = client.parse({ name: 'crashed.mid', blob: parseable() }, noop);
   workers.at(-1)?.onerror?.(new ErrorEvent('error'));
   const crash = await rejectMessage(crashed);
 
-  const corrupted = client.parse({ name: 'corrupted.mid', bytes: parseable() }, () => undefined);
+  const corrupted = client.parse({ name: 'corrupted.mid', blob: parseable() }, noop);
   workers.at(-1)?.onmessageerror?.(new MessageEvent('messageerror'));
   const messageError = await rejectMessage(corrupted);
 
-  const recreated = await rejectMessage(
-    client.parse({ name: 'recreated.mid', bytes: invalid() }, () => undefined),
-  );
+  const recreated = await rejectMessage(client.parse({ name: 'recreated.mid', blob: invalid() }, noop));
   client.dispose();
 
   return { initial, cancellation, crash, messageError, recreated, workerCount: workers.length };

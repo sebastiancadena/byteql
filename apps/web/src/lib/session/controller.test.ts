@@ -1,5 +1,4 @@
 import {
-  ipcToTable,
   tableToIpc,
   type BatchTransfer,
   type FormatPack,
@@ -13,11 +12,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ParseWorkerClient,
+  type BatchMessage,
   type ParseClientPort,
+  type ParseHandlers,
   type ParseProgress,
+  type StreamedParseResult,
   type WorkerPort,
 } from '../parse-worker-client.js';
-import { installParseWorker, type ParseWorkerScope } from '../../workers/parse.worker.js';
+import {
+  BATCH_CREDIT_WINDOW,
+  installParseWorker,
+  type ParseWorkerScope,
+} from '../../workers/parse.worker.js';
 import { SessionController } from './controller.js';
 import { initialSessionState } from './state.js';
 
@@ -37,10 +43,11 @@ const deferred = <T>(): Deferred<T> => {
   return { promise, resolve, reject };
 };
 
-// 8 ticks: the worker's run() awaits nextBatch() in a loop (one microtask hop per batch, plus the
-// terminal null) before its .then() posts a message, which 2 ticks no longer covers.
+// 32 ticks: Node's real Blob#arrayBuffer() takes ~3 microtask hops (used once per parse to probe
+// the head, plus per credit-gated pull loop iteration), well beyond a handful of Promise.resolve()
+// hops. Generous so credit-window tests spanning several pull iterations settle within one flush.
 const flush = async (): Promise<void> => {
-  for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+  for (let tick = 0; tick < 32; tick += 1) await Promise.resolve();
 };
 
 const transfer = (name: string, values: readonly number[]): TableTransfer => ({
@@ -68,7 +75,13 @@ class FakeParser implements ParseClientPort {
   cancel = vi.fn();
   dispose = vi.fn();
 
-  parse(
+  // The controller calls only `parseToResult` (Task 9 migrates it to the streaming `parse`); this
+  // stub keeps FakeParser assignable to ParseClientPort without exercising the streaming path.
+  parse(): Promise<StreamedParseResult> {
+    throw new Error('FakeParser.parse is not exercised by SessionController tests.');
+  }
+
+  parseToResult(
     input: { name: string; bytes: Uint8Array },
     onProgress: (progress: ParseProgress) => void,
   ): Promise<ParseResult> {
@@ -427,19 +440,32 @@ class FakeWorker implements WorkerPort {
   }
 }
 
+const streamedResult = (name: string, rowCount = 1): StreamedParseResult => ({
+  format: { id: 'standard_midi_file', title: 'Standard MIDI file' },
+  tables: [{ name, rowCount, columns: [] }],
+  issues: [],
+  queries: [{ id: 'overview', title: 'Overview', kind: 'grid', sql: 'select 1 limit 1;' }],
+  capabilities: { audio: { enabled: true, reason: null } },
+});
+
+const noopHandlers = (): ParseHandlers => ({
+  onProgress: vi.fn(),
+  onBatch: vi.fn().mockResolvedValue(undefined),
+});
+
 describe('ParseWorkerClient', () => {
-  it('transfers input bytes, kills on cancellation, and recreates the worker', async () => {
+  it('clones the input blob without transferring it, kills on cancellation, and recreates the worker', async () => {
     const workers: FakeWorker[] = [];
     const client = new ParseWorkerClient(() => {
       const worker = new FakeWorker();
       workers.push(worker);
       return worker;
     });
-    const bytes = new Uint8Array([1, 2, 3]);
+    const blob = new Blob([new Uint8Array([1, 2, 3])]);
 
-    const parsing = client.parse({ name: 'private.mid', bytes }, vi.fn());
-    expect(bytes.byteLength).toBe(0);
-    expect(workers[0]?.posts[0]?.transfer).toHaveLength(1);
+    const parsing = client.parse({ name: 'private.mid', blob }, noopHandlers());
+    expect(workers[0]?.posts[0]?.message).toMatchObject({ type: 'parse', name: 'private.mid' });
+    expect(workers[0]?.posts[0]?.transfer).toHaveLength(0);
 
     client.cancel();
     await expect(parsing).rejects.toMatchObject({ name: 'AbortError' });
@@ -455,7 +481,10 @@ describe('ParseWorkerClient', () => {
       workers.push(worker);
       return worker;
     });
-    const parsing = client.parse({ name: 'private.mid', bytes: new Uint8Array([1]) }, vi.fn());
+    const parsing = client.parse(
+      { name: 'private.mid', blob: new Blob([new Uint8Array([1])]) },
+      noopHandlers(),
+    );
     workers[0]!.failNextPost = true;
 
     expect(() => client.cancel()).not.toThrow();
@@ -471,11 +500,38 @@ describe('ParseWorkerClient', () => {
       workers.push(worker);
       return worker;
     });
-    const parsing = client.parse({ name: 'x.mid', bytes: new Uint8Array([1]) }, vi.fn());
+    const parsing = client.parse({ name: 'x.mid', blob: new Blob([new Uint8Array([1])]) }, noopHandlers());
 
     if (kind === 'error') workers[0]!.onerror?.({ type: 'error' } as ErrorEvent);
     else workers[0]!.onmessageerror?.(new MessageEvent('messageerror'));
 
+    await expect(parsing).rejects.toThrow('worker stopped unexpectedly');
+    expect(workers[0]?.terminated).toBe(true);
+    expect(workers).toHaveLength(2);
+  });
+
+  it('rejects on worker crash mid-stream and replaces the worker', async () => {
+    const workers: FakeWorker[] = [];
+    const client = new ParseWorkerClient(() => {
+      const worker = new FakeWorker();
+      workers.push(worker);
+      return worker;
+    });
+    const handlers = noopHandlers();
+    const parsing = client.parse({ name: 'mid-stream.mid', blob: new Blob([new Uint8Array([1])]) }, handlers);
+
+    workers[0]!.emit({
+      type: 'batch',
+      taskId: 1,
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array([1]),
+      rowCount: 1,
+    });
+    await flush();
+    expect(handlers.onBatch).toHaveBeenCalledOnce();
+
+    workers[0]!.onerror?.({ type: 'error' } as ErrorEvent);
     await expect(parsing).rejects.toThrow('worker stopped unexpectedly');
     expect(workers[0]?.terminated).toBe(true);
     expect(workers).toHaveLength(2);
@@ -488,15 +544,56 @@ describe('ParseWorkerClient', () => {
       workers.push(worker);
       return worker;
     });
-    const first = client.parse({ name: 'first.mid', bytes: new Uint8Array([1]) }, vi.fn());
+    const first = client.parse({ name: 'first.mid', blob: new Blob([new Uint8Array([1])]) }, noopHandlers());
     const oldWorker = workers[0]!;
     client.cancel();
     await expect(first).rejects.toMatchObject({ name: 'AbortError' });
 
-    const second = client.parse({ name: 'second.mid', bytes: new Uint8Array([2]) }, vi.fn());
-    oldWorker.emit({ type: 'result', taskId: 1, result: parseResult('stale') });
-    workers[1]!.emit({ type: 'result', taskId: 2, result: parseResult('current') });
-    await expect(second).resolves.toEqual(parseResult('current'));
+    const second = client.parse(
+      { name: 'second.mid', blob: new Blob([new Uint8Array([2])]) },
+      noopHandlers(),
+    );
+    oldWorker.emit({ type: 'finish', taskId: 1, ...streamedResult('stale') });
+    workers[1]!.emit({ type: 'finish', taskId: 2, ...streamedResult('current') });
+    await expect(second).resolves.toEqual(streamedResult('current'));
+  });
+
+  it('acks a batch only after the caller onBatch promise resolves', async () => {
+    const workers: FakeWorker[] = [];
+    const client = new ParseWorkerClient(() => {
+      const worker = new FakeWorker();
+      workers.push(worker);
+      return worker;
+    });
+    const gate = deferred<void>();
+    const onBatch = vi.fn(async (batch: BatchMessage) => {
+      if (batch.seq === 1) await gate.promise;
+    });
+    const parsing = client.parse(
+      { name: 'ack-order.mid', blob: new Blob([new Uint8Array([1])]) },
+      { onProgress: vi.fn(), onBatch },
+    );
+
+    workers[0]!.emit({
+      type: 'batch',
+      taskId: 1,
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array([9]),
+      rowCount: 1,
+    });
+    await flush();
+    expect(onBatch).toHaveBeenCalledOnce();
+    expect(workers[0]!.posts.some((post) => (post.message as { type?: string }).type === 'batchAck')).toBe(
+      false,
+    );
+
+    gate.resolve();
+    await flush();
+    expect(workers[0]!.posts.at(-1)?.message).toEqual({ type: 'batchAck', taskId: 1, seq: 1 });
+
+    workers[0]!.emit({ type: 'finish', taskId: 1, ...streamedResult('events') });
+    await expect(parsing).resolves.toEqual(streamedResult('events'));
   });
 });
 
@@ -532,13 +629,23 @@ const fakePack = (overrides: Partial<FormatPack> = {}): FormatPack => ({
   ...overrides,
 });
 
+type PostedMessage = { type?: string; [key: string]: unknown };
+
+const postsOfType = (scope: FakeWorkerScope, type: string) =>
+  scope.posts.filter((post) => (post.message as PostedMessage).type === type);
+
 describe('parse worker boundary', () => {
   it('rejects unrecognized formats before opening a source', async () => {
     const scope = new FakeWorkerScope();
     const open = vi.fn(fakePack().open);
     const pack = fakePack({ probe: () => null, open });
     installParseWorker(scope, [pack]);
-    scope.receive({ type: 'parse', taskId: 1, name: 'bad.mid', bytes: new Uint8Array([1, 2, 3, 4]) });
+    scope.receive({
+      type: 'parse',
+      taskId: 1,
+      name: 'bad.mid',
+      blob: new Blob([new Uint8Array([1, 2, 3, 4])]),
+    });
     await flush();
 
     expect(open).not.toHaveBeenCalled();
@@ -550,7 +657,29 @@ describe('parse worker boundary', () => {
     });
   });
 
-  it('transfers every distinct IPC ArrayBuffer with the completed result', async () => {
+  it('probes with the blob head and errors UNRECOGNIZED_FORMAT without draining', async () => {
+    const scope = new FakeWorkerScope();
+    const probe = vi.fn<FormatPack['probe']>(() => null);
+    const open = vi.fn(fakePack().open);
+    const pack = fakePack({ probe, open });
+    installParseWorker(scope, [pack]);
+    const bytes = new Uint8Array(10_000).fill(7);
+    scope.receive({ type: 'parse', taskId: 1, name: 'huge.bin', blob: new Blob([bytes]) });
+    await flush();
+
+    expect(probe).toHaveBeenCalledTimes(1);
+    const head = probe.mock.calls[0]![0];
+    expect(head.byteLength).toBeLessThanOrEqual(4096);
+    expect(open).not.toHaveBeenCalled();
+    expect(scope.posts.at(-1)?.message).toMatchObject({
+      type: 'error',
+      taskId: 1,
+      code: 'UNRECOGNIZED_FORMAT',
+      stage: 'framing',
+    });
+  });
+
+  it('streams each batch as its own message with a transferred IPC buffer', async () => {
     const scope = new FakeWorkerScope();
     const eventsIpc = arrowIpc([1, 2, 3]);
     const tempoIpc = arrowIpc([4, 5]);
@@ -573,18 +702,27 @@ describe('parse worker boundary', () => {
       type: 'parse',
       taskId: 7,
       name: 'demo.mid',
-      bytes: new Uint8Array([0x4d, 0x54, 0x68, 0x64]),
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
     });
     await flush();
 
-    const completed = scope.posts.find((post) => (post.message as { type?: string }).type === 'result');
-    expect(completed?.transfer).toEqual([eventsIpc.buffer, tempoIpc.buffer]);
+    const batchMessages = postsOfType(scope, 'batch');
+    expect(batchMessages).toHaveLength(2);
+    expect(batchMessages[0]).toMatchObject({
+      message: { type: 'batch', taskId: 7, seq: 1, table: 'events', rowCount: 3 },
+      transfer: [eventsIpc.buffer],
+    });
+    expect(batchMessages[1]).toMatchObject({
+      message: { type: 'batch', taskId: 7, seq: 2, table: 'tempo', rowCount: 2 },
+      transfer: [tempoIpc.buffer],
+    });
+    expect(postsOfType(scope, 'finish')).toHaveLength(1);
   });
 
-  it('merges multiple batches for the same table into one transfer, in arrival order', async () => {
+  it('derives a table columns once from its first batch, in first-arrival order, using pack.schemas() nullability', async () => {
     const scope = new FakeWorkerScope();
     // `flag` is absent from the fake pack's schemas() below, so its reported nullability must come
-    // from the merged Arrow field itself; it carries a null in every batch so Arrow infers it true.
+    // from the first batch's own Arrow field; it already carries a null in that batch alone.
     const firstBatch = tableToIpc(
       tableFromArrays({
         id: Int32Array.from([1, 2]),
@@ -623,23 +761,101 @@ describe('parse worker boundary', () => {
       type: 'parse',
       taskId: 12,
       name: 'demo.mid',
-      bytes: new Uint8Array([0x4d, 0x54, 0x68, 0x64]),
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
     });
     await flush();
 
-    const completed = scope.posts.find((post) => (post.message as { type?: string }).type === 'result');
-    const result = (completed?.message as { result?: ParseResult } | undefined)?.result;
-    const notes = result?.tables.find((table) => table.name === 'notes');
-
-    expect(notes?.rowCount).toBe(3);
-    expect(notes?.columns).toEqual([
-      { name: 'id', type: 'Int32', nullable: false },
-      { name: 'value', type: 'Int32', nullable: true },
-      { name: 'flag', type: 'Float64', nullable: true },
+    const finishMessage = postsOfType(scope, 'finish').at(-1)?.message as
+      { tables?: readonly { name: string; rowCount: number; columns: unknown }[] } | undefined;
+    expect(finishMessage?.tables).toEqual([
+      {
+        name: 'notes',
+        rowCount: 3,
+        columns: [
+          { name: 'id', type: 'Int32', nullable: false },
+          { name: 'value', type: 'Int32', nullable: true },
+          { name: 'flag', type: 'Float64', nullable: true },
+        ],
+      },
     ]);
-    const merged = ipcToTable(notes!.ipc);
-    expect(merged.getChild('id')?.toArray()).toEqual(Int32Array.from([1, 2, 3]));
-    expect(merged.getChild('value')?.toArray()).toEqual(Int32Array.from([10, 20, 30]));
+  });
+
+  it('streams batches and stalls at the credit window until acks arrive', async () => {
+    const scope = new FakeWorkerScope();
+    const rowIpc = (id: number): Uint8Array => tableToIpc(tableFromArrays({ id: Int32Array.from([id]) }));
+    const totalBatches = 6;
+    const pack = fakePack({
+      schemas: () => [{ name: 'events', columns: [{ name: 'id', type: 'int32', nullable: false }] }],
+      open: () => {
+        let index = 0;
+        return {
+          nextBatch: async () =>
+            index < totalBatches ? { table: 'events', ipc: rowIpc(++index), rowCount: 1 } : null,
+          finish: () => ({ issues: [], capabilities: {} }),
+        };
+      },
+    });
+    installParseWorker(scope, [pack]);
+
+    scope.receive({
+      type: 'parse',
+      taskId: 5,
+      name: 'stream.mid',
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
+    });
+    await flush();
+
+    expect(postsOfType(scope, 'batch')).toHaveLength(BATCH_CREDIT_WINDOW);
+    expect(postsOfType(scope, 'finish')).toHaveLength(0);
+
+    scope.receive({ type: 'batchAck', taskId: 5, seq: 1 });
+    await flush();
+    expect(postsOfType(scope, 'batch')).toHaveLength(5);
+    expect(postsOfType(scope, 'finish')).toHaveLength(0);
+
+    for (let seq = 2; seq <= totalBatches; seq += 1) {
+      scope.receive({ type: 'batchAck', taskId: 5, seq });
+    }
+    await flush();
+
+    expect(postsOfType(scope, 'batch')).toHaveLength(totalBatches);
+    const finishMessage = postsOfType(scope, 'finish').at(-1)?.message as
+      { tables?: readonly { name: string; rowCount: number; columns: unknown }[] } | undefined;
+    expect(finishMessage?.tables).toEqual([
+      { name: 'events', rowCount: totalBatches, columns: [{ name: 'id', type: 'Int32', nullable: false }] },
+    ]);
+  });
+
+  it('cancel mid-stream produces cancelled, not finish, and stops pulling nextBatch', async () => {
+    const scope = new FakeWorkerScope();
+    let index = 0;
+    const nextBatch = vi.fn(async () =>
+      index < 6
+        ? {
+            table: 'events',
+            ipc: tableToIpc(tableFromArrays({ id: Int32Array.from([++index]) })),
+            rowCount: 1,
+          }
+        : null,
+    );
+    const pack = fakePack({ open: () => ({ nextBatch, finish: () => ({ issues: [], capabilities: {} }) }) });
+    installParseWorker(scope, [pack]);
+
+    scope.receive({
+      type: 'parse',
+      taskId: 6,
+      name: 'cancel-mid-stream.mid',
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
+    });
+    await flush();
+    expect(nextBatch).toHaveBeenCalledTimes(BATCH_CREDIT_WINDOW);
+
+    scope.receive({ type: 'cancel', taskId: 6 });
+    await flush();
+
+    expect(nextBatch).toHaveBeenCalledTimes(BATCH_CREDIT_WINDOW);
+    expect(scope.posts.at(-1)?.message).toEqual({ type: 'cancelled', taskId: 6 });
+    expect(postsOfType(scope, 'finish')).toHaveLength(0);
   });
 
   it('forwards progress reported by the format pack', async () => {
@@ -653,7 +869,7 @@ describe('parse worker boundary', () => {
       { stage: 'projecting', completed: 1, total: 1, label: 'Processed track 1 of 1' },
     ];
     const pack = fakePack({
-      open: (_bytes, opts) => ({
+      open: (_source, opts) => ({
         nextBatch: async () => {
           for (const update of progress) opts.onProgress?.(update);
           return null;
@@ -667,7 +883,7 @@ describe('parse worker boundary', () => {
       type: 'parse',
       taskId: 8,
       name: 'demo.mid',
-      bytes: new Uint8Array([0x4d, 0x54, 0x68, 0x64]),
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
     });
     await flush();
 
@@ -682,7 +898,7 @@ describe('parse worker boundary', () => {
     const scope = new FakeWorkerScope();
     let signal: AbortSignal | undefined;
     const pack = fakePack({
-      open: (_bytes, opts) => {
+      open: (_source, opts) => {
         signal = opts.signal;
         return { nextBatch: async () => null, finish: () => ({ issues: [], capabilities: {} }) };
       },
@@ -694,7 +910,7 @@ describe('parse worker boundary', () => {
       type: 'parse',
       taskId: 3,
       name: 'demo.mid',
-      bytes: new Uint8Array([0x4d, 0x54, 0x68, 0x64]),
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
     });
     await flush();
 
@@ -707,7 +923,7 @@ describe('parse worker boundary', () => {
     const operation = deferred<BatchTransfer | null>();
     let signal: AbortSignal | undefined;
     const pack = fakePack({
-      open: (_bytes, opts) => {
+      open: (_source, opts) => {
         signal = opts.signal;
         return { nextBatch: () => operation.promise, finish: () => ({ issues: [], capabilities: {} }) };
       },
@@ -718,8 +934,13 @@ describe('parse worker boundary', () => {
       type: 'parse',
       taskId: 9,
       name: 'demo.mid',
-      bytes: new Uint8Array([0x4d, 0x54, 0x68, 0x64]),
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
     });
+    // The head probe reads the blob asynchronously, so `open()` (and thus `signal`) is only set
+    // once that settles; the cancellation below must still synchronously abort it once it is.
+    await flush();
+    expect(signal).toBeDefined();
+
     scope.receive({ type: 'cancel', taskId: 9 });
     expect(signal?.aborted).toBe(true);
     operation.reject(new DOMException('aborted', 'AbortError'));

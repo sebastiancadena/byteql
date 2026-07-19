@@ -16,6 +16,7 @@ export type {
   RecordSource,
   SourceFinish,
   TableColumn,
+  TableOverview,
   TableSchema,
   TableTransfer,
 } from './protocol.js';

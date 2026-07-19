@@ -11,6 +11,13 @@ export interface TableTransfer {
   columns: readonly TableColumn[];
 }
 
+/** Everything the Explorer needs to render a table's shape once parsing has finished — no IPC. */
+export interface TableOverview {
+  name: string;
+  rowCount: number;
+  columns: readonly TableColumn[];
+}
+
 export interface TableSchema {
   name: string;
   columns: readonly TableColumn[];

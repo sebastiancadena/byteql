@@ -190,7 +190,7 @@ export class SessionController {
     try {
       const [, bytes] = await Promise.all([queryCancellation, readBytes()]);
       if (!this.isCurrent(generation)) return;
-      const result = await this.parser.parse({ name, bytes }, (progress) => {
+      const result = await this.parser.parseToResult({ name, bytes }, (progress) => {
         if (this.isCurrent(generation)) this.progress(progress);
       });
       if (!this.isCurrent(generation)) return;

@@ -1,16 +1,12 @@
 import {
   ipcToTable,
-  memoryByteSource,
-  tableToIpc,
-  type BatchTransfer,
+  type ByteSource,
   type FormatPack,
-  type ParseResult,
   type TableColumn,
-  type TableTransfer,
+  type TableOverview,
 } from '@byteql/core';
 import { midiFormatPack } from '@byteql/midi';
 import { pcapFormatPack } from '@byteql/pcap';
-import { Table } from 'apache-arrow';
 
 export interface ParseWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
@@ -19,17 +15,55 @@ export interface ParseWorkerScope {
 
 const PROBE_HEAD_BYTES = 4096;
 
-type WorkerRequest =
-  | { type: 'parse'; taskId: number; name: string; bytes: Uint8Array; formatId?: string }
-  | { type: 'cancel'; taskId: number };
+/** In-flight batch messages a worker may have outstanding for one task before it must wait for acks. */
+export const BATCH_CREDIT_WINDOW = 4;
 
-const selectPack = (
-  packs: readonly FormatPack[],
-  bytes: Uint8Array,
-  formatId?: string,
-): FormatPack | null => {
+type WorkerRequest =
+  | { type: 'parse'; taskId: number; name: string; blob: Blob; formatId?: string }
+  | { type: 'cancel'; taskId: number }
+  | { type: 'batchAck'; taskId: number; seq: number };
+
+/**
+ * A small async semaphore: `take()` resolves immediately while permits remain, otherwise it
+ * waits for a `release()`. `releaseAll()` drains every current waiter without touching the
+ * permit count — it exists purely so a cancelled task's pull loop can observe the abort instead
+ * of hanging forever on a credit that will never arrive.
+ */
+class CreditGate {
+  private permits: number;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(initial: number) {
+    this.permits = initial;
+  }
+
+  take(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits -= 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => this.waiters.push(resolve));
+  }
+
+  release(): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter();
+    else this.permits += 1;
+  }
+
+  releaseAll(): void {
+    while (this.waiters.length > 0) this.waiters.shift()!();
+  }
+}
+
+const blobByteSource = (blob: Blob): ByteSource => ({
+  size: blob.size,
+  read: async (offset, length) =>
+    new Uint8Array(await blob.slice(offset, Math.min(offset + length, blob.size)).arrayBuffer()),
+});
+
+const selectPack = (packs: readonly FormatPack[], head: Uint8Array, formatId?: string): FormatPack | null => {
   if (formatId !== undefined) return packs.find((pack) => pack.id === formatId) ?? null;
-  const head = bytes.subarray(0, PROBE_HEAD_BYTES);
   let best: FormatPack | null = null;
   let bestConfidence = 0;
   // Strict `>`: the first-registered pack wins ties, and a confidence of 0 is never selected.
@@ -43,35 +77,18 @@ const selectPack = (
   return best;
 };
 
-const concatIpc = (parts: readonly Uint8Array[]): Table =>
-  new Table(parts.flatMap((part) => ipcToTable(part).batches));
-
-const mergeBatches = (pack: FormatPack, batches: readonly BatchTransfer[]): TableTransfer[] => {
-  const byTable = new Map<string, BatchTransfer[]>();
-  for (const batch of batches) {
-    const list = byTable.get(batch.table) ?? [];
-    list.push(batch);
-    byTable.set(batch.table, list);
-  }
-  const nullableByTable = new Map<string, Map<string, boolean>>(
-    pack
-      .schemas()
-      .map((schema) => [
-        schema.name,
-        new Map(schema.columns.map((column) => [column.name, column.nullable])),
-      ]),
-  );
-  return [...byTable.entries()].map(([name, parts]) => {
-    const ipc = parts.length === 1 ? parts[0]!.ipc : tableToIpc(concatIpc(parts.map((part) => part.ipc)));
-    const arrow = ipcToTable(ipc);
-    const nullable = nullableByTable.get(name);
-    const columns: TableColumn[] = arrow.schema.fields.map((field) => ({
-      name: field.name,
-      type: field.type.toString(),
-      nullable: nullable?.get(field.name) ?? field.nullable,
-    }));
-    return { name, ipc, rowCount: parts.reduce((sum, part) => sum + part.rowCount, 0), columns };
-  });
+/** Derives a table's reported columns from its first batch's IPC schema, once per table. */
+const deriveColumns = (pack: FormatPack, table: string, ipc: Uint8Array): readonly TableColumn[] => {
+  const arrow = ipcToTable(ipc);
+  const schema = pack.schemas().find((candidate) => candidate.name === table);
+  const nullable = schema
+    ? new Map(schema.columns.map((column) => [column.name, column.nullable]))
+    : undefined;
+  return arrow.schema.fields.map((field) => ({
+    name: field.name,
+    type: field.type.toString(),
+    nullable: nullable?.get(field.name) ?? field.nullable,
+  }));
 };
 
 const isAbortError = (error: unknown): boolean =>
@@ -82,36 +99,17 @@ const errorMessage = (error: unknown, packTitle: string): string =>
     ? error.message
     : `The ${packTitle} parser could not process this file.`;
 
-const ipcBuffers = (result: ParseResult): ArrayBuffer[] => {
-  const buffers = new Set<ArrayBuffer>();
-  for (const table of result.tables) {
-    if (table.ipc.buffer instanceof ArrayBuffer) buffers.add(table.ipc.buffer);
-  }
-  return [...buffers];
-};
-
 export function installParseWorker(
   scope: ParseWorkerScope,
   packs: readonly FormatPack[] = [midiFormatPack, pcapFormatPack],
 ): void {
   const active = new Map<number, AbortController>();
   const cancelled = new Set<number>();
+  const credits = new Map<number, CreditGate>();
 
-  scope.addEventListener('message', (event) => {
-    const request = event.data as WorkerRequest;
-    if (!request || typeof request !== 'object') return;
-
-    if (request.type === 'cancel') {
-      // Recorded even when the parse has not arrived yet: task ids are never
-      // reused, so a racing cancel must abort the parse that follows it.
-      cancelled.add(request.taskId);
-      active.get(request.taskId)?.abort();
-      return;
-    }
-    if (request.type !== 'parse') return;
-
-    const { taskId, bytes } = request;
-    const pack = selectPack(packs, bytes, request.formatId);
+  const runParse = async (taskId: number, name: string, blob: Blob, formatId?: string): Promise<void> => {
+    const head = new Uint8Array(await blob.slice(0, PROBE_HEAD_BYTES).arrayBuffer());
+    const pack = selectPack(packs, head, formatId);
     if (!pack) {
       scope.postMessage({
         type: 'error',
@@ -127,50 +125,102 @@ export function installParseWorker(
     active.set(taskId, controller);
     if (cancelled.has(taskId)) controller.abort();
 
-    const run = async (): Promise<ParseResult> => {
-      const source = pack.open(memoryByteSource(bytes), {
+    const gate = new CreditGate(BATCH_CREDIT_WINDOW);
+    credits.set(taskId, gate);
+
+    try {
+      const source = pack.open(blobByteSource(blob), {
         signal: controller.signal,
         onProgress: (progress) => scope.postMessage({ type: 'progress', taskId, ...progress }),
       });
-      const batches: BatchTransfer[] = [];
-      for (let batch = await source.nextBatch(); batch !== null; batch = await source.nextBatch()) {
-        batches.push(batch);
+
+      const overview: TableOverview[] = [];
+      const index = new Map<string, number>();
+      let seq = 0;
+      let cancelledInLoop = false;
+
+      for (;;) {
+        await gate.take();
+        if (controller.signal.aborted || cancelled.has(taskId)) {
+          cancelledInLoop = true;
+          break;
+        }
+        const batch = await source.nextBatch();
+        if (batch === null) break;
+
+        seq += 1;
+        let position = index.get(batch.table);
+        if (position === undefined) {
+          position = overview.length;
+          index.set(batch.table, position);
+          overview.push({
+            name: batch.table,
+            rowCount: 0,
+            columns: deriveColumns(pack, batch.table, batch.ipc),
+          });
+        }
+        const current = overview[position]!;
+        overview[position] = { ...current, rowCount: current.rowCount + batch.rowCount };
+
+        scope.postMessage(
+          { type: 'batch', taskId, seq, table: batch.table, ipc: batch.ipc, rowCount: batch.rowCount },
+          [batch.ipc.buffer],
+        );
       }
+
+      if (cancelledInLoop || controller.signal.aborted || cancelled.has(taskId)) {
+        scope.postMessage({ type: 'cancelled', taskId });
+        return;
+      }
+
       const finish = source.finish();
-      return {
+      scope.postMessage({
+        type: 'finish',
+        taskId,
         format: { id: pack.id, title: pack.title },
-        tables: mergeBatches(pack, batches),
+        tables: overview,
         issues: finish.issues,
         queries: pack.queries,
         capabilities: finish.capabilities,
-      };
-    };
-
-    void run()
-      .then((result) => {
-        if (controller.signal.aborted || cancelled.has(taskId)) {
-          scope.postMessage({ type: 'cancelled', taskId });
-          return;
-        }
-        scope.postMessage({ type: 'result', taskId, result }, ipcBuffers(result));
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted || cancelled.has(taskId) || isAbortError(error)) {
-          scope.postMessage({ type: 'cancelled', taskId });
-          return;
-        }
-        scope.postMessage({
-          type: 'error',
-          taskId,
-          code: 'PARSE_FAILED',
-          stage: 'parsing',
-          message: errorMessage(error, pack.title),
-        });
-      })
-      .finally(() => {
-        active.delete(taskId);
-        cancelled.delete(taskId);
       });
+    } catch (error) {
+      if (controller.signal.aborted || cancelled.has(taskId) || isAbortError(error)) {
+        scope.postMessage({ type: 'cancelled', taskId });
+        return;
+      }
+      scope.postMessage({
+        type: 'error',
+        taskId,
+        code: 'PARSE_FAILED',
+        stage: 'parsing',
+        message: errorMessage(error, pack.title),
+      });
+    } finally {
+      active.delete(taskId);
+      cancelled.delete(taskId);
+      credits.delete(taskId);
+    }
+  };
+
+  scope.addEventListener('message', (event) => {
+    const request = event.data as WorkerRequest;
+    if (!request || typeof request !== 'object') return;
+
+    if (request.type === 'cancel') {
+      // Recorded even when the parse has not arrived yet: task ids are never
+      // reused, so a racing cancel must abort the parse that follows it.
+      cancelled.add(request.taskId);
+      active.get(request.taskId)?.abort();
+      credits.get(request.taskId)?.releaseAll();
+      return;
+    }
+    if (request.type === 'batchAck') {
+      credits.get(request.taskId)?.release();
+      return;
+    }
+    if (request.type !== 'parse') return;
+
+    void runParse(request.taskId, request.name, request.blob, request.formatId);
   });
 }
 
