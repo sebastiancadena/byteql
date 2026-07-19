@@ -6,7 +6,7 @@
 |---|---|
 | Status | Draft v0.3 — updated 2026-07-18 |
 | Owner | TBD |
-| Progress | Phase 0 ✅ shipped · Phase 1a engine prep ✅ shipped 2026-07-18 · Phase 1 slice 1/3 (pcap pack) ✅ shipped 2026-07-18 · slices 2/3 (scale & intake) and 3/3 (hex-provenance UI) next |
+| Progress | Phase 0 ✅ shipped · Phase 1a engine prep ✅ shipped 2026-07-18 · Phase 1 slice 1/3 (pcap pack) ✅ shipped 2026-07-18 · slice 2/3 (scale & intake) ✅ shipped 2026-07-19 · slice 3/3 (hex-provenance UI) next |
 
 ## 1. Problem
 

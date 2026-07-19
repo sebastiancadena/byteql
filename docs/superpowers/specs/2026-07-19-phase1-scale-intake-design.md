@@ -239,3 +239,71 @@ issues arrive in the `finish` message.
   the normal parse-failure path.
 - Firefox/Safari get the same chunked read path (it is Blob-based); only the spill tier is
   capability-gated. This exceeds the PRD's "in-memory fallback with size cap" floor.
+
+## Implementation notes (recorded post-execution)
+
+Recorded 2026-07-19 after all 12 implementation tasks plus reviews landed
+(`71cb8c5..74596de`, 25 commits on main).
+
+### Measured numbers
+
+Both Phase-1 exit metrics (PRD §6) are **MET**, measured directly on this machine (arm64,
+20 logical cores, Chromium 149):
+
+- **1 GB pcap queryable in 44.25 s** (< 60 s target).
+- **A 3-column query over a 4 GB capture reads 1.71 %** of the capture (< 10 % target; the
+  1 GB run separately measured 1.72 %).
+- 4 GB parse: 176.4 s (44.1 k ms/GB — linear with the 1 GB figure).
+- Bench artifacts (git-ignored `bench/`, regenerate with `run-scale-bench.mjs --gb 1|4`):
+  `apps/web/bench/scale-1gb-2026-07-19.json`, `apps/web/bench/scale-4gb-2026-07-19.json`.
+
+### The recorded rung
+
+Task 1's day-one spike (`apps/web/e2e/spill-capability.spec.ts`, pinned `duckdb-wasm
+1.33.1-dev57.0`) confirmed **rung 1** (whitelist `allowed_directories` as specced) — see
+"Spike findings (Task 1, recorded)" above for the full probe result and the opfs-glob
+correction it carries (spill views must be built from explicit `parquet_scan([...])` arrays
+of tracked chunk paths, not `*.parquet` glob strings, which don't enumerate on this build).
+
+### The `schemas: 'discover'` decision
+
+`beginIngest` accepts `schemas: 'discover'` alongside a static schema list. Table schemas are
+format-specific (pcap and MIDI project different table sets), and the worker's `appendBatch`
+calls for a generation arrive before the terminal `finish` message that would otherwise carry
+schema information up front. Discovery mode creates each staging table from the shape of the
+first batch it sees for that table rather than requiring the caller to predeclare every table.
+
+### Amendments accumulated during execution
+
+- **Worker request carries a `Blob`, not a `File` as drafted above.** `openSample` builds an
+  in-memory `Blob` for the bundled demo sample rather than a real `File`; generalizing the
+  `parse` request to `{ type: 'parse', taskId, name, blob: Blob, formatId? }` (`File` is a
+  `Blob`) lets both intake paths share one worker protocol instead of branching.
+- **Hardening order is stricter than first specced:** `allowed_directories` must be set
+  *before* `enable_external_access` is disabled, not merely "first" among the app's own
+  PRAGMAs — setting it after leaves the app unable to boot. The Design section's hardening
+  order above reflects the corrected, runtime-verified order (Task 7).
+- **`LOAD parquet` must run before the hardening loop**, not after: the extension never loads
+  once autoinstall/autoload are off and configuration is locked, so `COPY ... FORMAT parquet`
+  would otherwise fail (Task 11).
+- **DuckDB throws a Catalog Error on a type-mismatched `DROP ... IF EXISTS`** in both
+  directions (dropping a view where a table is expected, and vice versa). The finals registry
+  now records each final table/view's catalog kind so cleanup issues one correctly-typed
+  `DROP` per name (Task 7).
+- **Detached-buffer staged-bytes bug:** `appendBatch` read a buffer's `byteLength` *after*
+  `insertArrowFromIPCStream` had already transferred (detached) it, so the spill tier's
+  rotation threshold never tripped and ingest silently stayed on the memory tier regardless of
+  size. Fixed by capturing `byteLength` before the insert call — a real-browser-only bug no
+  mock harness could see (Task 11).
+- **Errors-table issue ordering:** at EOF materialization, framing issues must be flushed into
+  the collector ahead of dissect issues so the `errors` table's row order matches arrival
+  order, not construction order — a Phase-2 finding re-verified against the incremental
+  framer's rewrite in this slice.
+- **`finish()`-vs-`drain()` `rowCount` divergence:** `FinishedTable.rowCount` is cumulative
+  across every prior `drain()` plus the final flush, not just the last chunk — documented
+  directly on the type after a reviewer flagged the ambiguity (Task 3).
+- **`setTimeout` nesting clamp:** the per-packet yield (`setTimeout(0)`) hit Chromium's ~4 ms
+  timer-nesting clamp, costing roughly 40 s/GB even batched at a 256-packet interval
+  (`YIELD_INTERVAL_PACKETS`). Replacing it with an unclamped yield (`scheduler.yield()`,
+  `MessageChannel` fallback) is what closed the 1 GB metric from an initial 80.6 s miss to the
+  44.25 s reported above (Task 12).

@@ -5,7 +5,7 @@ tables you query with DuckDB SQL, entirely in the browser, with every row tracin
 exact source bytes. Product requirements, differentiators, and the projection DSL live in
 `PRD.md` — read §9 (architecture) and Appendix A (DSL) first.
 
-## Status (2026-07-18)
+## Status (2026-07-19)
 
 - **Phase 0 (MIDI spike): shipped.** Two manual exit items remain open — the audible smoke test
   and the unaided external reproduction (`docs/phase-0-external-test.md`).
@@ -40,12 +40,38 @@ exact source bytes. Product requirements, differentiators, and the projection DS
   (4-tuple reuse merges into one stream), no partial-overlap reconciliation, no sequence-number
   wraparound, single-record ClientHello only, and a tls-before-dns first-match quirk when a TCP
   segment's ports collide on both 443 and 53.
-- **Next: Phase 1 slice 2 of 3 (scale & intake)** — worker-protocol streaming, DuckDB
-  incremental append, OPFS/Parquet spill (revisit the DuckDB hardening PRAGMAs deliberately),
-  File System Access intake with size-tiering. **Then slice 3 of 3**: hex-provenance UI and
-  polish. Start slice 2 with a pre-task batching any review-deferred cleanups listed in
-  `.superpowers/sdd/progress.md` (git-ignored scratch; recover from `git log` and
-  `.superpowers/sdd/task-*-report.md` if cleaned).
+- **Phase 1, slice 2 of 3 (scale & intake): shipped.** Design record:
+  `docs/superpowers/specs/2026-07-19-phase1-scale-intake-design.md` — read its
+  **"Implementation notes"** for the measured numbers and the engineering discoveries made
+  building it. Chunked intake replaces the whole-buffer path end to end: a random-access
+  `ByteSource` (`FormatPack.open(source)`) feeds an incremental pcap framer
+  (`createPcapFramer`, `PCAP_CHUNK_BYTES` 8 MiB, straddle-copy rule) through
+  `ProjectionSession.drain()`/`pendingRowCount()`; the parse worker's request generalized to
+  `Blob` (structured-cloned, no buffer transfer — `File` and the demo sample's synthetic
+  in-memory `Blob` both flow through one path) and streams batches back over a
+  credit-windowed protocol (`batch`/`batchAck`, credit window 4, terminal `finish` carrying
+  `TableOverview[]`). `packages/db` gained generation-scoped ingest sessions (`beginIngest`,
+  `schemas: 'discover'`, a `'failed'` state so abort can reclaim staging after a failed
+  finalize, typed final drops via a catalog-kind registry) and a DuckDB-owned OPFS Parquet
+  spill tier: rotating `COPY` to `opfs://byteql-spill/<generation>/<table>/<n>.parquet`
+  (96 MiB rotation default), finalized as views over explicit `parquet_scan([...])` arrays
+  (opfs glob strings don't enumerate in the pinned duckdb-wasm build), `LOAD parquet` run
+  before the hardening loop, and hardening applied in the runtime-forced order
+  `allowed_directories` first, then external-access-off, then extensions-off, then lock. Tier
+  selection is `TIER_THRESHOLD_BYTES` (64 MiB) with fail-fast `SPILL_UNSUPPORTED` when the
+  browser can't support spill. `apps/web` drives it with an unclamped per-packet yield
+  (`scheduler.yield()`/`MessageChannel` fallback, `YIELD_INTERVAL_PACKETS` 256), a
+  byte-accurate StatusBar (%, MB/s), and a File System Access picker alongside the existing
+  `<input>`/drag-drop path. Both Phase-1 exit metrics (PRD §6) are MET, measured directly on
+  this machine (arm64, 20 logical cores, Chromium 149): **1 GB pcap queryable in 44.25 s**
+  (< 60 s target) and **a 3-column query over a 4 GB capture reads 1.71 %** of the capture
+  (< 10 % target; the 1 GB run separately measured 1.72 %) — 4 GB parse 176.4 s
+  (44.1 k ms/GB, linear). Bench artifacts: `apps/web/bench/scale-1gb-2026-07-19.json`,
+  `apps/web/bench/scale-4gb-2026-07-19.json` (git-ignored `bench/`).
+- **Next: Phase 1 slice 3 of 3 (hex-provenance UI and polish).** Bidirectional hex↔grid
+  linking (SQL result rows light up hex bytes; hex selections filter the grid) and general UI
+  polish close out Phase 1's remaining scope (PRD §9, §12). This is the last slice before
+  Phase 1 exit.
 
 ## Repo map
 
