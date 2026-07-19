@@ -22,6 +22,11 @@ export interface ProjectCallOptions {
 export interface FinishedTable {
   readonly name: string;
   readonly arrow: Table;
+  /**
+   * From `finish()`: cumulative rows across the whole session — after prior `drain()` calls
+   * this EXCEEDS `arrow.numRows` (which holds only the undrained remainder). From `drain()`:
+   * always the rows in this batch (`=== arrow.numRows`).
+   */
   readonly rowCount: number;
 }
 
