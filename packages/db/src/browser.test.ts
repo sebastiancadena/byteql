@@ -148,7 +148,16 @@ describe('createBrowserDatabase', () => {
     duckdbMocks.database.registerOPFSFileName.mockResolvedValue(undefined);
     duckdbMocks.connection.query.mockResolvedValue({} as Table);
     duckdbMocks.connection.send.mockResolvedValue(resultTable().batches);
-    duckdbMocks.connection.insertArrowFromIPCStream.mockResolvedValue(undefined);
+    // Track copies of inserted data for test inspection (since the buffer gets detached in the mock).
+    const insertedDataCopies: Uint8Array[] = [];
+    duckdbMocks.connection.insertArrowFromIPCStream.mockImplementation(async (ipc: Uint8Array) => {
+      // Save a copy before detaching so tests can inspect the content.
+      insertedDataCopies.push(ipc.slice());
+      // Mirror duckdb-wasm's real transfer semantics: the caller's buffer is detached.
+      structuredClone(ipc.buffer, { transfer: [ipc.buffer] });
+    });
+    // Expose copies via a property for test access.
+    duckdbMocks.connection.insertArrowFromIPCStream._insertedCopies = insertedDataCopies;
     duckdbMocks.connection.cancelSent.mockResolvedValue(true);
     duckdbMocks.connection.close.mockResolvedValue(undefined);
     deleteSpillGenerationMock.mockClear();
@@ -355,6 +364,9 @@ describe('createBrowserDatabase', () => {
       });
       const ipcA = ipcBatch(2);
       const ipcB = ipcBatch(3);
+      // Capture copies before appendBatch transfers the buffers (the mock detaches them).
+      const ipcACopy = ipcA.slice();
+      const ipcBCopy = ipcB.slice();
 
       await session.appendBatch('events', ipcA);
       await session.appendBatch('events', ipcB);
@@ -369,12 +381,15 @@ describe('createBrowserDatabase', () => {
         expect.any(Uint8Array),
         { name: '__ingest_7_events', create: false },
       );
-      const [firstInserted] = duckdbMocks.connection.insertArrowFromIPCStream.mock.calls[0]!;
-      const [secondInserted] = duckdbMocks.connection.insertArrowFromIPCStream.mock.calls[1]!;
-      expect(firstInserted).not.toBe(ipcA);
-      expect(secondInserted).not.toBe(ipcB);
-      expect([...(firstInserted as Uint8Array)]).toEqual([...ipcA]);
-      expect([...(secondInserted as Uint8Array)]).toEqual([...ipcB]);
+      // Access the copies saved by the mock before buffer detach (mock.calls would have detached buffers).
+      const insertedCopies = (
+        duckdbMocks.connection.insertArrowFromIPCStream as unknown as {
+          _insertedCopies: Uint8Array[];
+        }
+      )._insertedCopies;
+      expect(insertedCopies).toHaveLength(2);
+      expect([...insertedCopies[0]!]).toEqual([...ipcACopy]);
+      expect([...insertedCopies[1]!]).toEqual([...ipcBCopy]);
     });
 
     it('finalize drops old finals, renames staging, updates listTables, in one transaction', async () => {

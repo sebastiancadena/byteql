@@ -97,6 +97,9 @@ test('a large capture streams through the opfs spill tier and stays queryable', 
 
   await runSql(page, 'select _src_start, _src_end from packets order by packet_id limit 1');
   const spillTierProvenance = await firstRowCells(page, '_src_start');
+  // Absolute anchor: the first packet record header starts at byte 24 (the classic-pcap global
+  // header size — see generateCapture's PCAP_GLOBAL_HEADER_SIZE in support/capture.ts).
+  expect(Number(spillTierProvenance[0])).toBe(24);
   expect(spillTierProvenance).toEqual(memoryTierProvenance);
 
   // Rotation actually happened, not just a single residual flush at finalize.
