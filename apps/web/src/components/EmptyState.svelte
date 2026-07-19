@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global DragEvent, Event, File, HTMLInputElement */
+  /* global DOMException, DragEvent, Event, File, HTMLInputElement, window */
 
   interface Props {
     busy?: boolean;
@@ -23,6 +23,23 @@
     dragging = false;
     const file = event.dataTransfer?.files[0];
     if (file) onopen(file);
+  }
+
+  const filePickerSupported = 'showOpenFilePicker' in window;
+
+  function browseFiles(): void {
+    if (!window.showOpenFilePicker) return;
+    window
+      .showOpenFilePicker()
+      .then(([handle]) => {
+        if (!handle) throw new DOMException('No file was selected.', 'AbortError');
+        return handle.getFile();
+      })
+      .then(onopen)
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        throw err;
+      });
   }
 </script>
 
@@ -54,6 +71,11 @@
     <button class="button button-secondary" type="button" disabled={busy} onclick={onsample}>
       Try sample
     </button>
+    {#if filePickerSupported}
+      <button class="button button-secondary" type="button" disabled={busy} onclick={browseFiles}>
+        Browse files
+      </button>
+    {/if}
   </div>
   <p class="drop-hint">or drop a file anywhere in this panel</p>
   {#if error}
