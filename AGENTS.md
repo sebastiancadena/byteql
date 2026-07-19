@@ -68,10 +68,19 @@ exact source bytes. Product requirements, differentiators, and the projection DS
   (< 10 % target; the 1 GB run separately measured 1.72 %) — 4 GB parse 176.4 s
   (44.1 k ms/GB, linear). Bench artifacts: `apps/web/bench/scale-1gb-2026-07-19.json`,
   `apps/web/bench/scale-4gb-2026-07-19.json` (git-ignored `bench/`).
-- **Next: Phase 1 slice 3 of 3 (hex-provenance UI and polish).** Bidirectional hex↔grid
-  linking (SQL result rows light up hex bytes; hex selections filter the grid) and general UI
-  polish close out Phase 1's remaining scope (PRD §9, §12). This is the last slice before
-  Phase 1 exit.
+- **Phase 1 slice 3 of 3 (hex-provenance UI and polish): shipped 2026-07-19.** The canvas
+  hex pane (`apps/web/src/lib/hex/` + `HexPane.svelte`) with the bidirectional hex↔grid
+  link — grid rows light up bytes, byte clicks reveal covering rows (smallest interval,
+  cycling), structure shading from the result's `_src_start`/`_src_end` columns, offset
+  goto, filter-to-selection — plus the full-shell polish pass (design tokens, app-wide
+  drag-drop intake, source chip, status-bar readouts, shortcuts overlay). The "hex↔grid
+  round-trip works on every gallery format" exit criterion is e2e-verified on MIDI and
+  pcap (`apps/web/e2e/hex-provenance.spec.ts`). **Phase 1 is complete.** Design:
+  `docs/superpowers/specs/2026-07-19-phase1-hex-provenance-ui-design.md`; plan:
+  `docs/superpowers/plans/2026-07-19-phase1-hex-provenance-ui.md`.
+- **Next:** Phase 0's two open manual exit criteria (audible smoke test; unaided external
+  reproduction — `docs/phase-0-external-test.md`), then Phase 2 content (forensics pack +
+  plugin model, PRD §12).
 
 ## Repo map
 
