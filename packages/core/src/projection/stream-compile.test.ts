@@ -184,14 +184,94 @@ streams:`,
     expectCode(yaml, 'PROJECTION_STREAM_INVALID');
   });
 
+  it('rule 6: rejects an undeclared flow table', () => {
+    const yaml = validYaml.replace(
+      'table: flows\n    segments_table',
+      'table: no_such_flow\n    segments_table',
+    );
+    expectCode(yaml, 'PROJECTION_STREAM_INVALID');
+  });
+
+  it('rule 6: rejects a flow table whose rows anchor is not "$"', () => {
+    const yaml = validYaml.replace(
+      '  - name: flows\n    rows: $\n    key: flow_id',
+      '  - name: flows\n    rows: $.message\n    key: flow_id',
+    );
+    expectCode(yaml, 'PROJECTION_STREAM_INVALID');
+  });
+
   it('rule 7: rejects a segments_table colliding with a declared table', () => {
     const yaml = validYaml.replace('segments_table: flow_segments', 'segments_table: msgs');
+    expectCode(yaml, 'PROJECTION_STREAM_INVALID');
+  });
+
+  it('rule 7: rejects two streams sharing a segments_table with different feed tables', () => {
+    const yaml = validYaml
+      .replace(
+        `      port: { expr: '_.port', type: uint16 }
+  - name: flows`,
+        `      port: { expr: '_.port', type: uint16 }
+  - name: chunks2
+    rows: $
+    key: chunk2_id
+    parent_key: { table: records, column: record_id }
+    columns:
+      port2: { expr: '_.port', type: uint16 }
+  - name: flows`,
+      )
+      .replace(
+        `      - { when: 'true', parser: chunk_parser, table: chunks }
+  - from: chunks`,
+        `      - { when: 'true', parser: chunk_parser, table: chunks }
+      - { when: 'true', parser: chunk_parser, table: chunks2 }
+  - from: chunks`,
+      )
+      .replace(
+        `      - { when: 'true', stream: byte_stream }
+streams:`,
+        `      - { when: 'true', stream: byte_stream }
+  - from: chunks2
+    payload: _.payload
+    chain:
+      - { when: 'true', stream: byte_stream2 }
+streams:`,
+      )
+      .replace(
+        `    messages:
+      - { when: 'true', parser: msg_parser, table: msgs }
+`,
+        `    messages:
+      - { when: 'true', parser: msg_parser, table: msgs }
+  - name: byte_stream2
+    key: chunk_key
+    offset: _.seq
+    framer: len_framer
+    table: flows
+    segments_table: flow_segments
+    max_buffer: 64
+    messages:
+      - { when: 'true', parser: msg_parser, table: msgs }
+`,
+      );
     expectCode(yaml, 'PROJECTION_STREAM_INVALID');
   });
 
   it('rule 8: rejects an unregistered message parser', () => {
     const yaml = validYaml.replace('parser: msg_parser, table: msgs', 'parser: no_such_parser, table: msgs');
     expectCode(yaml, 'PROJECTION_PARSER_UNKNOWN');
+  });
+
+  it('rule 8: rejects a message link referencing an undeclared table', () => {
+    const yaml = validYaml.replace(
+      'parser: msg_parser, table: msgs',
+      'parser: msg_parser, table: no_such_table',
+    );
+    expectCode(yaml, 'PROJECTION_DISSECT_INVALID');
+  });
+
+  it('rule 8: rejects a message table that does not declare parent_key', () => {
+    const yaml = validYaml.replace('parser: msg_parser, table: msgs', 'parser: msg_parser, table: records');
+    expectCode(yaml, 'PROJECTION_DISSECT_INVALID');
   });
 
   it('rule 9: rejects a message parent_key.table unavailable at contribution time', () => {
@@ -208,6 +288,11 @@ streams:`,
       `      text: { expr: '_.text', type: utf8 }
       stream_id: { expr: '_.sid', type: int64 }`,
     );
+    expectCode(yaml, 'PROJECTION_SPEC_INVALID');
+  });
+
+  it('rule 10: rejects a stream-fed table whose key (not column) is named stream_id', () => {
+    const yaml = validYaml.replace('key: msg_id', 'key: stream_id');
     expectCode(yaml, 'PROJECTION_SPEC_INVALID');
   });
 
