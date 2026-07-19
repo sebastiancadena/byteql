@@ -222,7 +222,8 @@ describe('column layout and hit-testing', () => {
 
   it('returns null outside byte regions and past EOF', () => {
     expect(byteAtPoint(2, 4, metrics, layout, 0, 4096)).toBeNull();
-    expect(byteAtPoint(hexByteX(metrics, layout, 2), 4, metrics, layout, 0, 33)).toBeNull();
+    // y = 40 → row 2 → offset 2 * 16 + 2 = 34, past the 33-byte file
+    expect(byteAtPoint(hexByteX(metrics, layout, 2), 40, metrics, layout, 0, 33)).toBeNull();
   });
 });
 
@@ -1498,7 +1499,9 @@ git add apps/web/src/lib/session/state.ts apps/web/src/lib/session/state.test.ts
 git commit -m "feat(web): byte-selection session state and retained source blob"
 ```
 
----### Task 7: `HexPane.svelte`
+---
+
+### Task 7: `HexPane.svelte`
 
 **Files:**
 - Create: `apps/web/src/components/HexPane.svelte`
