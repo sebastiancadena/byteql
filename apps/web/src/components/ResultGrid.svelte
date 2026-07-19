@@ -8,11 +8,13 @@
   interface Props {
     table: Table;
     selectedRow?: number | null;
+    hiddenPrefix?: string;
     onselect: (row: number) => void;
   }
 
-  let { table, selectedRow = null, onselect }: Props = $props();
+  let { table, selectedRow = null, hiddenPrefix = '_', onselect }: Props = $props();
   let scrollElement: HTMLDivElement | null = null;
+  let showHidden = $state(false);
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: untrack(() => table.numRows),
     getScrollElement: () => scrollElement,
@@ -21,8 +23,20 @@
     initialRect: { width: 960, height: 360 },
   });
 
-  const fields = $derived(table.schema.fields);
-  const gridColumns = $derived(`repeat(${Math.max(1, fields.length)}, minmax(9rem, 1fr))`);
+  const columns = $derived(
+    table.schema.fields
+      .map((field, index) => ({ field, index }))
+      .filter(({ field }) => showHidden || !field.name.startsWith(hiddenPrefix)),
+  );
+  const hiddenCount = $derived(
+    table.schema.fields.filter((field) => field.name.startsWith(hiddenPrefix)).length,
+  );
+  const gridColumns = $derived(`repeat(${Math.max(1, columns.length)}, minmax(9rem, 1fr))`);
+
+  $effect(() => {
+    const row = selectedRow;
+    if (row !== null) untrack(() => $virtualizer.scrollToIndex(row, { align: 'auto' }));
+  });
 
   function valueAt(row: number, column: number): unknown {
     return table.getChildAt(column)?.get(row) ?? null;
@@ -62,15 +76,24 @@
   role="grid"
   aria-label="Query results"
   aria-rowcount={table.numRows + 1}
-  aria-colcount={fields.length}
+  aria-colcount={columns.length}
 >
   <div class="grid-header" role="row" style:grid-template-columns={gridColumns}>
-    {#each fields as field, columnIndex (field.name)}
-      <div role="columnheader" aria-colindex={columnIndex + 1} title={field.type.toString()}>
+    {#each columns as { field, index } (field.name)}
+      <div role="columnheader" aria-colindex={index + 1} title={field.type.toString()}>
         <span>{field.name}</span>
         <small>{field.type.toString()}</small>
       </div>
     {/each}
+    {#if hiddenCount > 0}
+      <button
+        class="hidden-chip"
+        type="button"
+        aria-label="Toggle hidden columns"
+        aria-pressed={showHidden}
+        onclick={() => (showHidden = !showHidden)}>{showHidden ? '− hide' : `+${hiddenCount} hidden`}</button
+      >
+    {/if}
   </div>
 
   <div class="grid-scroll" bind:this={scrollElement}>
@@ -92,11 +115,11 @@
           onclick={() => onselect(virtualRow.index)}
           onkeydown={(event) => selectFromKeyboard(event, virtualRow.index)}
         >
-          {#each fields as field, columnIndex (field.name)}
-            {@const value = valueAt(virtualRow.index, columnIndex)}
+          {#each columns as { field, index } (field.name)}
+            {@const value = valueAt(virtualRow.index, index)}
             <div
               role="gridcell"
-              aria-colindex={columnIndex + 1}
+              aria-colindex={index + 1}
               class:null-value={value === null || value === undefined}
               title={formatValue(value)}
             >

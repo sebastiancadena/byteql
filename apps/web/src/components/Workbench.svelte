@@ -3,12 +3,15 @@
 
   import { onMount } from 'svelte';
 
+  import { buildCoverage, provenanceOfRow } from '../lib/hex/coverage.js';
+  import { wrapFilterSql } from '../lib/hex/filter-sql.js';
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import { compatibleViewers, type ViewerCapability } from '../lib/viewers/registry.js';
   import AppHeader from './AppHeader.svelte';
   import EmptyState from './EmptyState.svelte';
   import Explorer from './Explorer.svelte';
+  import HexPane from './HexPane.svelte';
   import Inspector from './Inspector.svelte';
   import ResultGrid from './ResultGrid.svelte';
   import SqlEditor from './SqlEditor.svelte';
@@ -21,6 +24,8 @@
     runQuery(sql: string): Promise<void>;
     cancel(): Promise<void>;
     selectResultRow(row: number | null): void;
+    selectByteRange(range: { start: number; end: number } | null): void;
+    getSourceBlob(): Blob | null;
   }
 
   interface Props {
@@ -59,6 +64,29 @@
       .filter((capability) => !capability.enabled && capability.reason)
       .map((capability) => capability.reason as string),
   );
+
+  let hexPane = $state<HexPane>();
+
+  const coverageResult = $derived.by(() =>
+    session.result ? buildCoverage(session.result) : { index: null, reason: 'no-provenance' as const },
+  );
+  const sourceBlob = $derived(session.source ? controller.getSourceBlob() : null);
+  const rowHighlight = $derived(
+    session.result && session.selectedRow !== null
+      ? provenanceOfRow(session.result, session.selectedRow)
+      : null,
+  );
+
+  let lastRevealOffset: number | null = null;
+  let revealCycle = 0;
+
+  function revealAt(offset: number): void {
+    const rows = coverageResult.index?.rowsAt(offset) ?? [];
+    if (rows.length === 0) return;
+    revealCycle = lastRevealOffset === offset ? revealCycle + 1 : 0;
+    lastRevealOffset = offset;
+    controller.selectResultRow(rows[revealCycle % rows.length] as number);
+  }
 
   onMount(() => {
     const compactQuery = window.matchMedia('(max-width: 1099px)');
@@ -166,7 +194,12 @@
       />
     </main>
   {:else}
-    <Explorer state={session} collapsed={explorerCollapsed} onquery={loadQuery} />
+    <Explorer
+      state={session}
+      collapsed={explorerCollapsed}
+      onquery={loadQuery}
+      onbrowse={(name) => run(`select * from ${name} limit 10000`)}
+    />
 
     {#if compactMode}
       <div class="mobile-tabs" role="tablist" aria-label="Workbench views">
@@ -296,6 +329,22 @@
             </div>
           {/if}
         </div>
+
+        {#if session.source !== null}
+          <HexPane
+            bind:this={hexPane}
+            blob={sourceBlob}
+            fileSize={session.source?.size ?? 0}
+            coverage={coverageResult.index}
+            coverageReason={coverageResult.reason}
+            highlight={rowHighlight}
+            filterAvailable={coverageResult.reason === 'ok'}
+            compact={compactMode}
+            onreveal={revealAt}
+            onselectionchange={(range) => controller.selectByteRange(range)}
+            onfilter={(range) => run(wrapFilterSql(draftSql || session.sql, range))}
+          />
+        {/if}
       </section>
     </div>
 

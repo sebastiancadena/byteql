@@ -5,9 +5,10 @@
     state: SessionState;
     collapsed?: boolean;
     onquery: (sql: string) => void;
+    onbrowse: (table: string) => void;
   }
 
-  let { state, collapsed = false, onquery }: Props = $props();
+  let { state, collapsed = false, onquery, onbrowse }: Props = $props();
 </script>
 
 <nav class:collapsed class="explorer" aria-label="Data explorer">
@@ -47,6 +48,15 @@
               <summary>
                 <span class="table-name"><span aria-hidden="true">▦</span> {table.name}</span>
                 <span class="row-count">{table.rowCount.toLocaleString()} rows</span>
+                <button
+                  class="table-browse"
+                  type="button"
+                  aria-label={`Browse ${table.name}`}
+                  onclick={(event) => {
+                    event.preventDefault();
+                    onbrowse(table.name);
+                  }}>Browse</button
+                >
               </summary>
               <dl class="schema-list">
                 {#each table.columns as column (column.name)}

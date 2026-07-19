@@ -9,6 +9,7 @@ import { midiQueries } from '@byteql/midi';
 
 import { initialSessionState, type SessionState } from '../lib/session/state.js';
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
+import ResultGrid from './ResultGrid.svelte';
 import Workbench from './Workbench.svelte';
 
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
@@ -73,6 +74,11 @@ class FakeController {
   selectResultRow = vi.fn((row: number | null) => {
     this.publish({ ...this.state, selectedRow: row });
   });
+  sourceBlob: Blob | null = new Blob([new Uint8Array(64).map((_, i) => i)]);
+  selectByteRange = vi.fn((range: { start: number; end: number } | null) => {
+    this.publish({ ...this.state, byteSelection: range });
+  });
+  getSourceBlob = vi.fn(() => this.sourceBlob);
 
   constructor(state: SessionState) {
     this.state = state;
@@ -270,9 +276,9 @@ describe('Inspector Workbench', () => {
     const controller = new FakeController({ ...readyState(), queries: midiQueries });
     render(Workbench, { controller });
 
-    const navigation = screen.getByRole('navigation', { name: 'Data explorer' });
+    const savedQueries = screen.getByRole('region', { name: 'Saved queries' });
     expect(
-      within(navigation)
+      within(savedQueries)
         .getAllByRole('button')
         .map((button) => button.textContent?.trim()),
     ).toEqual(midiQueries.map((query) => `↗ ${query.title}`));
@@ -444,5 +450,92 @@ describe('Inspector Workbench', () => {
     expect(inspectorTab.getAttribute('aria-selected')).toBe('true');
     await fireEvent.keyDown(inspectorTab, { key: 'ArrowLeft' });
     expect(document.activeElement).toBe(resultsTab);
+  });
+
+  it('reveals the covering result row when the hex pane reports a byte click', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    expect(pane).toBeTruthy();
+    // 30 sits inside row 1's provenance range [28, 41); row 0 covers [12, 20).
+    await user.type(within(pane).getByLabelText('Go to offset'), '30{Enter}');
+    expect(pane.getAttribute('data-hex-caret')).toBe('30');
+
+    within(pane).getByRole('application', { name: 'Hex viewer' }).focus();
+    await user.keyboard('{Enter}');
+
+    expect(controller.selectResultRow).toHaveBeenCalledWith(1);
+  });
+
+  it('runs the wrapped filter query from the hex pane filter action', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    await user.type(within(pane).getByLabelText('Go to offset'), '30{Enter}');
+    within(pane).getByRole('application', { name: 'Hex viewer' }).focus();
+    await user.keyboard('{Shift>}{ArrowRight}{/Shift}');
+    await user.click(within(pane).getByRole('button', { name: 'Filter results to selection' }));
+
+    expect(controller.runQuery).toHaveBeenCalled();
+    const query = controller.runQuery.mock.calls.at(-1)![0];
+    expect(query).toContain('select * from (');
+    expect(query).toContain('where _src_start < ');
+  });
+
+  it('passes the selected row provenance to the hex pane as highlight', async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      result: tableFromArrays({
+        record_id: [1n, 2n],
+        _src_start: [12n, 800n],
+        _src_end: [20n, 840n],
+      }),
+    });
+    render(Workbench, { controller });
+
+    await fireEvent.click(screen.getByRole('row', { name: /row 2/i }));
+    expect(controller.selectResultRow).toHaveBeenCalledWith(1);
+
+    const rowOfStart = Math.floor(800 / 16);
+    await vi.waitFor(() => {
+      const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+      const firstRow = Number(pane.getAttribute('data-hex-first-row'));
+      expect(firstRow).toBeGreaterThanOrEqual(rowOfStart - 8);
+      expect(firstRow).toBeLessThanOrEqual(rowOfStart);
+    });
+  });
+
+  it('browses a table from the explorer with select * limit 10000', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    const navigation = screen.getByRole('navigation', { name: 'Data explorer' });
+    await fireEvent.click(within(navigation).getByRole('button', { name: 'Browse records' }));
+
+    expect(controller.runQuery).toHaveBeenCalledWith('select * from records limit 10000');
+  });
+
+  it('hides underscore columns behind the +N hidden chip', async () => {
+    const table = tableFromArrays({
+      note: [60, 61],
+      _src_start: [12n, 28n],
+      _src_end: [20n, 41n],
+    });
+    render(ResultGrid, { table, onselect: vi.fn() });
+
+    expect(screen.getByRole('columnheader', { name: /note/ })).toBeTruthy();
+    expect(screen.queryByRole('columnheader', { name: /_src_start/ })).toBeNull();
+
+    const chip = screen.getByRole('button', { name: 'Toggle hidden columns' });
+    expect(chip.textContent).toContain('+2 hidden');
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+
+    await fireEvent.click(chip);
+    expect(screen.getByRole('columnheader', { name: /_src_start/ })).toBeTruthy();
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
   });
 });

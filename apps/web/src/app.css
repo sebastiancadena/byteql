@@ -428,6 +428,34 @@ button {
   font-size: 0.63rem;
 }
 
+.table-browse {
+  flex: 0 0 auto;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.63rem;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.table-list summary:hover .table-browse,
+.table-list summary:focus-within .table-browse {
+  opacity: 1;
+}
+
+.table-browse:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+@media (hover: none) {
+  .table-browse {
+    opacity: 1;
+  }
+}
+
 .schema-list,
 .schema-inspector,
 .value-list,
@@ -511,7 +539,7 @@ button {
 
 .sql-workspace {
   display: grid;
-  grid-template-rows: auto minmax(8rem, 28%) auto auto minmax(10rem, 1fr);
+  grid-template-rows: auto minmax(8rem, 24%) auto auto minmax(8rem, 1fr) auto;
   height: 100%;
   min-height: 0;
   outline: none;
@@ -697,6 +725,29 @@ button {
   color: var(--color-text-subtle);
   font-size: 0.58rem;
   font-weight: 500;
+}
+
+.hidden-chip {
+  z-index: 3;
+  position: sticky;
+  right: 0;
+  align-self: center;
+  justify-self: end;
+  margin: 0 0.4rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font-size: 0.61rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.hidden-chip:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
 }
 
 .grid-scroll {
