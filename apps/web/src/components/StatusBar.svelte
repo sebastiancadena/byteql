@@ -22,8 +22,8 @@
   // Percentage is generic: it applies to any bounded progress, byte-based or not (e.g. MIDI
   // track counts), so it only requires a non-null total.
   const progressPercent = $derived(
-    state.progress && state.progress.total !== null
-      ? Math.floor((100 * state.progress.completed) / state.progress.total)
+    state.progress && state.progress.total !== null && state.progress.total > 0
+      ? Math.floor(Math.min(100, (100 * state.progress.completed) / state.progress.total))
       : null,
   );
 

@@ -65,4 +65,29 @@ describe('StatusBar progress readout', () => {
     expect(within(subMegabyte.container).getByText(/50%/)).toBeTruthy();
     expect(subMegabyte.container.textContent).not.toMatch(/MB\/s/);
   });
+
+  it('status bar guards against NaN when total is zero', () => {
+    const state = stateWith({
+      phase: 'parsing',
+      progress: { completed: 0, total: 0, label: 'Parsing MIDI', bytes: 0 },
+      openStartedAt: Date.now() - 5000,
+    });
+    const { container } = render(StatusBar, { state });
+
+    expect(container.textContent).not.toMatch(/NaN/);
+    expect(container.textContent).not.toMatch(/%/);
+    expect(container.textContent).toContain('Parsing MIDI');
+  });
+
+  it('status bar clamps percentage to 100 when completed exceeds total', () => {
+    const state = stateWith({
+      phase: 'parsing',
+      progress: { completed: 150, total: 100, label: 'Parsing', bytes: 150 },
+      openStartedAt: Date.now() - 5000,
+    });
+    const { container } = render(StatusBar, { state });
+
+    expect(within(container).getByText(/100%/)).toBeTruthy();
+    expect(container.textContent).not.toMatch(/150%/);
+  });
 });
