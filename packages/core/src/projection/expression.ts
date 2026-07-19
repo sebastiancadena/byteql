@@ -587,6 +587,43 @@ const evaluateUnary = (node: UnaryExpression, context: ExpressionContext): unkno
   }
 };
 
+export const formatIpv4 = (value: unknown): string | null => {
+  if (!(value instanceof Uint8Array) || value.length !== 4) return null;
+  return `${value[0]}.${value[1]}.${value[2]}.${value[3]}`;
+};
+
+export const formatIpv6 = (value: unknown): string | null => {
+  if (!(value instanceof Uint8Array) || value.length !== 16) return null;
+  const groups: number[] = [];
+  for (let i = 0; i < 16; i += 2) groups.push((value[i]! << 8) | value[i + 1]!);
+  // RFC 5952: compress the longest run (length >= 2) of zero groups to "::".
+  let bestStart = -1,
+    bestLen = 0,
+    curStart = -1,
+    curLen = 0;
+  for (let i = 0; i < 8; i += 1) {
+    if (groups[i] === 0) {
+      if (curStart < 0) curStart = i;
+      curLen += 1;
+      if (curLen > bestLen) {
+        bestLen = curLen;
+        bestStart = curStart;
+      }
+    } else {
+      curStart = -1;
+      curLen = 0;
+    }
+  }
+  const hex = (g: number): string => g.toString(16);
+  if (bestLen < 2) return groups.map(hex).join(':');
+  const head = groups.slice(0, bestStart).map(hex).join(':');
+  const tail = groups
+    .slice(bestStart + bestLen)
+    .map(hex)
+    .join(':');
+  return `${head}::${tail}`;
+};
+
 const builtins = {
   enum_str: (value: unknown): unknown => (value == null ? null : String(value)),
   to_i: (value: unknown): unknown => (value == null ? null : Number(value)),
@@ -602,41 +639,8 @@ const builtins = {
     if (!(value instanceof Uint8Array) || value.length !== 3) return null;
     return (value[0]! << 16) | (value[1]! << 8) | value[2]!;
   },
-  ip4_str: (value: unknown): unknown => {
-    if (!(value instanceof Uint8Array) || value.length !== 4) return null;
-    return `${value[0]}.${value[1]}.${value[2]}.${value[3]}`;
-  },
-  ip6_str: (value: unknown): unknown => {
-    if (!(value instanceof Uint8Array) || value.length !== 16) return null;
-    const groups: number[] = [];
-    for (let i = 0; i < 16; i += 2) groups.push((value[i]! << 8) | value[i + 1]!);
-    // RFC 5952: compress the longest run (length >= 2) of zero groups to "::".
-    let bestStart = -1,
-      bestLen = 0,
-      curStart = -1,
-      curLen = 0;
-    for (let i = 0; i < 8; i += 1) {
-      if (groups[i] === 0) {
-        if (curStart < 0) curStart = i;
-        curLen += 1;
-        if (curLen > bestLen) {
-          bestLen = curLen;
-          bestStart = curStart;
-        }
-      } else {
-        curStart = -1;
-        curLen = 0;
-      }
-    }
-    const hex = (g: number): string => g.toString(16);
-    if (bestLen < 2) return groups.map(hex).join(':');
-    const head = groups.slice(0, bestStart).map(hex).join(':');
-    const tail = groups
-      .slice(bestStart + bestLen)
-      .map(hex)
-      .join(':');
-    return `${head}::${tail}`;
-  },
+  ip4_str: formatIpv4,
+  ip6_str: formatIpv6,
 } as const;
 
 const evaluateCall = (node: CallExpression, context: ExpressionContext): unknown => {

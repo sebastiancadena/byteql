@@ -22,7 +22,13 @@ export type {
 export { IssueCollector } from './issues.js';
 export type { IssueCollectorOptions, IssueReport } from './issues.js';
 
-export { ProjectionCompileError, compileExpression, evaluateExpression } from './projection/expression.js';
+export {
+  ProjectionCompileError,
+  compileExpression,
+  evaluateExpression,
+  formatIpv4,
+  formatIpv6,
+} from './projection/expression.js';
 export type {
   CompiledExpression,
   ExpressionContext,
