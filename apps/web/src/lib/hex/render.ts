@@ -76,7 +76,7 @@ export function drawHexFrame(ctx: CanvasTextContext, frame: HexFrame): void {
   const rows = Math.ceil(frame.heightPx / metrics.rowHeight);
   for (let r = 0; r < rows; r += 1) {
     const rowOffset = (firstRow + r) * BYTES_PER_ROW;
-    if (rowOffset >= frame.fileSize && frame.fileSize > 0) break;
+    if (frame.fileSize === 0 ? r > 0 : rowOffset >= frame.fileSize) break;
     const y = r * metrics.rowHeight + metrics.rowHeight / 2;
     ctx.fillStyle = colors.gutter;
     ctx.fillText(rowOffset.toString(16).padStart(metrics.gutterDigits, '0'), layout.gutterX, y);

@@ -97,4 +97,14 @@ describe('drawHexFrame', () => {
     const hexTexts = ops.filter((op) => op.kind === 'text' && op.style === '#tx');
     expect(hexTexts).toHaveLength(3);
   });
+
+  it('renders a single empty row for zero-byte files', () => {
+    const { ctx, ops } = recordingContext();
+    drawHexFrame(ctx, frame({ fileSize: 0, heightPx: 54 }));
+    const gutterTexts = ops.filter((op) => op.kind === 'text' && op.style === '#gu');
+    expect(gutterTexts).toHaveLength(1);
+    expect(gutterTexts[0]?.args[0]).toBe('00000000');
+    const hexTexts = ops.filter((op) => op.kind === 'text' && op.style === '#tx');
+    expect(hexTexts).toHaveLength(0);
+  });
 });
