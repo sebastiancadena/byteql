@@ -243,3 +243,132 @@ describe('stream runtime', () => {
     expect(compiled.tables.find((t) => t.name === 'msgs')!.streamFed).toBe(true);
   });
 });
+
+describe('stream runtime robustness', () => {
+  it('drops an exact duplicate silently', () => {
+    const { finished, issues } = project([
+      chunk(7, 0, [4, 97, 98]),
+      chunk(7, 0, [4, 97, 98]), // retransmission
+      chunk(7, 3, [99, 100]),
+    ]);
+    expect(issues.issues()).toHaveLength(0);
+    expect(table(finished, 'msgs').rowCount).toBe(1);
+    const flows = table(finished, 'flows');
+    expect(flows.arrow.getChild('segment_count')!.get(0)).toBe(2);
+    expect(flows.arrow.getChild('byte_count')!.get(0)).toBe(5);
+    expect(table(finished, 'flow_segments').rowCount).toBe(2);
+  });
+
+  it('marks a partial overlap as error, keeps prior messages, and stops', () => {
+    const { finished, issues } = project([
+      chunk(7, 0, [1, 65]), // complete message, consumed
+      chunk(7, 2, [3, 66, 67, 68]),
+      chunk(7, 4, [9, 9]), // overlaps [2,6)
+      chunk(7, 6, [1, 70]), // dropped: stream inactive
+    ]);
+    expect(issues.issues()).toEqual([
+      expect.objectContaining({ stage: 'reassembling', code: 'STREAM_ERROR', recoverable: true }),
+    ]);
+    const flows = table(finished, 'flows');
+    expect(flows.arrow.getChild('status')!.get(0)).toBe('error');
+    expect(table(finished, 'msgs').rowCount).toBe(2); // 'A' + the [3,66,67,68] message framed before the overlap
+  });
+
+  it('marks a below-base segment after consumption as error', () => {
+    const { finished, issues } = project([
+      chunk(7, 10, [1, 65]), // framed immediately, consumed
+      chunk(7, 8, [9, 9]), // below locked base
+    ]);
+    expect(issues.issues()).toEqual([expect.objectContaining({ code: 'STREAM_ERROR' })]);
+    expect(table(finished, 'flows').arrow.getChild('status')!.get(0)).toBe('error');
+  });
+
+  it('truncates at the buffer cap, keeping completed messages', () => {
+    // max_buffer 64: first a complete message, then a segment stretching past the cap
+    const big = Array.from({ length: 63 }, (_, i) => i % 251);
+    const { finished, issues } = project([
+      chunk(7, 0, [1, 65]),
+      chunk(7, 2, big), // extent 2+63 = 65 > 64
+    ]);
+    expect(issues.issues()).toEqual([expect.objectContaining({ code: 'STREAM_TRUNCATED' })]);
+    const flows = table(finished, 'flows');
+    expect(flows.arrow.getChild('status')!.get(0)).toBe('truncated');
+    expect(table(finished, 'msgs').rowCount).toBe(1);
+  });
+
+  it('reports an unfilled gap once at finish', () => {
+    const { finished, issues } = project([
+      chunk(7, 0, [4, 97]), // bytes 0..2 of a 5-byte message
+      chunk(7, 4, [100]), // gap at 2..4 never fills
+    ]);
+    expect(issues.issues()).toEqual([expect.objectContaining({ code: 'STREAM_GAP' })]);
+    expect(table(finished, 'flows').arrow.getChild('status')!.get(0)).toBe('gap');
+    expect(table(finished, 'msgs').rowCount).toBe(0);
+  });
+
+  it('stalls on a framer throw and reports error at finish (garbage stream)', () => {
+    const { finished, issues } = project([chunk(7, 0, [0, 1, 2])]); // len byte 0 → framer throws
+    expect(issues.issues()).toEqual([
+      expect.objectContaining({ code: 'STREAM_ERROR', message: expect.stringContaining('zero-length') }),
+    ]);
+    expect(table(finished, 'flows').arrow.getChild('status')!.get(0)).toBe('error');
+  });
+
+  it('clears a framing stall when a rebase changes byte zero', () => {
+    // First capture starts mid-stream: framer sees [0, 67] and throws (stall). The true start
+    // then arrives at seq 0; the rebase shifts the buffer to [2, 65, 0, 67] and clears the
+    // stall, so framing retries: len=2 → message [2, 65, 0] (text decodes [65, 0]), leaving
+    // [67] as the pending tail of the next message.
+    const { finished, issues } = project([chunk(7, 2, [0, 67]), chunk(7, 0, [2, 65])]);
+    expect(issues.issues()).toHaveLength(0);
+    expect(table(finished, 'msgs').rowCount).toBe(1);
+    expect(table(finished, 'flows').arrow.getChild('status')!.get(0)).toBe('ok');
+    expect(table(finished, 'flows').arrow.getChild('pending_bytes')!.get(0)).toBe(1);
+  });
+
+  it('skips empty payloads silently (no contribution, no flow)', () => {
+    const { finished, issues } = project([chunk(7, 0, [])]);
+    expect(issues.issues()).toHaveLength(0);
+    expect(table(finished, 'flows').rowCount).toBe(0);
+  });
+
+  it('reports STREAM_KEY_INVALID and skips when the extractor returns null', () => {
+    // Doctor the chunk parser to omit `port`, so chunk_key returns null.
+    const badRegistry = new Map(registry);
+    badRegistry.set('chunk_parser', (bytes: Uint8Array) => ({
+      root: { seq: bytes[1], payload: { bytes: bytes.subarray(2), start: 2 } },
+    }));
+    const compiled = compileProjection(parseProjectionSpec(yaml), badRegistry, streamRegistries);
+    const issues = new IssueCollector();
+    const session = createProjectionSession(compiled, { issues });
+    session.project(
+      { records: [{ n: 0, body: { bytes: chunk(7, 0, [1, 65]), start: 0 } }] },
+      { resolve: () => ({ start: 0, end: 4 }) },
+    );
+    const finished = session.finish();
+    expect(issues.issues()).toEqual([
+      expect.objectContaining({ stage: 'reassembling', code: 'STREAM_KEY_INVALID', recoverable: true }),
+    ]);
+    expect(finished.find((t) => t.name === 'flows')!.rowCount).toBe(0);
+  });
+
+  it('reports STREAM_ERROR when offset is not a non-negative integer', () => {
+    // seq byte is uint8 so a negative offset needs a doctored parser: recompile with a
+    // chunk_parser emitting seq: -1 and assert the issue.
+    const badRegistry = new Map(registry);
+    badRegistry.set('chunk_parser', (bytes: Uint8Array) => ({
+      root: { port: bytes[0], seq: -1, payload: { bytes: bytes.subarray(2), start: 2 } },
+    }));
+    const compiled = compileProjection(parseProjectionSpec(yaml), badRegistry, streamRegistries);
+    const issues = new IssueCollector();
+    const session = createProjectionSession(compiled, { issues });
+    session.project(
+      { records: [{ n: 0, body: { bytes: chunk(7, 0, [1, 65]), start: 0 } }] },
+      { resolve: () => ({ start: 0, end: 4 }) },
+    );
+    session.finish();
+    expect(issues.issues()).toEqual([
+      expect.objectContaining({ code: 'STREAM_ERROR', message: expect.stringContaining('offset') }),
+    ]);
+  });
+});
