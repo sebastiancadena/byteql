@@ -802,6 +802,22 @@ describe('createBrowserDatabase', () => {
       expect(await database.listTables()).toEqual(expect.arrayContaining(['events', 'errors']));
     });
 
+    it('maps uint8 columns to UTINYINT in backfill DDL', async () => {
+      const database = await createBrowserDatabase();
+      const uint8Schema: TableSchema = {
+        name: 'bytes',
+        columns: [{ name: 'value', type: 'uint8', nullable: false }],
+      };
+      const session = await database.beginIngest({ schemas: [uint8Schema], tier: 'memory', generation: 7 });
+
+      const summaries = await session.finalize();
+
+      const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+      const createTable = calls.find((sql) => sql.includes('CREATE TABLE "__ingest_7_bytes"'));
+      expect(createTable).toBe('CREATE TABLE "__ingest_7_bytes" ("value" UTINYINT);');
+      expect(summaries).toEqual([{ name: 'bytes', rowCount: 0 }]);
+    });
+
     describe('spill tier', () => {
       it('rejects with SPILL_UNSUPPORTED when spillSupported is false', async () => {
         const database = await createBrowserDatabase({ spillSupported: false });

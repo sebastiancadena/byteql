@@ -98,6 +98,7 @@ const ARROW_TYPE_TO_DUCKDB_TYPE: Readonly<Record<string, string>> = {
   int16: 'SMALLINT',
   int32: 'INTEGER',
   int64: 'BIGINT',
+  uint8: 'UTINYINT',
   uint16: 'USMALLINT',
   uint32: 'UINTEGER',
   uint64: 'UBIGINT',
