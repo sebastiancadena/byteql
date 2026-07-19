@@ -64,11 +64,11 @@ import { deleteSpillGeneration } from './spill-files.js';
 const deleteSpillGenerationMock = vi.mocked(deleteSpillGeneration);
 
 const HARDENING_STATEMENTS = [
+  "SET allowed_directories = ['opfs://byteql-spill/'];",
   'SET enable_external_access = false;',
   'SET autoinstall_known_extensions = false;',
   'SET autoload_known_extensions = false;',
   'SET allow_community_extensions = false;',
-  "SET allowed_directories = ['opfs://byteql-spill/'];",
   'SET lock_configuration = true;',
 ] as const;
 

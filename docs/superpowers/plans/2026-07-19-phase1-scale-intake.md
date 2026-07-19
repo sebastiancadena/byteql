@@ -36,11 +36,11 @@ and 3).
   protocol). All overridable for tests as documented per task.
 - **Spill root:** OPFS directory `byteql-spill`, DuckDB paths
   `opfs://byteql-spill/<generation>/<table>/<n>.parquet`.
-- **Hardening order** (db init): external access off → extension autoinstall/autoload/community
-  off → `SET allowed_directories = ['opfs://byteql-spill/'];` → `SET lock_configuration = true;`
-  last. If the Task 1 spike recorded fallback rung 2, the `allowed_directories` statement is
-  replaced by `SET enable_external_access = true;` (everything else unchanged) — the spike's
-  amendment to the spec is authoritative.
+- **Hardening order** (db init): whitelist `allowed_directories` first (it cannot be changed once
+  external access is off — empirically verified), then external access off, then the three
+  extension statements, then `lock_configuration = true;` last. If the Task 1 spike recorded
+  fallback rung 2, the `allowed_directories` statement is replaced by `SET enable_external_access = true;`
+  (everything else unchanged) — the spike's amendment to the spec is authoritative.
 - **`ByteSource.read` returns a copy; short only at EOF. Chunk buffers are transient — any bytes
   retained past the current record must be copied** (verified already true for `StreamAssembler`,
   see Task 3).

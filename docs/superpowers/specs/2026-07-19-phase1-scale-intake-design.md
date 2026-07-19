@@ -153,8 +153,9 @@ deletes its spill directory. `finalize()` performs the swap (drop old finals, in
 only then deletes the old generation's spill directory. This replaces the controller's
 `committedTables` re-registration; no retained IPC anywhere.
 
-**Hardening**, in order at init: disable external access; extension autoinstall/autoload/
-community off; `SET allowed_directories = ['opfs://byteql-spill/']`;
+**Hardening**, in order at init: `SET allowed_directories = ['opfs://byteql-spill/']` first
+(it cannot be changed once external access is disabled — empirically verified at runtime),
+then disable external access; extension autoinstall/autoload/community off;
 `lock_configuration = true` last. **Day-one spike task** confirms on the pinned
 `duckdb-wasm 1.33.1-dev57.0`: (a) `COPY ... TO` an `opfs://` path, (b) `allowed_directories`
 honored with external access disabled, (c) `parquet_scan` over `opfs://` globs, (d) the

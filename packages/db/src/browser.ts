@@ -20,15 +20,15 @@ import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
 import type { ByteqlDatabase, IngestOptions, IngestSession, QueryResult, TableSummary } from './types.js';
 import { deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 
-// Order matters: the spill whitelist must be set before `lock_configuration` freezes it, and
-// external access stays off throughout (Task 1 spike rung 1 — allowed_directories works with
-// external access disabled).
+// Order matters: the spill whitelist must be set BEFORE external access is disabled
+// (DuckDB rejects changing allowed_directories once external access is off), then lock.
+// Task 1 spike rung 1 — allowed_directories works with external access disabled.
 const HARDENING_STATEMENTS = [
+  "SET allowed_directories = ['opfs://byteql-spill/'];",
   'SET enable_external_access = false;',
   'SET autoinstall_known_extensions = false;',
   'SET autoload_known_extensions = false;',
   'SET allow_community_extensions = false;',
-  "SET allowed_directories = ['opfs://byteql-spill/'];",
   'SET lock_configuration = true;',
 ] as const;
 

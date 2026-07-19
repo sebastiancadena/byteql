@@ -82,6 +82,9 @@ const queryTable = (value: number): Table => tableFromArrays({ value: [value] })
 
 const fakeDatabase = (): ByteqlDatabase => ({
   initialize: vi.fn().mockResolvedValue(undefined),
+  // Minimal stub until the controller migrates to ingest sessions; the ingest-path
+  // controller tests replace this fake wholesale.
+  beginIngest: vi.fn().mockRejectedValue(new Error('beginIngest is not faked yet')),
   replaceTables: vi.fn().mockResolvedValue(undefined),
   query: vi.fn().mockResolvedValue({ table: queryTable(1), elapsedMs: 2 }),
   cancelQuery: vi.fn().mockResolvedValue(false),
