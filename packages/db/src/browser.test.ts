@@ -1,9 +1,10 @@
-import type { TableTransfer } from '@byteql/core';
+import type { TableSchema, TableTransfer } from '@byteql/core';
 import { Table } from 'apache-arrow';
 import {
   Int32 as DuckdbInt32,
   Table as DuckdbTable,
   Utf8 as DuckdbUtf8,
+  tableToIPC as duckdbTableToIPC,
   vectorFromArray as duckdbVectorFromArray,
 } from 'apache-arrow-duckdb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,6 +74,30 @@ const resultTable = () =>
       label: duckdbVectorFromArray(['snare'], new DuckdbUtf8()),
     }),
   );
+
+/** A valid Arrow IPC payload with `rows` rows, parseable via `tableFromIPC(...).numRows`. */
+const ipcBatch = (rows: number): Uint8Array =>
+  duckdbTableToIPC(
+    new DuckdbTable({
+      value: duckdbVectorFromArray(
+        Array.from({ length: rows }, (_, index) => index),
+        new DuckdbInt32(),
+      ),
+    }),
+  );
+
+const eventsSchema: TableSchema = {
+  name: 'events',
+  columns: [{ name: 'note', type: 'int32', nullable: false }],
+};
+
+const errorsSchema: TableSchema = {
+  name: 'errors',
+  columns: [
+    { name: 'code', type: 'utf8', nullable: false },
+    { name: 'seen_at', type: 'timestamp_us', nullable: true },
+  ],
+};
 
 const deferred = <T>() => {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -424,5 +449,261 @@ describe('createBrowserDatabase', () => {
     expect(options).toEqual({ name: 'events', create: true });
     expect([...inserted]).toEqual([4, 5, 6]);
     expect(await database.listTables()).toEqual(['events']);
+  });
+
+  describe('beginIngest', () => {
+    it('appends into generation-scoped staging tables, create-then-append', async () => {
+      const database = await createBrowserDatabase();
+      const session = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 7,
+      });
+      const ipcA = ipcBatch(2);
+      const ipcB = ipcBatch(3);
+
+      await session.appendBatch('events', ipcA);
+      await session.appendBatch('events', ipcB);
+
+      expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenNthCalledWith(
+        1,
+        expect.any(Uint8Array),
+        { name: '__ingest_7_events', create: true },
+      );
+      expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenNthCalledWith(
+        2,
+        expect.any(Uint8Array),
+        { name: '__ingest_7_events', create: false },
+      );
+      const [firstInserted] = duckdbMocks.connection.insertArrowFromIPCStream.mock.calls[0]!;
+      const [secondInserted] = duckdbMocks.connection.insertArrowFromIPCStream.mock.calls[1]!;
+      expect(firstInserted).not.toBe(ipcA);
+      expect(secondInserted).not.toBe(ipcB);
+      expect([...(firstInserted as Uint8Array)]).toEqual([...ipcA]);
+      expect([...(secondInserted as Uint8Array)]).toEqual([...ipcB]);
+    });
+
+    it('finalize drops old finals, renames staging, updates listTables, in one transaction', async () => {
+      const database = await createBrowserDatabase();
+
+      const first = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 7,
+      });
+      await first.appendBatch('events', ipcBatch(2));
+      await first.finalize();
+      duckdbMocks.connection.query.mockClear();
+
+      const second = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 8,
+      });
+      await second.appendBatch('events', ipcBatch(3));
+      const summaries = await second.finalize();
+
+      expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([
+        'BEGIN TRANSACTION;',
+        'DROP TABLE IF EXISTS "events";',
+        'ALTER TABLE "__ingest_8_events" RENAME TO "events";',
+        'COMMIT;',
+      ]);
+      expect(summaries).toEqual([{ name: 'events', rowCount: 3 }]);
+      expect(await database.listTables()).toEqual(['events']);
+    });
+
+    it('tables never appended still finalize as empty tables from their schema', async () => {
+      const database = await createBrowserDatabase();
+
+      const session = await database.beginIngest({
+        schemas: [eventsSchema, errorsSchema],
+        tier: 'memory',
+        generation: 8,
+      });
+      await session.appendBatch('events', ipcBatch(1));
+
+      const summaries = await session.finalize();
+
+      const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+      const createIndex = calls.indexOf(
+        'CREATE TABLE "__ingest_8_errors" ("code" VARCHAR, "seen_at" TIMESTAMP);',
+      );
+      const renameIndex = calls.indexOf('ALTER TABLE "__ingest_8_errors" RENAME TO "errors";');
+      expect(createIndex).toBeGreaterThanOrEqual(0);
+      expect(renameIndex).toBeGreaterThan(createIndex);
+      expect(summaries).toEqual(
+        expect.arrayContaining([
+          { name: 'events', rowCount: 1 },
+          { name: 'errors', rowCount: 0 },
+        ]),
+      );
+      expect(await database.listTables()).toEqual(expect.arrayContaining(['events', 'errors']));
+    });
+
+    it('abort drops only its own staging and leaves committed finals untouched', async () => {
+      const database = await createBrowserDatabase();
+
+      const committed = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 7,
+      });
+      await committed.appendBatch('events', ipcBatch(1));
+      await committed.finalize();
+      duckdbMocks.connection.query.mockClear();
+
+      const session = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 8,
+      });
+      await session.appendBatch('events', ipcBatch(1));
+
+      await session.abort();
+
+      expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([
+        'DROP TABLE IF EXISTS "__ingest_8_events";',
+      ]);
+      await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow();
+      await expect(session.finalize()).rejects.toThrow();
+      expect(await database.listTables()).toEqual(['events']);
+    });
+
+    it('rejects appends to undeclared tables and after finalize', async () => {
+      const database = await createBrowserDatabase();
+      const session = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 9,
+      });
+
+      await expect(session.appendBatch('unknown', ipcBatch(1))).rejects.toThrow('Undeclared');
+      expect(duckdbMocks.connection.insertArrowFromIPCStream).not.toHaveBeenCalled();
+
+      await session.appendBatch('events', ipcBatch(1));
+      await session.finalize();
+
+      await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow();
+    });
+
+    it('a failed finalize rolls back and preserves the previous registry', async () => {
+      const database = await createBrowserDatabase();
+
+      const first = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 7,
+      });
+      await first.appendBatch('events', ipcBatch(1));
+      await first.finalize();
+
+      const second = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 8,
+      });
+      await second.appendBatch('events', ipcBatch(1));
+
+      duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
+        if (sql.startsWith('ALTER TABLE')) {
+          throw new Error('rename failed');
+        }
+        return {} as Table;
+      });
+
+      await expect(second.finalize()).rejects.toThrow('rename failed');
+      expect(await database.listTables()).toEqual(['events']);
+    });
+
+    it('rejects invalid or duplicate schema table identifiers before creating a session', async () => {
+      const database = await createBrowserDatabase();
+
+      await expect(
+        database.beginIngest({
+          schemas: [{ name: 'bad-name', columns: [] }],
+          tier: 'memory',
+          generation: 1,
+        }),
+      ).rejects.toThrow('Invalid table identifier');
+
+      await expect(
+        database.beginIngest({
+          schemas: [
+            { name: 'Events', columns: [] },
+            { name: 'events', columns: [] },
+          ],
+          tier: 'memory',
+          generation: 1,
+        }),
+      ).rejects.toThrow('Duplicate table identifier');
+
+      expect(duckdbMocks.database.instantiate).not.toHaveBeenCalled();
+    });
+
+    it('rejects beginIngest while another ingest session is open', async () => {
+      const database = await createBrowserDatabase();
+      await database.beginIngest({ schemas: [eventsSchema], tier: 'memory', generation: 1 });
+
+      await expect(
+        database.beginIngest({ schemas: [eventsSchema], tier: 'memory', generation: 2 }),
+      ).rejects.toThrow(/already open/i);
+    });
+
+    it('rejects a spill-tier ingest as not implemented', async () => {
+      const database = await createBrowserDatabase();
+
+      await expect(
+        database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
+      ).rejects.toThrow('Task 7');
+    });
+
+    it('discover mode registers tables lazily and does not reject undeclared names', async () => {
+      const database = await createBrowserDatabase();
+      const session = await database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 3 });
+
+      await session.appendBatch('events', ipcBatch(2));
+      await session.appendBatch('events', ipcBatch(1));
+      await session.appendBatch('errors', ipcBatch(4));
+
+      expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenNthCalledWith(
+        1,
+        expect.any(Uint8Array),
+        { name: '__ingest_3_events', create: true },
+      );
+      expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenNthCalledWith(
+        2,
+        expect.any(Uint8Array),
+        { name: '__ingest_3_events', create: false },
+      );
+      expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenNthCalledWith(
+        3,
+        expect.any(Uint8Array),
+        { name: '__ingest_3_errors', create: true },
+      );
+
+      const summaries = await session.finalize();
+      expect(summaries).toEqual(
+        expect.arrayContaining([
+          { name: 'events', rowCount: 3 },
+          { name: 'errors', rowCount: 4 },
+        ]),
+      );
+      expect(summaries).toHaveLength(2);
+    });
+
+    it('discover mode finalizes exactly the discovered set with no empty tables', async () => {
+      const database = await createBrowserDatabase();
+      const session = await database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 4 });
+      await session.appendBatch('events', ipcBatch(2));
+
+      const summaries = await session.finalize();
+
+      expect(summaries).toEqual([{ name: 'events', rowCount: 2 }]);
+      expect(await database.listTables()).toEqual(['events']);
+      expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).not.toEqual(
+        expect.arrayContaining([expect.stringMatching(/^CREATE TABLE/)]),
+      );
+    });
   });
 });

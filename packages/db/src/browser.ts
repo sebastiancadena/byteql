@@ -13,11 +13,11 @@ import duckdbEhWasm from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url';
 import duckdbEhWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
 import duckdbMvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
 import duckdbMvpWasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
-import type { TableTransfer } from '@byteql/core';
+import type { TableSchema, TableTransfer } from '@byteql/core';
 import { tableFromIPC } from 'apache-arrow';
 import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
 
-import type { ByteqlDatabase, QueryResult } from './types.js';
+import type { ByteqlDatabase, IngestOptions, IngestSession, QueryResult, TableSummary } from './types.js';
 
 const HARDENING_STATEMENTS = [
   'SET enable_external_access = false;',
@@ -67,6 +67,181 @@ const snapshotTables = (tables: readonly TableTransfer[]): readonly TableSnapsho
   });
 };
 
+const ARROW_TYPE_TO_DUCKDB_TYPE: Readonly<Record<string, string>> = {
+  int8: 'TINYINT',
+  int16: 'SMALLINT',
+  int32: 'INTEGER',
+  int64: 'BIGINT',
+  uint16: 'USMALLINT',
+  uint32: 'UINTEGER',
+  uint64: 'UBIGINT',
+  float64: 'DOUBLE',
+  bool: 'BOOLEAN',
+  utf8: 'VARCHAR',
+  binary: 'BLOB',
+  timestamp_us: 'TIMESTAMP',
+};
+
+const duckdbColumnType = (type: string): string => {
+  const mapped = ARROW_TYPE_TO_DUCKDB_TYPE[type];
+  if (!mapped) {
+    throw new Error(`Unsupported ingest column type: ${JSON.stringify(type)}`);
+  }
+  return mapped;
+};
+
+const stagingTableName = (generation: number, table: string): string => `__ingest_${generation}_${table}`;
+
+/** Validates ingest schema table names exactly as `snapshotTables` does for `replaceTables`. */
+const validateIngestSchemas = (schemas: readonly TableSchema[]): ReadonlyMap<string, TableSchema> => {
+  const schemasByName = new Map<string, TableSchema>();
+  const canonicalNames = new Set<string>();
+  for (const schema of schemas) {
+    if (!IDENTIFIER.test(schema.name)) {
+      throw new Error(`Invalid table identifier: ${JSON.stringify(schema.name)}`);
+    }
+    const canonicalName = schema.name.toLowerCase();
+    if (canonicalNames.has(canonicalName)) {
+      throw new Error(`Duplicate table identifier: ${JSON.stringify(schema.name)}`);
+    }
+    canonicalNames.add(canonicalName);
+    schemasByName.set(schema.name, schema);
+  }
+  return schemasByName;
+};
+
+type IngestState = 'open' | 'finalized' | 'aborted';
+
+type SchemaMode =
+  | { readonly kind: 'declared'; readonly schemas: ReadonlyMap<string, TableSchema> }
+  | { readonly kind: 'discover' };
+
+type EnqueueFn = <T>(operation: (connection: AsyncDuckDBConnection) => Promise<T>) => Promise<T>;
+
+class IngestSessionImpl implements IngestSession {
+  private state: IngestState = 'open';
+  private readonly created = new Set<string>();
+  private readonly rowCounts = new Map<string, number>();
+
+  constructor(
+    private readonly generation: number,
+    private readonly schemaMode: SchemaMode,
+    private readonly enqueue: EnqueueFn,
+    private readonly getFinalTableNames: () => readonly string[],
+    private readonly setFinalTableNames: (names: readonly string[]) => void,
+    private readonly onSettled: () => void,
+  ) {}
+
+  /** The set of tables this session is responsible for finalizing/aborting. */
+  private sessionTables(): readonly string[] {
+    return this.schemaMode.kind === 'declared' ? [...this.schemaMode.schemas.keys()] : [...this.created];
+  }
+
+  async appendBatch(table: string, ipc: Uint8Array): Promise<void> {
+    if (this.state !== 'open') {
+      throw new Error(`Ingest session is ${this.state}; cannot append to ${JSON.stringify(table)}.`);
+    }
+    if (this.schemaMode.kind === 'declared') {
+      if (!this.schemaMode.schemas.has(table)) {
+        throw new Error(`Undeclared ingest table: ${JSON.stringify(table)}`);
+      }
+    } else if (!IDENTIFIER.test(table)) {
+      throw new Error(`Invalid table identifier: ${JSON.stringify(table)}`);
+    }
+
+    const rowCount = tableFromIPC(ipc).numRows;
+    const copy = ipc.slice();
+    const stagingName = stagingTableName(this.generation, table);
+    const create = !this.created.has(table);
+
+    await this.enqueue(async (connection) => {
+      if (this.state !== 'open') {
+        throw new Error(`Ingest session is ${this.state}; cannot append to ${JSON.stringify(table)}.`);
+      }
+      await connection.insertArrowFromIPCStream(copy, { name: stagingName, create });
+      this.created.add(table);
+      this.rowCounts.set(table, (this.rowCounts.get(table) ?? 0) + rowCount);
+    });
+  }
+
+  async finalize(): Promise<readonly TableSummary[]> {
+    if (this.state !== 'open') {
+      throw new Error(`Ingest session is ${this.state}; cannot finalize.`);
+    }
+    this.state = 'finalized';
+    try {
+      return await this.enqueue(async (connection) => {
+        await connection.query('BEGIN TRANSACTION;');
+        try {
+          for (const name of this.getFinalTableNames()) {
+            await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(name)};`);
+          }
+
+          const declaredSchemas = this.schemaMode.kind === 'declared' ? this.schemaMode.schemas : null;
+          const finalNames: string[] = [];
+          const summaries: TableSummary[] = [];
+          for (const table of this.sessionTables()) {
+            const stagingName = stagingTableName(this.generation, table);
+            if (!this.created.has(table)) {
+              // discover-mode session tables come only from `created`, so every discover-mode
+              // table has already been appended; only declared schemas reach this branch.
+              const schema = declaredSchemas?.get(table);
+              if (!schema) {
+                throw new Error(`Missing schema for never-appended ingest table: ${JSON.stringify(table)}`);
+              }
+              const columnsDdl = schema.columns
+                .map((column) => `${quoteIdentifier(column.name)} ${duckdbColumnType(column.type)}`)
+                .join(', ');
+              await connection.query(`CREATE TABLE ${quoteIdentifier(stagingName)} (${columnsDdl});`);
+            }
+            await connection.query(
+              `ALTER TABLE ${quoteIdentifier(stagingName)} RENAME TO ${quoteIdentifier(table)};`,
+            );
+            finalNames.push(table);
+            summaries.push({ name: table, rowCount: this.rowCounts.get(table) ?? 0 });
+          }
+
+          await connection.query('COMMIT;');
+          this.setFinalTableNames(finalNames);
+          return summaries;
+        } catch (error) {
+          try {
+            await connection.query('ROLLBACK;');
+          } catch (rollbackError) {
+            throw new AggregateError([error, rollbackError], 'Ingest finalize and rollback failed.', {
+              cause: rollbackError,
+            });
+          }
+          throw error;
+        }
+      });
+    } finally {
+      this.onSettled();
+    }
+  }
+
+  async abort(): Promise<void> {
+    if (this.state !== 'open') {
+      return;
+    }
+    this.state = 'aborted';
+    try {
+      await this.enqueue(async (connection) => {
+        for (const table of this.sessionTables()) {
+          const stagingName = stagingTableName(this.generation, table);
+          try {
+            await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(stagingName)};`);
+          } catch {
+            // Best-effort cleanup outside a transaction; ignore failures dropping staging tables.
+          }
+        }
+      });
+    } finally {
+      this.onSettled();
+    }
+  }
+}
+
 class BrowserDatabase implements ByteqlDatabase {
   private connection: AsyncDuckDBConnection | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -77,6 +252,7 @@ class BrowserDatabase implements ByteqlDatabase {
   private closePromise: Promise<void> | null = null;
   private terminatePromise: Promise<void> | null = null;
   private queryInFlight = false;
+  private activeIngest: IngestSessionImpl | null = null;
 
   constructor(
     private readonly database: AsyncDuckDB,
@@ -132,6 +308,45 @@ class BrowserDatabase implements ByteqlDatabase {
         throw error;
       }
     });
+  }
+
+  async beginIngest(options: IngestOptions): Promise<IngestSession> {
+    if (this.disposeRequested) {
+      throw new Error('ByteQL database has been disposed.');
+    }
+    if (options.tier === 'spill') {
+      throw new Error('Spill tier ingest is not implemented until Task 7.');
+    }
+    if (!Number.isInteger(options.generation) || options.generation < 0) {
+      throw new Error(
+        `Ingest generation must be a non-negative integer: ${JSON.stringify(options.generation)}`,
+      );
+    }
+    if (this.activeIngest) {
+      throw new Error('An ingest session is already open.');
+    }
+
+    const schemaMode: SchemaMode =
+      options.schemas === 'discover'
+        ? { kind: 'discover' }
+        : { kind: 'declared', schemas: validateIngestSchemas(options.schemas) };
+
+    const session: IngestSessionImpl = new IngestSessionImpl(
+      options.generation,
+      schemaMode,
+      (operation) => this.enqueue(operation),
+      () => this.tableNames,
+      (names) => {
+        this.tableNames = names;
+      },
+      () => {
+        if (this.activeIngest === session) {
+          this.activeIngest = null;
+        }
+      },
+    );
+    this.activeIngest = session;
+    return session;
   }
 
   query(sql: string): Promise<QueryResult> {
