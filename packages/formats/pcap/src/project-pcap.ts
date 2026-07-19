@@ -31,8 +31,13 @@ import { parsePcapContainer } from './container.js';
 import { pcapParserRegistry } from './parsers.js';
 import pcapQueries from './pcap-queries.generated.js';
 import tablesYaml from './pcap-tables.generated.js';
+import { pcapStreamRegistries } from './streams.js';
 
-const compiledProjection = compileProjection(parseProjectionSpec(tablesYaml), pcapParserRegistry);
+const compiledProjection = compileProjection(
+  parseProjectionSpec(tablesYaml),
+  pcapParserRegistry,
+  pcapStreamRegistries,
+);
 
 export type PcapProgressCallback = (progress: ParseProgress) => void;
 
@@ -46,10 +51,12 @@ export const pcapNullability: Readonly<Record<string, ReadonlySet<string>>> = {
   ip: new Set(['_src_start', '_src_end', 'hop_limit']),
   tcp: new Set(['_src_start', '_src_end']),
   udp: new Set(['_src_start', '_src_end']),
-  dns: new Set(['_src_start', '_src_end', 'query_name', 'query_type']),
+  dns: new Set(['_src_start', '_src_end', 'query_name', 'query_type', 'stream_id']),
   icmp: new Set(['_src_start', '_src_end', 'echo_id', 'echo_seq']),
   icmpv6: new Set(['_src_start', '_src_end', 'echo_id', 'echo_seq']),
-  tls: new Set(['_src_start', '_src_end', 'sni']),
+  tls: new Set(['_src_start', '_src_end', 'sni', 'stream_id']),
+  streams: new Set(['_src_start', '_src_end']),
+  stream_segments: new Set(['_src_start', '_src_end', 'tcp_id']),
   errors: new Set(['record', '_src_start', '_src_end']),
 };
 

@@ -2,7 +2,18 @@ import { ipcToTable } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
 import { parseAndProjectPcap } from '../src/project-pcap.js';
-import { buildPcap, dnsOverTcp, dnsQuery, ethFrame, icmpv6Echo, ipv4, ipv6, tcp, udp } from './build-pcap.js';
+import {
+  buildPcap,
+  dnsOverTcp,
+  dnsQuery,
+  ethFrame,
+  icmpv6Echo,
+  ipv4,
+  ipv6,
+  tcp,
+  tlsClientHello,
+  udp,
+} from './build-pcap.js';
 
 const dns = dnsQuery({ txId: 0x1234, name: 'a.ru', type: 1 });
 const pkt = ethFrame({
@@ -165,5 +176,105 @@ describe('parseAndProjectPcap', () => {
     const result = await parseAndProjectPcap(p, new AbortController().signal);
     const errors = findTable(result, 'errors');
     expect(errors.numRows).toBeGreaterThan(0);
+  });
+});
+
+const tcpPacket = (seq: number, payload: Uint8Array, srcPort = 40000, dstPort = 53) =>
+  ethFrame({
+    etherType: 0x0800,
+    payload: ipv4({
+      protocol: 6,
+      src: '10.0.0.1',
+      dst: '10.0.0.2',
+      payload: tcp({ srcPort, dstPort, flags: 0x18, seq, payload }),
+    }),
+  });
+const capture = (packets: Uint8Array[]) =>
+  buildPcap({
+    magic: 'be_us',
+    linktype: 1,
+    packets: packets.map((data, i) => ({ tsSec: i + 1, tsFrac: 0, data })),
+  });
+
+describe('tcp stream reassembly', () => {
+  it('reassembles a DNS-over-TCP message split across two segments', async () => {
+    const payload = dnsOverTcp({ txId: 0xbeef, name: 'stream.example', type: 1 });
+    const result = await parseAndProjectPcap(
+      capture([tcpPacket(0, payload.subarray(0, 10)), tcpPacket(10, payload.subarray(10))]),
+      new AbortController().signal,
+    );
+    expect(result.issues).toHaveLength(0);
+    const dnsT = findTable(result, 'dns');
+    expect(dnsT.numRows).toBe(1);
+    expect(dnsT.get(0)!.query_name).toBe('stream.example');
+    expect(dnsT.get(0)!.packet_id).toBe(2n); // completing packet
+    expect(dnsT.get(0)!.stream_id).toBe(1n);
+    const streams = findTable(result, 'streams');
+    expect(streams.numRows).toBe(1);
+    const flow = streams.get(0)!;
+    expect(flow.src_addr).toBe('10.0.0.1');
+    expect(flow.dst_port).toBe(53);
+    expect(flow.status).toBe('ok');
+    expect(flow.message_count).toBe(1);
+    const segs = findTable(result, 'stream_segments');
+    expect(segs.numRows).toBe(2);
+    expect(segs.get(0)!.stream_id).toBe(1n);
+    expect(segs.get(0)!.tcp_id).toBe(1n);
+    expect(segs.get(1)!.tcp_id).toBe(2n);
+  });
+
+  it('reassembles a TLS ClientHello split across three out-of-order segments', async () => {
+    const record = tlsClientHello({ sni: 'split.example' });
+    const third = Math.ceil(record.length / 3);
+    const [s1, s2, s3] = [
+      record.subarray(0, third),
+      record.subarray(third, 2 * third),
+      record.subarray(2 * third),
+    ];
+    const result = await parseAndProjectPcap(
+      capture([
+        tcpPacket(third, s2, 50000, 443), // out-of-order first capture
+        tcpPacket(0, s1, 50000, 443),
+        tcpPacket(2 * third, s3, 50000, 443),
+      ]),
+      new AbortController().signal,
+    );
+    expect(result.issues).toHaveLength(0);
+    const tlsT = findTable(result, 'tls');
+    expect(tlsT.numRows).toBe(1);
+    expect(tlsT.get(0)!.sni).toBe('split.example');
+    expect(tlsT.get(0)!.packet_id).toBe(3n);
+    expect(findTable(result, 'stream_segments').numRows).toBe(3);
+  });
+
+  it('drops a retransmitted segment without an issue', async () => {
+    const payload = dnsOverTcp({ txId: 1, name: 'dup.example', type: 1 });
+    const result = await parseAndProjectPcap(
+      capture([
+        tcpPacket(0, payload.subarray(0, 8)),
+        tcpPacket(0, payload.subarray(0, 8)),
+        tcpPacket(8, payload.subarray(8)),
+      ]),
+      new AbortController().signal,
+    );
+    expect(result.issues).toHaveLength(0);
+    expect(findTable(result, 'dns').numRows).toBe(1);
+    expect(findTable(result, 'streams').get(0)!.segment_count).toBe(2);
+  });
+
+  it('marks a gapped stream and emits no message', async () => {
+    const payload = dnsOverTcp({ txId: 2, name: 'gap.example', type: 1 });
+    const result = await parseAndProjectPcap(
+      capture([tcpPacket(0, payload.subarray(0, 8)), tcpPacket(12, payload.subarray(12))]),
+      new AbortController().signal,
+    );
+    expect(result.issues).toEqual([expect.objectContaining({ code: 'STREAM_GAP' })]);
+    expect(findTable(result, 'dns').numRows).toBe(0);
+    expect(findTable(result, 'streams').get(0)!.status).toBe('gap');
+  });
+
+  it('keeps udp dns rows with a null stream_id', async () => {
+    const result = await parseAndProjectPcap(pcap, new AbortController().signal); // existing udp fixture
+    expect(findTable(result, 'dns').get(0)!.stream_id).toBeNull();
   });
 });

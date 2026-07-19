@@ -1,4 +1,4 @@
-version: '0.2'
+version: '0.3'
 format: pcap
 tables:
   - name: packets
@@ -74,6 +74,19 @@ tables:
     columns:
       tls_version: { expr: _.tls_version, type: utf8 }
       sni: { expr: _.sni, type: utf8 }
+  - name: streams
+    rows: $
+    key: stream_id
+    columns:
+      src_addr: { expr: _.src_addr, type: utf8 }
+      src_port: { expr: _.src_port, type: uint16 }
+      dst_addr: { expr: _.dst_addr, type: utf8 }
+      dst_port: { expr: _.dst_port, type: uint16 }
+      segment_count: { expr: _.segment_count, type: uint32 }
+      byte_count: { expr: _.byte_count, type: uint32 }
+      message_count: { expr: _.message_count, type: uint32 }
+      pending_bytes: { expr: _.pending_bytes, type: uint32 }
+      status: { expr: _.status, type: utf8 }
 dissect:
   - from: packets
     payload: _.body
@@ -98,12 +111,31 @@ dissect:
       - { when: _.l4_proto == 6, parser: tcp_segment, table: tcp }
       - { when: _.l4_proto == 17, parser: udp_datagram, table: udp }
       - { when: _.l4_proto == 58, parser: icmpv6_packet, table: icmpv6 }
-  - from: tcp_segment
+  - from: tcp
     payload: _.body
     chain:
-      - { when: _.dst_port == 443 or _.src_port == 443, parser: tls_client_hello, table: tls }
-      - { when: _.dst_port == 53 or _.src_port == 53, parser: dns_tcp_message, table: dns }
+      - { when: _.dst_port == 443 or _.src_port == 443, stream: tls_stream }
+      - { when: _.dst_port == 53 or _.src_port == 53, stream: dns_tcp_stream }
   - from: udp_datagram
     payload: _.body
     chain:
       - { when: _.dst_port == 53 or _.src_port == 53, parser: dns_packet, table: dns }
+streams:
+  - name: tls_stream
+    key: tcp_flow_key
+    offset: _.seq_num
+    framer: tls_record
+    table: streams
+    segments_table: stream_segments
+    max_buffer: 1048576
+    messages:
+      - { when: _.offset == 0, parser: tls_client_hello, table: tls }
+  - name: dns_tcp_stream
+    key: tcp_flow_key
+    offset: _.seq_num
+    framer: dns_tcp
+    table: streams
+    segments_table: stream_segments
+    max_buffer: 1048576
+    messages:
+      - { when: 'true', parser: dns_tcp_message, table: dns }
