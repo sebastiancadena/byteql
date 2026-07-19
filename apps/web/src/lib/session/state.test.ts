@@ -200,3 +200,60 @@ describe('reduceSession', () => {
     expect(initialSessionState.capabilities).toBeNull();
   });
 });
+
+describe('byteRangeSelected', () => {
+  it('stores the range while a source is open and clears on lifecycle resets', () => {
+    let state = reduceSession(initialSessionState, {
+      type: 'opening',
+      source: { name: 'a.pcap', size: 10 },
+    });
+    state = reduceSession(state, { type: 'byteRangeSelected', range: { start: 4, end: 8 } });
+    expect(state.byteSelection).toEqual({ start: 4, end: 8 });
+    state = reduceSession(state, { type: 'byteRangeSelected', range: null });
+    expect(state.byteSelection).toBeNull();
+  });
+
+  it('is a no-op when no source is open', () => {
+    const state = reduceSession(initialSessionState, {
+      type: 'byteRangeSelected',
+      range: { start: 0, end: 1 },
+    });
+    expect(state).toBe(initialSessionState);
+    expect(state.byteSelection).toBeNull();
+  });
+
+  it('is kept across queryStarted, queryFailed, and rowSelected', () => {
+    let state = reduceSession(initialSessionState, {
+      type: 'opening',
+      source: { name: 'a.pcap', size: 10 },
+    });
+    state = reduceSession(state, { type: 'byteRangeSelected', range: { start: 2, end: 5 } });
+    state = reduceSession(state, { type: 'queryStarted', sql: 'select 1' });
+    expect(state.byteSelection).toEqual({ start: 2, end: 5 });
+    state = reduceSession(state, { type: 'queryFailed', message: 'bad sql' });
+    expect(state.byteSelection).toEqual({ start: 2, end: 5 });
+    state = reduceSession(state, { type: 'rowSelected', row: 1 });
+    expect(state.byteSelection).toEqual({ start: 2, end: 5 });
+  });
+
+  it('is cleared by a new query result, by failure, and by opening', () => {
+    let state = reduceSession(initialSessionState, {
+      type: 'opening',
+      source: { name: 'a.pcap', size: 10 },
+    });
+    state = reduceSession(state, { type: 'byteRangeSelected', range: { start: 0, end: 1 } });
+    state = reduceSession(state, { type: 'querySucceeded', result, elapsedMs: 1 });
+    expect(state.byteSelection).toBeNull();
+
+    state = reduceSession(state, { type: 'byteRangeSelected', range: { start: 0, end: 1 } });
+    state = reduceSession(state, { type: 'failed', message: 'boom' });
+    expect(state.byteSelection).toBeNull();
+
+    state = reduceSession(
+      { ...initialSessionState, source: { name: 'a.pcap', size: 10 } },
+      { type: 'byteRangeSelected', range: { start: 0, end: 1 } },
+    );
+    state = reduceSession(state, { type: 'opening', source: { name: 'b', size: 1 } });
+    expect(state.byteSelection).toBeNull();
+  });
+});

@@ -58,6 +58,7 @@ const readyState = (): SessionState => ({
   queryError: null,
   selectedRow: null,
   fatalError: null,
+  byteSelection: null,
 });
 
 class FakeController {

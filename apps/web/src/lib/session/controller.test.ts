@@ -948,6 +948,48 @@ describe('SessionController', () => {
     await opening;
     expect(controller.getState().openStartedAt).toBeNull();
   });
+
+  it('retains the source blob for the session and exposes byte selection', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    expect(controller.getSourceBlob()).toBeNull();
+
+    const file = new File([new Uint8Array([1, 2, 3])], 'x.mid');
+    const opening = controller.openFile(file);
+    expect(controller.getSourceBlob()).toBe(file);
+
+    controller.selectByteRange({ start: 0, end: 2 });
+    expect(controller.getState().byteSelection).toEqual({ start: 0, end: 2 });
+    controller.selectByteRange(null);
+    expect(controller.getState().byteSelection).toBeNull();
+
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('events', 1));
+    await opening;
+  });
+
+  it('retains the sample blob across openSample and clears it on dispose', async () => {
+    const sample = new Uint8Array([0x4d, 0x54, 0x68, 0x64, 1, 2, 3]);
+    const fetchSample = vi.fn().mockResolvedValue(new Response(sample));
+    const controller = new SessionController({
+      database,
+      parser,
+      fetch: fetchSample,
+      demoUrl: '/assets/demo.mid',
+      stopViewer,
+    });
+    await controller.initialize();
+
+    const opening = controller.openSample();
+    expect(controller.getSourceBlob()).toBeInstanceOf(Blob);
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('events', 1));
+    await opening;
+
+    await controller.dispose();
+    expect(controller.getSourceBlob()).toBeNull();
+  });
 });
 
 class FakeWorker implements WorkerPort {

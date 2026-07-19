@@ -45,6 +45,7 @@ export class SessionController {
   private sessionGeneration = 0;
   private queryGeneration = 0;
   private retainedFile: File | null = null;
+  private retainedBlob: Blob | null = null;
   private disposed = false;
   private disposal: Promise<void> | null = null;
   /** Cumulative IPC bytes ingested this open, and the last parser-reported stage, for progress. */
@@ -141,6 +142,15 @@ export class SessionController {
     this.dispatch({ type: 'rowSelected', row });
   }
 
+  selectByteRange(range: { start: number; end: number } | null): void {
+    this.assertUsable();
+    this.dispatch({ type: 'byteRangeSelected', range });
+  }
+
+  getSourceBlob(): Blob | null {
+    return this.retainedBlob;
+  }
+
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal;
     this.disposed = true;
@@ -152,6 +162,7 @@ export class SessionController {
     void this.initialization?.catch(() => undefined);
     this.sampleBytes = null;
     this.retainedFile = null;
+    this.retainedBlob = null;
     this.stopActiveViewer();
     try {
       this.parser.dispose();
@@ -186,6 +197,7 @@ export class SessionController {
     ++this.queryGeneration;
     this.cancelParser();
     this.stopActiveViewer();
+    this.retainedBlob = blob;
     const queryCancellation = this.cancelDatabaseQuery();
     this.bytesIngested = 0;
     this.lastProgress = null;

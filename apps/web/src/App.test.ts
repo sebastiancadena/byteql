@@ -32,6 +32,7 @@ const { database, databaseDispose, initialize, dispose, createBrowserDatabase, S
             queryError: null,
             selectedRow: null,
             fatalError: null,
+            byteSelection: null,
           });
           return () => undefined;
         },

@@ -33,6 +33,8 @@ export interface SessionState {
   queryError: string | null;
   selectedRow: number | null;
   fatalError: string | null;
+  /** Active hex-pane byte selection: absolute file offsets, end exclusive. */
+  byteSelection: { start: number; end: number } | null;
 }
 
 export type SessionEvent =
@@ -58,7 +60,8 @@ export type SessionEvent =
   | { type: 'queryFailed'; message: string }
   | { type: 'rowSelected'; row: number | null }
   | { type: 'cancelled' }
-  | { type: 'failed'; message: string };
+  | { type: 'failed'; message: string }
+  | { type: 'byteRangeSelected'; range: { start: number; end: number } | null };
 
 export const initialSessionState: SessionState = {
   phase: 'idle',
@@ -76,6 +79,7 @@ export const initialSessionState: SessionState = {
   queryError: null,
   selectedRow: null,
   fatalError: null,
+  byteSelection: null,
 };
 
 export function reduceSession(state: SessionState, event: SessionEvent): SessionState {
@@ -124,6 +128,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         queryElapsedMs: event.elapsedMs,
         queryError: null,
         selectedRow: null,
+        byteSelection: null,
       };
     case 'queryFailed':
       return {
@@ -154,6 +159,9 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         queryError: null,
         selectedRow: null,
         fatalError: event.message,
+        byteSelection: null,
       };
+    case 'byteRangeSelected':
+      return state.source === null ? state : { ...state, byteSelection: event.range };
   }
 }
