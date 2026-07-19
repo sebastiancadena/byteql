@@ -1,8 +1,28 @@
-import { memoryByteSource } from '@byteql/core';
+import { memoryByteSource, type ByteSource } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
 import { buildPcap } from './build-pcap.js';
 import { createPcapFramer, parsePcapContainer } from '../src/container.js';
+
+/**
+ * Reads land in ONE reused scratch buffer — any retained view is clobbered by
+ * the next read. Deliberately violates the documented "returns a copy" contract
+ * of ByteSource to simulate worst-case reader behavior the copy rule protects against.
+ */
+const recyclingByteSource = (bytes: Uint8Array): ByteSource => {
+  let scratch = new Uint8Array(0);
+  return {
+    size: bytes.byteLength,
+    async read(offset, length) {
+      const end = Math.min(offset + length, bytes.byteLength);
+      const span = Math.max(end - offset, 0);
+      if (scratch.byteLength < span) scratch = new Uint8Array(span);
+      const view = scratch.subarray(0, span);
+      view.set(bytes.subarray(offset, end));
+      return view;
+    },
+  };
+};
 
 describe('parsePcapContainer', () => {
   it('parses global header magic → endianness and µs/ns', async () => {
@@ -124,6 +144,32 @@ describe('createPcapFramer', () => {
     });
 
     const framer = await createPcapFramer(memoryByteSource(bytes), 64);
+    let held: Awaited<ReturnType<typeof framer.next>> = null;
+    let packet = await framer.next();
+    while (packet !== null) {
+      if (packet.index === 1) held = packet;
+      packet = await framer.next();
+    }
+
+    expect(held).not.toBeNull();
+    expect([...held!.body.bytes]).toEqual([...straddlingBody]);
+  });
+
+  it('pin straddle-body copies against a buffer-recycling byte source', async () => {
+    const straddlingBody = new Uint8Array(20).fill(2);
+    const bytes = buildPcap({
+      magic: 'be_us',
+      linktype: 1,
+      packets: [
+        { tsSec: 1, tsFrac: 111, data: new Uint8Array(20).fill(1) },
+        { tsSec: 2, tsFrac: 222, data: straddlingBody },
+        { tsSec: 3, tsFrac: 333, data: new Uint8Array(40).fill(3) },
+        { tsSec: 4, tsFrac: 444, data: new Uint8Array(40).fill(4) },
+        { tsSec: 5, tsFrac: 555, data: new Uint8Array(40).fill(5) },
+      ],
+    });
+
+    const framer = await createPcapFramer(recyclingByteSource(bytes), 64);
     let held: Awaited<ReturnType<typeof framer.next>> = null;
     let packet = await framer.next();
     while (packet !== null) {
