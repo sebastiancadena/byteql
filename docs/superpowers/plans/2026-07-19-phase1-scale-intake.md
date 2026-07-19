@@ -965,7 +965,10 @@ it('rotates a staging table to parquet when staged bytes cross the threshold', a
 it('finalize flushes residual staging as a final chunk and creates parquet_scan views', async () => {
   // expect COPY ... /1.parquet for the residual rows, then inside the swap transaction:
   // DROP VIEW IF EXISTS "events"; DROP TABLE IF EXISTS "events";
-  // CREATE VIEW "events" AS SELECT * FROM parquet_scan('opfs://byteql-spill/9/events/*.parquet');
+  // CREATE VIEW "events" AS SELECT * FROM parquet_scan(
+  //   ['opfs://byteql-spill/9/events/0.parquet', 'opfs://byteql-spill/9/events/1.parquet']);
+  // — an EXPLICIT path array from the session's tracked chunk names, never a '*' glob:
+  // the Task 1 spike recorded that opfs:// glob strings do not enumerate in this build.
   // then staging DROP; old generation's spill deleted AFTER commit (spy on deleteSpillGeneration).
 });
 
@@ -1003,7 +1006,10 @@ Map<string, number> }`. Rotation inside `appendBatch` (after the insert, same en
 parquet);`, `DELETE FROM <staging>;`, reset counter, bump chunk index; wrap COPY failures with
 `isQuotaError` → abort + reject `new Error('SPILL_QUOTA_EXCEEDED: …')`. `finalize` (spill):
 residual COPY per table with rows, then swap transaction creating views (or empty tables),
-drop staging, commit, then `deleteSpillGeneration(previousGeneration)` best-effort.
+drop staging, commit, then `deleteSpillGeneration(previousGeneration)` best-effort. Views are
+built from the session's tracked chunk paths as an explicit `parquet_scan([...])` array (spike
+finding: opfs:// globs do not enumerate); track `chunkPaths: Map<string, string[]>` alongside
+`chunkIndex`.
 `HARDENING_STATEMENTS` updated per the recorded rung. `dispose()` additionally calls
 `deleteSpillGeneration(currentGeneration)` best-effort. Export `sweepSpillOrphans` for the app
 (Task 9 calls it at startup with the empty keep-list before any ingest).
