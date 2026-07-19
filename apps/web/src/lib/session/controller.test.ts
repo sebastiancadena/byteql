@@ -3,6 +3,7 @@ import {
   type BatchTransfer,
   type FormatPack,
   type ParseProgress as PackProgress,
+  type TableSchema,
 } from '@byteql/core';
 import type { ByteqlDatabase, IngestOptions, IngestSession, TableSummary } from '@byteql/db';
 import { tableFromArrays, type Table } from 'apache-arrow';
@@ -59,6 +60,7 @@ const streamedResult = (name: string, rowCount = 1): StreamedParseResult => ({
   issues: [],
   queries: [{ id: 'overview', title: 'Overview', kind: 'grid', sql: 'select 1 limit 1;' }],
   capabilities: { audio: { enabled: true, reason: null } },
+  schemas: [],
 });
 
 interface FakeParseCall {
@@ -132,7 +134,17 @@ class FakeIngestSession implements IngestSession {
   finalizeCalls = 0;
   abortCalls = 0;
   finalizeResult: readonly TableSummary[] = [];
+  /** Every `backfillSchemas` argument `finalize()` was called with, in call order. */
+  readonly finalizeSchemaCalls: Array<readonly TableSchema[] | undefined> = [];
   private finalizeGate: Deferred<void> | null = null;
+
+  /**
+   * Fires once this session is fully settled (its `finalize()`/`abort()` call has resolved or
+   * rejected) — mirrors `BrowserDatabase`'s real `onSettled` callback, which is what clears
+   * `activeIngest` and lets the next `beginIngest` proceed. Set by `fakeDatabase()` so it can
+   * enforce the real single-open-session invariant (see that function's comment).
+   */
+  onSettled: () => void = () => undefined;
 
   constructor(readonly options: IngestOptions) {}
 
@@ -148,25 +160,45 @@ class FakeIngestSession implements IngestSession {
     return this.finalizeGate;
   }
 
-  async finalize(): Promise<readonly TableSummary[]> {
+  async finalize(backfillSchemas?: readonly TableSchema[]): Promise<readonly TableSummary[]> {
     this.finalizeCalls += 1;
-    if (this.finalizeGate) await this.finalizeGate.promise;
-    return this.finalizeResult;
+    this.finalizeSchemaCalls.push(backfillSchemas);
+    try {
+      if (this.finalizeGate) await this.finalizeGate.promise;
+      return this.finalizeResult;
+    } finally {
+      this.onSettled();
+    }
   }
 
   async abort(): Promise<void> {
     this.abortCalls += 1;
+    this.onSettled();
   }
 }
 
 const queryTable = (value: number): Table => tableFromArrays({ value: [value] });
 
+/**
+ * The real `BrowserDatabase.beginIngest` throws 'An ingest session is already open.' while a
+ * prior session's `finalize()`/`abort()` hasn't resolved yet (`activeIngest` only clears in that
+ * call's `onSettled`) — this fake enforces the identical invariant, so controller tests exercise
+ * the real race instead of a laxer stand-in that always allows a second `beginIngest` through.
+ */
 const fakeDatabase = (): { database: ByteqlDatabase; sessions: FakeIngestSession[] } => {
   const sessions: FakeIngestSession[] = [];
+  let active: FakeIngestSession | null = null;
   const database: ByteqlDatabase = {
     initialize: vi.fn().mockResolvedValue(undefined),
     beginIngest: vi.fn(async (options: IngestOptions) => {
+      if (active) {
+        throw new Error('An ingest session is already open.');
+      }
       const session = new FakeIngestSession(options);
+      session.onSettled = () => {
+        if (active === session) active = null;
+      };
+      active = session;
       sessions.push(session);
       return session;
     }),
@@ -263,6 +295,37 @@ describe('SessionController', () => {
     const result = streamedResult('events', 3);
     expect(controller.getState().queries).toEqual(result.queries);
     expect(controller.getState().capabilities).toEqual(result.capabilities);
+  });
+
+  it('finalizes with the pack schemas and backfills zero-row tables the capture never populated', async () => {
+    // C1 regression: a table the pack declares but this file never populated (e.g. no `tcp`
+    // packets) must still be listed for the Explorer/UNION-ALL-overview to work — it is backfilled
+    // as a rowCount-0 entry from `result.schemas`, not silently dropped.
+    const controller = new SessionController({ database, parser, stopViewer });
+    const opening = controller.openFile(new File([new Uint8Array([1])], 'capture.pcap'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const session = sessions[0]!;
+    session.finalizeResult = [{ name: 'packets', rowCount: 2 }];
+
+    const schemas: TableSchema[] = [
+      { name: 'packets', columns: [{ name: 'packet_id', type: 'int64', nullable: false }] },
+      { name: 'tcp', columns: [{ name: 'tcp_id', type: 'int64', nullable: false }] },
+    ];
+    parser.calls[0]!.finish({
+      format: { id: 'pcap', title: 'PCAP capture' },
+      tables: [{ name: 'packets', rowCount: 2, columns: schemas[0]!.columns }],
+      issues: [],
+      queries: [],
+      capabilities: {},
+      schemas,
+    });
+    await opening;
+
+    expect(session.finalizeSchemaCalls).toEqual([schemas]);
+    expect(controller.getState().tables).toEqual([
+      { name: 'packets', rowCount: 2, columns: schemas[0]!.columns },
+      { name: 'tcp', rowCount: 0, columns: schemas[1]!.columns },
+    ]);
   });
 
   it('cancels parse, query, and viewer immediately and ignores stale ingest results', async () => {
@@ -531,6 +594,7 @@ describe('SessionController', () => {
       issues: [],
       queries: [],
       capabilities: {},
+      schemas: [],
     });
     await opening;
 
@@ -645,11 +709,20 @@ describe('SessionController', () => {
     await flush();
     expect(firstSession.finalizeCalls).toBe(0);
 
-    // Supersede while the append is still pending.
+    // Supersede while the append is still pending. Gen 1's ingest session is still open (its
+    // eventual abort hasn't happened yet), and the real DB refuses a second `beginIngest` while a
+    // prior session is open (I1) — so the controller's own `beginIngest` for gen 2 is blocked
+    // awaiting gen 1's settlement, and no second `FakeIngestSession` exists yet. Dispatching
+    // 'opening' still happens immediately; it never touches the ingest session.
     const second = controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
-    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    expect(controller.getState()).toMatchObject({
+      phase: 'opening',
+      source: { name: 'second.mid', size: 1 },
+    });
+    expect(sessions).toHaveLength(1);
 
-    // Now let the straggling append settle.
+    // Now let the straggling append settle; gen 1 then notices it's superseded and aborts,
+    // which settles gen 1 and unblocks gen 2's blocked `beginIngest`.
     firstSession.appendCalls[0]!.resolve();
     await emit;
     await first;
@@ -657,6 +730,7 @@ describe('SessionController', () => {
     expect(firstSession.finalizeCalls).toBe(0);
     expect(firstSession.abortCalls).toBe(1);
 
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
     sessions[1]!.finalizeResult = [{ name: 'second', rowCount: 1 }];
     parser.calls[1]!.finish(streamedResult('second', 1));
     await second;
@@ -679,13 +753,16 @@ describe('SessionController', () => {
     await vi.waitFor(() => expect(firstSession.finalizeCalls).toBe(1));
     expect(controller.getState().phase).not.toBe('ready');
 
+    // Supersede while gen 1's finalize is still in flight (I1: the real DB refuses a second
+    // `beginIngest` while gen 1's session is still open, since `finalize()` hasn't resolved yet).
+    // The controller's own `beginIngest` for gen 2 is now blocked awaiting gen 1's settlement, so
+    // no second `FakeIngestSession` exists yet even though 'opening' dispatches immediately.
     const second = controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
-    await vi.waitFor(() => expect(sessions).toHaveLength(2));
-    const secondSession = sessions[1]!;
     expect(controller.getState()).toMatchObject({
       phase: 'opening',
       source: { name: 'second.mid', size: 1 },
     });
+    expect(sessions).toHaveLength(1);
 
     finalizeGate.resolve();
     await first;
@@ -694,6 +771,9 @@ describe('SessionController', () => {
     expect(controller.getState().tables).not.toEqual(streamedResult('first', 1).tables);
     expect(firstSession.abortCalls).toBe(0);
 
+    // gen 1 settling (its finalize resolved) unblocks gen 2's blocked `beginIngest`.
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    const secondSession = sessions[1]!;
     secondSession.finalizeResult = [{ name: 'second', rowCount: 1 }];
     parser.calls[1]!.finish(streamedResult('second', 1));
     await second;
@@ -1197,6 +1277,30 @@ describe('parse worker boundary', () => {
       transfer: [tempoIpc.buffer],
     });
     expect(postsOfType(scope, 'finish')).toHaveLength(1);
+  });
+
+  it('carries the pack schemas in finish, for backfilling tables the capture never populated', async () => {
+    // C1 regression: the DB needs every declared table's schema at finalize time to backfill
+    // zero-row tables (e.g. no `tcp` packets in this capture) as empty tables, so a UNION ALL
+    // overview query over all pack tables does not hit a Catalog Error.
+    const scope = new FakeWorkerScope();
+    const packSchemas = [
+      { name: 'events', columns: [{ name: 'id', type: 'int32', nullable: false }] },
+      { name: 'errors', columns: [{ name: 'code', type: 'utf8', nullable: false }] },
+    ];
+    const pack = fakePack({ schemas: () => packSchemas });
+    installParseWorker(scope, [pack]);
+
+    scope.receive({
+      type: 'parse',
+      taskId: 4,
+      name: 'demo.mid',
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
+    });
+    await flush();
+
+    const finishMessage = postsOfType(scope, 'finish').at(-1)?.message as { schemas?: unknown };
+    expect(finishMessage?.schemas).toEqual(packSchemas);
   });
 
   it('derives a table columns once from its first batch, in first-arrival order, using pack.schemas() nullability', async () => {

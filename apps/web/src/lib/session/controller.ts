@@ -50,6 +50,13 @@ export class SessionController {
   /** Cumulative IPC bytes ingested this open, and the last parser-reported stage, for progress. */
   private bytesIngested = 0;
   private lastProgress: ParseProgress | null = null;
+  /**
+   * Resolves once the ingest session currently (or most recently) owned by this controller has
+   * fully settled — its `finalize()` or `abort()` call has resolved or rejected. Starts resolved
+   * (no ingest owned yet). `completeOpen` awaits this before its own `beginIngest` call, so a
+   * quick supersession never races the real DB's single-open-session invariant (I1).
+   */
+  private ingestSettlement: Promise<void> = Promise.resolve();
 
   constructor(options: SessionControllerOptions) {
     this.database = options.database;
@@ -204,6 +211,13 @@ export class SessionController {
     }
 
     const rotationBytes = this.tiering?.rotationBytes;
+    // `beginIngest` throws 'An ingest session is already open.' while the previous generation's
+    // ingest hasn't fully settled yet (its `finalize()`/`abort()` call hasn't resolved) — a real
+    // possibility since a superseding open only bumps `sessionGeneration`, it never waits for the
+    // outgoing generation's DB work to finish first. Awaiting the tracked settlement of whatever
+    // ingest currently owns the session avoids surfacing that raw internal error to the user.
+    await this.ingestSettlement;
+
     let ingest: IngestSession;
     try {
       ingest = await this.database.beginIngest({
@@ -219,79 +233,99 @@ export class SessionController {
       return;
     }
 
-    if (!this.isCurrent(generation)) {
-      await ingest.abort().catch(() => undefined);
-      return;
-    }
-
-    // The client resolves `parse()` as soon as the worker's `finish` message arrives, and the
-    // worker sends `finish` right after its last `nextBatch()` — it does NOT wait for that last
-    // batch (or up to BATCH_CREDIT_WINDOW batches still in flight) to be acked first. So `finish`
-    // can race ahead of one or more `onBatch` calls that are still awaiting `appendBatch`. Every
-    // `appendBatch` promise is tracked here and awaited below, after `parse()` settles but before
-    // `finalize()` — otherwise finalize can commit while a batch is still mid-append, silently
-    // dropping rows (or, once the session is finalized under it, rejecting that straggling append).
-    const pendingAppends: Promise<void>[] = [];
+    // From here on, this generation owns the ingest session; track its eventual settlement
+    // (finalize or abort resolving) so the NEXT generation's `beginIngest` can wait for it,
+    // however far along this generation currently is (still parsing, mid-append, or already
+    // finalizing) — not just from whichever point below happens to call finalize/abort.
+    let settleIngest!: () => void;
+    this.ingestSettlement = new Promise<void>((resolve) => {
+      settleIngest = resolve;
+    });
 
     try {
-      const result = await this.parser.parse(
-        { name, blob },
-        {
-          onProgress: (progress) => {
-            if (this.isCurrent(generation)) this.progress(generation, progress);
-          },
-          onBatch: async (batch) => {
-            // Generation-guard only: the client can still deliver up to BATCH_CREDIT_WINDOW - 1
-            // queued `onBatch` calls after this generation is superseded or cancelled (already
-            // in-flight batch messages keep draining through the client's ack chain). Dropping
-            // them here — before touching `ingest` at all — means we never call `appendBatch` on
-            // an ingest whose abort may or may not have completed yet, without needing a second
-            // local "aborted" flag: every path that supersedes or cancels this generation bumps
-            // `sessionGeneration` synchronously before anything else happens.
-            if (!this.isCurrent(generation)) return;
-            this.bytesIngested += batch.ipc.byteLength;
-            this.progressBytes(generation);
-            const append = ingest.appendBatch(batch.table, batch.ipc);
-            pendingAppends.push(append);
-            await append;
-          },
-        },
-      );
-
       if (!this.isCurrent(generation)) {
         await ingest.abort().catch(() => undefined);
         return;
       }
 
-      await Promise.all(pendingAppends);
-      if (!this.isCurrent(generation)) {
+      // The client resolves `parse()` as soon as the worker's `finish` message arrives, and the
+      // worker sends `finish` right after its last `nextBatch()` — it does NOT wait for that last
+      // batch (or up to BATCH_CREDIT_WINDOW batches still in flight) to be acked first. So `finish`
+      // can race ahead of one or more `onBatch` calls that are still awaiting `appendBatch`. Every
+      // `appendBatch` promise is tracked here and awaited below, after `parse()` settles but before
+      // `finalize()` — otherwise finalize can commit while a batch is still mid-append, silently
+      // dropping rows (or, once the session is finalized under it, rejecting that straggling append).
+      const pendingAppends: Promise<void>[] = [];
+
+      try {
+        const result = await this.parser.parse(
+          { name, blob },
+          {
+            onProgress: (progress) => {
+              if (this.isCurrent(generation)) this.progress(generation, progress);
+            },
+            onBatch: async (batch) => {
+              // Generation-guard only: the client can still deliver up to BATCH_CREDIT_WINDOW - 1
+              // queued `onBatch` calls after this generation is superseded or cancelled (already
+              // in-flight batch messages keep draining through the client's ack chain). Dropping
+              // them here — before touching `ingest` at all — means we never call `appendBatch` on
+              // an ingest whose abort may or may not have completed yet, without needing a second
+              // local "aborted" flag: every path that supersedes or cancels this generation bumps
+              // `sessionGeneration` synchronously before anything else happens.
+              if (!this.isCurrent(generation)) return;
+              this.bytesIngested += batch.ipc.byteLength;
+              this.progressBytes(generation);
+              const append = ingest.appendBatch(batch.table, batch.ipc);
+              pendingAppends.push(append);
+              await append;
+            },
+          },
+        );
+
+        if (!this.isCurrent(generation)) {
+          await ingest.abort().catch(() => undefined);
+          return;
+        }
+
+        await Promise.all(pendingAppends);
+        if (!this.isCurrent(generation)) {
+          await ingest.abort().catch(() => undefined);
+          return;
+        }
+
+        const summaries = await ingest.finalize(result.schemas);
+        if (!this.isCurrent(generation)) return;
+
+        const rowCounts = new Map(summaries.map((summary) => [summary.name, summary.rowCount]));
+        // Backfill any pack table the capture never populated (e.g. no `tcp` packets) as a
+        // rowCount-0 entry, mirroring what `ingest.finalize()` just did in the DB — otherwise the
+        // Explorer would omit a table that actually exists (empty) in the catalog (C1).
+        const populatedNames = new Set(result.tables.map((table) => table.name));
+        const backfilledTables = result.schemas
+          .filter((schema) => !populatedNames.has(schema.name))
+          .map((schema) => ({ name: schema.name, rowCount: 0, columns: schema.columns }));
+        this.dispatch({
+          type: 'ready',
+          format: result.format,
+          tables: [...result.tables, ...backfilledTables].map((table) => ({
+            ...table,
+            rowCount: rowCounts.get(table.name) ?? table.rowCount,
+          })),
+          issues: result.issues,
+          queries: result.queries,
+          capabilities: result.capabilities,
+        });
+      } catch (error) {
         await ingest.abort().catch(() => undefined);
-        return;
+        if (!this.isCurrent(generation)) return;
+        if (isAbortError(error)) {
+          this.dispatch({ type: 'cancelled' });
+          return;
+        }
+        this.dispatch({ type: 'failed', message: this.openFailureMessage(error, tierThresholdBytes) });
       }
-
-      const summaries = await ingest.finalize();
-      if (!this.isCurrent(generation)) return;
-
-      const rowCounts = new Map(summaries.map((summary) => [summary.name, summary.rowCount]));
-      this.dispatch({
-        type: 'ready',
-        format: result.format,
-        tables: result.tables.map((table) => ({
-          ...table,
-          rowCount: rowCounts.get(table.name) ?? table.rowCount,
-        })),
-        issues: result.issues,
-        queries: result.queries,
-        capabilities: result.capabilities,
-      });
-    } catch (error) {
-      await ingest.abort().catch(() => undefined);
-      if (!this.isCurrent(generation)) return;
-      if (isAbortError(error)) {
-        this.dispatch({ type: 'cancelled' });
-        return;
-      }
-      this.dispatch({ type: 'failed', message: this.openFailureMessage(error, tierThresholdBytes) });
+    } finally {
+      settleIngest();
     }
   }
 
