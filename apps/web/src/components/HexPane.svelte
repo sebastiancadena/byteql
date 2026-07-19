@@ -34,6 +34,8 @@
     coverageReason: CoverageReason;
     highlight: { start: number; end: number } | null;
     filterAvailable: boolean;
+    /** Changes when a new result arrives; the pane clears its local selection to follow it. */
+    resetKey?: unknown;
     compact?: boolean;
     onreveal: (offset: number) => void;
     onselectionchange: (range: { start: number; end: number } | null) => void;
@@ -47,6 +49,7 @@
     coverageReason,
     highlight,
     filterAvailable,
+    resetKey,
     compact = false,
     onreveal,
     onselectionchange,
@@ -128,11 +131,20 @@
 
   const thumb = $derived(thumbGeometry(viewportHeight, total, view, scrollRow));
 
-  // Cache lifecycle: rebuild on blob change, dispose the previous instance.
+  // Cache lifecycle: rebuild only when the blob REFERENCE actually changes. Guarding on identity
+  // keeps a same-blob re-render (e.g. a new result on the same source file) from tearing down the
+  // cache and wiping scroll/selection — selection reset on new results is owned by `resetKey`.
+  let cacheCleanup: (() => void) | null = null;
+  let activeBlobRef: Blob | null | undefined;
+  let blobInitialized = false;
   $effect(() => {
     const current = blob;
     untrack(() => {
-      cache?.dispose();
+      if (blobInitialized && current === activeBlobRef) return;
+      blobInitialized = true;
+      activeBlobRef = current;
+      cacheCleanup?.();
+      cacheCleanup = null;
       scrollRow = 0;
       selection = null;
       readError = false;
@@ -147,18 +159,17 @@
         schedulePaint();
       });
       cache = next;
-      // stash the unsubscribe on the instance via closure cleanup below
       cacheCleanup = () => {
         unsubscribe();
         next.dispose();
       };
     });
-    return () => {
-      cacheCleanup?.();
-      cacheCleanup = null;
-    };
   });
-  let cacheCleanup: (() => void) | null = null;
+  // Dispose the cache once, on unmount (no reactive reads → cleanup runs only on destroy).
+  $effect(() => () => {
+    cacheCleanup?.();
+    cacheCleanup = null;
+  });
 
   // Prefetch the viewport plus one page of lookahead.
   $effect(() => {
@@ -186,6 +197,26 @@
     void collapsed;
     void cachePulse;
     schedulePaint();
+  });
+
+  // A new result (resetKey reference change) already cleared byteSelection in state; the pane
+  // follows by clearing its LOCAL selection + caret. Skip onselectionchange — state is already
+  // null, so a callback here would be a redundant dispatch. Blob change handles its own reset.
+  let lastResetKey: unknown;
+  let resetKeyInitialized = false;
+  $effect(() => {
+    const key = resetKey;
+    untrack(() => {
+      if (!resetKeyInitialized) {
+        resetKeyInitialized = true;
+        lastResetKey = key;
+        return;
+      }
+      if (key === lastResetKey) return;
+      lastResetKey = key;
+      selection = null;
+      copyStatus = '';
+    });
   });
 
   // React to a new highlight prop: scroll it into view + flash. Compare by VALUE — Workbench

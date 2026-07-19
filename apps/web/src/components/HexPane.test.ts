@@ -194,6 +194,27 @@ describe('HexPane', () => {
     expect(sliceSpy).toHaveBeenCalledWith(0, 2);
   });
 
+  it('clears its local selection when resetKey changes, with no spurious callback', async () => {
+    const user = userEvent.setup();
+    const onselectionchange = vi.fn();
+    const { container, getByLabelText, getByRole, rerender } = renderPane({
+      resetKey: { id: 1 },
+      onselectionchange,
+    });
+    await user.type(getByLabelText('Go to offset'), '4{Enter}');
+    getByRole('application', { name: 'Hex viewer' }).focus();
+    await user.keyboard('{Shift>}{ArrowRight}{/Shift}');
+    const root = container.querySelector('[data-hex-pane]');
+    expect(root?.getAttribute('data-hex-selection')).toBe('4-6');
+    const callsBefore = onselectionchange.mock.calls.length;
+
+    // A new result arrives (state already cleared byteSelection); the pane must follow.
+    await rerender({ resetKey: { id: 2 }, onselectionchange });
+    expect(root?.getAttribute('data-hex-selection')).toBe('');
+    expect(root?.getAttribute('data-hex-caret')).toBe('');
+    expect(onselectionchange.mock.calls.length).toBe(callsBefore); // no redundant null dispatch
+  });
+
   it('collapses to the toolbar strip and persists the flag', async () => {
     const user = userEvent.setup();
     const { container, getByRole } = renderPane();

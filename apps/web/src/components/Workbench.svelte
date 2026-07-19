@@ -459,6 +459,7 @@
             coverageReason={coverageResult.reason}
             highlight={rowHighlight}
             filterAvailable={coverageResult.reason === 'ok'}
+            resetKey={session.result}
             compact={compactMode}
             onreveal={revealAt}
             onselectionchange={(range) => controller.selectByteRange(range)}
