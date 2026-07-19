@@ -6,6 +6,7 @@ dist-e2e/
 coverage/
 playwright-report/
 test-results/
+bench/
 packages/formats/*/gen/
 
 # Rust

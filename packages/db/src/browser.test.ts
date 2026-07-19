@@ -22,6 +22,8 @@ const duckdbMocks = vi.hoisted(() => {
     connect: vi.fn(),
     terminate: vi.fn(),
     registerOPFSFileName: vi.fn(),
+    collectFileStatistics: vi.fn(),
+    exportFileStatistics: vi.fn(),
   };
 
   return {
@@ -146,6 +148,17 @@ describe('createBrowserDatabase', () => {
     duckdbMocks.database.connect.mockResolvedValue(duckdbMocks.connection);
     duckdbMocks.database.terminate.mockResolvedValue(undefined);
     duckdbMocks.database.registerOPFSFileName.mockResolvedValue(undefined);
+    duckdbMocks.database.collectFileStatistics.mockResolvedValue(undefined);
+    duckdbMocks.database.exportFileStatistics.mockResolvedValue({
+      totalFileReadsCold: 0,
+      totalFileReadsAhead: 0,
+      totalFileReadsCached: 0,
+      totalFileWrites: 0,
+      totalPageAccesses: 0,
+      totalPageLoads: 0,
+      blockSize: 0,
+      blockStats: new Uint8Array(),
+    });
     duckdbMocks.connection.query.mockResolvedValue({} as Table);
     duckdbMocks.connection.send.mockResolvedValue(resultTable().batches);
     // Track copies of inserted data for test inspection (since the buffer gets detached in the mock).
@@ -241,6 +254,84 @@ describe('createBrowserDatabase', () => {
     ]);
     await append;
     expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenCalledOnce();
+  });
+
+  describe('file statistics pass-through', () => {
+    it('collectFileStatistics forwards the path and enable flag to AsyncDuckDB, after initializing', async () => {
+      const database = await createBrowserDatabase();
+
+      await database.collectFileStatistics('opfs://byteql-spill/1/packets/0.parquet', true);
+
+      expect(duckdbMocks.database.instantiate).toHaveBeenCalledOnce();
+      expect(duckdbMocks.database.collectFileStatistics).toHaveBeenCalledExactlyOnceWith(
+        'opfs://byteql-spill/1/packets/0.parquet',
+        true,
+      );
+    });
+
+    it('exportFileStatistics forwards the path and returns the plain numeric summary', async () => {
+      duckdbMocks.database.exportFileStatistics.mockResolvedValueOnce({
+        totalFileReadsCold: 3,
+        totalFileReadsAhead: 1,
+        totalFileReadsCached: 5,
+        totalFileWrites: 2,
+        totalPageAccesses: 9,
+        totalPageLoads: 4,
+        blockSize: 262_144,
+        // The raw duckdb-wasm FileStatistics class also carries a blockStats Uint8Array and a
+        // getBlockStats() method — the narrow ByteqlDatabase surface deliberately omits both, so
+        // this mock proves the pass-through only forwards the plain numeric fields it declares.
+        blockStats: new Uint8Array([1, 2, 3]),
+        getBlockStats: vi.fn(),
+      });
+      const database = await createBrowserDatabase();
+
+      const summary = await database.exportFileStatistics('opfs://byteql-spill/1/packets/0.parquet');
+
+      expect(duckdbMocks.database.exportFileStatistics).toHaveBeenCalledExactlyOnceWith(
+        'opfs://byteql-spill/1/packets/0.parquet',
+      );
+      expect(summary).toEqual({
+        totalFileReadsCold: 3,
+        totalFileReadsAhead: 1,
+        totalFileReadsCached: 5,
+        totalFileWrites: 2,
+        totalPageAccesses: 9,
+        totalPageLoads: 4,
+        blockSize: 262_144,
+      });
+    });
+
+    it('serializes behind other queued operations, like every other pass-through', async () => {
+      const database = await createBrowserDatabase();
+      await database.initialize();
+      const pending = deferred<readonly unknown[]>();
+      duckdbMocks.connection.send.mockImplementationOnce(() => pending.promise);
+
+      const query = database.query('SELECT * FROM events;');
+      await vi.waitFor(() => expect(duckdbMocks.connection.send).toHaveBeenCalledOnce());
+      const stats = database.exportFileStatistics('opfs://byteql-spill/1/packets/0.parquet');
+      expect(duckdbMocks.database.exportFileStatistics).not.toHaveBeenCalled();
+
+      pending.resolve(resultTable().batches);
+      await query;
+      await stats;
+      expect(duckdbMocks.database.exportFileStatistics).toHaveBeenCalledOnce();
+    });
+
+    it('rejects after disposal, like every other operation', async () => {
+      const database = await createBrowserDatabase();
+      await database.initialize();
+
+      await database.dispose();
+
+      await expect(
+        database.collectFileStatistics('opfs://byteql-spill/1/packets/0.parquet', true),
+      ).rejects.toThrow('disposed');
+      await expect(database.exportFileStatistics('opfs://byteql-spill/1/packets/0.parquet')).rejects.toThrow(
+        'disposed',
+      );
+    });
   });
 
   it('cancels without waiting behind the active query', async () => {

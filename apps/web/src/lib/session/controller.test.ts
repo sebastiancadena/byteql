@@ -173,6 +173,16 @@ const fakeDatabase = (): { database: ByteqlDatabase; sessions: FakeIngestSession
     query: vi.fn().mockResolvedValue({ table: queryTable(1), elapsedMs: 2 }),
     cancelQuery: vi.fn().mockResolvedValue(false),
     listTables: vi.fn().mockResolvedValue([]),
+    collectFileStatistics: vi.fn().mockResolvedValue(undefined),
+    exportFileStatistics: vi.fn().mockResolvedValue({
+      totalFileReadsCold: 0,
+      totalFileReadsAhead: 0,
+      totalFileReadsCached: 0,
+      totalFileWrites: 0,
+      totalPageAccesses: 0,
+      totalPageLoads: 0,
+      blockSize: 0,
+    }),
     dispose: vi.fn().mockResolvedValue(undefined),
   };
   return { database, sessions };

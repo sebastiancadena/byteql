@@ -35,6 +35,7 @@
           await database.dispose();
           return;
         }
+        e2eHarness?.attachDatabase(database);
 
         const stopViewer = (): void => workbench?.closeActiveViewer();
         ownedController = new SessionController(

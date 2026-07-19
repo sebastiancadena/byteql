@@ -17,7 +17,14 @@ import type { TableSchema } from '@byteql/core';
 import { tableFromIPC } from 'apache-arrow';
 import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
 
-import type { ByteqlDatabase, IngestOptions, IngestSession, QueryResult, TableSummary } from './types.js';
+import type {
+  ByteqlDatabase,
+  FileStatisticsSummary,
+  IngestOptions,
+  IngestSession,
+  QueryResult,
+  TableSummary,
+} from './types.js';
 import { deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 
 // The parquet extension ships statically linked into the eh/mvp wasm binaries this project
@@ -488,6 +495,27 @@ class BrowserDatabase implements ByteqlDatabase {
 
   async listTables(): Promise<readonly string[]> {
     return [...this.finalNames.keys()];
+  }
+
+  collectFileStatistics(path: string, enable: boolean): Promise<void> {
+    return this.enqueue(() => this.database.collectFileStatistics(path, enable));
+  }
+
+  exportFileStatistics(path: string): Promise<FileStatisticsSummary> {
+    return this.enqueue(async () => {
+      const stats = await this.database.exportFileStatistics(path);
+      // Narrow to the plain-data subset ByteqlDatabase declares — drop the class's blockStats
+      // buffer and getBlockStats() method (see the FileStatisticsSummary doc comment).
+      return {
+        totalFileReadsCold: stats.totalFileReadsCold,
+        totalFileReadsAhead: stats.totalFileReadsAhead,
+        totalFileReadsCached: stats.totalFileReadsCached,
+        totalFileWrites: stats.totalFileWrites,
+        totalPageAccesses: stats.totalPageAccesses,
+        totalPageLoads: stats.totalPageLoads,
+        blockSize: stats.blockSize,
+      };
+    });
   }
 
   dispose(): Promise<void> {

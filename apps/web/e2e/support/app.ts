@@ -14,6 +14,11 @@ export interface SessionOverrides {
   tiering?: { tierThresholdBytes?: number; rotationBytes?: number };
 }
 
+export interface ReadStats {
+  totalBytesRead: number;
+  spillBytes: number;
+}
+
 export interface ByteqlE2EControl {
   armParserCrash(): void;
   workerCount(): number;
@@ -21,6 +26,8 @@ export interface ByteqlE2EControl {
   spillProbe(): Promise<SpillProbeReport>;
   sessionOverrides?: SessionOverrides;
   spillFiles(): Promise<readonly string[]>;
+  enableReadStats(tables: readonly string[]): Promise<void>;
+  readStats(): Promise<ReadStats>;
 }
 
 declare global {
