@@ -25,9 +25,21 @@ exact source bytes. Product requirements, differentiators, and the projection DS
   pack's wrappers/dissect graph, no new engine capability or container:
   `ip.length` normalized to total on-wire IP datagram length (v4/v6 comparable), single-segment
   DNS-over-TCP (`dns_tcp_message` parser feeding the existing `dns` table), and ICMPv6 as its
-  own `icmpv6` table (byteql-authored `icmpv6.ksy`, `ipv6` `next_header == 58`). Still deferred:
-  TCP stream reassembly (a PRD-designated Phase-2 engine feature) and anything depending on it
-  — multi-segment TLS ClientHello and multi-segment DNS-over-TCP — plus pcapng container support.
+  own `icmpv6` table (byteql-authored `icmpv6.ksy`, `ipv6` `next_header == 58`). TCP stream
+  reassembly and its dependents (multi-segment TLS ClientHello, multi-segment DNS-over-TCP)
+  shipped in Phase 2, below; pcapng container support is still deferred.
+- **Phase 2 (TCP stream reassembly): shipped.** Design record:
+  `docs/superpowers/specs/2026-07-18-phase2-tcp-reassembly-design.md`. Engine spec v0.3 adds a
+  declarative `streams:` section plus key-extractor/framer registries that sit beside the
+  existing parser registry, and a `StreamAssembler` (out-of-order reorder, rebase-while-
+  unconsumed, dedup, gap/cap/stall statuses). Runtime adds engine-owned `streams` and
+  `stream_segments` tables, injects `stream_id` on message-fed tables, and flushes flow rows at
+  finish. `packages/formats/pcap` now reassembles multi-segment TLS ClientHello and
+  multi-segment DNS-over-TCP — the single-segment-only limitation is gone — on a 10-parser
+  dissect registry projecting 10 tables + `errors`. Documented limitations: no FIN/RST teardown
+  (4-tuple reuse merges into one stream), no partial-overlap reconciliation, no sequence-number
+  wraparound, single-record ClientHello only, and a tls-before-dns first-match quirk when a TCP
+  segment's ports collide on both 443 and 53.
 - **Next: Phase 1 slice 2 of 3 (scale & intake)** — worker-protocol streaming, DuckDB
   incremental append, OPFS/Parquet spill (revisit the DuckDB hardening PRAGMAs deliberately),
   File System Access intake with size-tiering. **Then slice 3 of 3**: hex-provenance UI and
