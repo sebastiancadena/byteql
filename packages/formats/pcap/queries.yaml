@@ -13,6 +13,8 @@ queries:
       union all select 'icmp', count(*) from icmp
       union all select 'icmpv6', count(*) from icmpv6
       union all select 'tls', count(*) from tls
+      union all select 'streams', count(*) from streams
+      union all select 'stream_segments', count(*) from stream_segments
       order by table_name
       limit 100;
 
@@ -34,4 +36,14 @@ queries:
       from dns d
       join packets p using (packet_id)
       order by p.ts
+      limit 100;
+
+  - id: tcp_flows
+    title: TCP flows
+    kind: grid
+    sql: |
+      select s.stream_id, s.src_addr, s.src_port, s.dst_addr, s.dst_port,
+             s.status, s.message_count, s.byte_count, s.pending_bytes
+      from streams s
+      order by s.stream_id
       limit 100;

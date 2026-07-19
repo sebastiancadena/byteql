@@ -7,7 +7,7 @@ const queries = [
     "id": "overview",
     "title": "Table overview",
     "kind": "grid",
-    "sql": "select 'packets' as table_name, count(*) as row_count from packets\nunion all select 'ip', count(*) from ip\nunion all select 'tcp', count(*) from tcp\nunion all select 'udp', count(*) from udp\nunion all select 'dns', count(*) from dns\nunion all select 'icmp', count(*) from icmp\nunion all select 'icmpv6', count(*) from icmpv6\nunion all select 'tls', count(*) from tls\norder by table_name\nlimit 100;\n"
+    "sql": "select 'packets' as table_name, count(*) as row_count from packets\nunion all select 'ip', count(*) from ip\nunion all select 'tcp', count(*) from tcp\nunion all select 'udp', count(*) from udp\nunion all select 'dns', count(*) from dns\nunion all select 'icmp', count(*) from icmp\nunion all select 'icmpv6', count(*) from icmpv6\nunion all select 'tls', count(*) from tls\nunion all select 'streams', count(*) from streams\nunion all select 'stream_segments', count(*) from stream_segments\norder by table_name\nlimit 100;\n"
   },
   {
     "id": "protocols",
@@ -20,6 +20,12 @@ const queries = [
     "title": "DNS queries by time",
     "kind": "grid",
     "sql": "select p.ts, d.query_name, d.query_type\nfrom dns d\njoin packets p using (packet_id)\norder by p.ts\nlimit 100;\n"
+  },
+  {
+    "id": "tcp_flows",
+    "title": "TCP flows",
+    "kind": "grid",
+    "sql": "select s.stream_id, s.src_addr, s.src_port, s.dst_addr, s.dst_port,\n       s.status, s.message_count, s.byte_count, s.pending_bytes\nfrom streams s\norder by s.stream_id\nlimit 100;\n"
   }
 ] as const satisfies readonly PackQuery[];
 

@@ -26,6 +26,8 @@ describe('pcapFormatPack', () => {
       'icmp',
       'icmpv6',
       'tls',
+      'streams',
+      'stream_segments',
       'errors',
     ]);
     const ip = pcapFormatPack.schemas().find((schema) => schema.name === 'ip')!;
@@ -59,6 +61,23 @@ describe('pcapFormatPack', () => {
     ]);
     expect(errors.columns.find((column) => column.name === 'record')!.nullable).toBe(true);
     expect(errors.columns.find((column) => column.name === 'error_id')!.nullable).toBe(false);
+  });
+
+  it('declares schemas for streams and stream_segments, and stream_id on tls/dns', () => {
+    const schemas = pcapFormatPack.schemas();
+    const byName = new Map(schemas.map((s) => [s.name, s]));
+    expect(byName.get('streams')!.columns.map((c) => c.name)).toEqual([
+      'stream_id', 'src_addr', 'src_port', 'dst_addr', 'dst_port',
+      'segment_count', 'byte_count', 'message_count', 'pending_bytes', 'status',
+      '_src_start', '_src_end',
+    ]);
+    expect(byName.get('stream_segments')!.columns.map((c) => c.name)).toEqual([
+      'segment_id', 'stream_id', 'tcp_id', 'offset', '_src_start', '_src_end',
+    ]);
+    expect(byName.get('dns')!.columns.map((c) => c.name)).toContain('stream_id');
+    expect(byName.get('tls')!.columns.map((c) => c.name)).toContain('stream_id');
+    const dnsStreamId = byName.get('dns')!.columns.find((c) => c.name === 'stream_id')!;
+    expect(dnsStreamId.nullable).toBe(true);
   });
 
   it('open() drains to the projected tables then finish() returns', async () => {
