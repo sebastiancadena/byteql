@@ -44,7 +44,10 @@ export class ByteCache {
   ensureRange(start: number, end: number): Promise<void> {
     if (this.#disposed || this.#blob.size === 0) return Promise.resolve();
     const first = Math.max(0, Math.floor(start / this.pageBytes));
-    const last = Math.min(Math.ceil(this.#blob.size / this.pageBytes) - 1, Math.floor((end - 1) / this.pageBytes));
+    const last = Math.min(
+      Math.ceil(this.#blob.size / this.pageBytes) - 1,
+      Math.floor((end - 1) / this.pageBytes),
+    );
     const fetches: Promise<void>[] = [];
     for (let page = first; page <= last; page += 1) {
       if (this.#pages.has(page)) {

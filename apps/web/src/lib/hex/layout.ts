@@ -86,12 +86,7 @@ export function thumbGeometry(
   return { thumbPx, thumbTop };
 }
 
-export function scrollRowForThumbTop(
-  topPx: number,
-  trackPx: number,
-  total: number,
-  view: number,
-): number {
+export function scrollRowForThumbTop(topPx: number, trackPx: number, total: number, view: number): number {
   const { thumbPx } = thumbGeometry(trackPx, total, view, 0);
   const range = trackPx - thumbPx;
   if (range <= 0) return 0;
