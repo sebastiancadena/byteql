@@ -93,6 +93,18 @@ describe('layer helpers round-trip through the compiled parsers', () => {
     expect([...p.body]).toEqual([...payload]);
   });
 
+  it('tcp writes a caller-supplied seq_num so the gen parser reads it back', () => {
+    const KaitaiStream = require('kaitai-struct/KaitaiStream.js');
+    const { TcpSegment } = require('../gen/TcpSegment.js');
+    const payload = new Uint8Array([1, 2]);
+    const bytes = tcp({ srcPort: 1234, dstPort: 80, flags: 0x18, payload, seq: 1000 });
+    const p = new TcpSegment(
+      new KaitaiStream(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)),
+    );
+    p._read();
+    expect(p.seqNum).toBe(1000);
+  });
+
   it('udp sets length = 8 + payload.length', () => {
     const KaitaiStream = require('kaitai-struct/KaitaiStream.js');
     const { UdpDatagram } = require('../gen/UdpDatagram.js');

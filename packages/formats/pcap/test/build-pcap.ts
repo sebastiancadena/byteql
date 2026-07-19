@@ -260,17 +260,19 @@ export interface TcpOptions {
   /** Raw flags byte (cwr|ece|urg|ack|psh|rst|syn|fin, MSB to LSB). */
   flags: number;
   payload: Uint8Array;
+  /** seq_num (default 0). */
+  seq?: number;
 }
 
 const TCP_HEADER_SIZE = 20;
 
 /** Builds a minimal (no options) TCP header + payload. */
-export function tcp({ srcPort, dstPort, flags, payload }: TcpOptions): Uint8Array {
+export function tcp({ srcPort, dstPort, flags, payload, seq }: TcpOptions): Uint8Array {
   const bytes = new Uint8Array(TCP_HEADER_SIZE + payload.length);
   const view = new DataView(bytes.buffer);
   view.setUint16(0, srcPort, false);
   view.setUint16(2, dstPort, false);
-  view.setUint32(4, 0, false); // seq_num
+  view.setUint32(4, seq ?? 0, false); // seq_num
   view.setUint32(8, 0, false); // ack_num
   bytes[12] = 0x50; // data_offset=5 (high nibble) -> 20-byte header, reserved=0 (low nibble)
   bytes[13] = flags & 0xff;
