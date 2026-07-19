@@ -780,6 +780,53 @@ describe('SessionController', () => {
     expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'second.mid', size: 1 } });
   });
 
+  it('skips ingest claim for generations superseded while awaiting settlement', async () => {
+    // Regression: generation B (open while A awaits `ingestSettlement`) supersedes A, then gets
+    // superseded by C. When A's settlement finally resolves, B is stale but tries to call
+    // `beginIngest`, which would throw 'An ingest session is already open.' if C's session is still
+    // open. The guard `if (!this.isCurrent(generation)) return;` after `await
+    // this.ingestSettlement` prevents B from claiming the ingest slot.
+    const controller = new SessionController({ database, parser, stopViewer });
+
+    // Open A, hold its finalize to keep its ingest session open.
+    const openA = controller.openFile(new File([new Uint8Array([1])], 'first.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const sessionA = sessions[0]!;
+    const gateA = sessionA.holdFinalize();
+    sessionA.finalizeResult = [{ name: 'first', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('first', 1));
+    await vi.waitFor(() => expect(sessionA.finalizeCalls).toBe(1));
+
+    // Open B while A's finalize is pending. B's `completeOpen` is now blocked waiting on A's
+    // `ingestSettlement` to resolve (it awaits ingestSettlement before calling beginIngest).
+    const openB = controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
+    expect(controller.getState().source?.name).toBe('second.mid');
+    expect(sessions).toHaveLength(1);
+
+    // Open C to supersede B. C's `completeOpen` is also blocked on A's settlement.
+    const openC = controller.openFile(new File([new Uint8Array([3])], 'third.mid'));
+    expect(controller.getState().source?.name).toBe('third.mid');
+    expect(sessions).toHaveLength(1);
+
+    // Release A's finalize. A settles and unblocks both B and C's waiting `completeOpen`.
+    // B is stale by now (C superseded it), so after A's ingestSettlement resolves,
+    // B's isCurrent check should return false and skip the beginIngest call.
+    // Only C should reach `beginIngest` and create a session.
+    gateA.resolve();
+    await openA;
+
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    const sessionC = sessions[1]!;
+    expect(sessionC.options.generation).toBe(3);
+    sessionC.finalizeResult = [{ name: 'third', rowCount: 1 }];
+
+    // C's parse finishes and it reaches ready state.
+    parser.calls[1]!.finish(streamedResult('third', 1));
+    await openC;
+
+    expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'third.mid', size: 1 } });
+  });
+
   it('parse failure and quota failure abort the ingest session', async () => {
     const parseFailure = new FakeParser();
     const { database: databaseA, sessions: sessionsA } = fakeDatabase();

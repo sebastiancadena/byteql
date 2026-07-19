@@ -217,6 +217,7 @@ export class SessionController {
     // outgoing generation's DB work to finish first. Awaiting the tracked settlement of whatever
     // ingest currently owns the session avoids surfacing that raw internal error to the user.
     await this.ingestSettlement;
+    if (!this.isCurrent(generation)) return;
 
     let ingest: IngestSession;
     try {
