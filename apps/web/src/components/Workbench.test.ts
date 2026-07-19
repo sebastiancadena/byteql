@@ -159,7 +159,7 @@ describe('Inspector Workbench', () => {
     });
     render(Workbench, { controller });
 
-    expect(screen.getByText(/files stay on this device/i)).toBeTruthy();
+    expect(screen.getByText(/files never leave this browser/i)).toBeTruthy();
     const input = screen.getByLabelText('Open file');
     expect(input.getAttribute('type')).toBe('file');
     expect((screen.getByRole('button', { name: 'Try sample' }) as HTMLButtonElement).disabled).toBe(false);
@@ -230,10 +230,7 @@ describe('Inspector Workbench', () => {
 
     expect(controller.selectResultRow).toHaveBeenCalledWith(1);
     const inspector = screen.getByRole('complementary', { name: 'Inspector' });
-    expect(within(inspector).getByText('_src_start')).toBeTruthy();
-    expect(within(inspector).getByText('28')).toBeTruthy();
-    expect(within(inspector).getByText('_src_end')).toBeTruthy();
-    expect(within(inspector).getByText('41')).toBeTruthy();
+    expect(within(inspector).getByRole('button', { name: '0x1c – 0x29' })).toBeTruthy();
     expect(within(inspector).getByText('optional')).toBeTruthy();
     expect(within(inspector).getByText('available')).toBeTruthy();
     expect(textOf(editor)).toContain('select * from records limit 100');
@@ -517,6 +514,20 @@ describe('Inspector Workbench', () => {
     await fireEvent.click(within(navigation).getByRole('button', { name: 'Browse records' }));
 
     expect(controller.runQuery).toHaveBeenCalledWith('select * from records limit 10000');
+  });
+
+  it('opens a dropped file through the window-level drop overlay', async () => {
+    const controller = new FakeController(readyState());
+    const { container } = render(Workbench, { controller });
+    const appShell = container.querySelector('.app-shell') as HTMLElement;
+    const file = new File([new Uint8Array([1, 2, 3])], 'dropped.bin');
+
+    await fireEvent.dragEnter(appShell, { dataTransfer: { types: ['Files'] } });
+    expect(screen.getByText('Drop to open')).toBeTruthy();
+
+    await fireEvent.drop(appShell, { dataTransfer: { files: [file] } });
+    expect(controller.openFile).toHaveBeenCalledWith(file);
+    expect(screen.queryByText('Drop to open')).toBeNull();
   });
 
   it('hides underscore columns behind the +N hidden chip', async () => {

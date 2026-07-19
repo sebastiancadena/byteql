@@ -9,6 +9,14 @@
   }
 
   let { state, collapsed = false, onquery, onbrowse }: Props = $props();
+
+  const DIAGNOSTICS_CAP = 50;
+  const shownIssues = $derived(state.issues.slice(0, DIAGNOSTICS_CAP));
+  const extraIssueCount = $derived(Math.max(0, state.issues.length - DIAGNOSTICS_CAP));
+
+  function issueTable(issue: unknown): string | undefined {
+    return (issue as { table?: string }).table;
+  }
 </script>
 
 <nav class:collapsed class="explorer" aria-label="Data explorer">
@@ -91,8 +99,28 @@
 
   {#if state.issues.length > 0}
     <section class="explorer-section issue-summary" aria-label="Parse diagnostics">
-      <strong>{state.issues.length} parse {state.issues.length === 1 ? 'diagnostic' : 'diagnostics'}</strong>
-      <span>Partial data may still be queryable.</span>
+      <details>
+        <summary>
+          <strong
+            >{state.issues.length} parse {state.issues.length === 1 ? 'diagnostic' : 'diagnostics'}</strong
+          >
+          <span>Partial data may still be queryable.</span>
+        </summary>
+        <ul class="diagnostics-list">
+          {#each shownIssues as issue, index (index)}
+            <li>
+              <span class="diagnostic-code">{issue.code}</span>
+              {#if issueTable(issue)}
+                <span class="diagnostic-table">{issueTable(issue)}</span>
+              {/if}
+              <span class="diagnostic-message">{issue.message}</span>
+            </li>
+          {/each}
+          {#if extraIssueCount > 0}
+            <li class="diagnostic-more">…and {extraIssueCount} more</li>
+          {/if}
+        </ul>
+      </details>
     </section>
   {/if}
 </nav>

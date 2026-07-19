@@ -49,4 +49,11 @@ describe('EmptyState native file picker intake', () => {
     await vi.waitFor(() => expect(dismissingPicker).toHaveBeenCalledOnce());
     expect(onopenAfterDismiss).not.toHaveBeenCalled();
   });
+
+  it('shows the supported-format badges and the privacy line', () => {
+    const { getByText } = render(EmptyState, { props: { onopen: vi.fn(), onsample: vi.fn() } });
+    expect(getByText('MIDI')).toBeTruthy();
+    expect(getByText('pcap')).toBeTruthy();
+    expect(getByText(/never leave this browser/iu)).toBeTruthy();
+  });
 });

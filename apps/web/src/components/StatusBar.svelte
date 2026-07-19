@@ -39,11 +39,18 @@
     const seconds = elapsedMs / 1000;
     return `${(megabytes / seconds).toFixed(1)} MB/s`;
   });
+
+  const formatByteRange = ({ start, end }: { start: number; end: number }): string =>
+    `0x${start.toString(16)}–0x${(end - 1).toString(16)} · ${end - start} bytes`;
 </script>
 
 <footer class="status-bar">
   <div class="status-primary">
-    <span class:active={state.phase !== 'idle' && state.phase !== 'failed'} class="status-dot"></span>
+    <span
+      class:active={state.phase !== 'idle' && state.phase !== 'failed'}
+      class:failed={state.phase === 'failed'}
+      class="status-dot"
+    ></span>
     <span>{statusLabel}</span>
   </div>
   <div class="status-metrics">
@@ -58,6 +65,9 @@
     {/if}
     {#if state.queryElapsedMs !== null}
       <span>{state.queryElapsedMs.toFixed(1)} ms</span>
+    {/if}
+    {#if state.byteSelection}
+      <span class="tabular">{formatByteRange(state.byteSelection)}</span>
     {/if}
     <span>Local processing</span>
   </div>

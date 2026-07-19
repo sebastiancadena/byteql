@@ -33,6 +33,8 @@
   );
   const gridColumns = $derived(`repeat(${Math.max(1, columns.length)}, minmax(9rem, 1fr))`);
 
+  const numeric = (type: string): boolean => /^(u?int|float|decimal)/iu.test(type);
+
   $effect(() => {
     const row = selectedRow;
     if (row !== null) untrack(() => $virtualizer.scrollToIndex(row, { align: 'auto' }));
@@ -49,7 +51,8 @@
       const preview = Array.from(value.subarray(0, 32), (byte) => byte.toString(16).padStart(2, '0')).join(
         ' ',
       );
-      return preview.length > 100 ? `${preview.slice(0, 100)}…` : preview;
+      const prefix = `${value.byteLength} B · `;
+      return preview.length > 100 ? `${prefix}${preview.slice(0, 100)}…` : `${prefix}${preview}`;
     }
     const text = String(value);
     return text.length > 100 ? `${text.slice(0, 100)}…` : text;
@@ -80,7 +83,12 @@
 >
   <div class="grid-header" role="row" style:grid-template-columns={gridColumns}>
     {#each columns as { field, index } (field.name)}
-      <div role="columnheader" aria-colindex={index + 1} title={field.type.toString()}>
+      <div
+        role="columnheader"
+        aria-colindex={index + 1}
+        title={field.type.toString()}
+        class:cell-numeric={numeric(field.type.toString())}
+      >
         <span>{field.name}</span>
         <small>{field.type.toString()}</small>
       </div>
@@ -121,6 +129,7 @@
               role="gridcell"
               aria-colindex={index + 1}
               class:null-value={value === null || value === undefined}
+              class:cell-numeric={numeric(field.type.toString())}
               title={formatValue(value)}
             >
               {formatValue(value)}

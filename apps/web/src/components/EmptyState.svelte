@@ -59,9 +59,14 @@
   <p class="eyebrow">Private by design</p>
   <h1 id="empty-title">Inspect structured data at its source</h1>
   <p class="empty-copy">
-    Open a local file to explore its generated tables with SQL. Files stay on this device and are processed
-    inside your browser.
+    Open a local file to explore its generated tables with SQL. Files never leave this browser — parsing,
+    storage, and SQL all run locally.
   </p>
+
+  <ul class="format-badges" aria-label="Supported formats">
+    <li>MIDI</li>
+    <li>pcap</li>
+  </ul>
 
   <div class="empty-actions">
     <label class="button button-primary">

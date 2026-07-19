@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Table } from 'apache-arrow';
 
+  import { provenanceOfRow } from '../lib/hex/coverage.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import type { ViewerCapability } from '../lib/viewers/registry.js';
   import ViewerMenu from './ViewerMenu.svelte';
@@ -15,6 +16,7 @@
     audioEngineFactory?: (() => AudioEngine) | undefined;
     onopenviewer?: (viewer: ViewerCapability) => void;
     oncloseviewer?: () => void;
+    onrevealrange?: (range: { start: number; end: number }) => void;
   }
 
   let {
@@ -27,13 +29,22 @@
     audioEngineFactory,
     onopenviewer = () => undefined,
     oncloseviewer = () => undefined,
+    onrevealrange = () => undefined,
   }: Props = $props();
 
   const provenanceNames = new Set(['_src_start', '_src_end']);
 
+  const provenanceRange = $derived(
+    table && selectedRow !== null ? provenanceOfRow(table, selectedRow) : null,
+  );
+
   function valueAt(columnIndex: number): unknown {
     if (!table || selectedRow === null) return null;
     return table.getChildAt(columnIndex)?.get(selectedRow) ?? null;
+  }
+
+  function isNumeric(value: unknown): boolean {
+    return typeof value === 'bigint' || typeof value === 'number';
   }
 
   function formatValue(value: unknown): string {
@@ -72,9 +83,10 @@
       <dl class="value-list">
         {#each table.schema.fields as field, columnIndex (field.name)}
           {#if !provenanceNames.has(field.name)}
+            {@const value = valueAt(columnIndex)}
             <div>
               <dt>{field.name}</dt>
-              <dd class:null-value={valueAt(columnIndex) === null}>{formatValue(valueAt(columnIndex))}</dd>
+              <dd class:null-value={value === null} class:tabular={isNumeric(value)}>{formatValue(value)}</dd>
             </div>
           {/if}
         {/each}
@@ -84,16 +96,32 @@
     <section class="inspector-section provenance" aria-labelledby="provenance-heading">
       <p class="eyebrow">Original source</p>
       <h3 id="provenance-heading">Provenance</h3>
-      <dl>
-        {#each table.schema.fields as field, columnIndex (field.name)}
-          {#if provenanceNames.has(field.name)}
-            <div>
-              <dt>{field.name}</dt>
-              <dd>{formatValue(valueAt(columnIndex))}</dd>
-            </div>
-          {/if}
-        {/each}
-      </dl>
+      {#if provenanceRange}
+        <dl>
+          <div>
+            <dt>Source range</dt>
+            <dd>
+              <button
+                class="provenance-link"
+                type="button"
+                onclick={() => onrevealrange(provenanceRange as { start: number; end: number })}
+                >0x{provenanceRange.start.toString(16)} – 0x{provenanceRange.end.toString(16)}</button
+              >
+            </dd>
+          </div>
+        </dl>
+      {:else}
+        <dl>
+          {#each table.schema.fields as field, columnIndex (field.name)}
+            {#if provenanceNames.has(field.name)}
+              <div>
+                <dt>{field.name}</dt>
+                <dd>{formatValue(valueAt(columnIndex))}</dd>
+              </div>
+            {/if}
+          {/each}
+        </dl>
+      {/if}
     </section>
   {:else if table}
     <section class="inspector-section" aria-labelledby="schema-heading">

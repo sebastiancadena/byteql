@@ -86,11 +86,11 @@ describe('App lifecycle', () => {
     await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
     expect(createBrowserDatabase).toHaveBeenCalledOnce();
     expect(SessionController).toHaveBeenCalledWith({ database, stopViewer: expect.any(Function) });
-    expect(screen.queryByText(/files stay on this device/i)).toBeNull();
+    expect(screen.queryByText(/files never leave this browser/i)).toBeNull();
     expect(view.container.querySelector('[data-app-ready="true"]')).toBeNull();
 
     resolveInitialization();
-    expect(await screen.findByText(/files stay on this device/i)).toBeTruthy();
+    expect(await screen.findByText(/files never leave this browser/i)).toBeTruthy();
     expect(view.container.querySelector('[data-app-ready="true"]')).not.toBeNull();
 
     view.unmount();
@@ -112,7 +112,7 @@ describe('App lifecycle', () => {
     expect(() => stopViewer!()).not.toThrow();
 
     resolveInitialization();
-    expect(await screen.findByText(/files stay on this device/i)).toBeTruthy();
+    expect(await screen.findByText(/files never leave this browser/i)).toBeTruthy();
     expect(() => stopViewer!()).not.toThrow();
   });
 
@@ -138,10 +138,10 @@ describe('App lifecycle', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('WASM startup failed');
     expect(dispose).toHaveBeenCalledOnce();
     expect(view.container.querySelector('[data-app-ready="true"]')).toBeNull();
-    expect(screen.queryByText(/files stay on this device/i)).toBeNull();
+    expect(screen.queryByText(/files never leave this browser/i)).toBeNull();
 
     await fireEvent.click(screen.getByRole('button', { name: /retry startup/i }));
-    expect(await screen.findByText(/files stay on this device/i)).toBeTruthy();
+    expect(await screen.findByText(/files never leave this browser/i)).toBeTruthy();
     expect(initialize).toHaveBeenCalledTimes(2);
     expect(view.container.querySelector('[data-app-ready="true"]')).not.toBeNull();
   });

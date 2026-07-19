@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global File, HTMLButtonElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
+  /* global DragEvent, File, HTMLButtonElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
 
   import { onMount } from 'svelte';
 
@@ -45,6 +45,48 @@
   let inspectorTabElement = $state<HTMLButtonElement>();
   let overviewSource: string | null = null;
   let activeViewerId = $state<string | null>(null);
+  let dragCounter = 0;
+  let dropActive = $state(false);
+  let filePickerInput = $state<HTMLInputElement>();
+
+  function openPicker(): void {
+    filePickerInput?.click();
+  }
+
+  function choosePickedFile(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file) perform(() => controller.openFile(file));
+    input.value = '';
+  }
+
+  function hasFiles(event: DragEvent): boolean {
+    return Array.from(event.dataTransfer?.types ?? []).includes('Files');
+  }
+
+  function onDragEnter(event: DragEvent): void {
+    if (!hasFiles(event)) return;
+    dragCounter += 1;
+    dropActive = true;
+  }
+
+  function onDragLeave(event: DragEvent): void {
+    if (!hasFiles(event)) return;
+    dragCounter = Math.max(0, dragCounter - 1);
+    if (dragCounter === 0) dropActive = false;
+  }
+
+  function onDragOver(event: DragEvent): void {
+    event.preventDefault();
+  }
+
+  function onDrop(event: DragEvent): void {
+    event.preventDefault();
+    dragCounter = 0;
+    dropActive = false;
+    const file = event.dataTransfer?.files[0];
+    if (file) perform(() => controller.openFile(file));
+  }
 
   const intakeBusy = $derived(['opening', 'normalizing', 'parsing', 'projecting'].includes(session.phase));
   const viewers = $derived.by((): ViewerCapability[] => {
@@ -175,14 +217,38 @@
   class:inspector-collapsed={inspectorCollapsed}
   class:show-mobile-inspector={mobileTab === 'inspector'}
   class="app-shell"
+  role="presentation"
+  ondragenter={onDragEnter}
+  ondragleave={onDragLeave}
+  ondragover={onDragOver}
+  ondrop={onDrop}
 >
   <AppHeader
     sourceName={session.source?.name ?? null}
+    sourceSize={session.source?.size ?? null}
+    formatTitle={session.format?.title ?? null}
     {explorerCollapsed}
     {inspectorCollapsed}
     ontoggleexplorer={() => (explorerCollapsed = !explorerCollapsed)}
     ontoggleinspector={() => (inspectorCollapsed = !inspectorCollapsed)}
+    onopen={openPicker}
   />
+
+  {#if dropActive}
+    <div class="drop-overlay" aria-hidden="true">
+      <p>Drop to open</p>
+    </div>
+  {/if}
+
+  {#if session.phase !== 'idle' && session.phase !== 'failed'}
+    <input
+      bind:this={filePickerInput}
+      class="visually-hidden"
+      type="file"
+      aria-label="Open file picker"
+      onchange={choosePickedFile}
+    />
+  {/if}
 
   {#if session.phase === 'idle' || session.phase === 'failed'}
     <main class="empty-main">
@@ -291,9 +357,14 @@
             <p class="eyebrow">Output</p>
             <h2>Results</h2>
           </div>
-          {#if session.result}
-            <span class="result-count">{session.result.numRows.toLocaleString()} rows</span>
-          {/if}
+          <div class="results-heading-meta">
+            {#if session.result}
+              <span class="result-count">{session.result.numRows.toLocaleString()} rows</span>
+            {/if}
+            {#if session.queryElapsedMs !== null}
+              <span class="result-count tabular">{session.queryElapsedMs.toFixed(1)} ms</span>
+            {/if}
+          </div>
         </div>
 
         <div class="results-panel">
@@ -367,6 +438,7 @@
         {audioEngineFactory}
         onopenviewer={(viewer) => (activeViewerId = viewer.id)}
         oncloseviewer={() => (activeViewerId = null)}
+        onrevealrange={(range) => hexPane?.revealRange(range)}
       />
     </div>
   {/if}
