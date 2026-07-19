@@ -5,6 +5,7 @@ export { TableBatchBuilder } from './arrow/batch.js';
 export type { BatchBuilderOptions } from './arrow/batch.js';
 export type {
   BatchTransfer,
+  ByteSource,
   FormatCapability,
   FormatPack,
   OpenOptions,
@@ -21,6 +22,8 @@ export type {
 
 export { IssueCollector } from './issues.js';
 export type { IssueCollectorOptions, IssueReport } from './issues.js';
+
+export { memoryByteSource, readAll } from './byte-source.js';
 
 export {
   ProjectionCompileError,

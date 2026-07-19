@@ -59,6 +59,16 @@ export interface OpenOptions {
   onProgress?: (progress: ParseProgress) => void;
 }
 
+/**
+ * Random-access byte source for format packs. `read` returns a copy of the
+ * requested range; it only short-reads (returns fewer bytes than requested)
+ * when the range runs past the end of the source, never in the middle of it.
+ */
+export interface ByteSource {
+  readonly size: number;
+  read(offset: number, length: number): Promise<Uint8Array>;
+}
+
 export interface BatchTransfer {
   table: string;
   ipc: Uint8Array;
@@ -80,6 +90,6 @@ export interface FormatPack {
   readonly title: string;
   probe(head: Uint8Array): number | null; // sniff confidence 0..1
   schemas(): readonly TableSchema[];
-  open(bytes: Uint8Array, opts: OpenOptions): RecordSource;
+  open(source: ByteSource, opts: OpenOptions): RecordSource;
   readonly queries: readonly PackQuery[];
 }

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
+import { memoryByteSource } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
 import { midiFormatPack } from './pack.js';
@@ -32,7 +33,9 @@ describe('midiFormatPack', () => {
   });
 
   it('streams every table as a batch, then null, then finish() reports capabilities', async () => {
-    const source = midiFormatPack.open(await validMidiBytes(), { signal: new AbortController().signal });
+    const source = midiFormatPack.open(memoryByteSource(await validMidiBytes()), {
+      signal: new AbortController().signal,
+    });
     const batches = [];
     for (let batch = await source.nextBatch(); batch !== null; batch = await source.nextBatch()) {
       batches.push(batch);
@@ -47,14 +50,18 @@ describe('midiFormatPack', () => {
   it('rejects when the signal is already aborted', async () => {
     const controller = new AbortController();
     controller.abort();
-    const source = midiFormatPack.open(await validMidiBytes(), { signal: controller.signal });
+    const source = midiFormatPack.open(memoryByteSource(await validMidiBytes()), {
+      signal: controller.signal,
+    });
     await expect(source.nextBatch()).rejects.toThrow();
   });
 
   it('has finish() rethrow the original parse error instead of masking it as NOT_DRAINED', async () => {
     const controller = new AbortController();
     controller.abort();
-    const source = midiFormatPack.open(await validMidiBytes(), { signal: controller.signal });
+    const source = midiFormatPack.open(memoryByteSource(await validMidiBytes()), {
+      signal: controller.signal,
+    });
     const rejection = await source.nextBatch().catch((error: unknown) => error);
     expect(rejection).toBeInstanceOf(Error);
     expect((rejection as Error).name).toBe('AbortError');
@@ -70,7 +77,9 @@ describe('midiFormatPack', () => {
   });
 
   it('rejects finish() after only a partial drain', async () => {
-    const source = midiFormatPack.open(await validMidiBytes(), { signal: new AbortController().signal });
+    const source = midiFormatPack.open(memoryByteSource(await validMidiBytes()), {
+      signal: new AbortController().signal,
+    });
     const first = await source.nextBatch();
     expect(first?.table).toBe('header');
     expect(() => source.finish()).toThrow(/RECORD_SOURCE_NOT_DRAINED/);

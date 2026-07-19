@@ -1,5 +1,6 @@
 import {
   ipcToTable,
+  memoryByteSource,
   tableToIpc,
   type BatchTransfer,
   type FormatPack,
@@ -127,7 +128,7 @@ export function installParseWorker(
     if (cancelled.has(taskId)) controller.abort();
 
     const run = async (): Promise<ParseResult> => {
-      const source = pack.open(bytes, {
+      const source = pack.open(memoryByteSource(bytes), {
         signal: controller.signal,
         onProgress: (progress) => scope.postMessage({ type: 'progress', taskId, ...progress }),
       });

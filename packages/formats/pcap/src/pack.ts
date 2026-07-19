@@ -1,12 +1,14 @@
-import type {
-  BatchTransfer,
-  FormatPack,
-  OpenOptions,
-  ParseResult,
-  RecordSource,
-  SourceFinish,
-  TableColumn,
-  TableSchema,
+import {
+  readAll,
+  type BatchTransfer,
+  type ByteSource,
+  type FormatPack,
+  type OpenOptions,
+  type ParseResult,
+  type RecordSource,
+  type SourceFinish,
+  type TableColumn,
+  type TableSchema,
 } from '@byteql/core';
 
 import pcapQueries from './pcap-queries.generated.js';
@@ -164,7 +166,8 @@ export const pcapFormatPack: FormatPack = {
     head.byteLength >= 4 && PCAP_MAGICS.some((magic) => matchesMagic(head, magic)) ? 1 : null,
   schemas: () => PCAP_TABLE_SCHEMAS,
   queries: pcapQueries,
-  open(bytes: Uint8Array, opts: OpenOptions): RecordSource {
+  open(source: ByteSource, opts: OpenOptions): RecordSource {
+    let bytes: Uint8Array | null = null;
     let parsed: Promise<ParseResult> | null = null;
     let cursor = 0;
     let result: ParseResult | null = null;
@@ -173,6 +176,7 @@ export const pcapFormatPack: FormatPack = {
     let failed = false;
     return {
       async nextBatch(): Promise<BatchTransfer | null> {
+        bytes ??= await readAll(source);
         parsed ??= parseAndProjectPcap(bytes, opts.signal, opts.onProgress).catch((error: unknown) => {
           failed = true;
           failure = error;

@@ -1,3 +1,4 @@
+import { memoryByteSource } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
 import { pcapFormatPack } from '../src/pack.js';
@@ -67,12 +68,26 @@ describe('pcapFormatPack', () => {
     const schemas = pcapFormatPack.schemas();
     const byName = new Map(schemas.map((s) => [s.name, s]));
     expect(byName.get('streams')!.columns.map((c) => c.name)).toEqual([
-      'stream_id', 'src_addr', 'src_port', 'dst_addr', 'dst_port',
-      'segment_count', 'byte_count', 'message_count', 'pending_bytes', 'status',
-      '_src_start', '_src_end',
+      'stream_id',
+      'src_addr',
+      'src_port',
+      'dst_addr',
+      'dst_port',
+      'segment_count',
+      'byte_count',
+      'message_count',
+      'pending_bytes',
+      'status',
+      '_src_start',
+      '_src_end',
     ]);
     expect(byName.get('stream_segments')!.columns.map((c) => c.name)).toEqual([
-      'segment_id', 'stream_id', 'tcp_id', 'offset', '_src_start', '_src_end',
+      'segment_id',
+      'stream_id',
+      'tcp_id',
+      'offset',
+      '_src_start',
+      '_src_end',
     ]);
     expect(byName.get('dns')!.columns.map((c) => c.name)).toContain('stream_id');
     expect(byName.get('tls')!.columns.map((c) => c.name)).toContain('stream_id');
@@ -86,7 +101,10 @@ describe('pcapFormatPack', () => {
       linktype: 1,
       packets: [{ tsSec: 0, tsFrac: 0, data: new Uint8Array([0]) }],
     });
-    const src = pcapFormatPack.open(pcap, { signal: new AbortController().signal, onProgress: () => {} });
+    const src = pcapFormatPack.open(memoryByteSource(pcap), {
+      signal: new AbortController().signal,
+      onProgress: () => {},
+    });
     const seen: string[] = [];
     for (let b = await src.nextBatch(); b; b = await src.nextBatch()) seen.push(b.table);
     expect(seen).toContain('packets');
@@ -99,7 +117,7 @@ describe('pcapFormatPack', () => {
       linktype: 1,
       packets: [{ tsSec: 0, tsFrac: 0, data: new Uint8Array([0]) }],
     });
-    const src = pcapFormatPack.open(pcap, { signal: new AbortController().signal });
+    const src = pcapFormatPack.open(memoryByteSource(pcap), { signal: new AbortController().signal });
     const first = await src.nextBatch();
     expect(first?.table).toBe('packets');
     expect(() => src.finish()).toThrow(/RECORD_SOURCE_NOT_DRAINED/);
@@ -113,7 +131,7 @@ describe('pcapFormatPack', () => {
       linktype: 1,
       packets: [{ tsSec: 0, tsFrac: 0, data: new Uint8Array([0]) }],
     });
-    const src = pcapFormatPack.open(pcap, { signal: controller.signal });
+    const src = pcapFormatPack.open(memoryByteSource(pcap), { signal: controller.signal });
     await expect(src.nextBatch()).rejects.toThrow();
   });
 });

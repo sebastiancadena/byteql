@@ -1,12 +1,14 @@
-import type {
-  BatchTransfer,
-  FormatPack,
-  OpenOptions,
-  ParseResult,
-  RecordSource,
-  SourceFinish,
-  TableColumn,
-  TableSchema,
+import {
+  readAll,
+  type BatchTransfer,
+  type ByteSource,
+  type FormatPack,
+  type OpenOptions,
+  type ParseResult,
+  type RecordSource,
+  type SourceFinish,
+  type TableColumn,
+  type TableSchema,
 } from '@byteql/core';
 
 import midiQueries from './midi-queries.generated.js';
@@ -83,7 +85,8 @@ export const midiFormatPack: FormatPack = {
       : null,
   schemas: () => MIDI_TABLE_SCHEMAS,
   queries: midiQueries,
-  open(bytes: Uint8Array, opts: OpenOptions): RecordSource {
+  open(source: ByteSource, opts: OpenOptions): RecordSource {
+    let bytes: Uint8Array | null = null;
     let parsed: Promise<ParseResult> | null = null;
     let cursor = 0;
     let result: ParseResult | null = null;
@@ -92,6 +95,7 @@ export const midiFormatPack: FormatPack = {
     let failed = false;
     return {
       async nextBatch(): Promise<BatchTransfer | null> {
+        bytes ??= await readAll(source);
         parsed ??= parseAndProjectMidi(bytes, opts.signal, opts.onProgress).catch((error: unknown) => {
           failed = true;
           failure = error;
