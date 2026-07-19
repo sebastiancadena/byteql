@@ -52,6 +52,22 @@ export class TableBatchBuilder {
     return batches.length > 0 ? new Table(batches) : this.#chunks[0]!;
   }
 
+  /**
+   * Seals any pending rows and hands back everything accumulated since the last `drain()` (or
+   * since construction) as one Table, then resets chunk storage — `null` when nothing was
+   * appended since the last drain. Unlike `finish()`, this is a **non-terminal** seam: the
+   * builder stays open for more `appendRow()` calls, and cumulative `rowCount` is never reset by
+   * draining.
+   */
+  drain(): Table | null {
+    if (this.#pendingRows > 0) this.#seal();
+    if (this.#chunks.length === 0) return null;
+    const batches = this.#chunks.flatMap((chunk) => chunk.batches);
+    const drained = batches.length > 0 ? new Table(batches) : this.#chunks[0]!;
+    this.#chunks = [];
+    return drained;
+  }
+
   #emptyPending(): Record<string, unknown[]> {
     return Object.fromEntries(this.#columnNames.map((column) => [column, []]));
   }

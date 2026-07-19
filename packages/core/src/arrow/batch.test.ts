@@ -41,4 +41,26 @@ describe('TableBatchBuilder', () => {
     expect(roundTrip.getChild('item_id')!.toArray()).toEqual(new BigInt64Array([1n, 2n, 3n]));
     expect(roundTrip.getChild('value')!.toArray()).toEqual(new Int32Array([0, 1, 2]));
   });
+
+  it('drain returns accumulated rows and resets, keeping cumulative rowCount', () => {
+    const builder = new TableBatchBuilder('t', { v: 'int32' }, { flushRowThreshold: 2 });
+    builder.appendRow({ v: 1 });
+    builder.appendRow({ v: 2 });
+    builder.appendRow({ v: 3 });
+    const first = builder.drain();
+    expect(first?.numRows).toBe(3);
+    expect(builder.drain()).toBeNull();
+    builder.appendRow({ v: 4 });
+    expect(builder.drain()?.numRows).toBe(1);
+    expect(builder.rowCount).toBe(4);
+  });
+
+  it('finish after drain returns only undrained rows, preserving the schema when empty', () => {
+    const builder = new TableBatchBuilder('t', { v: 'int32' });
+    builder.appendRow({ v: 1 });
+    builder.drain();
+    const rest = builder.finish();
+    expect(rest.numRows).toBe(0);
+    expect(rest.schema.fields.map((f) => f.name)).toEqual(['v']);
+  });
 });

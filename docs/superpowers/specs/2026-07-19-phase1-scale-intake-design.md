@@ -79,9 +79,11 @@ Contract notes recorded alongside the interface:
 - Small-file packs may slurp: MIDI adapts with a single `await source.read(0, source.size)`
   and keeps its whole-buffer internals.
 - **Copy-on-retention rule:** chunk buffers are transient. Any bytes that outlive the record
-  currently being framed must be copied. Concretely: the `StreamAssembler` copies segment
-  payloads on ingest (today they are views into the whole-file buffer). Provenance columns are
-  absolute offsets, never views, and are unaffected.
+  currently being framed must be copied. Verified: the `StreamAssembler` already copies segment
+  payloads on ingest (`#data.set(bytes, relStart)` in `add()`), not merely views into the
+  caller's buffer — no assembler change was needed. This is now pinned by a regression test
+  (`streams.test.ts`: mutate the caller's buffer after `add()`, assert reassembly is
+  unaffected). Provenance columns are absolute offsets, never views, and are unaffected.
 - `RecordSource.nextBatch()` keeps its pull contract and the drain-before-finish rule, but each
   pull now does real work: advance the framer until some table's batch builder crosses its
   flush threshold (or input is exhausted), then emit that one `BatchTransfer`. The Phase-2

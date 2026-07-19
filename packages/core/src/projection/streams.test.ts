@@ -108,4 +108,12 @@ describe('StreamAssembler', () => {
       { start: 6, end: 7, srcStart: 10, srcEnd: 11 }, // [14,15) - 8 = [6,7)
     ]);
   });
+
+  it('does not retain the caller buffer: mutating it after add leaves reassembly intact', () => {
+    const a = new StreamAssembler(1024);
+    const buf = bytes(1, 2, 3, 4);
+    a.add(0, buf, 100, 104);
+    buf.fill(0xff);
+    expect([...a.contiguousView()]).toEqual([1, 2, 3, 4]);
+  });
 });

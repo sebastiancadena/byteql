@@ -390,3 +390,40 @@ describe('stream runtime robustness', () => {
     ]);
   });
 });
+
+describe('ProjectionSession drain with streams', () => {
+  it('drain does not flush streams; finish still does', () => {
+    // Message rows (msgs) are emitted eagerly during project() as soon as framing completes
+    // (see frameStreamMessages), independent of flushStreams. Flow/segment rows (flows,
+    // flow_segments), by contrast, are only ever produced by flushStreams, which finish()
+    // calls and drain() deliberately does not.
+    const compiled = compileProjection(parseProjectionSpec(yaml), registry, streamRegistries);
+    const issues = new IssueCollector();
+    const session = createProjectionSession(compiled, { issues });
+    session.project(
+      {
+        records: [
+          { n: 0, body: { bytes: chunk(7, 0, [4, 97, 98]), start: 0 } },
+          { n: 1, body: { bytes: chunk(7, 3, [99, 100]), start: 100 } },
+        ],
+      },
+      { resolve: () => ({ start: 0, end: 4 }) },
+    );
+
+    const drained = session.drain();
+    expect(drained.some((t) => t.name === 'flows')).toBe(false);
+    expect(drained.some((t) => t.name === 'flow_segments')).toBe(false);
+    const drainedMsgs = drained.find((t) => t.name === 'msgs');
+    expect(drainedMsgs?.rowCount).toBe(1);
+    expect(drainedMsgs?.arrow.getChild('text')!.get(0)).toBe('abcd');
+
+    const finished = session.finish();
+    expect(issues.issues()).toHaveLength(0);
+    const flows = table(finished, 'flows');
+    expect(flows.rowCount).toBe(1);
+    expect(flows.arrow.getChild('status')!.get(0)).toBe('ok');
+    // msgs were already drained; finish() returns no undrained remainder rows. (Its `rowCount`
+    // field stays cumulative by finish()'s existing contract, so the check is on arrow.numRows.)
+    expect(finished.find((t) => t.name === 'msgs')!.arrow.numRows).toBe(0);
+  });
+});

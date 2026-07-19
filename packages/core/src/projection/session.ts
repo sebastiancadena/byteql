@@ -28,6 +28,17 @@ export interface FinishedTable {
 export interface ProjectionSession {
   project(root: unknown, resolver: ProvenanceResolver, options?: ProjectCallOptions): void;
   finish(): FinishedTable[];
+  /**
+   * Seals and returns every table's rows appended since the last `drain()` (or since session
+   * creation), as one `FinishedTable` per table that has pending rows — tables with nothing new
+   * are omitted. Unlike `finish()`, each `FinishedTable.rowCount` here is the row count of just
+   * this drained batch, **not** the table's cumulative row count. `drain()` never flushes
+   * streams — `finish()` keeps sole responsibility for that — so stream flow/segment rows only
+   * ever appear via `finish()`.
+   */
+  drain(): FinishedTable[];
+  /** Rows appended across all tables since the last `drain()` (or since session creation). */
+  pendingRowCount(): number;
 }
 
 export interface ProjectionSessionOptions {
@@ -59,12 +70,30 @@ export const createProjectionSession = (
   }
   const runtimes = createRuntimes(compiled);
   const streams: StreamsRuntime = createStreamsRuntime(compiled);
-  const sink: RowSink = { push: (table, row) => builders.get(table)!.appendRow(row) };
+  let pendingSinceDrain = 0;
+  const sink: RowSink = {
+    push: (table, row) => {
+      builders.get(table)!.appendRow(row);
+      pendingSinceDrain += 1;
+    },
+  };
 
   return {
     project(root, resolver, callOptions) {
       const subset = callOptions?.tables === undefined ? null : new Set(callOptions.tables);
       projectInto(compiled, root, resolver, sink, runtimes, subset, options.issues, streams);
+    },
+    drain() {
+      const drained: FinishedTable[] = [];
+      for (const [name, builder] of builders) {
+        const arrow = builder.drain();
+        if (arrow && arrow.numRows > 0) drained.push({ name, arrow, rowCount: arrow.numRows });
+      }
+      pendingSinceDrain = 0;
+      return drained;
+    },
+    pendingRowCount() {
+      return pendingSinceDrain;
     },
     finish() {
       // Streams flush first: their flow (and, transitively, message) rows must land before the
