@@ -37,16 +37,34 @@ export type {
   ProjectionColumnSpec,
   ProjectionSpec,
   ProjectionStateSpec,
+  StreamMessageLinkSpec,
+  StreamSpec,
   TableSpec,
 } from './projection/spec.js';
 export { compileAnchor, traverseAnchor } from './projection/anchors.js';
 export type { AnchorMatch, AnchorStep, CompiledAnchor } from './projection/anchors.js';
 export type { ParsedRecord, ParserRegistry, RecordParser } from './projection/parsers.js';
-export { compileProjection, projectTree } from './projection/project.js';
+export type {
+  StreamFramer,
+  StreamFramerRegistry,
+  StreamKeyContext,
+  StreamKeyExtractor,
+  StreamKeyRegistry,
+  StreamKeyResult,
+  StreamRegistries,
+} from './projection/streams.js';
+export {
+  compileProjection,
+  createStreamsRuntime,
+  flushStreams,
+  projectTree,
+  streamSegmentsOutputTypes,
+} from './projection/project.js';
 export type {
   CompiledChainLink,
   CompiledDissect,
   CompiledProjection,
+  CompiledStream,
   ProjectedTable,
   ProvenanceResolver,
   SourceRange,

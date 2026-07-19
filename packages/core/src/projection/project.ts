@@ -17,7 +17,8 @@ import {
 import type { IssueCollector } from '../issues.js';
 import type { ParsedRecord, ParserRegistry, RecordParser } from './parsers.js';
 import type { ArrowTypeName, ProjectionSpec, TableSpec } from './spec.js';
-import type { StreamFramer, StreamKeyExtractor, StreamRegistries } from './streams.js';
+import { StreamAssembler } from './streams.js';
+import type { StreamFramer, StreamKeyExtractor, StreamKeyResult, StreamRegistries } from './streams.js';
 import { buildMatcher, walkMatcher } from './walk.js';
 
 export interface SourceRange {
@@ -873,10 +874,40 @@ export const createRuntimes = (compiled: CompiledProjection): Map<string, TableR
     ]),
   );
 
+// Per-flow runtime state for one stream's reassembly, keyed by the stream key extractor's
+// `key` string within StreamsRuntime.flows.get(stream.name). `status` starts 'ok' and only
+// ever moves forward: 'truncated'/'error' are terminal (contributions silently drop once
+// reached); 'gap' is flush-only (assigned in flushStreams, never during contribution).
+export interface StreamRuntimeEntry {
+  readonly assembler: StreamAssembler;
+  readonly streamId: bigint;
+  readonly flowRoot: Record<string, unknown>;
+  messageCount: number;
+  framingStalled: boolean;
+  stallMessage: string | null;
+  status: 'ok' | 'gap' | 'truncated' | 'error';
+}
+
+export interface StreamsRuntime {
+  // Outer key: stream name (compiled.streams[].name). Inner key: the stream key extractor's
+  // `key` string — one entry per distinct flow observed so far.
+  readonly flows: Map<string, Map<string, StreamRuntimeEntry>>;
+  // segments_table name -> next segment_id to assign (mirrors TableRuntime.nextKey, but keyed
+  // by table name rather than living on a per-table runtime since segments tables have no
+  // CompiledProjectionTable of their own).
+  readonly segmentKeys: Map<string, bigint>;
+}
+
+export const createStreamsRuntime = (compiled: CompiledProjection): StreamsRuntime => ({
+  flows: new Map(compiled.streams.map((stream) => [stream.name, new Map<string, StreamRuntimeEntry>()])),
+  segmentKeys: new Map(compiled.segmentsTables.map((table) => [table.name, 1n])),
+});
+
 export interface EmitContext {
   readonly compiled: CompiledProjection;
   readonly runtimes: Map<string, TableRuntime>;
   readonly sink: RowSink;
+  readonly streams: StreamsRuntime | null;
   readonly issues?: IssueCollector;
 }
 
@@ -899,7 +930,17 @@ const emitRow = (
   // itself, whether `table` is a root table (null) or was itself dissected out of a parent
   // payload (that payload's byte length).
   enclosingLength: number | null,
+  // Ancestor threading invariant: parse-tree roots strictly ABOVE `root` (does not include
+  // `root` itself) — projectInto's root-level call passes [], projectChildTable threads its
+  // own `ancestors` through unchanged (see that function's doc), and flushStreams also passes
+  // [] since a flushed flow row has no enclosing parse tree at all.
+  ancestors: readonly unknown[],
   parentKey?: { name: string; value: bigint | null },
+  extraColumns?: Readonly<Record<string, unknown>>,
+  // Set by flushStreams to force a flow row onto its eagerly-reserved streamId (reserved at
+  // first contribution, long before the flow row itself is emitted) instead of drawing a
+  // fresh key from the table runtime.
+  forcedKey?: bigint,
 ): void => {
   for (const register of table.state) {
     const currentScope = match.indexes.slice(0, register.scope.wildcardCount);
@@ -919,10 +960,11 @@ const emitRow = (
   const context = expressionContext(match, root, runtime.stateValues);
   if (table.where && !evaluateExpression(table.where, context)) return;
 
-  const key = runtime.nextKey;
+  const key = forcedKey ?? runtime.nextKey;
+  if (forcedKey === undefined) runtime.nextKey += 1n;
   const row: Record<string, unknown> = { [table.key]: key };
-  runtime.nextKey += 1n;
   if (parentKey) row[parentKey.name] = parentKey.value;
+  if (extraColumns) Object.assign(row, extraColumns);
   for (const column of table.columns) {
     if (column.name === table.key || column.name === '_src_start' || column.name === '_src_end') continue;
     row[column.name] =
@@ -938,7 +980,12 @@ const emitRow = (
   const childKeys = new Map(keysByTable);
   childKeys.set(table.name, key);
   for (const dissect of emitContext.compiled.dissectByFrom.get(table.name) ?? []) {
-    fireDissect(dissect, context, childKeys, emitContext, range, baseOffset, enclosingLength);
+    // Ancestor threading invariant: fireDissect's ancestors end with the firing tree's own
+    // root as their LAST element — here that's `root`, the tree this row was matched from.
+    fireDissect(dissect, context, childKeys, emitContext, range, baseOffset, enclosingLength, [
+      ...ancestors,
+      root,
+    ]);
   }
 };
 
@@ -1008,6 +1055,11 @@ const fireDissect = (
   // that same payload (see PayloadRange), so a range this dissect's own `payload` evaluates
   // to that runs past `enclosingLength` is provably broken, not merely suspicious.
   enclosingLength: number | null,
+  // Ancestor threading invariant: this list's LAST element is the firing tree's own root (the
+  // tree `context` was built from — see emitRow, which appends `root` here, and the "deeper"
+  // recursion below, which appends `parsed.root`). Consumers needing "ancestors strictly above
+  // the current tree" (projectChildTable, the stream key extractor) slice that last element off.
+  ancestors: readonly unknown[],
 ): void => {
   const payload = asPayloadRange(evaluateExpression(dissect.payload, context));
   if (!payload) {
@@ -1042,8 +1094,16 @@ const fireDissect = (
 
   for (const link of dissect.chain) {
     if (!evaluateExpression(link.when, context)) continue;
+
+    if (link.stream) {
+      // Rule 1: a stream link matched in fireDissect contributes and returns — first match
+      // wins exactly like a parser link, it just never produces a table row of its own here.
+      contributeToStream(link.stream, context, payload, absoluteStart, keysByTable, emitContext, ancestors);
+      return;
+    }
+
     const parser = link.parser;
-    if (!parser) continue; // runtime wiring lands with stream execution (task 5)
+    if (!parser) continue; // unreachable: chainLinkSpec requires exactly one of parser/stream
 
     let parsed: ParsedRecord;
     try {
@@ -1061,7 +1121,15 @@ const fireDissect = (
     }
 
     if (link.table)
-      projectChildTable(link.table, parsed, payload.bytes, absoluteStart, keysByTable, emitContext);
+      projectChildTable(
+        link.table,
+        parsed,
+        payload.bytes,
+        absoluteStart,
+        keysByTable,
+        emitContext,
+        ancestors,
+      );
 
     const childContext: ExpressionContext = { _: parsed.root, _root: parsed.root };
     // Invariant: parserId is set whenever parser is (both null together for stream links,
@@ -1072,6 +1140,8 @@ const fireDissect = (
       // parser built purely from `payload.bytes` — so its own payload.start (if any) is
       // relative to *this* payload; that's `absoluteStart`, not `baseOffset`. Likewise, this
       // payload's own byte length is now the enclosing bound for whatever it dissects.
+      // Ancestor threading invariant: extend with `parsed.root`, the tree this recursion fires
+      // against.
       fireDissect(
         deeper,
         childContext,
@@ -1080,9 +1150,262 @@ const fireDissect = (
         { start: absoluteStart, end: absoluteStart + payload.bytes.length },
         absoluteStart,
         payload.bytes.length,
+        [...ancestors, parsed.root],
       );
     }
     return; // first matching guard wins
+  }
+};
+
+// `stream.offset` may legitimately evaluate to a bigint (large/wide file offsets go through
+// the same numeric-literal path as everything else in this DSL) — accept it and convert down
+// to a plain number as long as it stays representable, since StreamAssembler works in `number`.
+const toSafeOffset = (value: unknown): number | null => {
+  if (typeof value === 'bigint') {
+    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(value);
+  }
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
+  return null;
+};
+
+const contributeToStream = (
+  stream: CompiledStream,
+  context: ExpressionContext,
+  payload: PayloadRange,
+  absoluteStart: number,
+  keysByTable: ReadonlyMap<string, bigint>,
+  emitContext: EmitContext,
+  // Ancestors strictly above the row that fired this dissect (fireDissect's own list, whose
+  // LAST element is that row's root — not meaningful to a key extractor asked about the row
+  // node itself, hence the `.slice(0, -1)` below).
+  ancestors: readonly unknown[],
+): void => {
+  if (payload.bytes.length === 0) return; // empty payload: no contribution, no flow creation
+
+  const streams = emitContext.streams;
+  if (!streams) return; // no StreamsRuntime wired in (projectInto called without one)
+
+  const srcStart = absoluteStart;
+  const srcEnd = absoluteStart + payload.bytes.length;
+
+  const offset = toSafeOffset(evaluateExpression(stream.offset, context));
+  if (offset === null) {
+    emitContext.issues?.report({
+      stage: 'reassembling',
+      code: 'STREAM_ERROR',
+      recoverable: true,
+      message: `stream ${JSON.stringify(stream.name)}: offset did not evaluate to a non-negative safe integer`,
+      sourceStart: srcStart,
+      sourceEnd: srcEnd,
+    });
+    return;
+  }
+
+  let keyResult: StreamKeyResult | null;
+  try {
+    // Ancestor threading invariant: the key extractor sees ancestors strictly above the row
+    // itself, so the row's own root (fireDissect's ancestors' last element) is dropped here.
+    keyResult = stream.keyExtractor({ node: context._, ancestors: ancestors.slice(0, -1) });
+  } catch (error) {
+    emitContext.issues?.report({
+      stage: 'reassembling',
+      code: 'STREAM_KEY_INVALID',
+      recoverable: true,
+      message: error instanceof Error ? error.message : String(error),
+      sourceStart: srcStart,
+      sourceEnd: srcEnd,
+    });
+    return;
+  }
+  if (!keyResult) {
+    emitContext.issues?.report({
+      stage: 'reassembling',
+      code: 'STREAM_KEY_INVALID',
+      recoverable: true,
+      message: `stream ${JSON.stringify(stream.name)}: key extractor returned null`,
+      sourceStart: srcStart,
+      sourceEnd: srcEnd,
+    });
+    return;
+  }
+
+  const flowMap = streams.flows.get(stream.name)!;
+  let entry = flowMap.get(keyResult.key);
+  if (!entry) {
+    // Eager streamId reservation: the flow's row key is claimed from the flow table's own
+    // runtime at first contribution (not at flush time), so message rows — emitted mid-stream,
+    // long before the flow row itself is ever built — can already carry a stable stream_id.
+    const flowRuntime = emitContext.runtimes.get(stream.flowTable.name)!;
+    const streamId = flowRuntime.nextKey;
+    flowRuntime.nextKey += 1n;
+    entry = {
+      assembler: new StreamAssembler(stream.maxBuffer),
+      streamId,
+      flowRoot: { ...keyResult.root }, // first contribution wins; later ones do not overwrite
+      messageCount: 0,
+      framingStalled: false,
+      stallMessage: null,
+      status: 'ok',
+    };
+    flowMap.set(keyResult.key, entry);
+  }
+
+  if (entry.status === 'truncated' || entry.status === 'error') return; // inactive: drop silently
+
+  const result = entry.assembler.add(offset, payload.bytes, srcStart, srcEnd);
+  if (result === 'duplicate') return;
+  if (result === 'below_base' || result === 'overlap') {
+    entry.status = 'error';
+    emitContext.issues?.report({
+      stage: 'reassembling',
+      code: 'STREAM_ERROR',
+      recoverable: true,
+      message: `stream ${JSON.stringify(stream.name)} flow ${JSON.stringify(keyResult.key)}: segment at offset ${offset} ${
+        result === 'overlap' ? 'overlaps an already-assembled segment' : 'arrived below the consumed base'
+      }`,
+      sourceStart: srcStart,
+      sourceEnd: srcEnd,
+    });
+    return;
+  }
+  if (result === 'truncated') {
+    entry.status = 'truncated';
+    emitContext.issues?.report({
+      stage: 'reassembling',
+      code: 'STREAM_TRUNCATED',
+      recoverable: true,
+      message: `stream ${JSON.stringify(stream.name)} flow ${JSON.stringify(keyResult.key)}: buffer exceeded max_buffer (${stream.maxBuffer})`,
+      sourceStart: srcStart,
+      sourceEnd: srcEnd,
+    });
+    return;
+  }
+
+  // result is 'added' or 'rebased': fold in the segment row and (re-)attempt framing.
+  if (result === 'rebased') {
+    entry.framingStalled = false;
+    entry.stallMessage = null;
+  }
+
+  const segmentId = streams.segmentKeys.get(stream.segmentsTable)!;
+  streams.segmentKeys.set(stream.segmentsTable, segmentId + 1n);
+  emitContext.sink.push(stream.segmentsTable, {
+    segment_id: segmentId,
+    stream_id: entry.streamId,
+    [stream.feedKeyColumn]: keysByTable.get(stream.feedTable) ?? null,
+    offset: BigInt(offset - entry.assembler.base!),
+    _src_start: BigInt(srcStart),
+    _src_end: BigInt(srcEnd),
+  });
+
+  // completingKeys: the CURRENT contribution's keysByTable — the packet whose arrival framed
+  // whatever messages come out of this call, chronologically last even when its own byte
+  // offset in the stream is earlier than other already-buffered segments.
+  frameStreamMessages(stream, entry, keysByTable, emitContext);
+};
+
+const frameStreamMessages = (
+  stream: CompiledStream,
+  entry: StreamRuntimeEntry,
+  completingKeys: ReadonlyMap<string, bigint>,
+  emitContext: EmitContext,
+): void => {
+  while (!entry.framingStalled) {
+    const view = entry.assembler.contiguousView();
+    if (view.length === 0) break;
+
+    let length: number;
+    try {
+      const result = stream.framer(view);
+      if (result === null) break; // wait: undeterminable with the bytes buffered so far
+      length = result;
+    } catch (error) {
+      entry.framingStalled = true;
+      entry.stallMessage = error instanceof Error ? error.message : String(error);
+      break;
+    }
+    if (!Number.isInteger(length) || length <= 0) {
+      entry.framingStalled = true;
+      entry.stallMessage = `framer returned a non-positive or non-integer length (${length})`;
+      break;
+    }
+    if (length > view.length) break; // wait: message not fully arrived yet
+
+    const messageStart = entry.assembler.consumed;
+    const messageEnd = messageStart + length;
+    // Copy BEFORE consume: a later rebase can reallocate the assembler's backing buffer, which
+    // would leave a bare `subarray` view of `view` pointing at stale/detached memory.
+    const messageBytes = Uint8Array.from(view.subarray(0, length));
+    entry.assembler.consume(length);
+    entry.messageCount += 1;
+    emitStreamMessage(stream, entry, messageStart, messageEnd, messageBytes, completingKeys, emitContext);
+  }
+};
+
+const emitStreamMessage = (
+  stream: CompiledStream,
+  entry: StreamRuntimeEntry,
+  messageStart: number,
+  messageEnd: number,
+  messageBytes: Uint8Array,
+  completingKeys: ReadonlyMap<string, bigint>,
+  emitContext: EmitContext,
+): void => {
+  // Exact span endpoints: map messageStart/messageEnd (current-base-relative stream positions)
+  // through the contributing segments' own linear offset <-> file-offset relationship, rather
+  // than the coarse span of the segments as a whole.
+  const boundary = entry.assembler.segmentsOverlapping(messageStart, messageEnd);
+  const first = boundary[0]!;
+  const last = boundary[boundary.length - 1]!;
+  const span: SourceRange = {
+    start: first.srcStart + (messageStart - first.start),
+    end: last.srcStart + (messageEnd - last.start),
+  };
+
+  const node = { offset: messageStart, length: messageEnd - messageStart };
+  const context: ExpressionContext = { _: node, _root: node };
+
+  for (const link of stream.messages) {
+    if (!evaluateExpression(link.when, context)) continue;
+
+    let parsed: ParsedRecord;
+    try {
+      parsed = link.parser(messageBytes);
+    } catch (error) {
+      emitContext.issues?.report({
+        stage: 'dissecting',
+        code: 'DISSECT_PARSE_FAILED',
+        recoverable: true,
+        message: error instanceof Error ? error.message : String(error),
+        sourceStart: span.start,
+        sourceEnd: span.end,
+      });
+      return; // stop: this message is dropped, but framing already advanced past it
+    }
+
+    if (link.table) {
+      projectChildTable(link.table, parsed, messageBytes, span.start, completingKeys, emitContext, [], {
+        streamId: entry.streamId,
+        span,
+      });
+    }
+
+    // Ancestor threading invariant: a framed message is a fresh top-level tree, like the file
+    // root at projectInto — it has no ancestors of its own, only the parser's own output root.
+    for (const deeper of emitContext.compiled.dissectByFrom.get(link.parserId) ?? []) {
+      fireDissect(
+        deeper,
+        { _: parsed.root, _root: parsed.root },
+        completingKeys,
+        emitContext,
+        span,
+        span.start,
+        messageBytes.length,
+        [parsed.root],
+      );
+    }
+    return; // first matching message link wins
   }
 };
 
@@ -1093,16 +1416,31 @@ const projectChildTable = (
   absolutePayloadStart: number,
   keysByTable: ReadonlyMap<string, bigint>,
   emitContext: EmitContext,
+  // Ancestor threading invariant: ancestors strictly above `parsed.root` — received unchanged
+  // from the caller (fireDissect passes its own `ancestors`; emitStreamMessage passes [] since
+  // a framed message is a fresh top-level tree, like the file root).
+  ancestors: readonly unknown[],
+  // Set only for a stream `messages[].table` link — see the resolver override below.
+  streamMeta?: { streamId: bigint; span: SourceRange },
 ): void => {
-  const resolver: ProvenanceResolver = {
-    resolve(tableName, match) {
-      if (!parsed.resolve) {
-        return { start: absolutePayloadStart, end: absolutePayloadStart + payloadBytes.length };
+  const resolver: ProvenanceResolver = streamMeta
+    ? {
+        // A reassembled stream buffer is discontiguous with the source file — byte N of
+        // `messageBytes` has no fixed relationship to any single file offset, so a parser's
+        // `resolve` (which reports offsets relative to the buffer it was handed) cannot be
+        // mapped back through it. Every row from a message-fed table shares the exact span
+        // the framing loop already computed for the whole message instead.
+        resolve: () => streamMeta.span,
       }
-      const relative = parsed.resolve(tableName, match);
-      return { start: absolutePayloadStart + relative.start, end: absolutePayloadStart + relative.end };
-    },
-  };
+    : {
+        resolve(tableName, match) {
+          if (!parsed.resolve) {
+            return { start: absolutePayloadStart, end: absolutePayloadStart + payloadBytes.length };
+          }
+          const relative = parsed.resolve(tableName, match);
+          return { start: absolutePayloadStart + relative.start, end: absolutePayloadStart + relative.end };
+        },
+      };
   const parentKeyValue = keysByTable.get(table.parentKey!.table) ?? null;
   const runtime = emitContext.runtimes.get(table.name)!;
   // Each dissected payload is a fresh document: every scope ancestor for this table's state
@@ -1129,7 +1467,9 @@ const projectChildTable = (
       emitContext,
       absolutePayloadStart,
       payloadBytes.length,
+      ancestors,
       { name: table.parentKey!.column, value: parentKeyValue },
+      streamMeta ? { stream_id: streamMeta.streamId } : undefined,
     );
   }
 };
@@ -1142,10 +1482,11 @@ export const projectInto = (
   runtimes: Map<string, TableRuntime>,
   subset: ReadonlySet<string> | null,
   issues?: IssueCollector,
+  streams: StreamsRuntime | null = null,
 ): void => {
   const active = compiled.rootTables.filter((table) => !subset || subset.has(table.name));
   const matcher = buildMatcher(active.map((table) => table.rows));
-  const emitContext: EmitContext = { compiled, runtimes, sink, ...(issues ? { issues } : {}) };
+  const emitContext: EmitContext = { compiled, runtimes, sink, streams, ...(issues ? { issues } : {}) };
   const emptyKeys: ReadonlyMap<string, bigint> = new Map();
   walkMatcher(root, matcher, (anchorIndex, match) => {
     const table = active[anchorIndex]!;
@@ -1153,8 +1494,97 @@ export const projectInto = (
     // absolute unchanged for chains fired directly off root-table rows. enclosingLength is
     // null here — the engine never sees the file's byte length, so root-level dissect
     // payloads are unchecked; only payloads nested inside another payload can be validated.
-    emitRow(table, runtimes.get(table.name)!, match, root, provenance, sink, emptyKeys, emitContext, 0, null);
+    // Ancestor threading invariant: a root-table row has no ancestors of its own.
+    emitRow(
+      table,
+      runtimes.get(table.name)!,
+      match,
+      root,
+      provenance,
+      sink,
+      emptyKeys,
+      emitContext,
+      0,
+      null,
+      [],
+    );
   });
+};
+
+// Resolves every stream's flows to their final flow-table row (and clears any resolvable
+// error state accumulated during contribution) — see the runtime-semantics contract at
+// task-5-brief.md point 9. Idempotent to call is NOT guaranteed: it draws a fresh row per
+// flow every time, so callers (session.finish, projectTree) must call it exactly once, after
+// every contributing `project`/walk call has already run.
+export const flushStreams = (emitContext: EmitContext): void => {
+  const streams = emitContext.streams;
+  if (!streams) return;
+
+  for (const stream of emitContext.compiled.streams) {
+    const flowMap = streams.flows.get(stream.name);
+    if (!flowMap) continue;
+    const runtime = emitContext.runtimes.get(stream.flowTable.name)!;
+
+    for (const entry of flowMap.values()) {
+      const span = entry.assembler.srcSpan ?? { start: 0, end: 0 };
+
+      // Precedence: a stalled framer beats an end-of-stream gap — a stream that both stalled
+      // AND still has unresolved gaps behind it reports 'error', not 'gap'. Both checks only
+      // run when status is still 'ok': truncated/error from contribution are already terminal.
+      if (entry.status === 'ok') {
+        if (entry.framingStalled) {
+          entry.status = 'error';
+          emitContext.issues?.report({
+            stage: 'reassembling',
+            code: 'STREAM_ERROR',
+            recoverable: true,
+            message: entry.stallMessage ?? `stream ${JSON.stringify(stream.name)}: framing stalled`,
+            sourceStart: span.start,
+            sourceEnd: span.end,
+          });
+        } else if (entry.assembler.hasGap()) {
+          entry.status = 'gap';
+          emitContext.issues?.report({
+            stage: 'reassembling',
+            code: 'STREAM_GAP',
+            recoverable: true,
+            message: `stream ${JSON.stringify(stream.name)}: a gap remains unresolved at flush`,
+            sourceStart: span.start,
+            sourceEnd: span.end,
+          });
+        }
+      }
+
+      const root: Record<string, unknown> = {
+        ...entry.flowRoot,
+        segment_count: entry.assembler.segmentCount,
+        byte_count: entry.assembler.byteCount,
+        message_count: entry.messageCount,
+        pending_bytes: entry.assembler.pendingBytes(),
+        status: entry.status,
+      };
+      const provenance: ProvenanceResolver = { resolve: () => span };
+      for (const match of traverseAnchor(stream.flowTable.rows, root)) {
+        // Ancestor threading invariant: a flushed flow row has no enclosing parse tree at all.
+        emitRow(
+          stream.flowTable,
+          runtime,
+          match,
+          root,
+          provenance,
+          emitContext.sink,
+          new Map(),
+          emitContext,
+          span.start,
+          null,
+          [],
+          undefined,
+          undefined,
+          entry.streamId, // forcedKey: the streamId reserved eagerly at first contribution
+        );
+      }
+    }
+  }
 };
 
 export const projectTree = (
@@ -1168,16 +1598,33 @@ export const projectTree = (
       Object.fromEntries(Object.keys(tableOutputTypes(table)).map((name) => [name, []])),
     ]),
   );
+  for (const segmentsTable of compiled.segmentsTables) {
+    columnsByTable.set(
+      segmentsTable.name,
+      Object.fromEntries(
+        Object.keys(streamSegmentsOutputTypes(segmentsTable.feedKeyColumn)).map((name) => [name, []]),
+      ),
+    );
+  }
   const sink: RowSink = {
     push(tableName, row) {
       const columns = columnsByTable.get(tableName)!;
       for (const name of Object.keys(columns)) columns[name]!.push(row[name] ?? null);
     },
   };
-  projectInto(compiled, root, provenance, sink, createRuntimes(compiled), null);
-  return compiled.tables.map((table) => {
+  const runtimes = createRuntimes(compiled);
+  const streams = createStreamsRuntime(compiled);
+  projectInto(compiled, root, provenance, sink, runtimes, null, undefined, streams);
+  flushStreams({ compiled, runtimes, sink, streams });
+  const tables = compiled.tables.map((table) => {
     const columns = columnsByTable.get(table.name)!;
     const types = tableOutputTypes(table);
     return { name: table.name, columns, types, rowCount: columns[table.key]!.length };
   });
+  const segmentsTables = compiled.segmentsTables.map((segmentsTable) => {
+    const columns = columnsByTable.get(segmentsTable.name)!;
+    const types = streamSegmentsOutputTypes(segmentsTable.feedKeyColumn);
+    return { name: segmentsTable.name, columns, types, rowCount: columns.segment_id!.length };
+  });
+  return [...tables, ...segmentsTables];
 };
