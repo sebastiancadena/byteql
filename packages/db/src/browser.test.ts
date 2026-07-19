@@ -1002,6 +1002,28 @@ describe('createBrowserDatabase', () => {
 
         await expect(database.dispose()).resolves.toBeUndefined();
       });
+
+      it('abort after a failed spill finalize also deletes the new generation spill directory', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 9 });
+        await session.appendBatch('events', ipcBatch(1));
+        duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
+          if (sql.startsWith('CREATE VIEW')) {
+            throw new Error('view creation failed');
+          }
+          return {} as Table;
+        });
+
+        await expect(session.finalize()).rejects.toThrow('view creation failed');
+        deleteSpillGenerationMock.mockClear();
+
+        await session.abort();
+
+        expect(deleteSpillGenerationMock).toHaveBeenCalledExactlyOnceWith(9);
+        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual(
+          expect.arrayContaining(['DROP TABLE IF EXISTS "__ingest_9_events";']),
+        );
+      });
     });
   });
 });
