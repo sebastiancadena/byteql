@@ -138,6 +138,27 @@ describe('HexPane', () => {
     expect(onreveal).toHaveBeenCalledWith(0);
   });
 
+  it('ignores an equal-but-new highlight object so it does not re-center after the user scrolls', async () => {
+    const user = userEvent.setup();
+    const bigBlob = new Blob([new Uint8Array(4096)]);
+    const { container, getByLabelText, rerender } = renderPane({
+      blob: bigBlob,
+      fileSize: 4096,
+      highlight: { start: 1600, end: 1610 },
+    });
+    const root = container.querySelector('[data-hex-pane]');
+    // The initial highlight scrolls its row (100) into view.
+    await vi.waitFor(() => expect(Number(root?.getAttribute('data-hex-first-row'))).toBeGreaterThan(0));
+
+    // User navigates away to the top.
+    await user.type(getByLabelText('Go to offset'), '0x0{Enter}');
+    expect(root?.getAttribute('data-hex-first-row')).toBe('0');
+
+    // A fresh object with the SAME range must be treated as a no-op (value equality).
+    await rerender({ highlight: { start: 1600, end: 1610 } });
+    expect(root?.getAttribute('data-hex-first-row')).toBe('0');
+  });
+
   it('collapses to the toolbar strip and persists the flag', async () => {
     const user = userEvent.setup();
     const { container, getByRole } = renderPane();

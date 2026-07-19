@@ -3,7 +3,7 @@
 
   import { onMount } from 'svelte';
 
-  import { buildCoverage, provenanceOfRow } from '../lib/hex/coverage.js';
+  import { createCoverageMemo, provenanceOfRow } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
@@ -111,15 +111,27 @@
 
   let hexPane = $state<HexPane>();
 
-  const coverageResult = $derived.by(() =>
-    session.result ? buildCoverage(session.result) : { index: null, reason: 'no-provenance' as const },
-  );
+  // Memoize on result identity: session is reassigned on every publish (caret moves, progress
+  // events), but buildCoverage must run once per result, not once per publish.
+  const coverageMemo = createCoverageMemo();
+  const coverageResult = $derived(coverageMemo(session.result));
   const sourceBlob = $derived(session.source ? controller.getSourceBlob() : null);
-  const rowHighlight = $derived(
-    session.result && session.selectedRow !== null
-      ? provenanceOfRow(session.result, session.selectedRow)
-      : null,
-  );
+  // Memoize on (result, selectedRow) so the highlight object stays reference-stable across
+  // publishes; otherwise HexPane's identity guard re-flashes and re-centers on every publish
+  // (including each caret move's byteRangeSelected dispatch), fighting user navigation.
+  let highlightMemo: { result: unknown; row: number; value: { start: number; end: number } | null } | null =
+    null;
+  const rowHighlight = $derived.by(() => {
+    const result = session.result;
+    const row = session.selectedRow;
+    if (!result || row === null) return null;
+    if (highlightMemo && highlightMemo.result === result && highlightMemo.row === row) {
+      return highlightMemo.value;
+    }
+    const value = provenanceOfRow(result, row);
+    highlightMemo = { result, row, value };
+    return value;
+  });
 
   let lastRevealOffset: number | null = null;
   let revealCycle = 0;

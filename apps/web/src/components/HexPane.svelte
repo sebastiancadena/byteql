@@ -188,11 +188,21 @@
     schedulePaint();
   });
 
-  // React to a new highlight prop: scroll it into view + flash.
+  // React to a new highlight prop: scroll it into view + flash. Compare by VALUE — Workbench
+  // recomputes a derived per publish, so a reference guard would re-flash and re-center on every
+  // caret move, fighting user navigation.
   let lastHighlight: { start: number; end: number } | null = null;
   $effect(() => {
     const next = highlight;
-    if (next === lastHighlight) return;
+    if (
+      next === lastHighlight ||
+      (next !== null &&
+        lastHighlight !== null &&
+        next.start === lastHighlight.start &&
+        next.end === lastHighlight.end)
+    ) {
+      return;
+    }
     lastHighlight = next;
     if (next) untrack(() => revealTo(next.start, false));
   });
