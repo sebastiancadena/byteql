@@ -171,7 +171,7 @@ class IngestSessionImpl implements IngestSession {
     private readonly getFinalTableNames: () => ReadonlyMap<string, CatalogKind>,
     private readonly setFinalTableNames: (finals: ReadonlyMap<string, CatalogKind>) => void,
     private readonly getSpillGeneration: () => number | null,
-    private readonly setSpillGeneration: (generation: number) => void,
+    private readonly setSpillGeneration: (generation: number | null) => void,
     private readonly onSettled: () => void,
   ) {}
 
@@ -267,7 +267,7 @@ class IngestSessionImpl implements IngestSession {
     }
   }
 
-  async finalize(): Promise<readonly TableSummary[]> {
+  async finalize(backfillSchemas?: readonly TableSchema[]): Promise<readonly TableSummary[]> {
     if (this.state !== 'open') {
       throw new Error(`Ingest session is ${this.state}; cannot finalize.`);
     }
@@ -279,11 +279,35 @@ class IngestSessionImpl implements IngestSession {
         await this.enqueue(async (connection) => {
           for (const table of this.sessionTables()) {
             if (this.created.has(table) && (this.stagedBytes.get(table) ?? 0) > 0) {
-              await this.rotateChunk(connection, table);
+              try {
+                await this.rotateChunk(connection, table);
+              } catch (error) {
+                if (!isQuotaError(error)) {
+                  throw error;
+                }
+                // Same tagging as appendBatch's mid-ingest rotation (Trivia 2), so the controller
+                // shows its clear "ran out of space" message instead of a raw DB/OS error string.
+                throw new Error(`SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`, {
+                  cause: error,
+                });
+              }
             }
           }
         });
       }
+
+      const declaredSchemas = this.schemaMode.kind === 'declared' ? this.schemaMode.schemas : null;
+      // Discover mode only: a pack schema for a table this session never saw an `appendBatch`
+      // for (e.g. no `tcp` packets in this capture). Backfilled so the table still exists —
+      // callers (like a UNION ALL overview query) assume every pack table exists, not just the
+      // ones this particular file happened to populate.
+      const backfillByName = new Map((backfillSchemas ?? []).map((schema) => [schema.name, schema]));
+      const schemaFor = (table: string): TableSchema | undefined =>
+        declaredSchemas?.get(table) ?? backfillByName.get(table);
+      const finalizeTables: readonly string[] =
+        this.schemaMode.kind === 'declared'
+          ? this.sessionTables()
+          : [...new Set([...this.created, ...backfillByName.keys()])];
 
       const summaries = await this.enqueue(async (connection) => {
         await connection.query('BEGIN TRANSACTION;');
@@ -294,10 +318,9 @@ class IngestSessionImpl implements IngestSession {
             await dropFinal(connection, name, kind);
           }
 
-          const declaredSchemas = this.schemaMode.kind === 'declared' ? this.schemaMode.schemas : null;
           const finalKinds = new Map<string, CatalogKind>();
           const summaries: TableSummary[] = [];
-          for (const table of this.sessionTables()) {
+          for (const table of finalizeTables) {
             const stagingName = stagingTableName(this.generation, table);
             const chunks = this.chunkPaths.get(table) ?? [];
             if (this.tier === 'spill' && this.created.has(table) && chunks.length > 0) {
@@ -310,11 +333,11 @@ class IngestSessionImpl implements IngestSession {
               finalKinds.set(table, 'view');
             } else {
               if (!this.created.has(table)) {
-                // discover-mode session tables come only from `created`, so every discover-mode
-                // table has already been appended; only declared schemas reach this branch. This
-                // also covers a spill-tier table with zero rotated/residual chunks: it falls back
-                // to an empty TABLE rather than a view over nothing.
-                const schema = declaredSchemas?.get(table);
+                // A table that was never appended to: either a declared schema no rows arrived
+                // for, a discover-mode table backfilled from `backfillSchemas`, or a spill-tier
+                // table with zero rotated/residual chunks. Falls back to an empty TABLE rather
+                // than a view over nothing.
+                const schema = schemaFor(table);
                 if (!schema) {
                   throw new Error(`Missing schema for never-appended ingest table: ${JSON.stringify(table)}`);
                 }
@@ -350,6 +373,17 @@ class IngestSessionImpl implements IngestSession {
         const previousGeneration = this.getSpillGeneration();
         this.setSpillGeneration(this.generation);
         if (previousGeneration !== null) {
+          await deleteSpillGeneration(previousGeneration);
+        }
+      } else {
+        // I2: a memory-tier finalize's DROP (inside the transaction above) already replaced any
+        // previous spill-backed views with this generation's plain tables, so the old
+        // generation's OPFS parquet payload is now orphaned — reclaim it the same best-effort
+        // way the spill-tier branch does, rather than leaving it until the next launch's orphan
+        // sweep or session dispose. No spill generation backs the catalog anymore, so clear it.
+        const previousGeneration = this.getSpillGeneration();
+        if (previousGeneration !== null) {
+          this.setSpillGeneration(null);
           await deleteSpillGeneration(previousGeneration);
         }
       }
@@ -393,6 +427,14 @@ class BrowserDatabase implements ByteqlDatabase {
   private activeIngest: IngestSessionImpl | null = null;
   /** The generation currently backing committed spill views, or `null` before any spill finalize. */
   private spillGeneration: number | null = null;
+  /**
+   * The in-flight (not yet finalized or aborted) spill-tier ingest's generation, or `null` when
+   * no spill-tier ingest is currently open. Cleared alongside `activeIngest` once that session
+   * settles — a settled session's spill directory is already handled either by `finalize()`
+   * (rolled into `spillGeneration`) or by `abort()`'s own cleanup. Tracked separately so
+   * `dispose()` can reclaim it immediately for a session that is neither (Trivia 3).
+   */
+  private activeIngestSpillGeneration: number | null = null;
 
   constructor(
     private readonly database: AsyncDuckDB,
@@ -462,10 +504,12 @@ class BrowserDatabase implements ByteqlDatabase {
       () => {
         if (this.activeIngest === session) {
           this.activeIngest = null;
+          this.activeIngestSpillGeneration = null;
         }
       },
     );
     this.activeIngest = session;
+    this.activeIngestSpillGeneration = options.tier === 'spill' ? options.generation : null;
     return session;
   }
 
@@ -560,6 +604,12 @@ class BrowserDatabase implements ByteqlDatabase {
     if (this.spillGeneration !== null) {
       // Best-effort: reclaim the current generation's OPFS spill directory on teardown.
       await deleteSpillGeneration(this.spillGeneration).catch(() => undefined);
+    }
+    if (this.activeIngestSpillGeneration !== null) {
+      // Trivia (3): a spill-tier ingest still open at dispose (neither finalized nor aborted)
+      // has its own, separately-tracked generation — reclaim it immediately too, unconditionally
+      // and best-effort, rather than leaving it for the next launch's orphan sweep.
+      await deleteSpillGeneration(this.activeIngestSpillGeneration).catch(() => undefined);
     }
 
     if (errors.length === 1) {

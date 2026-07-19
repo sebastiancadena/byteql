@@ -22,7 +22,14 @@ export interface IngestOptions {
 
 export interface IngestSession {
   appendBatch(table: string, ipc: Uint8Array): Promise<void>;
-  finalize(): Promise<readonly TableSummary[]>;
+  /**
+   * `backfillSchemas` (discover-mode only) names tables the caller knows the format pack
+   * declares but that may never have received an `appendBatch` call — e.g. a capture with no
+   * `tcp` packets. Any such table is created as an empty table from its schema, exactly like a
+   * never-appended declared-mode table, so it exists for queries (e.g. a UNION ALL overview)
+   * that assume every pack table exists. Ignored in declared mode (already covered).
+   */
+  finalize(backfillSchemas?: readonly TableSchema[]): Promise<readonly TableSummary[]>;
   abort(): Promise<void>;
 }
 

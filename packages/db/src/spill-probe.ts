@@ -7,6 +7,8 @@ export interface SpillProbeReport {
   opfsAvailable: boolean;
   copyToOpfs: boolean;
   allowedDirectories: boolean;
+  /** Verifies reading multiple registered OPFS parquet parts via an explicit path array — not
+   *  an actual glob: this duckdb-wasm build's `opfs://` globs don't enumerate files (see below). */
   parquetScanGlob: boolean;
   fileStatistics: boolean;
   detail: string;

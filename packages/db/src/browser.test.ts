@@ -775,6 +775,33 @@ describe('createBrowserDatabase', () => {
       );
     });
 
+    it('discover mode backfills schema tables that never received an append as empty tables', async () => {
+      // Regression (C1): zero-row tables never appended in discover mode used to simply not
+      // exist after finalize, so a query assuming every pack table exists (e.g. a UNION ALL
+      // overview) hit a Catalog Error. Passing the pack's full schema list to finalize backfills
+      // any table discover-mode never saw an appendBatch for, as an empty table.
+      const database = await createBrowserDatabase();
+      const session = await database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 6 });
+      await session.appendBatch('events', ipcBatch(2));
+
+      const summaries = await session.finalize([eventsSchema, errorsSchema]);
+
+      const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+      const createIndex = calls.indexOf(
+        'CREATE TABLE "__ingest_6_errors" ("code" VARCHAR, "seen_at" TIMESTAMP);',
+      );
+      const renameIndex = calls.indexOf('ALTER TABLE "__ingest_6_errors" RENAME TO "errors";');
+      expect(createIndex).toBeGreaterThanOrEqual(0);
+      expect(renameIndex).toBeGreaterThan(createIndex);
+      expect(summaries).toEqual(
+        expect.arrayContaining([
+          { name: 'events', rowCount: 2 },
+          { name: 'errors', rowCount: 0 },
+        ]),
+      );
+      expect(await database.listTables()).toEqual(expect.arrayContaining(['events', 'errors']));
+    });
+
     describe('spill tier', () => {
       it('rejects with SPILL_UNSUPPORTED when spillSupported is false', async () => {
         const database = await createBrowserDatabase({ spillSupported: false });
@@ -910,6 +937,26 @@ describe('createBrowserDatabase', () => {
         expect(deleteSpillGenerationMock.mock.invocationCallOrder[0]).toBeGreaterThan(commitOrder);
       });
 
+      it('a quota error flushing residual staging at finalize rejects SPILL_QUOTA_EXCEEDED and fails the session', async () => {
+        // Trivia (2): the residual-flush COPY at finalize used to reject with the raw quota
+        // error, unlike appendBatch's mid-ingest rotation, which tags it SPILL_QUOTA_EXCEEDED so
+        // the controller can show a clear message instead of a raw DB/OS error string.
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const quotaError = new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 12 });
+        await session.appendBatch('events', ipcBatch(1)); // stays staged as a residual
+
+        duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
+          if (sql.startsWith('COPY')) {
+            throw quotaError;
+          }
+          return {} as Table;
+        });
+
+        await expect(session.finalize()).rejects.toThrow('SPILL_QUOTA_EXCEEDED');
+        await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow(/failed/i);
+      });
+
       it('a table with zero rows in spill tier finalizes as an empty TABLE, not a view', async () => {
         const database = await createBrowserDatabase({ spillSupported: true });
         const session = await database.beginIngest({
@@ -927,6 +974,28 @@ describe('createBrowserDatabase', () => {
           'CREATE TABLE "__ingest_4_errors" ("code" VARCHAR, "seen_at" TIMESTAMP);',
         );
         const renameIndex = calls.indexOf('ALTER TABLE "__ingest_4_errors" RENAME TO "errors";');
+        expect(createIndex).toBeGreaterThanOrEqual(0);
+        expect(renameIndex).toBeGreaterThan(createIndex);
+        expect(summaries).toEqual(expect.arrayContaining([{ name: 'errors', rowCount: 0 }]));
+        expect(await database.listTables()).toEqual(expect.arrayContaining(['events', 'errors']));
+      });
+
+      it('discover mode backfills a never-appended schema table as an empty TABLE in the spill tier', async () => {
+        // Same C1 regression as the memory-tier case above, exercised in the spill tier: a
+        // discover-mode table the pack declares but that never rotated or staged any residual
+        // bytes must still exist as an empty table, not a dangling view over nothing.
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 11 });
+        await session.appendBatch('events', ipcBatch(1));
+
+        const summaries = await session.finalize([eventsSchema, errorsSchema]);
+
+        const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+        expect(calls).not.toEqual(expect.arrayContaining([expect.stringMatching(/^CREATE VIEW "errors"/)]));
+        const createIndex = calls.indexOf(
+          'CREATE TABLE "__ingest_11_errors" ("code" VARCHAR, "seen_at" TIMESTAMP);',
+        );
+        const renameIndex = calls.indexOf('ALTER TABLE "__ingest_11_errors" RENAME TO "errors";');
         expect(createIndex).toBeGreaterThanOrEqual(0);
         expect(renameIndex).toBeGreaterThan(createIndex);
         expect(summaries).toEqual(expect.arrayContaining([{ name: 'errors', rowCount: 0 }]));
@@ -1045,6 +1114,32 @@ describe('createBrowserDatabase', () => {
         await expect(database.dispose()).resolves.toBeUndefined();
       });
 
+      it('dispose reclaims an in-flight (never finalized or aborted) spill generation immediately', async () => {
+        // Trivia (3): dispose() only reclaimed a *committed* spill generation (`spillGeneration`,
+        // set at a successful finalize). A dispose mid-spill-ingest — the session still open,
+        // never finalized or aborted — left that generation's already-rotated OPFS parquet chunks
+        // around until the next launch's orphan sweep instead of being reclaimed immediately.
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 15 });
+        await session.appendBatch('events', ipcBatch(1));
+        deleteSpillGenerationMock.mockClear();
+
+        await database.dispose();
+
+        expect(deleteSpillGenerationMock).toHaveBeenCalledExactlyOnceWith(15);
+      });
+
+      it('dispose does not reclaim any spill generation for an in-flight memory-tier ingest', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 2 });
+        await session.appendBatch('events', ipcBatch(1));
+        deleteSpillGenerationMock.mockClear();
+
+        await database.dispose();
+
+        expect(deleteSpillGenerationMock).not.toHaveBeenCalled();
+      });
+
       it('abort after a failed spill finalize also deletes the new generation spill directory', async () => {
         const database = await createBrowserDatabase({ spillSupported: true });
         const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 9 });
@@ -1066,6 +1161,42 @@ describe('createBrowserDatabase', () => {
           expect.arrayContaining(['DROP TABLE IF EXISTS "__ingest_9_events";']),
         );
       });
+    });
+
+    it('a memory-tier finalize after a spill-tier generation reclaims the old spill directory', async () => {
+      // I2 regression: `finalize()` only reclaimed the previous generation's OPFS spill
+      // directory in the spill-tier branch. A spill capture followed by a memory-tier open left
+      // the old parquet payload on OPFS for the rest of the session (only cleaned up by the
+      // startup orphan sweep on next launch, or session dispose).
+      const database = await createBrowserDatabase({ spillSupported: true });
+      const spillSession = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'spill',
+        generation: 3,
+      });
+      await spillSession.appendBatch('events', ipcBatch(1));
+      await spillSession.finalize();
+      deleteSpillGenerationMock.mockClear();
+
+      const memorySession = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 4,
+      });
+      await memorySession.appendBatch('events', ipcBatch(1));
+      await memorySession.finalize();
+
+      expect(deleteSpillGenerationMock).toHaveBeenCalledExactlyOnceWith(3);
+    });
+
+    it('a memory-tier finalize with no prior spill generation does not call deleteSpillGeneration', async () => {
+      const database = await createBrowserDatabase();
+      const session = await database.beginIngest({ schemas: [eventsSchema], tier: 'memory', generation: 1 });
+      await session.appendBatch('events', ipcBatch(1));
+
+      await session.finalize();
+
+      expect(deleteSpillGenerationMock).not.toHaveBeenCalled();
     });
   });
 });
