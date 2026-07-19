@@ -586,6 +586,7 @@
   data-hex-pane
   data-hex-caret={caret ?? ''}
   data-hex-selection={range ? `${range.start}-${range.end}` : ''}
+  data-hex-highlight={highlight ? `${highlight.start}-${highlight.end}` : ''}
   data-hex-first-row={scrollRow}
   data-hex-provenance={coverageReason}
   data-hex-collapsed={collapsed}

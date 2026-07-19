@@ -39,6 +39,20 @@ describe('HexPane', () => {
     expect(root?.textContent).toContain('No byte provenance in this result');
   });
 
+  it('exposes the grid-row highlight range on data-hex-highlight', () => {
+    const { container } = renderPane({ highlight: { start: 12, end: 20 } });
+    const root = container.querySelector('[data-hex-pane]');
+    // The grid->hex link surfaces as `highlight`, distinct from the pane's own selection; e2e
+    // reads this attribute to learn which bytes a row lit up. Absent a highlight it is empty.
+    expect(root?.getAttribute('data-hex-highlight')).toBe('12-20');
+    expect(root?.getAttribute('data-hex-selection')).toBe('');
+  });
+
+  it('leaves data-hex-highlight empty when no row is selected', () => {
+    const { container } = renderPane();
+    expect(container.querySelector('[data-hex-pane]')?.getAttribute('data-hex-highlight')).toBe('');
+  });
+
   it('jumps and sets the caret through the goto input', async () => {
     const user = userEvent.setup();
     const { container, getByLabelText } = renderPane();
