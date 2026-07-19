@@ -47,7 +47,11 @@ export class ByteCache {
     const last = Math.min(Math.ceil(this.#blob.size / this.pageBytes) - 1, Math.floor((end - 1) / this.pageBytes));
     const fetches: Promise<void>[] = [];
     for (let page = first; page <= last; page += 1) {
-      if (!this.#pages.has(page)) fetches.push(this.#fetch(page));
+      if (this.#pages.has(page)) {
+        this.#touch(page);
+      } else {
+        fetches.push(this.#fetch(page));
+      }
     }
     return Promise.all(fetches).then(() => undefined);
   }
@@ -58,9 +62,15 @@ export class ByteCache {
     if (to <= from) return new Uint8Array(0);
     await this.ensureRange(from, to);
     const out = new Uint8Array(to - from);
+    let lastPage = -1;
+    let lastBytes: Uint8Array | undefined;
     for (let offset = from; offset < to; offset += 1) {
-      const page = this.#pages.get(Math.floor(offset / this.pageBytes));
-      out[offset - from] = page?.[offset % this.pageBytes] ?? 0;
+      const page = Math.floor(offset / this.pageBytes);
+      if (page !== lastPage) {
+        lastPage = page;
+        lastBytes = this.#touch(page);
+      }
+      out[offset - from] = lastBytes?.[offset % this.pageBytes] ?? 0;
     }
     return out;
   }

@@ -91,4 +91,15 @@ describe('ByteCache', () => {
     expect(bytes[0]).toBe(0 % 251); // from page 0 (fill = start % 251 = 0)
     expect(bytes[6]).toBe(256 % 251); // from page 1
   });
+
+  it('refreshes LRU recency on ensureRange for cached pages', async () => {
+    const { blob, reads } = fakeBlob(4096);
+    const cache = new ByteCache(blob, { pageBytes: 256, budgetBytes: 512 }); // 2 pages max
+    await cache.ensureRange(0, 256); // load page 0
+    await cache.ensureRange(256, 512); // load page 1
+    await cache.ensureRange(0, 256); // touch page 0 via ensureRange → page 1 becomes LRU
+    await cache.ensureRange(512, 768); // load page 2 (evicts page 1, not page 0)
+    expect(cache.byteAt(0)).not.toBeNull(); // page 0 should still be cached
+    expect(reads.filter((r) => r.start === 0)).toHaveLength(1); // page 0 read exactly once
+  });
 });
