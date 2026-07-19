@@ -7,7 +7,7 @@
     inspectorCollapsed?: boolean;
     ontoggleexplorer?: () => void;
     ontoggleinspector?: () => void;
-    onopen?: () => void;
+    onopen?: (() => void) | undefined;
   }
 
   let {

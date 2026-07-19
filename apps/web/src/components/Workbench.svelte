@@ -231,7 +231,7 @@
     {inspectorCollapsed}
     ontoggleexplorer={() => (explorerCollapsed = !explorerCollapsed)}
     ontoggleinspector={() => (inspectorCollapsed = !inspectorCollapsed)}
-    onopen={openPicker}
+    onopen={session.phase !== 'idle' && session.phase !== 'failed' ? openPicker : undefined}
   />
 
   {#if dropActive}

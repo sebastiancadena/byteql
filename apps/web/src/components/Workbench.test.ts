@@ -168,6 +168,17 @@ describe('Inspector Workbench', () => {
     expect(controller.openSample).toHaveBeenCalledOnce();
   });
 
+  it('hides the header Open button when no session can receive the picker click', () => {
+    const idleController = new FakeController({ ...initialSessionState, phase: 'idle' });
+    render(Workbench, { controller: idleController });
+    expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+    cleanup();
+
+    const readyController = new FakeController(readyState());
+    render(Workbench, { controller: readyController });
+    expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
+  });
+
   it('shows source context, pack metadata, query tools, results, and inspection landmarks', () => {
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
