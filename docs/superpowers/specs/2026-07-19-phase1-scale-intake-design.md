@@ -164,6 +164,21 @@ honored with external access disabled, (c) `parquet_scan` over `opfs://` globs, 
 3. Approach B (parquet-wasm writer in the parse worker) — only if OPFS *writing* through
    DuckDB is unsupported. The spike's finding and the chosen rung are recorded here.
 
+**Spike findings (Task 1, recorded)**: run against real Chromium via
+`apps/web/e2e/spill-capability.spec.ts` on the pinned `duckdb-wasm 1.33.1-dev57.0`:
+`opfsAvailable: true`, `copyToOpfs: true`, `allowedDirectories: true`, `parquetScanGlob: true`,
+`fileStatistics: true`, `detail: ""`. `allowedDirectories: true` selects **rung 1** (whitelist
+as specced). One correction to the design as written above: this build's `parquet_scan`/
+`read_parquet` do not implement real directory enumeration for `opfs://` glob strings —
+`SELECT ... FROM parquet_scan('opfs://.../*.parquet')` and `db.globFiles()` both report zero
+matches even though the file exists and reads fine at its exact registered path. The probe's
+`parquetScanGlob` instead confirms the mechanism the spill tier actually needs: unioning
+multiple registered OPFS parquet parts via an explicit path array,
+`parquet_scan(['opfs://.../0.parquet', 'opfs://.../1.parquet'])`, which works. Since
+`appendBatch`'s rotation loop already knows every part-file name it wrote, `finalize()`'s
+per-table views must be built from that tracked array rather than a `*.parquet` wildcard
+string.
+
 **OPFS lifecycle:** request `navigator.storage.persist()` on first spill-tier ingest;
 `QuotaExceededError` fails the ingest (abort + cleanup + surfaced message); startup sweeps
 `byteql-spill/` for directories from crashed sessions; `dispose()` deletes everything.

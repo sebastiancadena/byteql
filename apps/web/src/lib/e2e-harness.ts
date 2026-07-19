@@ -1,3 +1,5 @@
+import { probeSpillCapability, type SpillProbeReport } from '@byteql/db';
+
 import {
   createInlineParseWorker,
   ParseWorkerClient,
@@ -16,6 +18,7 @@ export interface BrowserE2EControl {
   armParserCrash(): void;
   workerCount(): number;
   audioStats(): AudioStats;
+  spillProbe: () => Promise<SpillProbeReport>;
 }
 
 export interface BrowserE2EHarness {
@@ -65,6 +68,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       },
       workerCount: () => workerCount,
       audioStats: () => ({ ...audioStats }),
+      spillProbe: () => probeSpillCapability(),
     },
     createParser: () => new ParseWorkerClient(createWorker),
     audioEngineFactory: () => {

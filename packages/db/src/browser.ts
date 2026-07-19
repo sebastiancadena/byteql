@@ -27,7 +27,8 @@ const HARDENING_STATEMENTS = [
   'SET lock_configuration = true;',
 ] as const;
 
-const LOCAL_BUNDLES: DuckDBBundles = {
+/** @internal exported for reuse by the OPFS spill capability probe. */
+export const LOCAL_BUNDLES: DuckDBBundles = {
   mvp: {
     mainModule: duckdbMvpWasm,
     mainWorker: duckdbMvpWorker,

@@ -2,6 +2,8 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, type Page } from '@playwright/test';
 
+import type { SpillProbeReport } from '@byteql/db';
+
 export interface AudioStats {
   loadCalls: number;
   disposeCalls: number;
@@ -12,6 +14,7 @@ export interface ByteqlE2EControl {
   armParserCrash(): void;
   workerCount(): number;
   audioStats(): AudioStats;
+  spillProbe(): Promise<SpillProbeReport>;
 }
 
 declare global {
