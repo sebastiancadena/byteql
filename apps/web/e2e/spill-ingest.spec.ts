@@ -50,6 +50,11 @@ const asFile = (name: string, bytes: Uint8Array) => ({
  * to avoid reading stale content. Wait for a column header unique to the new query first.
  */
 async function firstRowCells(page: Page, firstColumn: string): Promise<string[]> {
+  // Provenance columns (`_`-prefixed) are hidden by default in the result grid — ResultGrid folds
+  // them behind a "+N hidden" toggle. A query that selects ONLY `_src_start`/`_src_end` therefore
+  // renders no columnheaders until the toggle is flipped, so reveal them before reading. The grid
+  // remounts per result, resetting the toggle, so this runs for every call.
+  await page.getByRole('button', { name: 'Toggle hidden columns' }).click();
   // Not `exact` — the header's accessible name is "<field> <type>" (e.g. "_src_start Uint64"),
   // concatenated from the name/type spans ResultGrid.svelte renders for each columnheader.
   await page.getByRole('columnheader', { name: firstColumn }).waitFor();
