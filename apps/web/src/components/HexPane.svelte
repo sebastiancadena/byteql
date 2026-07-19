@@ -4,7 +4,7 @@
      localStorage, navigator, requestAnimationFrame, setTimeout, clearTimeout, window */
   import { untrack } from 'svelte';
 
-  import { ByteCache } from '../lib/hex/byte-cache.js';
+  import { ByteCache, COPY_LIMIT_BYTES } from '../lib/hex/byte-cache.js';
   import type { CoverageIndex, CoverageReason } from '../lib/hex/coverage.js';
   import { parseOffsetInput } from '../lib/hex/goto.js';
   import {
@@ -306,6 +306,7 @@
 
   /** Apply a selection action and emit the range change. */
   function apply(action: SelectionAction): void {
+    copyStatus = '';
     selection = reduceSelection(selection, action);
     onselectionchange(selection ? selectionRange(selection) : null);
   }
@@ -353,11 +354,19 @@
     keepCaretInView();
   }
 
+  let copyStatus = $state('');
   async function copySelection(): Promise<void> {
-    if (!cache || !range) return;
-    const bytes = await cache.copyRange(range.start, range.end);
-    const text = Array.from(bytes, (b) => HEX[b]).join(' ');
+    if (!blob || !range) return;
+    if (range.end - range.start > COPY_LIMIT_BYTES) {
+      copyStatus = 'Selection too large to copy (limit 1 MiB)';
+      return;
+    }
+    // Read directly from the blob, bypassing the LRU cache (which would zero-fill a range
+    // wider than its budget mid-copy). Within COPY_LIMIT_BYTES this is a single small slice.
+    const buffer = await blob.slice(range.start, range.end).arrayBuffer();
+    const text = Array.from(new Uint8Array(buffer), (b) => HEX[b]).join(' ');
     await navigator.clipboard?.writeText(text);
+    copyStatus = '';
   }
 
   function onCanvasKeydown(event: KeyboardEvent): void {
@@ -715,5 +724,5 @@
     </div>
   {/if}
 
-  <div class="visually-hidden" aria-live="polite">{announcement}</div>
+  <div class="visually-hidden" aria-live="polite">{copyStatus || announcement}</div>
 </section>

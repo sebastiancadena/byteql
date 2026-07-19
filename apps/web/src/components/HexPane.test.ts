@@ -159,6 +159,41 @@ describe('HexPane', () => {
     expect(root?.getAttribute('data-hex-first-row')).toBe('0');
   });
 
+  it('refuses to copy a selection wider than the 1 MiB limit and announces it', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const { container, getByLabelText, getByRole } = renderPane({ fileSize: 2_000_000 });
+    await user.type(getByLabelText('Go to offset'), '0{Enter}');
+    getByRole('application', { name: 'Hex viewer' }).focus();
+    await user.keyboard('{Control>}{Shift>}{End}{/Shift}{/Control}'); // select [0, fileSize)
+    await user.keyboard('{Control>}c{/Control}');
+
+    const live = container.querySelector('[aria-live="polite"]');
+    expect(live?.textContent).toContain('too large to copy');
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('copies a within-limit selection by reading the blob directly', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const bytes = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
+    const sliceSpy = vi.fn((s: number, e: number) => ({
+      arrayBuffer: async () => bytes.slice(s, e).buffer,
+    }));
+    const fakeBlob = { size: 8, slice: sliceSpy } as unknown as Blob;
+    const { getByLabelText, getByRole } = renderPane({ blob: fakeBlob, fileSize: 8 });
+    await user.type(getByLabelText('Go to offset'), '0{Enter}');
+    getByRole('application', { name: 'Hex viewer' }).focus();
+    await user.keyboard('{Shift>}{ArrowRight}{/Shift}'); // select [0, 2)
+    await user.keyboard('{Control>}c{/Control}');
+
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('00 01'));
+    // Direct blob read for the copied range — never routed through the cache page fetch.
+    expect(sliceSpy).toHaveBeenCalledWith(0, 2);
+  });
+
   it('collapses to the toolbar strip and persists the flag', async () => {
     const user = userEvent.setup();
     const { container, getByRole } = renderPane();

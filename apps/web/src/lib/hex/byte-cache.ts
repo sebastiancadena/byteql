@@ -1,5 +1,11 @@
 export const PAGE_BYTES = 64 * 1024;
 export const CACHE_BUDGET_BYTES = 8 * 1024 * 1024;
+/**
+ * Hard cap on a single hex clipboard copy. Copies within this budget are read
+ * DIRECTLY from the blob (bypassing the LRU, which would zero-fill any range
+ * wider than CACHE_BUDGET_BYTES mid-copy); larger selections are refused.
+ */
+export const COPY_LIMIT_BYTES = 1024 * 1024;
 
 /** Structural subset of Blob so unit tests can pass plain fakes. */
 export interface BlobLike {
