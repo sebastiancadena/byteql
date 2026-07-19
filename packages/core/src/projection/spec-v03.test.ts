@@ -97,4 +97,25 @@ dissect:
     expect(() => parseProjectionSpec(base.replace('max_buffer: 64', 'max_buffer: 0'))).toThrow();
     expect(() => parseProjectionSpec(base.replace('max_buffer: 64', 'max_buffer: 1.5'))).toThrow();
   });
+
+  it('rejects a duplicate stream name', () => {
+    // String surgery: duplicate the sole `streams[]` entry verbatim, so both share the name
+    // "byte_stream" — the parser must reject this before any deeper stream-graph validation
+    // (which lives in compileProjection, not parseProjectionSpec) ever runs.
+    const streamEntry = `  - name: byte_stream
+    key: chunk_key
+    offset: _.seq
+    framer: len_framer
+    table: flows
+    segments_table: flow_segments
+    max_buffer: 64
+    messages:
+      - { when: 'true', parser: msg_parser, table: msgs }
+`;
+    expect(base).toContain(streamEntry);
+    const duplicated = base.replace(streamEntry, streamEntry + streamEntry);
+    expect(() => parseProjectionSpec(duplicated)).toThrowError(
+      /PROJECTION_STREAM_INVALID|declared more than once/,
+    );
+  });
 });

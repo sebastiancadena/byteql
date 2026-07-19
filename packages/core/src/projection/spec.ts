@@ -268,6 +268,18 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
     names.add(table.name);
   }
 
+  const streamNames = new Set<string>();
+  for (const [index, stream] of (parsed.data.streams ?? []).entries()) {
+    if (streamNames.has(stream.name)) {
+      throw new ProjectionCompileError(
+        'PROJECTION_STREAM_INVALID',
+        `streams.${index}.name`,
+        `stream ${JSON.stringify(stream.name)} is declared more than once`,
+      );
+    }
+    streamNames.add(stream.name);
+  }
+
   if (parsed.data.version === '0.1') {
     if (parsed.data.dissect !== undefined) {
       throw new ProjectionCompileError(
