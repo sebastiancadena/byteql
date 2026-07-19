@@ -99,7 +99,7 @@ export async function parseAndProjectPcap(
 ): Promise<ParseResult> {
   throwIfAborted(signal);
   // An unrecognized magic throws here; Task 9 turns that into a fatal, errors-only result.
-  const container = parsePcapContainer(bytes);
+  const container = await parsePcapContainer(bytes);
 
   const collector = new IssueCollector({ ordinalColumn: 'record' });
   for (const issue of container.issues) {
