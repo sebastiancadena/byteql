@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global DragEvent, File, HTMLButtonElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
+  /* global DragEvent, File, HTMLButtonElement, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
 
   import { onMount } from 'svelte';
 
@@ -14,6 +14,7 @@
   import HexPane from './HexPane.svelte';
   import Inspector from './Inspector.svelte';
   import ResultGrid from './ResultGrid.svelte';
+  import ShortcutsOverlay from './ShortcutsOverlay.svelte';
   import SqlEditor from './SqlEditor.svelte';
   import StatusBar from './StatusBar.svelte';
 
@@ -48,6 +49,7 @@
   let dragCounter = 0;
   let dropActive = $state(false);
   let filePickerInput = $state<HTMLInputElement>();
+  let shortcutsOpen = $state(false);
 
   function openPicker(): void {
     filePickerInput?.click();
@@ -210,7 +212,42 @@
     event.preventDefault();
     selectTab(next, true);
   }
+
+  function inEditableTarget(event: KeyboardEvent): boolean {
+    const target = event.target as HTMLElement | null;
+    return !!target?.closest('input, textarea, select, [contenteditable="true"], .cm-editor');
+  }
+
+  function globalKeys(event: KeyboardEvent): void {
+    const mod = event.metaKey || event.ctrlKey;
+    if (event.key === '?' && !mod && !inEditableTarget(event)) {
+      event.preventDefault();
+      shortcutsOpen = !shortcutsOpen;
+      return;
+    }
+    if (!mod) return;
+    const key = event.key.toLowerCase();
+    if (key === 'o') {
+      event.preventDefault();
+      openPicker();
+    } else if (key === 'b') {
+      event.preventDefault();
+      explorerCollapsed = !explorerCollapsed;
+    } else if (key === 'i') {
+      event.preventDefault();
+      inspectorCollapsed = !inspectorCollapsed;
+    } else if (key === 'g') {
+      event.preventDefault();
+      hexPane?.focusGoto();
+    }
+  }
 </script>
+
+<svelte:window onkeydown={globalKeys} />
+
+{#if shortcutsOpen}
+  <ShortcutsOverlay onclose={() => (shortcutsOpen = false)} />
+{/if}
 
 <div
   class:explorer-collapsed={explorerCollapsed}

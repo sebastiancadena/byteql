@@ -541,6 +541,50 @@ describe('Inspector Workbench', () => {
     expect(screen.queryByText('Drop to open')).toBeNull();
   });
 
+  it('opens the shortcuts overlay with ? and toggles panes with Mod+B / Mod+I', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    const { container } = render(Workbench, { controller });
+    const appShell = container.querySelector('.app-shell') as HTMLElement;
+
+    await user.keyboard('?');
+    expect(screen.getByRole('dialog', { name: 'Keyboard shortcuts' })).toBeTruthy();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).toBeNull();
+
+    expect(appShell.classList.contains('explorer-collapsed')).toBe(false);
+    await user.keyboard('{Control>}b{/Control}');
+    expect(appShell.classList.contains('explorer-collapsed')).toBe(true);
+
+    expect(appShell.classList.contains('inspector-collapsed')).toBe(false);
+    await user.keyboard('{Control>}i{/Control}');
+    expect(appShell.classList.contains('inspector-collapsed')).toBe(true);
+  });
+
+  it('opens the file picker with Mod+O and focuses the hex goto input with Mod+G', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    const input = screen.getByLabelText('Open file picker') as HTMLInputElement;
+    const click = vi.spyOn(input, 'click');
+    await user.keyboard('{Control>}o{/Control}');
+    expect(click).toHaveBeenCalledOnce();
+
+    await user.keyboard('{Control>}g{/Control}');
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    expect(document.activeElement).toBe(within(pane).getByLabelText('Go to offset'));
+  });
+
+  it('ignores Mod+O when no session can receive the file picker', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController({ ...initialSessionState, phase: 'idle' });
+    render(Workbench, { controller });
+
+    await expect(user.keyboard('{Control>}o{/Control}')).resolves.not.toThrow();
+    expect(screen.queryByLabelText('Open file picker')).toBeNull();
+  });
+
   it('hides underscore columns behind the +N hidden chip', async () => {
     const table = tableFromArrays({
       note: [60, 61],
