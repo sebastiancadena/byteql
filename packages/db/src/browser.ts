@@ -110,7 +110,7 @@ const validateIngestSchemas = (schemas: readonly TableSchema[]): ReadonlyMap<str
   return schemasByName;
 };
 
-type IngestState = 'open' | 'finalized' | 'aborted';
+type IngestState = 'open' | 'finalized' | 'aborted' | 'failed';
 
 type SchemaMode =
   | { readonly kind: 'declared'; readonly schemas: ReadonlyMap<string, TableSchema> }
@@ -215,13 +215,16 @@ class IngestSessionImpl implements IngestSession {
           throw error;
         }
       });
+    } catch (error) {
+      this.state = 'failed';
+      throw error;
     } finally {
       this.onSettled();
     }
   }
 
   async abort(): Promise<void> {
-    if (this.state !== 'open') {
+    if (this.state !== 'open' && this.state !== 'failed') {
       return;
     }
     this.state = 'aborted';

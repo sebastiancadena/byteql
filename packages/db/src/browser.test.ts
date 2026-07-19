@@ -616,6 +616,57 @@ describe('createBrowserDatabase', () => {
       expect(await database.listTables()).toEqual(['events']);
     });
 
+    it('abort reclaims staging tables after a failed finalize', async () => {
+      const database = await createBrowserDatabase();
+
+      const session = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 8,
+      });
+      await session.appendBatch('events', ipcBatch(1));
+
+      duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
+        if (sql.startsWith('ALTER TABLE')) {
+          throw new Error('rename failed');
+        }
+        return {} as Table;
+      });
+
+      await expect(session.finalize()).rejects.toThrow('rename failed');
+
+      await session.abort();
+
+      const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+      const rollbackIndex = calls.indexOf('ROLLBACK;');
+      const dropIndex = calls.indexOf('DROP TABLE IF EXISTS "__ingest_8_events";');
+      expect(rollbackIndex).toBeGreaterThanOrEqual(0);
+      expect(dropIndex).toBeGreaterThan(rollbackIndex);
+    });
+
+    it('rejects a second finalize and further appends after a failed finalize', async () => {
+      const database = await createBrowserDatabase();
+
+      const session = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 8,
+      });
+      await session.appendBatch('events', ipcBatch(1));
+
+      duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
+        if (sql.startsWith('ALTER TABLE')) {
+          throw new Error('rename failed');
+        }
+        return {} as Table;
+      });
+
+      await expect(session.finalize()).rejects.toThrow('rename failed');
+
+      await expect(session.finalize()).rejects.toThrow(/failed/i);
+      await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow(/failed/i);
+    });
+
     it('rejects invalid or duplicate schema table identifiers before creating a session', async () => {
       const database = await createBrowserDatabase();
 
