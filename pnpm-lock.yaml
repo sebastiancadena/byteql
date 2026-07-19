@@ -161,6 +161,9 @@ importers:
       '@byteql/core':
         specifier: workspace:*
         version: link:../../core
+      apache-arrow:
+        specifier: ^21.1.0
+        version: 21.1.0
       kaitai-struct:
         specifier: ^0.11.0
         version: 0.11.0

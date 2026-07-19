@@ -1,18 +1,14 @@
 import {
-  readAll,
-  type BatchTransfer,
   type ByteSource,
   type FormatPack,
   type OpenOptions,
-  type ParseResult,
   type RecordSource,
-  type SourceFinish,
   type TableColumn,
   type TableSchema,
 } from '@byteql/core';
 
 import pcapQueries from './pcap-queries.generated.js';
-import { parseAndProjectPcap, pcapNullability } from './project-pcap.js';
+import { openPcapSource, pcapNullability } from './project-pcap.js';
 
 const column = (table: string, name: string, type: string): TableColumn => ({
   name,
@@ -167,36 +163,6 @@ export const pcapFormatPack: FormatPack = {
   schemas: () => PCAP_TABLE_SCHEMAS,
   queries: pcapQueries,
   open(source: ByteSource, opts: OpenOptions): RecordSource {
-    let bytes: Uint8Array | null = null;
-    let parsed: Promise<ParseResult> | null = null;
-    let cursor = 0;
-    let result: ParseResult | null = null;
-    let drained = false;
-    let failure: unknown;
-    let failed = false;
-    return {
-      async nextBatch(): Promise<BatchTransfer | null> {
-        bytes ??= await readAll(source);
-        parsed ??= parseAndProjectPcap(bytes, opts.signal, opts.onProgress).catch((error: unknown) => {
-          failed = true;
-          failure = error;
-          throw error;
-        });
-        result ??= await parsed;
-        if (cursor >= result.tables.length) {
-          drained = true;
-          return null;
-        }
-        const table = result.tables[cursor]!;
-        cursor += 1;
-        return { table: table.name, ipc: table.ipc, rowCount: table.rowCount };
-      },
-      finish(): SourceFinish {
-        if (failed) throw failure;
-        if (!drained || !result)
-          throw new Error('RECORD_SOURCE_NOT_DRAINED: call nextBatch() until null before finish()');
-        return { issues: result.issues, capabilities: result.capabilities };
-      },
-    };
+    return openPcapSource(source, opts);
   },
 };

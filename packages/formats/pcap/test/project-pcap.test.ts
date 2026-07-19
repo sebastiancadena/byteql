@@ -1,7 +1,8 @@
-import { ipcToTable } from '@byteql/core';
+import { ipcToTable, memoryByteSource, type BatchTransfer, type ParseProgress } from '@byteql/core';
+import { Table } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { parseAndProjectPcap } from '../src/project-pcap.js';
+import { openPcapSource, parseAndProjectPcap } from '../src/project-pcap.js';
 import {
   buildPcap,
   dnsOverTcp,
@@ -283,5 +284,162 @@ describe('tcp stream reassembly', () => {
   it('keeps udp dns rows with a null stream_id', async () => {
     const result = await parseAndProjectPcap(pcap, new AbortController().signal); // existing udp fixture
     expect(findTable(result, 'dns').get(0)!.stream_id).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// openPcapSource: pull-driven incremental projection
+// ---------------------------------------------------------------------------
+
+const rowObject = (table: Table, index: number): Record<string, unknown> =>
+  Object.fromEntries(
+    table.schema.fields.map((field) => [field.name, table.getChild(field.name)!.get(index)]),
+  );
+
+const mergeIpc = (parts: readonly BatchTransfer[]): Table =>
+  new Table(parts.flatMap((part) => ipcToTable(part.ipc).batches));
+
+const manyDnsPackets = (count: number): Uint8Array =>
+  buildPcap({
+    magic: 'be_us',
+    linktype: 1,
+    packets: Array.from({ length: count }, (_unused, i) => ({
+      tsSec: i + 1,
+      tsFrac: 0,
+      data: ethFrame({
+        etherType: 0x0800,
+        payload: ipv4({
+          protocol: 17,
+          src: '1.1.1.1',
+          dst: '8.8.8.8',
+          payload: udp({
+            srcPort: 5000,
+            dstPort: 53,
+            payload: dnsQuery({ txId: i, name: `q${i}.example`, type: 1 }),
+          }),
+        }),
+      }),
+    })),
+  });
+
+const drainAll = async (source: ReturnType<typeof openPcapSource>): Promise<BatchTransfer[]> => {
+  const batches: BatchTransfer[] = [];
+  for (let batch = await source.nextBatch(); batch !== null; batch = await source.nextBatch()) {
+    batches.push(batch);
+  }
+  return batches;
+};
+
+describe('openPcapSource (incremental)', () => {
+  it('emits multiple batches per table and their union equals the one-shot projection', async () => {
+    const bytes = manyDnsPackets(20);
+    const source = openPcapSource(
+      memoryByteSource(bytes),
+      { signal: new AbortController().signal },
+      {
+        chunkBytes: 4096,
+        flushRowThreshold: 8,
+      },
+    );
+    const batches = await drainAll(source);
+    expect(() => source.finish()).not.toThrow();
+
+    const byTable = new Map<string, BatchTransfer[]>();
+    for (const batch of batches) {
+      const parts = byTable.get(batch.table) ?? [];
+      parts.push(batch);
+      byTable.set(batch.table, parts);
+    }
+    expect(byTable.get('packets')!.length).toBeGreaterThanOrEqual(2);
+
+    const oneShot = await parseAndProjectPcap(bytes, new AbortController().signal);
+    for (const [name, parts] of byTable) {
+      const merged = mergeIpc(parts);
+      const expected = ipcToTable(oneShot.tables.find((t) => t.name === name)!.ipc);
+      expect(merged.numRows).toBe(expected.numRows);
+      for (let i = 0; i < merged.numRows; i += 1) {
+        expect(rowObject(merged, i)).toEqual(rowObject(expected, i));
+      }
+    }
+  });
+
+  it('reports byte-based progress that ends at the file size', async () => {
+    const bytes = manyDnsPackets(20);
+    const progress: ParseProgress[] = [];
+    const source = openPcapSource(
+      memoryByteSource(bytes),
+      { signal: new AbortController().signal, onProgress: (p) => progress.push(p) },
+      { chunkBytes: 4096, flushRowThreshold: 8 },
+    );
+    await drainAll(source);
+    source.finish();
+
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress.every((p) => p.stage === 'projecting')).toBe(true);
+    expect(progress.every((p) => p.total === bytes.length)).toBe(true);
+    for (let i = 1; i < progress.length; i += 1) {
+      expect(progress[i]!.completed).toBeGreaterThanOrEqual(progress[i - 1]!.completed);
+    }
+    expect(progress.at(-1)!.completed).toBe(bytes.length);
+  });
+
+  it('keeps the errors table and stream flushes at the tail', async () => {
+    const payload = dnsOverTcp({ txId: 0xbeef, name: 'tail.example', type: 1 });
+    const bytes = capture([tcpPacket(0, payload.subarray(0, 10)), tcpPacket(10, payload.subarray(10))]);
+    const oneShot = await parseAndProjectPcap(bytes, new AbortController().signal);
+
+    const source = openPcapSource(
+      memoryByteSource(bytes),
+      { signal: new AbortController().signal },
+      {
+        chunkBytes: 4096,
+        flushRowThreshold: 2,
+      },
+    );
+    const batches = await drainAll(source);
+    source.finish();
+
+    const lastPacketIndex = batches.map((b) => b.table).lastIndexOf('packets');
+    const tailTables = ['streams', 'stream_segments', 'errors'];
+    const tailIndices = batches.map((b, i) => (tailTables.includes(b.table) ? i : -1)).filter((i) => i >= 0);
+    expect(tailIndices.length).toBeGreaterThan(0);
+    expect(tailIndices.every((i) => i > lastPacketIndex)).toBe(true);
+
+    for (const name of ['streams', 'stream_segments', 'dns']) {
+      const parts = batches.filter((b) => b.table === name);
+      const merged = mergeIpc(parts);
+      const expected = ipcToTable(oneShot.tables.find((t) => t.name === name)!.ipc);
+      expect(merged.numRows).toBe(expected.numRows);
+      for (let i = 0; i < merged.numRows; i += 1) {
+        expect(rowObject(merged, i)).toEqual(rowObject(expected, i));
+      }
+    }
+  });
+
+  it('still honors abort signals between chunks', async () => {
+    const bytes = buildPcap({
+      magic: 'be_us',
+      linktype: 1,
+      packets: [0, 1].map((i) => ({
+        tsSec: i + 1,
+        tsFrac: 0,
+        // Unrecognized ether_type: dissect stops right after the packets row, so each
+        // packet contributes exactly one pending row (no ip/udp/dns fan-out to race).
+        data: ethFrame({ etherType: 0x9999, payload: new Uint8Array(0) }),
+      })),
+    });
+    const controller = new AbortController();
+    const source = openPcapSource(
+      memoryByteSource(bytes),
+      { signal: controller.signal },
+      {
+        chunkBytes: 4096,
+        flushRowThreshold: 1,
+      },
+    );
+    const first = await source.nextBatch();
+    expect(first?.table).toBe('packets');
+    controller.abort();
+    await expect(source.nextBatch()).rejects.toThrow();
   });
 });
