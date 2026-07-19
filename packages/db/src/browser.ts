@@ -49,6 +49,9 @@ export const LOCAL_BUNDLES: DuckDBBundles = {
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** The DuckDB catalog kind a committed final was created as; drives which typed DROP applies. */
+type CatalogKind = 'table' | 'view';
+
 interface TableSnapshot {
   readonly name: string;
   readonly ipc: Uint8Array;
@@ -64,6 +67,21 @@ const defaultSpillSupported = (): boolean =>
   typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory;
 
 const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
+
+/**
+ * Issues exactly one type-correct drop for a recorded final. DuckDB (even pinned 1.33.1-dev57.0)
+ * throws a Catalog Error on `DROP VIEW IF EXISTS t` when `t` is a table (and vice versa), so the
+ * blind "drop both" pattern is never safe against a real database — only a single, kind-correct
+ * drop is.
+ */
+const dropFinal = async (
+  connection: AsyncDuckDBConnection,
+  name: string,
+  kind: CatalogKind,
+): Promise<void> => {
+  const keyword = kind === 'view' ? 'DROP VIEW IF EXISTS' : 'DROP TABLE IF EXISTS';
+  await connection.query(`${keyword} ${quoteIdentifier(name)};`);
+};
 
 const snapshotTables = (tables: readonly TableTransfer[]): readonly TableSnapshot[] => {
   const names = new Set<string>();
@@ -155,8 +173,8 @@ class IngestSessionImpl implements IngestSession {
     private readonly rotationBytes: number,
     private readonly opfs: OpfsFileRegistrar,
     private readonly enqueue: EnqueueFn,
-    private readonly getFinalTableNames: () => readonly string[],
-    private readonly setFinalTableNames: (names: readonly string[]) => void,
+    private readonly getFinalTableNames: () => ReadonlyMap<string, CatalogKind>,
+    private readonly setFinalTableNames: (finals: ReadonlyMap<string, CatalogKind>) => void,
     private readonly getSpillGeneration: () => number | null,
     private readonly setSpillGeneration: (generation: number) => void,
     private readonly onSettled: () => void,
@@ -271,15 +289,14 @@ class IngestSessionImpl implements IngestSession {
       const summaries = await this.enqueue(async (connection) => {
         await connection.query('BEGIN TRANSACTION;');
         try {
-          for (const name of this.getFinalTableNames()) {
+          for (const [name, kind] of this.getFinalTableNames()) {
             // The old final name may be a view (a prior spill generation) or a table (a prior
-            // memory generation); drop whichever it is before creating the replacement.
-            await connection.query(`DROP VIEW IF EXISTS ${quoteIdentifier(name)};`);
-            await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(name)};`);
+            // memory generation); its recorded kind says exactly which single drop applies.
+            await dropFinal(connection, name, kind);
           }
 
           const declaredSchemas = this.schemaMode.kind === 'declared' ? this.schemaMode.schemas : null;
-          const finalNames: string[] = [];
+          const finalKinds = new Map<string, CatalogKind>();
           const summaries: TableSummary[] = [];
           for (const table of this.sessionTables()) {
             const stagingName = stagingTableName(this.generation, table);
@@ -291,6 +308,7 @@ class IngestSessionImpl implements IngestSession {
                 `CREATE VIEW ${quoteIdentifier(table)} AS SELECT * FROM parquet_scan([${pathList}]);`,
               );
               await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(stagingName)};`);
+              finalKinds.set(table, 'view');
             } else {
               if (!this.created.has(table)) {
                 // discover-mode session tables come only from `created`, so every discover-mode
@@ -309,13 +327,13 @@ class IngestSessionImpl implements IngestSession {
               await connection.query(
                 `ALTER TABLE ${quoteIdentifier(stagingName)} RENAME TO ${quoteIdentifier(table)};`,
               );
+              finalKinds.set(table, 'table');
             }
-            finalNames.push(table);
             summaries.push({ name: table, rowCount: this.rowCounts.get(table) ?? 0 });
           }
 
           await connection.query('COMMIT;');
-          this.setFinalTableNames(finalNames);
+          this.setFinalTableNames(finalKinds);
           return summaries;
         } catch (error) {
           try {
@@ -366,7 +384,8 @@ class BrowserDatabase implements ByteqlDatabase {
   private connection: AsyncDuckDBConnection | null = null;
   private initializePromise: Promise<void> | null = null;
   private operationTail: Promise<void> = Promise.resolve();
-  private tableNames: readonly string[] = [];
+  /** Committed finals, keyed by name, with the catalog kind each was created as. */
+  private finalNames: Map<string, CatalogKind> = new Map();
   private disposePromise: Promise<void> | null = null;
   private disposeRequested = false;
   private closePromise: Promise<void> | null = null;
@@ -409,8 +428,8 @@ class BrowserDatabase implements ByteqlDatabase {
     return this.enqueue(async (connection) => {
       await connection.query('BEGIN TRANSACTION;');
       try {
-        for (const name of this.tableNames) {
-          await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(name)};`);
+        for (const [name, kind] of this.finalNames) {
+          await dropFinal(connection, name, kind);
         }
         for (const table of snapshots) {
           await connection.insertArrowFromIPCStream(table.ipc, {
@@ -419,7 +438,7 @@ class BrowserDatabase implements ByteqlDatabase {
           });
         }
         await connection.query('COMMIT;');
-        this.tableNames = snapshots.map(({ name }) => name);
+        this.finalNames = new Map(snapshots.map(({ name }) => [name, 'table' as const]));
       } catch (error) {
         try {
           await connection.query('ROLLBACK;');
@@ -461,9 +480,9 @@ class BrowserDatabase implements ByteqlDatabase {
       options.rotationBytes ?? ROTATION_THRESHOLD_BYTES,
       this.database,
       (operation) => this.enqueue(operation),
-      () => this.tableNames,
-      (names) => {
-        this.tableNames = names;
+      () => this.finalNames,
+      (finals) => {
+        this.finalNames = new Map(finals);
       },
       () => this.spillGeneration,
       (generation) => {
@@ -504,7 +523,7 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   async listTables(): Promise<readonly string[]> {
-    return [...this.tableNames];
+    return [...this.finalNames.keys()];
   }
 
   dispose(): Promise<void> {

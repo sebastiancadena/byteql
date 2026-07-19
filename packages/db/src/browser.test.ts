@@ -523,7 +523,6 @@ describe('createBrowserDatabase', () => {
 
       expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([
         'BEGIN TRANSACTION;',
-        'DROP VIEW IF EXISTS "events";',
         'DROP TABLE IF EXISTS "events";',
         'ALTER TABLE "__ingest_8_events" RENAME TO "events";',
         'COMMIT;',
@@ -882,7 +881,6 @@ describe('createBrowserDatabase', () => {
         expect(calls.slice(beginIndex)).toEqual([
           'BEGIN TRANSACTION;',
           'DROP VIEW IF EXISTS "events";',
-          'DROP TABLE IF EXISTS "events";',
           'CREATE VIEW "events" AS SELECT * FROM parquet_scan([' +
             "'opfs://byteql-spill/9/events/0.parquet', 'opfs://byteql-spill/9/events/1.parquet']);",
           'DROP TABLE IF EXISTS "__ingest_9_events";',
@@ -925,6 +923,63 @@ describe('createBrowserDatabase', () => {
         expect(renameIndex).toBeGreaterThan(createIndex);
         expect(summaries).toEqual(expect.arrayContaining([{ name: 'errors', rowCount: 0 }]));
         expect(await database.listTables()).toEqual(expect.arrayContaining(['events', 'errors']));
+      });
+
+      it('a second finalize drops each old final by its recorded catalog kind, not a blind double drop', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+
+        const spillSession = await database.beginIngest({
+          schemas: [eventsSchema, errorsSchema],
+          tier: 'spill',
+          generation: 4,
+        });
+        await spillSession.appendBatch('events', ipcBatch(1));
+        // errors is never appended, so it finalizes as an empty TABLE fallback, not a view.
+        await spillSession.finalize();
+        duckdbMocks.connection.query.mockClear();
+        duckdbMocks.database.registerOPFSFileName.mockClear();
+
+        const memorySession = await database.beginIngest({
+          schemas: [eventsSchema, errorsSchema],
+          tier: 'memory',
+          generation: 10,
+        });
+        await memorySession.appendBatch('events', ipcBatch(2));
+        await memorySession.appendBatch('errors', ipcBatch(1));
+
+        await memorySession.finalize();
+
+        const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+        const beginIndex = calls.indexOf('BEGIN TRANSACTION;');
+        expect(calls.slice(beginIndex)).toEqual([
+          'BEGIN TRANSACTION;',
+          'DROP VIEW IF EXISTS "events";',
+          'DROP TABLE IF EXISTS "errors";',
+          'ALTER TABLE "__ingest_10_events" RENAME TO "events";',
+          'ALTER TABLE "__ingest_10_errors" RENAME TO "errors";',
+          'COMMIT;',
+        ]);
+      });
+
+      it('replaceTables drops a spill-finalized view old final with DROP VIEW IF EXISTS, not DROP TABLE', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({
+          schemas: 'discover',
+          tier: 'spill',
+          generation: 3,
+        });
+        await session.appendBatch('events', ipcBatch(1));
+        await session.finalize();
+        duckdbMocks.connection.query.mockClear();
+
+        await database.replaceTables([transfer('events')]);
+
+        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([
+          'BEGIN TRANSACTION;',
+          'DROP VIEW IF EXISTS "events";',
+          'COMMIT;',
+        ]);
+        expect(await database.listTables()).toEqual(['events']);
       });
 
       it('abort deletes the new generation spill directory and staging, never the committed one', async () => {
