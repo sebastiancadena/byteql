@@ -92,18 +92,55 @@ const throwIfAborted = (signal: AbortSignal): void => {
   throw new DOMException('The operation was aborted.', 'AbortError');
 };
 
-const yieldToWorker = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+type SchedulerLike = { yield?: () => Promise<void> };
 
-// Yielding on every single packet forces a real macrotask each time — and once a tight loop
-// calls `setTimeout(fn, 0)` enough times in a row (as `pump()`'s per-packet loop below used to),
-// browsers clamp nested timeouts to a floor of a few milliseconds (the WHATWG timer-nesting
-// clamp) regardless of the requested 0ms delay. For an N-packet capture that turned an O(N)
-// yield into an O(N * ~4ms) wall-clock cost — measured empirically at ~4.4ms/packet, constant
-// regardless of capture size, against real Chromium via Task 12's scale-metrics spec — utterly
-// dominating real parse+ingest time (a 96 MiB/~240k-packet capture would have cost over a
-// thousand seconds on this alone). Yielding (and reporting progress) only every this many
-// packets keeps the worker responsive to an incoming abort message and gives the main thread
-// regular progress updates, at a small fraction of the cost.
+/** Node's `MessagePort` adds `unref()`; the DOM lib type doesn't declare it. */
+type UnrefableMessagePort = MessagePort & { unref?: () => void };
+
+/**
+ * Builds an unclamped macrotask yield. `setTimeout(fn, 0)` is subject to the WHATWG
+ * timer-nesting clamp — once a tight loop calls it enough times in a row (as `pump()`'s
+ * per-packet loop below used to), browsers floor nested timeouts to a few milliseconds
+ * regardless of the requested 0ms delay. For an N-packet capture that turned an O(N)
+ * yield into an O(N * ~4ms) wall-clock cost — measured empirically at ~4.4ms/packet,
+ * constant regardless of capture size, against real Chromium via Task 12's scale-metrics
+ * spec — utterly dominating real parse+ingest time. `scheduler.yield()` (Chromium's
+ * Prioritized Task Scheduling API) is unclamped where available; otherwise a
+ * `MessageChannel` round trip is used, since posted-message macrotasks are exempt from
+ * the setTimeout nesting clamp. The channel is created lazily on first use (rather than
+ * at module load) and its ports are unref'd so a stray instance never keeps a Node
+ * process — e.g. a vitest worker — alive waiting on an open handle.
+ */
+const createYield = (): (() => Promise<void>) => {
+  const scheduler = (globalThis as { scheduler?: SchedulerLike }).scheduler;
+  if (scheduler?.yield) return () => scheduler.yield!();
+
+  let channel: MessageChannel | null = null;
+  // Invariant: `pump()` is a strictly sequential loop — it always awaits the previous
+  // yield before requesting another — so at most one resolver is ever pending at a time.
+  let pending: (() => void) | null = null;
+  return () =>
+    new Promise<void>((resolve) => {
+      if (!channel) {
+        channel = new MessageChannel();
+        (channel.port1 as UnrefableMessagePort).unref?.();
+        (channel.port2 as UnrefableMessagePort).unref?.();
+        channel.port1.onmessage = () => {
+          const resolveNext = pending;
+          pending = null;
+          resolveNext?.();
+        };
+      }
+      pending = resolve;
+      channel.port2.postMessage(null);
+    });
+};
+
+const yieldToWorker = createYield();
+
+// Yielding (and reporting progress) only every this many packets keeps the worker
+// responsive to an incoming abort message and gives the main thread regular progress
+// updates, at a small fraction of the cost of yielding on every packet.
 const YIELD_INTERVAL_PACKETS = 256;
 
 /** Formats a byte count in MB with two decimal places, for progress labels. */
