@@ -94,6 +94,18 @@ const throwIfAborted = (signal: AbortSignal): void => {
 
 const yieldToWorker = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
+// Yielding on every single packet forces a real macrotask each time — and once a tight loop
+// calls `setTimeout(fn, 0)` enough times in a row (as `pump()`'s per-packet loop below used to),
+// browsers clamp nested timeouts to a floor of a few milliseconds (the WHATWG timer-nesting
+// clamp) regardless of the requested 0ms delay. For an N-packet capture that turned an O(N)
+// yield into an O(N * ~4ms) wall-clock cost — measured empirically at ~4.4ms/packet, constant
+// regardless of capture size, against real Chromium via Task 12's scale-metrics spec — utterly
+// dominating real parse+ingest time (a 96 MiB/~240k-packet capture would have cost over a
+// thousand seconds on this alone). Yielding (and reporting progress) only every this many
+// packets keeps the worker responsive to an incoming abort message and gives the main thread
+// regular progress updates, at a small fraction of the cost.
+const YIELD_INTERVAL_PACKETS = 256;
+
 /** Formats a byte count in MB with two decimal places, for progress labels. */
 const mb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(2);
 
@@ -136,6 +148,9 @@ export function openPcapSource(
   let drained = false;
   let failed = false;
   let failure: unknown;
+  // Persists across `pump()` re-entries (one per drained batch) so the yield/progress cadence
+  // stays even across the whole capture, not reset to 0 every time a batch drains.
+  let packetsSinceYield = 0;
 
   const ensureStarted = async (): Promise<{
     framer: PcapFramer;
@@ -233,9 +248,14 @@ export function openPcapSource(
             : { start: packet.body.start, end: packet.body.start + packet.body.bytes.length },
       };
       state.session.project(packetRoot(packet), resolver);
-      await yieldToWorker();
-      throwIfAborted(opts.signal);
-      reportProgress(state.framer);
+
+      packetsSinceYield += 1;
+      if (packetsSinceYield >= YIELD_INTERVAL_PACKETS) {
+        packetsSinceYield = 0;
+        await yieldToWorker();
+        throwIfAborted(opts.signal);
+        reportProgress(state.framer);
+      }
 
       if (state.session.pendingRowCount() >= threshold) {
         pending = toBatches(state.session.drain());
