@@ -172,12 +172,12 @@ export const dnsPacket: RecordParser = (bytes) => ({
 });
 
 /**
- * DNS-over-TCP: a 2-byte BE length prefix followed by the DNS message. Used both as a
- * dissect-registry parser (fed single segments directly, where the message may not yet be
- * complete) and as the `dns_tcp_stream` message parser (fed framer-delimited, reassembled
- * bytes, where completeness is already guaranteed). Conditional emission (`{ root: {} }`, per
- * the `tlsClientHello` pattern above) covers empty/handshake segments and a declared length
- * that doesn't fit the available bytes; in the stream path that guard is defensive only — the
+ * DNS-over-TCP: a 2-byte BE length prefix followed by the DNS message. Fed exclusively as the
+ * `dns_tcp_stream` message parser, on framer-delimited, reassembled bytes where completeness is
+ * already guaranteed — a single TCP segment carrying a complete message is just the degenerate,
+ * one-contribution case of that same stream path, not a separate feed. Conditional emission
+ * (`{ root: {} }`, per the `tlsClientHello` pattern above) covers empty/handshake segments and a
+ * declared length that doesn't fit the available bytes; that guard is defensive only — the
  * `dnsTcp` framer (`streams.ts`) never hands this a short buffer.
  */
 export const dnsTcpMessage: RecordParser = (bytes) => {

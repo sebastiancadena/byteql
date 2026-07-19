@@ -243,5 +243,6 @@ Full-suite: existing pcap tests, MIDI suite, `pnpm -r check`, `check:bundle`, e2
 - **Provenance of single-segment messages** may shift slightly for TLS (previously the whole tcp
   payload extent; now the framed record `[0, 5 + len)`) — typically identical bytes; the dns path
   is unchanged (framed message = full payload). Any test churn is confined to `tls` `_src_*`.
-- **Port-reuse merging** (no FIN/RST teardown) and **wraparound streams** degrade to `gap`/`error`
-  status rather than corrupting output — graceful, visible in the `streams` table.
+- **Port-reuse merging** (no FIN/RST teardown) and **wraparound streams** degrade to `truncated`
+  (an unconsumed rebase across the ~2^32 extent) or `error` (a below-base contribution after
+  consumption) status rather than corrupting output — graceful, visible in the `streams` table.
