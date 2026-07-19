@@ -141,12 +141,21 @@ A message parser's optional `resolve` is ignored — stream messages use the coa
 
 **Provenance.** Each contribution's absolute file range is kept, so a message spanning `[s, e)` in
 stream space maps back to exact per-segment ranges. The message row's `_src_start/_src_end` is the
-coarse first-to-last span over its contributing segments; for a single-segment message this
-degenerates to the exact range (existing single-segment expectations stay meaningful).
+min/max over each contributing segment's own clipped file range (the segment's file range narrowed
+to the part the message actually overlaps) — not simply the first/last segment ordered by stream
+position, since an out-of-order capture can put a stream-earlier segment at a later file offset
+than a stream-later one, which would otherwise invert the span (`start > end`). For a
+single-segment message this degenerates to the exact range (existing single-segment expectations
+stay meaningful).
 
-**Link table.** One row per contributed segment, emitted at contribution time into the
-engine-synthesized `segments_table`: `{ segment_id, stream_id, <feed-table>_id (e.g. tcp_id),
-offset, _src_start, _src_end }`. The hex UI joins through it for precise multi-range highlighting.
+**Link table.** One row per accepted contribution, recorded at contribution time (arrival order)
+but **emitted at flush** into the engine-synthesized `segments_table`: `{ segment_id, stream_id,
+<feed-table>_id (e.g. tcp_id), offset, _src_start, _src_end }`. `offset` is contribution-relative to
+the assembler's base, which is only final at flush — a later out-of-order contribution can still
+rebase the base downward, and translating `offset` at contribution time against a base that hasn't
+settled yet would silently invalidate already-emitted rows. `segment_id` keys are still assigned
+sequentially, arrival-ordered, at flush. The hex UI joins through it for precise multi-range
+highlighting.
 
 **Flush.** `finish()` first flushes one flow row per stream into the declared `table`, projected
 from a synthetic root: the key extractor's metadata plus engine counters — `segment_count` and

@@ -175,6 +175,42 @@ describe('stream runtime', () => {
     expect(msgs.arrow.getChild('text')!.get(0)).toBe('abcd');
     expect(msgs.arrow.getChild('record_id')!.get(0)).toBe(2n);
     expect(table(finished, 'flows').arrow.getChild('status')!.get(0)).toBe('ok');
+
+    // Geometry: record 0's body sits at file offset 0 and carries the seq=3 chunk
+    // (payload [99,100], 2 bytes in past the [port,seq] header → file [2, 4));
+    // record 1's body sits at file offset 100 and carries the seq=0 chunk
+    // (payload [4,97,98], 3 bytes → file [102, 105)). The seq=3 chunk contributes FIRST
+    // (arrival order), establishing base=3; the seq=0 chunk contributes second and rebases
+    // the base down to 0. Segment rows are emitted at flush, arrival-ordered, with `offset`
+    // computed against the FINAL base (0): seq=3's absolute offset 3 relative to base 0 is
+    // 3n; seq=0's absolute offset 0 relative to base 0 is 0n — i.e. [3n, 0n] in arrival order
+    // (NOT [0n, 3n]; a stale offset computed at contribution time against the transient
+    // base=3 would have wrongly read [0n, 0n] for both rows).
+    const segments = table(finished, 'flow_segments');
+    expect(segments.rowCount).toBe(2);
+    expect(segments.arrow.getChild('offset')!.toArray()).toEqual(new BigInt64Array([3n, 0n]));
+    expect(segments.arrow.getChild('_src_start')!.toArray()).toEqual(new BigUint64Array([2n, 102n]));
+    expect(segments.arrow.getChild('_src_end')!.toArray()).toEqual(new BigUint64Array([4n, 105n]));
+
+    // The reassembled message spans both segments. In stream position the seq=0 segment
+    // (file [102,105)) comes first and the seq=3 segment (file [2,4)) comes last, so a naive
+    // first-segment-start/last-segment-end span would invert to start=102, end=4. The correct
+    // covering range is the min/max over each segment's own clipped file range: min(102, 2)=2,
+    // max(105, 4)=105 — a proper range with start < end.
+    expect(msgs.arrow.getChild('_src_start')!.get(0)).toBe(2n);
+    expect(msgs.arrow.getChild('_src_end')!.get(0)).toBe(105n);
+  });
+
+  it('segment offsets are final-base-relative after a rebase', () => {
+    // Same geometry as above, isolated to just the flow_segments/offset semantics: the offset
+    // column must reflect the FINAL assembler base at flush, not whatever base was current at
+    // the moment each contribution was recorded.
+    const { finished } = project([chunk(7, 3, [99, 100]), chunk(7, 0, [4, 97, 98])]);
+    const segments = table(finished, 'flow_segments');
+    const finalBase = 0n; // the seq=0 contribution rebases the base down to 0 and nothing raises it again
+    expect(segments.arrow.getChild('offset')!.toArray()).toEqual(
+      new BigInt64Array([3n - finalBase, 0n - finalBase]),
+    );
   });
 
   it('computes exact provenance spans per message', () => {

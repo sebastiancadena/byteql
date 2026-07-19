@@ -874,6 +874,19 @@ export const createRuntimes = (compiled: CompiledProjection): Map<string, TableR
     ]),
   );
 
+// One ACCEPTED ('added'/'rebased') contribution to a flow's assembler, recorded at contribution
+// time but deliberately NOT yet translated to a base-relative `offset` — the base can still
+// shift under a later rebase, which would silently invalidate an offset computed too early (see
+// StreamRuntimeEntry.segments doc). `absOffset` is the raw offset value passed to
+// `assembler.add`, in absolute (never-rebased) offset space; `feedKeyValue` is the feed table's
+// key captured at contribution time (the feed row is long gone by flush).
+export interface StreamSegmentRecord {
+  readonly absOffset: number;
+  readonly srcStart: number;
+  readonly srcEnd: number;
+  readonly feedKeyValue: bigint | null;
+}
+
 // Per-flow runtime state for one stream's reassembly, keyed by the stream key extractor's
 // `key` string within StreamsRuntime.flows.get(stream.name). `status` starts 'ok' and only
 // ever moves forward: 'truncated'/'error' are terminal (contributions silently drop once
@@ -886,6 +899,13 @@ export interface StreamRuntimeEntry {
   framingStalled: boolean;
   stallMessage: string | null;
   status: 'ok' | 'gap' | 'truncated' | 'error';
+  // Every ACCEPTED contribution, in arrival order. `offset` rows are NOT emitted here — a
+  // rebase after this contribution would move the base and silently invalidate an
+  // already-emitted `offset - base` row (empirically: an out-of-order flow used to yield two
+  // segment rows both reading offset=0 instead of the correct 0 and 3). Instead we defer
+  // translating `absOffset` into a base-relative `offset` until flushStreams, when the
+  // assembler's base is final.
+  readonly segments: StreamSegmentRecord[];
 }
 
 export interface StreamsRuntime {
@@ -1247,6 +1267,7 @@ const contributeToStream = (
       framingStalled: false,
       stallMessage: null,
       status: 'ok',
+      segments: [],
     };
     flowMap.set(keyResult.key, entry);
   }
@@ -1288,15 +1309,13 @@ const contributeToStream = (
     entry.stallMessage = null;
   }
 
-  const segmentId = streams.segmentKeys.get(stream.segmentsTable)!;
-  streams.segmentKeys.set(stream.segmentsTable, segmentId + 1n);
-  emitContext.sink.push(stream.segmentsTable, {
-    segment_id: segmentId,
-    stream_id: entry.streamId,
-    [stream.feedKeyColumn]: keysByTable.get(stream.feedTable) ?? null,
-    offset: BigInt(offset - entry.assembler.base!),
-    _src_start: BigInt(srcStart),
-    _src_end: BigInt(srcEnd),
+  // Record the contribution, arrival-ordered; the base-relative `offset` and segment_id are
+  // both assigned later, at flush (see StreamSegmentRecord doc and flushStreams).
+  entry.segments.push({
+    absOffset: offset,
+    srcStart,
+    srcEnd,
+    feedKeyValue: keysByTable.get(stream.feedTable) ?? null,
   });
 
   // completingKeys: the CURRENT contribution's keysByTable — the packet whose arrival framed
@@ -1352,16 +1371,25 @@ const emitStreamMessage = (
   completingKeys: ReadonlyMap<string, bigint>,
   emitContext: EmitContext,
 ): void => {
-  // Exact span endpoints: map messageStart/messageEnd (current-base-relative stream positions)
-  // through the contributing segments' own linear offset <-> file-offset relationship, rather
-  // than the coarse span of the segments as a whole.
+  // Span endpoints: map messageStart/messageEnd (current-base-relative stream positions)
+  // through EACH contributing segment's own linear offset <-> file-offset relationship, clip
+  // to the part of that segment the message actually overlaps, and take the min/max of the
+  // clipped ranges. This is NOT simply first-segment-start/last-segment-end ordered by stream
+  // position: under out-of-order capture a segment earlier in stream order can sit at a LATER
+  // file offset than one after it (rebase reorders stream position without reordering file
+  // position), which would otherwise yield an inverted span (start > end). Clipping and taking
+  // min/max over every overlapping segment always yields a proper covering range, and degrades
+  // to the previous exact single-segment/in-order-multi-segment span when there is no reordering.
   const boundary = entry.assembler.segmentsOverlapping(messageStart, messageEnd);
-  const first = boundary[0]!;
-  const last = boundary[boundary.length - 1]!;
-  const span: SourceRange = {
-    start: first.srcStart + (messageStart - first.start),
-    end: last.srcStart + (messageEnd - last.start),
-  };
+  let spanStart = Infinity;
+  let spanEnd = -Infinity;
+  for (const s of boundary) {
+    const clipStart = s.srcStart + Math.max(0, messageStart - s.start);
+    const clipEnd = s.srcStart + Math.min(s.end - s.start, messageEnd - s.start);
+    if (clipStart < spanStart) spanStart = clipStart;
+    if (clipEnd > spanEnd) spanEnd = clipEnd;
+  }
+  const span: SourceRange = { start: spanStart, end: spanEnd };
 
   const node = { offset: messageStart, length: messageEnd - messageStart };
   const context: ExpressionContext = { _: node, _root: node };
@@ -1582,6 +1610,24 @@ export const flushStreams = (emitContext: EmitContext): void => {
           undefined,
           entry.streamId, // forcedKey: the streamId reserved eagerly at first contribution
         );
+      }
+
+      // Segment rows: emitted here, not at contribution time, because the assembler's base is
+      // only final now — a contribution recorded early in the flow's life can still be rebased
+      // by a later, out-of-order-earlier one (see StreamSegmentRecord doc). segment_id keys are
+      // still assigned sequentially, arrival-ordered, from streams.segmentKeys.
+      const finalBase = entry.assembler.base ?? 0;
+      for (const record of entry.segments) {
+        const segmentId = streams.segmentKeys.get(stream.segmentsTable)!;
+        streams.segmentKeys.set(stream.segmentsTable, segmentId + 1n);
+        emitContext.sink.push(stream.segmentsTable, {
+          segment_id: segmentId,
+          stream_id: entry.streamId,
+          [stream.feedKeyColumn]: record.feedKeyValue,
+          offset: BigInt(record.absOffset - finalBase),
+          _src_start: BigInt(record.srcStart),
+          _src_end: BigInt(record.srcEnd),
+        });
       }
     }
   }
