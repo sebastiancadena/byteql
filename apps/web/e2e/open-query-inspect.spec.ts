@@ -12,5 +12,11 @@ test('opens the bundled sample, queries five events, and inspects provenance', a
 
   await expect(page.getByRole('gridcell', { name: /note_/u }).first()).toBeVisible();
   await page.getByRole('row', { name: 'Row 1', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Provenance' }).getByText('_src_start')).toBeVisible();
+  // The Inspector's provenance is now a single clickable byte-range button (e.g. "0x1c – 0x29")
+  // inside the Provenance section, replacing the old raw `_src_start` text.
+  await expect(
+    page
+      .getByRole('region', { name: 'Provenance' })
+      .getByRole('button', { name: /0x[0-9a-f]+ – 0x[0-9a-f]+/u }),
+  ).toBeVisible();
 });
