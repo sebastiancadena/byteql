@@ -352,6 +352,24 @@ describe('stream runtime robustness', () => {
     expect(finished.find((t) => t.name === 'flows')!.rowCount).toBe(0);
   });
 
+  it('records the true source span for a flow whose only contribution is rejected as truncated', () => {
+    // A single segment already bigger than max_buffer (64) is rejected by assembler.add() as
+    // 'truncated' before it is ever stored — assembler.segmentCount stays 0 and assembler.srcSpan
+    // stays null forever, so flushStreams must fall back to the rejected contribution's own
+    // {srcStart, srcEnd} (see fallbackSpan in project.ts), not the meaningless {0, 0}.
+    // Geometry: record 0's body sits at file offset 0; the chunk's payload starts 2 bytes in
+    // (past the [port, seq] header) → file [2, 72) for a 70-byte payload.
+    const big70 = Array.from({ length: 70 }, (_, i) => i % 251);
+    const { finished, issues } = project([chunk(7, 0, big70)]);
+    expect(issues.issues()).toEqual([expect.objectContaining({ code: 'STREAM_TRUNCATED' })]);
+    const flows = table(finished, 'flows');
+    expect(flows.rowCount).toBe(1);
+    expect(flows.arrow.getChild('status')!.get(0)).toBe('truncated');
+    expect(flows.arrow.getChild('message_count')!.get(0)).toBe(0);
+    expect(flows.arrow.getChild('_src_start')!.get(0)).toBe(2n);
+    expect(flows.arrow.getChild('_src_end')!.get(0)).toBe(72n);
+  });
+
   it('reports STREAM_ERROR when offset is not a non-negative integer', () => {
     // seq byte is uint8 so a negative offset needs a doctored parser: recompile with a
     // chunk_parser emitting seq: -1 and assert the issue.

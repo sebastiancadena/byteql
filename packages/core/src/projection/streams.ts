@@ -135,6 +135,14 @@ export class StreamAssembler {
     const newExtent = Math.max(end, this.#highestEndAbs ?? end) - newBase;
     if (newExtent > this.#maxBuffer) return 'truncated';
 
+    // Cost bound: a rebase is an O(extent) copy of #data (below) plus the O(n) segment-array
+    // insertion/frontier rescan above, so an adversarial strictly-descending arrival order (each
+    // segment rebasing the base further down) is worst-case quadratic in the number of segments.
+    // That's deliberately accepted rather than engineered away: #maxBuffer hard-bounds the extent
+    // factor, and callers abort-check per record upstream, so the quadratic blowup can only ever
+    // run over a bounded buffer for a bounded record count. If this ever shows up as a real cost,
+    // the fix is to stop reusing the linear #segments array for insertion and reach for an
+    // index that supports O(log n) insertion (e.g. a sorted tree/skip list) instead.
     if (rebasing) {
       const shift = this.#base! - newBase;
       const shiftedLen = Math.min(Math.max(this.#data.length + shift, newExtent), this.#maxBuffer);

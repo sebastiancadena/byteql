@@ -6,7 +6,12 @@ import { it } from 'vitest';
 import { buildPcap, dnsOverTcp, ethFrame, ipv4, tcp } from './build-pcap.js';
 
 // Regenerates apps/web/e2e/fixtures/dns-stream.pcap. Skipped unless explicitly requested:
-//   GENERATE_E2E_FIXTURES=1 pnpm --filter @byteql/pcap test -- --run test/generate-e2e-fixture.test.ts
+//   GENERATE_E2E_FIXTURES=1 pnpm --filter @byteql/pcap exec vitest run test/generate-e2e-fixture.test.ts
+// (NOT `pnpm ... test -- --run <file>`: pnpm appends `-- --run <file>` after the `test` script's
+// own `&& vitest` tail, so vitest sees a literal `--` as its first arg and the filter never
+// scopes — the whole suite runs. `exec vitest run <file>` invokes vitest directly, so the file
+// argument reaches vitest's own filter unmangled. build-pcap.ts has no imports of its own (pure
+// DataView writers), so this file needs no prior `compile:ksy`/`generate:pack` step.)
 it.runIf(process.env.GENERATE_E2E_FIXTURES === '1')('writes the dns-stream e2e fixture', () => {
   const payload = dnsOverTcp({ txId: 0xbeef, name: 'stream.example', type: 1 });
   const packet = (seq: number, data: Uint8Array) =>

@@ -906,6 +906,17 @@ export interface StreamRuntimeEntry {
   // translating `absOffset` into a base-relative `offset` until flushStreams, when the
   // assembler's base is final.
   readonly segments: StreamSegmentRecord[];
+  // Set only when a contribution is rejected as 'truncated' while the assembler still holds
+  // zero stored segments — i.e. the flow's very FIRST contribution was already, by itself,
+  // larger than max_buffer. That contribution's assembler.add() call returns before ever
+  // storing a segment, so assembler.srcSpan stays null forever (segments never gets a single
+  // entry) and flushStreams would otherwise fall back to the meaningless {0, 0}. Reachability:
+  // a first add() can only ever return 'added' or 'truncated' — 'duplicate'/'overlap' both
+  // require an existing stored segment to collide with, and 'below_base' requires an already-set
+  // base to fall under — so this is the only path that can leave srcSpan null while a flow entry
+  // still exists. Once any segment IS stored, srcSpan is populated for good (segments only grow),
+  // so this field only ever needs to remember the rejected FIRST contribution.
+  fallbackSpan: SourceRange | null;
 }
 
 export interface StreamsRuntime {
@@ -1268,6 +1279,7 @@ const contributeToStream = (
       stallMessage: null,
       status: 'ok',
       segments: [],
+      fallbackSpan: null,
     };
     flowMap.set(keyResult.key, entry);
   }
@@ -1292,6 +1304,10 @@ const contributeToStream = (
   }
   if (result === 'truncated') {
     entry.status = 'truncated';
+    // See fallbackSpan's doc: this is the only way a flow entry can end up with a null
+    // assembler.srcSpan at flush — capture this (the first and only) contribution's real file
+    // range now, since it will never be recorded as a stored segment.
+    if (entry.assembler.segmentCount === 0) entry.fallbackSpan = { start: srcStart, end: srcEnd };
     emitContext.issues?.report({
       stage: 'reassembling',
       code: 'STREAM_TRUNCATED',
@@ -1554,7 +1570,11 @@ export const flushStreams = (emitContext: EmitContext): void => {
     const runtime = emitContext.runtimes.get(stream.flowTable.name)!;
 
     for (const entry of flowMap.values()) {
-      const span = entry.assembler.srcSpan ?? { start: 0, end: 0 };
+      // assembler.srcSpan is null only when no segment was ever stored; fallbackSpan then
+      // supplies the rejected first contribution's real range (see its doc), and only a flow
+      // that never contributed anything at all (unreachable in practice — a flow entry is
+      // created at first contribution) would fall through to the {0, 0} placeholder.
+      const span = entry.assembler.srcSpan ?? entry.fallbackSpan ?? { start: 0, end: 0 };
 
       // Precedence: a stalled framer beats an end-of-stream gap — a stream that both stalled
       // AND still has unresolved gaps behind it reports 'error', not 'gap'. Both checks only
