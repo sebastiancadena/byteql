@@ -21,6 +21,7 @@ const duckdbMocks = vi.hoisted(() => {
     instantiate: vi.fn(),
     connect: vi.fn(),
     terminate: vi.fn(),
+    registerOPFSFileName: vi.fn(),
   };
 
   return {
@@ -47,13 +48,27 @@ vi.mock('@duckdb/duckdb-wasm', () => ({
   },
 }));
 
+// Real spillPath/isQuotaError logic is exercised as-is; only deleteSpillGeneration is spied on
+// so tests can assert OPFS generation cleanup without touching real OPFS APIs.
+vi.mock('./spill-files.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./spill-files.js')>();
+  return {
+    ...actual,
+    deleteSpillGeneration: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 import { createBrowserDatabase } from './browser.js';
+import { deleteSpillGeneration } from './spill-files.js';
+
+const deleteSpillGenerationMock = vi.mocked(deleteSpillGeneration);
 
 const HARDENING_STATEMENTS = [
   'SET enable_external_access = false;',
   'SET autoinstall_known_extensions = false;',
   'SET autoload_known_extensions = false;',
   'SET allow_community_extensions = false;',
+  "SET allowed_directories = ['opfs://byteql-spill/'];",
   'SET lock_configuration = true;',
 ] as const;
 
@@ -134,11 +149,14 @@ describe('createBrowserDatabase', () => {
     duckdbMocks.database.instantiate.mockResolvedValue(null);
     duckdbMocks.database.connect.mockResolvedValue(duckdbMocks.connection);
     duckdbMocks.database.terminate.mockResolvedValue(undefined);
+    duckdbMocks.database.registerOPFSFileName.mockResolvedValue(undefined);
     duckdbMocks.connection.query.mockResolvedValue({} as Table);
     duckdbMocks.connection.send.mockResolvedValue(resultTable().batches);
     duckdbMocks.connection.insertArrowFromIPCStream.mockResolvedValue(undefined);
     duckdbMocks.connection.cancelSent.mockResolvedValue(true);
     duckdbMocks.connection.close.mockResolvedValue(undefined);
+    deleteSpillGenerationMock.mockClear();
+    deleteSpillGenerationMock.mockResolvedValue(undefined);
   });
 
   it('selects only Vite-local MVP and EH bundles and accepts an injected logger', async () => {
@@ -172,7 +190,7 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.AsyncDuckDB).toHaveBeenCalledWith(logger, FakeWorker.instances[0]);
   });
 
-  it('runs all hardening statements in exact order before user SQL and initializes once', async () => {
+  it('runs hardening in order with the spill whitelist before locking', async () => {
     const database = await createBrowserDatabase();
 
     await Promise.all([database.initialize(), database.initialize()]);
@@ -505,6 +523,7 @@ describe('createBrowserDatabase', () => {
 
       expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([
         'BEGIN TRANSACTION;',
+        'DROP VIEW IF EXISTS "events";',
         'DROP TABLE IF EXISTS "events";',
         'ALTER TABLE "__ingest_8_events" RENAME TO "events";',
         'COMMIT;',
@@ -701,14 +720,6 @@ describe('createBrowserDatabase', () => {
       ).rejects.toThrow(/already open/i);
     });
 
-    it('rejects a spill-tier ingest as not implemented', async () => {
-      const database = await createBrowserDatabase();
-
-      await expect(
-        database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
-      ).rejects.toThrow('Task 7');
-    });
-
     it('discover mode registers tables lazily and does not reject undeclared names', async () => {
       const database = await createBrowserDatabase();
       const session = await database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 3 });
@@ -755,6 +766,242 @@ describe('createBrowserDatabase', () => {
       expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).not.toEqual(
         expect.arrayContaining([expect.stringMatching(/^CREATE TABLE/)]),
       );
+    });
+
+    describe('spill tier', () => {
+      it('rejects with SPILL_UNSUPPORTED when spillSupported is false', async () => {
+        const database = await createBrowserDatabase({ spillSupported: false });
+
+        await expect(
+          database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
+        ).rejects.toThrow('SPILL_UNSUPPORTED');
+      });
+
+      it('defaults spillSupported from navigator.storage.getDirectory availability', async () => {
+        vi.stubGlobal('navigator', { storage: { getDirectory: vi.fn() } });
+        try {
+          const database = await createBrowserDatabase();
+          await expect(
+            database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
+          ).resolves.toBeDefined();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('defaults spillSupported to false without navigator.storage.getDirectory', async () => {
+        vi.stubGlobal('navigator', {});
+        try {
+          const database = await createBrowserDatabase();
+          await expect(
+            database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
+          ).rejects.toThrow('SPILL_UNSUPPORTED');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('rotates a staging table to parquet when staged bytes cross the threshold', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const batch1 = ipcBatch(2);
+        const batch2 = ipcBatch(3);
+        const rotationBytes = batch1.byteLength + 1;
+        const session = await database.beginIngest({
+          schemas: 'discover',
+          tier: 'spill',
+          generation: 9,
+          rotationBytes,
+        });
+
+        await session.appendBatch('events', batch1);
+        expect(duckdbMocks.database.registerOPFSFileName).not.toHaveBeenCalled();
+        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).not.toEqual(
+          expect.arrayContaining([expect.stringMatching(/^COPY/)]),
+        );
+
+        await session.appendBatch('events', batch2);
+
+        expect(duckdbMocks.database.registerOPFSFileName).toHaveBeenCalledExactlyOnceWith(
+          'opfs://byteql-spill/9/events/0.parquet',
+        );
+        const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+        const copyIndex = calls.indexOf(
+          'COPY "__ingest_9_events" TO \'opfs://byteql-spill/9/events/0.parquet\' (FORMAT parquet);',
+        );
+        const deleteIndex = calls.indexOf('DELETE FROM "__ingest_9_events";');
+        expect(copyIndex).toBeGreaterThanOrEqual(0);
+        expect(deleteIndex).toBeGreaterThan(copyIndex);
+
+        duckdbMocks.connection.query.mockClear();
+        duckdbMocks.database.registerOPFSFileName.mockClear();
+
+        await session.appendBatch('events', batch1);
+
+        expect(duckdbMocks.database.registerOPFSFileName).not.toHaveBeenCalled();
+        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).not.toEqual(
+          expect.arrayContaining([expect.stringMatching(/^COPY/)]),
+        );
+      });
+
+      it('finalize flushes residual staging as a final chunk and creates parquet_scan views', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+
+        const previous = await database.beginIngest({
+          schemas: 'discover',
+          tier: 'spill',
+          generation: 5,
+        });
+        await previous.appendBatch('events', ipcBatch(1));
+        await previous.finalize();
+        duckdbMocks.connection.query.mockClear();
+        duckdbMocks.database.registerOPFSFileName.mockClear();
+        deleteSpillGenerationMock.mockClear();
+
+        const batch1 = ipcBatch(2);
+        const batch2 = ipcBatch(3);
+        const rotationBytes = batch1.byteLength + 1;
+        const session = await database.beginIngest({
+          schemas: 'discover',
+          tier: 'spill',
+          generation: 9,
+          rotationBytes,
+        });
+        await session.appendBatch('events', batch1);
+        await session.appendBatch('events', batch2); // rotates -> chunk 0
+        await session.appendBatch('events', ipcBatch(1)); // residual, stays staged
+
+        const summaries = await session.finalize();
+
+        const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+        const beginIndex = calls.indexOf('BEGIN TRANSACTION;');
+        const residualCopyIndex = calls.indexOf(
+          'COPY "__ingest_9_events" TO \'opfs://byteql-spill/9/events/1.parquet\' (FORMAT parquet);',
+        );
+        expect(residualCopyIndex).toBeGreaterThanOrEqual(0);
+        expect(residualCopyIndex).toBeLessThan(beginIndex);
+        expect(calls.slice(beginIndex)).toEqual([
+          'BEGIN TRANSACTION;',
+          'DROP VIEW IF EXISTS "events";',
+          'DROP TABLE IF EXISTS "events";',
+          'CREATE VIEW "events" AS SELECT * FROM parquet_scan([' +
+            "'opfs://byteql-spill/9/events/0.parquet', 'opfs://byteql-spill/9/events/1.parquet']);",
+          'DROP TABLE IF EXISTS "__ingest_9_events";',
+          'COMMIT;',
+        ]);
+        expect(duckdbMocks.database.registerOPFSFileName).toHaveBeenNthCalledWith(
+          1,
+          'opfs://byteql-spill/9/events/0.parquet',
+        );
+        expect(duckdbMocks.database.registerOPFSFileName).toHaveBeenNthCalledWith(
+          2,
+          'opfs://byteql-spill/9/events/1.parquet',
+        );
+        expect(summaries).toEqual([{ name: 'events', rowCount: 6 }]);
+        expect(await database.listTables()).toEqual(['events']);
+
+        expect(deleteSpillGenerationMock).toHaveBeenCalledExactlyOnceWith(5);
+        const commitOrder = duckdbMocks.connection.query.mock.invocationCallOrder[calls.indexOf('COMMIT;')]!;
+        expect(deleteSpillGenerationMock.mock.invocationCallOrder[0]).toBeGreaterThan(commitOrder);
+      });
+
+      it('a table with zero rows in spill tier finalizes as an empty TABLE, not a view', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({
+          schemas: [eventsSchema, errorsSchema],
+          tier: 'spill',
+          generation: 4,
+        });
+        await session.appendBatch('events', ipcBatch(1));
+
+        const summaries = await session.finalize();
+
+        const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+        expect(calls).not.toEqual(expect.arrayContaining([expect.stringMatching(/^CREATE VIEW "errors"/)]));
+        const createIndex = calls.indexOf(
+          'CREATE TABLE "__ingest_4_errors" ("code" VARCHAR, "seen_at" TIMESTAMP);',
+        );
+        const renameIndex = calls.indexOf('ALTER TABLE "__ingest_4_errors" RENAME TO "errors";');
+        expect(createIndex).toBeGreaterThanOrEqual(0);
+        expect(renameIndex).toBeGreaterThan(createIndex);
+        expect(summaries).toEqual(expect.arrayContaining([{ name: 'errors', rowCount: 0 }]));
+        expect(await database.listTables()).toEqual(expect.arrayContaining(['events', 'errors']));
+      });
+
+      it('abort deletes the new generation spill directory and staging, never the committed one', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+
+        const committed = await database.beginIngest({
+          schemas: 'discover',
+          tier: 'spill',
+          generation: 5,
+        });
+        await committed.appendBatch('events', ipcBatch(1));
+        await committed.finalize();
+        deleteSpillGenerationMock.mockClear();
+
+        const session = await database.beginIngest({
+          schemas: 'discover',
+          tier: 'spill',
+          generation: 9,
+        });
+        await session.appendBatch('events', ipcBatch(1));
+
+        await session.abort();
+
+        expect(deleteSpillGenerationMock).toHaveBeenCalledExactlyOnceWith(9);
+        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual(
+          expect.arrayContaining(['DROP TABLE IF EXISTS "__ingest_9_events";']),
+        );
+      });
+
+      it('quota errors from COPY reject appendBatch with a QUOTA-tagged error after aborting', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const quotaError = new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
+          if (sql.startsWith('COPY')) {
+            throw quotaError;
+          }
+          return {} as Table;
+        });
+
+        const session = await database.beginIngest({
+          schemas: 'discover',
+          tier: 'spill',
+          generation: 9,
+          rotationBytes: 1,
+        });
+
+        await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow('SPILL_QUOTA_EXCEEDED');
+
+        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual(
+          expect.arrayContaining(['DROP TABLE IF EXISTS "__ingest_9_events";']),
+        );
+        expect(deleteSpillGenerationMock).toHaveBeenCalledWith(9);
+        await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow(/aborted/i);
+        await expect(session.finalize()).rejects.toThrow(/aborted/i);
+      });
+
+      it('dispose best-effort deletes the current generation spill directory', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 6 });
+        await session.appendBatch('events', ipcBatch(1));
+        await session.finalize();
+        deleteSpillGenerationMock.mockClear();
+
+        await database.dispose();
+
+        expect(deleteSpillGenerationMock).toHaveBeenCalledExactlyOnceWith(6);
+      });
+
+      it('dispose resolves even if best-effort spill cleanup fails', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 6 });
+        await session.appendBatch('events', ipcBatch(1));
+        await session.finalize();
+        deleteSpillGenerationMock.mockRejectedValueOnce(new Error('opfs down'));
+
+        await expect(database.dispose()).resolves.toBeUndefined();
+      });
     });
   });
 });

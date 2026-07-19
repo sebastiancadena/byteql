@@ -18,14 +18,22 @@ import { tableFromIPC } from 'apache-arrow';
 import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
 
 import type { ByteqlDatabase, IngestOptions, IngestSession, QueryResult, TableSummary } from './types.js';
+import { deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 
+// Order matters: the spill whitelist must be set before `lock_configuration` freezes it, and
+// external access stays off throughout (Task 1 spike rung 1 — allowed_directories works with
+// external access disabled).
 const HARDENING_STATEMENTS = [
   'SET enable_external_access = false;',
   'SET autoinstall_known_extensions = false;',
   'SET autoload_known_extensions = false;',
   'SET allow_community_extensions = false;',
+  "SET allowed_directories = ['opfs://byteql-spill/'];",
   'SET lock_configuration = true;',
 ] as const;
+
+/** Spill-tier rotation threshold: flush a table's staged batches to parquet past this size. */
+const ROTATION_THRESHOLD_BYTES = 96 * 1024 * 1024;
 
 /** @internal exported for reuse by the OPFS spill capability probe. */
 export const LOCAL_BUNDLES: DuckDBBundles = {
@@ -48,7 +56,12 @@ interface TableSnapshot {
 
 export interface BrowserDatabaseOptions {
   logger?: Logger;
+  /** Whether the spill tier's OPFS-backed persistence is available. Defaults to feature-detection. */
+  spillSupported?: boolean;
 }
+
+const defaultSpillSupported = (): boolean =>
+  typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory;
 
 const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
 
@@ -118,23 +131,65 @@ type SchemaMode =
 
 type EnqueueFn = <T>(operation: (connection: AsyncDuckDBConnection) => Promise<T>) => Promise<T>;
 
+/** The subset of `AsyncDuckDB` the spill tier needs: whitelisting an OPFS path as writable. */
+interface OpfsFileRegistrar {
+  registerOPFSFileName(path: string): Promise<void>;
+}
+
 class IngestSessionImpl implements IngestSession {
   private state: IngestState = 'open';
   private readonly created = new Set<string>();
   private readonly rowCounts = new Map<string, number>();
+  // Spill tier only: bytes staged since the last rotation, the next chunk index to write, and
+  // every chunk path written so far. `chunkPaths` becomes the explicit `parquet_scan([...])`
+  // array at finalize — never a glob (the Task 1 spike found opfs:// globs do not enumerate in
+  // this duckdb-wasm build).
+  private readonly stagedBytes = new Map<string, number>();
+  private readonly chunkIndex = new Map<string, number>();
+  private readonly chunkPaths = new Map<string, string[]>();
 
   constructor(
     private readonly generation: number,
     private readonly schemaMode: SchemaMode,
+    private readonly tier: 'memory' | 'spill',
+    private readonly rotationBytes: number,
+    private readonly opfs: OpfsFileRegistrar,
     private readonly enqueue: EnqueueFn,
     private readonly getFinalTableNames: () => readonly string[],
     private readonly setFinalTableNames: (names: readonly string[]) => void,
+    private readonly getSpillGeneration: () => number | null,
+    private readonly setSpillGeneration: (generation: number) => void,
     private readonly onSettled: () => void,
   ) {}
 
   /** The set of tables this session is responsible for finalizing/aborting. */
   private sessionTables(): readonly string[] {
     return this.schemaMode.kind === 'declared' ? [...this.schemaMode.schemas.keys()] : [...this.created];
+  }
+
+  /** Copies a staging table's currently-staged rows to the next parquet chunk and empties it. */
+  private async rotateChunk(connection: AsyncDuckDBConnection, table: string): Promise<void> {
+    const index = this.chunkIndex.get(table) ?? 0;
+    const path = spillPath(this.generation, table, index);
+    const stagingName = stagingTableName(this.generation, table);
+    await this.opfs.registerOPFSFileName(path);
+    await connection.query(`COPY ${quoteIdentifier(stagingName)} TO '${path}' (FORMAT parquet);`);
+    await connection.query(`DELETE FROM ${quoteIdentifier(stagingName)};`);
+    this.chunkIndex.set(table, index + 1);
+    this.chunkPaths.set(table, [...(this.chunkPaths.get(table) ?? []), path]);
+    this.stagedBytes.set(table, 0);
+  }
+
+  /** Best-effort drop of every staging table this session owns, outside a transaction. */
+  private async dropStaging(connection: AsyncDuckDBConnection): Promise<void> {
+    for (const table of this.sessionTables()) {
+      const stagingName = stagingTableName(this.generation, table);
+      try {
+        await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(stagingName)};`);
+      } catch {
+        // Best-effort cleanup outside a transaction; ignore failures dropping staging tables.
+      }
+    }
   }
 
   async appendBatch(table: string, ipc: Uint8Array): Promise<void> {
@@ -154,14 +209,45 @@ class IngestSessionImpl implements IngestSession {
     const stagingName = stagingTableName(this.generation, table);
     const create = !this.created.has(table);
 
-    await this.enqueue(async (connection) => {
-      if (this.state !== 'open') {
-        throw new Error(`Ingest session is ${this.state}; cannot append to ${JSON.stringify(table)}.`);
+    let quotaAborted = false;
+    try {
+      await this.enqueue(async (connection) => {
+        if (this.state !== 'open') {
+          throw new Error(`Ingest session is ${this.state}; cannot append to ${JSON.stringify(table)}.`);
+        }
+        await connection.insertArrowFromIPCStream(copy, { name: stagingName, create });
+        this.created.add(table);
+        this.rowCounts.set(table, (this.rowCounts.get(table) ?? 0) + rowCount);
+
+        if (this.tier !== 'spill') {
+          return;
+        }
+        const staged = (this.stagedBytes.get(table) ?? 0) + copy.byteLength;
+        this.stagedBytes.set(table, staged);
+        if (staged < this.rotationBytes) {
+          return;
+        }
+        try {
+          await this.rotateChunk(connection, table);
+        } catch (error) {
+          if (!isQuotaError(error)) {
+            throw error;
+          }
+          quotaAborted = true;
+          this.state = 'aborted';
+          await this.dropStaging(connection);
+          throw new Error(`SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`, {
+            cause: error,
+          });
+        }
+      });
+    } catch (error) {
+      if (quotaAborted) {
+        await deleteSpillGeneration(this.generation);
+        this.onSettled();
       }
-      await connection.insertArrowFromIPCStream(copy, { name: stagingName, create });
-      this.created.add(table);
-      this.rowCounts.set(table, (this.rowCounts.get(table) ?? 0) + rowCount);
-    });
+      throw error;
+    }
   }
 
   async finalize(): Promise<readonly TableSummary[]> {
@@ -170,10 +256,25 @@ class IngestSessionImpl implements IngestSession {
     }
     this.state = 'finalized';
     try {
-      return await this.enqueue(async (connection) => {
+      if (this.tier === 'spill') {
+        // Flush every table's residual (never-rotated) staged rows as one final chunk, outside
+        // the swap transaction, so the transaction only ever touches metadata.
+        await this.enqueue(async (connection) => {
+          for (const table of this.sessionTables()) {
+            if (this.created.has(table) && (this.stagedBytes.get(table) ?? 0) > 0) {
+              await this.rotateChunk(connection, table);
+            }
+          }
+        });
+      }
+
+      const summaries = await this.enqueue(async (connection) => {
         await connection.query('BEGIN TRANSACTION;');
         try {
           for (const name of this.getFinalTableNames()) {
+            // The old final name may be a view (a prior spill generation) or a table (a prior
+            // memory generation); drop whichever it is before creating the replacement.
+            await connection.query(`DROP VIEW IF EXISTS ${quoteIdentifier(name)};`);
             await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(name)};`);
           }
 
@@ -182,21 +283,33 @@ class IngestSessionImpl implements IngestSession {
           const summaries: TableSummary[] = [];
           for (const table of this.sessionTables()) {
             const stagingName = stagingTableName(this.generation, table);
-            if (!this.created.has(table)) {
-              // discover-mode session tables come only from `created`, so every discover-mode
-              // table has already been appended; only declared schemas reach this branch.
-              const schema = declaredSchemas?.get(table);
-              if (!schema) {
-                throw new Error(`Missing schema for never-appended ingest table: ${JSON.stringify(table)}`);
+            const chunks = this.chunkPaths.get(table) ?? [];
+            if (this.tier === 'spill' && this.created.has(table) && chunks.length > 0) {
+              // Explicit path array from the tracked chunk names — never a glob (spike finding).
+              const pathList = chunks.map((path) => `'${path}'`).join(', ');
+              await connection.query(
+                `CREATE VIEW ${quoteIdentifier(table)} AS SELECT * FROM parquet_scan([${pathList}]);`,
+              );
+              await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(stagingName)};`);
+            } else {
+              if (!this.created.has(table)) {
+                // discover-mode session tables come only from `created`, so every discover-mode
+                // table has already been appended; only declared schemas reach this branch. This
+                // also covers a spill-tier table with zero rotated/residual chunks: it falls back
+                // to an empty TABLE rather than a view over nothing.
+                const schema = declaredSchemas?.get(table);
+                if (!schema) {
+                  throw new Error(`Missing schema for never-appended ingest table: ${JSON.stringify(table)}`);
+                }
+                const columnsDdl = schema.columns
+                  .map((column) => `${quoteIdentifier(column.name)} ${duckdbColumnType(column.type)}`)
+                  .join(', ');
+                await connection.query(`CREATE TABLE ${quoteIdentifier(stagingName)} (${columnsDdl});`);
               }
-              const columnsDdl = schema.columns
-                .map((column) => `${quoteIdentifier(column.name)} ${duckdbColumnType(column.type)}`)
-                .join(', ');
-              await connection.query(`CREATE TABLE ${quoteIdentifier(stagingName)} (${columnsDdl});`);
+              await connection.query(
+                `ALTER TABLE ${quoteIdentifier(stagingName)} RENAME TO ${quoteIdentifier(table)};`,
+              );
             }
-            await connection.query(
-              `ALTER TABLE ${quoteIdentifier(stagingName)} RENAME TO ${quoteIdentifier(table)};`,
-            );
             finalNames.push(table);
             summaries.push({ name: table, rowCount: this.rowCounts.get(table) ?? 0 });
           }
@@ -215,6 +328,16 @@ class IngestSessionImpl implements IngestSession {
           throw error;
         }
       });
+
+      if (this.tier === 'spill') {
+        const previousGeneration = this.getSpillGeneration();
+        this.setSpillGeneration(this.generation);
+        if (previousGeneration !== null) {
+          await deleteSpillGeneration(previousGeneration);
+        }
+      }
+
+      return summaries;
     } catch (error) {
       this.state = 'failed';
       throw error;
@@ -229,16 +352,10 @@ class IngestSessionImpl implements IngestSession {
     }
     this.state = 'aborted';
     try {
-      await this.enqueue(async (connection) => {
-        for (const table of this.sessionTables()) {
-          const stagingName = stagingTableName(this.generation, table);
-          try {
-            await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(stagingName)};`);
-          } catch {
-            // Best-effort cleanup outside a transaction; ignore failures dropping staging tables.
-          }
-        }
-      });
+      await this.enqueue((connection) => this.dropStaging(connection));
+      if (this.tier === 'spill') {
+        await deleteSpillGeneration(this.generation);
+      }
     } finally {
       this.onSettled();
     }
@@ -256,10 +373,13 @@ class BrowserDatabase implements ByteqlDatabase {
   private terminatePromise: Promise<void> | null = null;
   private queryInFlight = false;
   private activeIngest: IngestSessionImpl | null = null;
+  /** The generation currently backing committed spill views, or `null` before any spill finalize. */
+  private spillGeneration: number | null = null;
 
   constructor(
     private readonly database: AsyncDuckDB,
     private readonly bundle: DuckDBBundle,
+    private readonly spillSupported: boolean,
   ) {}
 
   initialize(): Promise<void> {
@@ -317,8 +437,8 @@ class BrowserDatabase implements ByteqlDatabase {
     if (this.disposeRequested) {
       throw new Error('ByteQL database has been disposed.');
     }
-    if (options.tier === 'spill') {
-      throw new Error('Spill tier ingest is not implemented until Task 7.');
+    if (options.tier === 'spill' && !this.spillSupported) {
+      throw new Error('SPILL_UNSUPPORTED: OPFS storage is not available in this environment.');
     }
     if (!Number.isInteger(options.generation) || options.generation < 0) {
       throw new Error(
@@ -337,10 +457,17 @@ class BrowserDatabase implements ByteqlDatabase {
     const session: IngestSessionImpl = new IngestSessionImpl(
       options.generation,
       schemaMode,
+      options.tier,
+      options.rotationBytes ?? ROTATION_THRESHOLD_BYTES,
+      this.database,
       (operation) => this.enqueue(operation),
       () => this.tableNames,
       (names) => {
         this.tableNames = names;
+      },
+      () => this.spillGeneration,
+      (generation) => {
+        this.spillGeneration = generation;
       },
       () => {
         if (this.activeIngest === session) {
@@ -419,6 +546,11 @@ class BrowserDatabase implements ByteqlDatabase {
       errors.push(error);
     }
 
+    if (this.spillGeneration !== null) {
+      // Best-effort: reclaim the current generation's OPFS spill directory on teardown.
+      await deleteSpillGeneration(this.spillGeneration).catch(() => undefined);
+    }
+
     if (errors.length === 1) {
       throw errors[0];
     }
@@ -494,7 +626,8 @@ export const createBrowserDatabase = async (
   const worker = new Worker(bundle.mainWorker);
   try {
     const database = new AsyncDuckDB(options.logger ?? new VoidLogger(), worker);
-    return new BrowserDatabase(database, bundle);
+    const spillSupported = options.spillSupported ?? defaultSpillSupported();
+    return new BrowserDatabase(database, bundle, spillSupported);
   } catch (error) {
     worker.terminate();
     throw error;
