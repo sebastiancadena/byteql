@@ -79,7 +79,7 @@
   role="grid"
   aria-label="Query results"
   aria-rowcount={table.numRows + 1}
-  aria-colcount={columns.length}
+  aria-colcount={table.schema.fields.length}
 >
   <div class="grid-header" role="row" style:grid-template-columns={gridColumns}>
     {#each columns as { field, index } (field.name)}

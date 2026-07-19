@@ -600,8 +600,13 @@ describe('Inspector Workbench', () => {
     expect(chip.textContent).toContain('+2 hidden');
     expect(chip.getAttribute('aria-pressed')).toBe('false');
 
+    // aria-colcount reports the TOTAL field count so aria-colindex stays consistent with
+    // original positions even while the two _src columns are hidden.
+    expect(screen.getByRole('grid').getAttribute('aria-colcount')).toBe('3');
+
     await fireEvent.click(chip);
     expect(screen.getByRole('columnheader', { name: /_src_start/ })).toBeTruthy();
     expect(chip.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('grid').getAttribute('aria-colcount')).toBe('3');
   });
 });

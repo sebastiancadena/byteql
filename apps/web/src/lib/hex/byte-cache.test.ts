@@ -92,6 +92,30 @@ describe('ByteCache', () => {
     expect(bytes[6]).toBe(256 % 251); // from page 1
   });
 
+  it('byteAt swallows the fire-and-forget fetch rejection', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    const existing = process.listeners('unhandledRejection');
+    existing.forEach((listener) => process.off('unhandledRejection', listener));
+    process.on('unhandledRejection', onRejection);
+    try {
+      const blob: BlobLike = {
+        size: 1024,
+        slice: () => ({ arrayBuffer: () => Promise.reject(new Error('read failed')) }),
+      };
+      const cache = new ByteCache(blob, { pageBytes: 256 });
+      expect(cache.byteAt(300)).toBeNull(); // miss schedules a rejecting fetch
+      await flush();
+      await flush();
+      expect(rejections).toEqual([]); // the miss path attaches .catch → nothing escapes
+    } finally {
+      process.off('unhandledRejection', onRejection);
+      existing.forEach((listener) => process.on('unhandledRejection', listener as (reason: unknown) => void));
+    }
+  });
+
   it('refreshes LRU recency on ensureRange for cached pages', async () => {
     const { blob, reads } = fakeBlob(4096);
     const cache = new ByteCache(blob, { pageBytes: 256, budgetBytes: 512 }); // 2 pages max

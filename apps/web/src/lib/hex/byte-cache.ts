@@ -43,7 +43,9 @@ export class ByteCache {
     const page = Math.floor(offset / this.pageBytes);
     const bytes = this.#touch(page);
     if (bytes) return bytes[offset - page * this.pageBytes] ?? null;
-    void this.#fetch(page);
+    // Fire-and-forget prefetch: swallow rejection here so the miss stays unobserved-safe.
+    // (ensureRange still surfaces its own rejections to the caller.)
+    void this.#fetch(page).catch(() => undefined);
     return null;
   }
 
