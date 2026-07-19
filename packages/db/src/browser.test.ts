@@ -63,7 +63,10 @@ import { deleteSpillGeneration } from './spill-files.js';
 
 const deleteSpillGenerationMock = vi.mocked(deleteSpillGeneration);
 
+// The parquet extension must be loaded before autoload is disabled and the configuration is
+// locked below — see the comment on `LOAD_PARQUET_STATEMENT` in browser.ts.
 const HARDENING_STATEMENTS = [
+  'LOAD parquet;',
   "SET allowed_directories = ['opfs://byteql-spill/'];",
   'SET enable_external_access = false;',
   'SET autoinstall_known_extensions = false;',

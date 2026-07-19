@@ -20,6 +20,14 @@ import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
 import type { ByteqlDatabase, IngestOptions, IngestSession, QueryResult, TableSummary } from './types.js';
 import { deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 
+// The parquet extension ships statically linked into the eh/mvp wasm binaries this project
+// bundles (no separate extension file, no network fetch) — but duckdb-wasm still requires an
+// explicit `LOAD` to activate it. It MUST run before `autoload_known_extensions` is turned off
+// below (Task 11 found this the hard way: the spill tier's `COPY ... FORMAT parquet` and
+// `parquet_scan(...)` both fail with a Catalog Error otherwise, since nothing ever loads it once
+// auto-load is disabled and the configuration is locked).
+const LOAD_PARQUET_STATEMENT = 'LOAD parquet;';
+
 // Order matters: the spill whitelist must be set BEFORE external access is disabled
 // (DuckDB rejects changing allowed_directories once external access is off), then lock.
 // Task 1 spike rung 1 — allowed_directories works with external access disabled.
@@ -204,6 +212,10 @@ class IngestSessionImpl implements IngestSession {
 
     const rowCount = tableFromIPC(ipc).numRows;
     const copy = ipc.slice();
+    // `insertArrowFromIPCStream` transfers `copy`'s underlying `ArrayBuffer` across the
+    // duckdb-wasm worker boundary (structured clone with transfer, for a zero-copy handoff), so
+    // `copy.byteLength` reads back as 0 once that call resolves — capture it up front instead.
+    const byteLength = copy.byteLength;
     const stagingName = stagingTableName(this.generation, table);
     const create = !this.created.has(table);
 
@@ -220,7 +232,7 @@ class IngestSessionImpl implements IngestSession {
         if (this.tier !== 'spill') {
           return;
         }
-        const staged = (this.stagedBytes.get(table) ?? 0) + copy.byteLength;
+        const staged = (this.stagedBytes.get(table) ?? 0) + byteLength;
         this.stagedBytes.set(table, staged);
         if (staged < this.rotationBytes) {
           return;
@@ -394,6 +406,7 @@ class BrowserDatabase implements ByteqlDatabase {
       await this.database.instantiate(this.bundle.mainModule, this.bundle.pthreadWorker);
       const connection = await this.database.connect();
       this.connection = connection;
+      await connection.query(LOAD_PARQUET_STATEMENT);
       for (const statement of HARDENING_STATEMENTS) {
         await connection.query(statement);
       }

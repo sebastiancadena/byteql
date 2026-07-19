@@ -29,6 +29,45 @@ export interface BrowserE2EControl {
    * production tiering thresholds unless a spec opts into an override.
    */
   sessionOverrides?: SessionOverrides;
+  /**
+   * Every file path under OPFS `byteql-spill/`, walked recursively (e.g.
+   * `byteql-spill/1/packets/0.parquet`). Tolerates OPFS or the directory being absent by
+   * resolving to `[]` — a session that never spilled, or ran before OPFS is available, is
+   * indistinguishable from "no spill files" for e2e purposes.
+   */
+  spillFiles(): Promise<readonly string[]>;
+}
+
+/** `FileSystemDirectoryHandle` with the async-iterable `entries()` current DOM libs omit. */
+type IterableDirectoryHandle = FileSystemDirectoryHandle & {
+  entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
+};
+
+const SPILL_ROOT_NAME = 'byteql-spill';
+
+async function walkSpillFiles(dir: FileSystemDirectoryHandle, prefix: string): Promise<string[]> {
+  const out: string[] = [];
+  for await (const [name, handle] of (dir as IterableDirectoryHandle).entries()) {
+    const path = `${prefix}${name}`;
+    if (handle.kind === 'directory') {
+      out.push(...(await walkSpillFiles(handle as FileSystemDirectoryHandle, `${path}/`)));
+    } else {
+      out.push(path);
+    }
+  }
+  return out;
+}
+
+async function collectSpillFiles(): Promise<readonly string[]> {
+  if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) return [];
+  try {
+    const root = await navigator.storage.getDirectory();
+    const spillRoot = await root.getDirectoryHandle(SPILL_ROOT_NAME, { create: false });
+    return await walkSpillFiles(spillRoot, `${SPILL_ROOT_NAME}/`);
+  } catch {
+    // No spill data has ever been written, or OPFS is unavailable; treat as empty.
+    return [];
+  }
 }
 
 export interface BrowserE2EHarness {
@@ -79,7 +118,13 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       workerCount: () => workerCount,
       audioStats: () => ({ ...audioStats }),
       spillProbe: () => probeSpillCapability(),
-      sessionOverrides: {},
+      // App.svelte spreads this into `SessionControllerOptions` at controller construction
+      // time, on app boot — well before any `page.evaluate()` a spec runs after `page.goto()`
+      // could reach it. A spec that needs non-default tiering thresholds must instead set
+      // `window.__byteqlE2EOverrides` via `page.addInitScript()` BEFORE navigating, so it's
+      // already in place when this module (and the harness it constructs) first evaluates.
+      sessionOverrides: globalThis.__byteqlE2EOverrides ?? {},
+      spillFiles: () => collectSpillFiles(),
     },
     createParser: () => new ParseWorkerClient(createWorker),
     audioEngineFactory: () => {

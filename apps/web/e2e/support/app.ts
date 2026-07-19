@@ -20,12 +20,26 @@ export interface ByteqlE2EControl {
   audioStats(): AudioStats;
   spillProbe(): Promise<SpillProbeReport>;
   sessionOverrides?: SessionOverrides;
+  spillFiles(): Promise<readonly string[]>;
 }
 
 declare global {
   interface Window {
     __byteqlE2E?: ByteqlE2EControl;
+    __byteqlE2EOverrides?: SessionOverrides;
   }
+}
+
+/**
+ * Arms `SessionOverrides` for the next page load. Must run BEFORE `page.goto()`: the app reads
+ * `window.__byteqlE2EOverrides` synchronously while constructing its e2e harness, on boot — a
+ * `page.evaluate()` after navigation would always lose that race. See the mirrored comment on
+ * `createBrowserE2EHarness` in `apps/web/src/lib/e2e-harness.ts`.
+ */
+export async function setSessionOverrides(page: Page, overrides: SessionOverrides): Promise<void> {
+  await page.addInitScript((value: SessionOverrides) => {
+    window.__byteqlE2EOverrides = value;
+  }, overrides);
 }
 
 export const fixturePath = (name: string): string =>
