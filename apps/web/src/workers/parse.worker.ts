@@ -182,6 +182,10 @@ export function installParseWorker(
         issues: finish.issues,
         queries: pack.queries,
         capabilities: finish.capabilities,
+        // Every table the pack declares, not just the ones this capture happened to populate —
+        // lets the DB backfill zero-row tables (e.g. no `tcp` packets) as empty tables at
+        // finalize, so queries assuming every pack table exists don't hit a Catalog Error (C1).
+        schemas: pack.schemas(),
       });
     } catch (error) {
       if (controller.signal.aborted || cancelled.has(taskId) || isAbortError(error)) {

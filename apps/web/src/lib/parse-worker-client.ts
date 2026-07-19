@@ -1,4 +1,4 @@
-import type { FormatCapability, PackQuery, ParseIssue, TableOverview } from '@byteql/core';
+import type { FormatCapability, PackQuery, ParseIssue, TableOverview, TableSchema } from '@byteql/core';
 
 import InlineParseWorker from '../workers/parse.worker.ts?worker&inline';
 
@@ -22,6 +22,8 @@ export interface StreamedParseResult {
   issues: readonly ParseIssue[];
   queries: readonly PackQuery[];
   capabilities: Readonly<Record<string, FormatCapability>>;
+  /** Every table the format pack declares (`FormatPack.schemas()`), not just populated ones. */
+  schemas: readonly TableSchema[];
 }
 
 export interface ParseHandlers {
@@ -242,6 +244,7 @@ export class ParseWorkerClient implements ParseClientPort {
           issues: message.issues,
           queries: message.queries,
           capabilities: message.capabilities,
+          schemas: message.schemas,
         };
         void active.ackChain.then(
           () => active.resolve(result),
