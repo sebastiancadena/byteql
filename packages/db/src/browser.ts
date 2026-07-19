@@ -13,7 +13,7 @@ import duckdbEhWasm from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url';
 import duckdbEhWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
 import duckdbMvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
 import duckdbMvpWasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
-import type { TableSchema, TableTransfer } from '@byteql/core';
+import type { TableSchema } from '@byteql/core';
 import { tableFromIPC } from 'apache-arrow';
 import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
 
@@ -52,11 +52,6 @@ const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** The DuckDB catalog kind a committed final was created as; drives which typed DROP applies. */
 type CatalogKind = 'table' | 'view';
 
-interface TableSnapshot {
-  readonly name: string;
-  readonly ipc: Uint8Array;
-}
-
 export interface BrowserDatabaseOptions {
   logger?: Logger;
   /** Whether the spill tier's OPFS-backed persistence is available. Defaults to feature-detection. */
@@ -81,21 +76,6 @@ const dropFinal = async (
 ): Promise<void> => {
   const keyword = kind === 'view' ? 'DROP VIEW IF EXISTS' : 'DROP TABLE IF EXISTS';
   await connection.query(`${keyword} ${quoteIdentifier(name)};`);
-};
-
-const snapshotTables = (tables: readonly TableTransfer[]): readonly TableSnapshot[] => {
-  const names = new Set<string>();
-  return tables.map((table) => {
-    if (!IDENTIFIER.test(table.name)) {
-      throw new Error(`Invalid table identifier: ${JSON.stringify(table.name)}`);
-    }
-    const canonicalName = table.name.toLowerCase();
-    if (names.has(canonicalName)) {
-      throw new Error(`Duplicate table identifier: ${JSON.stringify(table.name)}`);
-    }
-    names.add(canonicalName);
-    return { name: table.name, ipc: table.ipc.slice() };
-  });
 };
 
 const ARROW_TYPE_TO_DUCKDB_TYPE: Readonly<Record<string, string>> = {
@@ -123,7 +103,7 @@ const duckdbColumnType = (type: string): string => {
 
 const stagingTableName = (generation: number, table: string): string => `__ingest_${generation}_${table}`;
 
-/** Validates ingest schema table names exactly as `snapshotTables` does for `replaceTables`. */
+/** Validates ingest schema table names: identifier syntax and case-insensitive uniqueness. */
 const validateIngestSchemas = (schemas: readonly TableSchema[]): ReadonlyMap<string, TableSchema> => {
   const schemasByName = new Map<string, TableSchema>();
   const canonicalNames = new Set<string>();
@@ -421,35 +401,6 @@ class BrowserDatabase implements ByteqlDatabase {
       await this.cleanupAfterInitializationFailure();
       throw error;
     }
-  }
-
-  async replaceTables(tables: readonly TableTransfer[]): Promise<void> {
-    const snapshots = snapshotTables(tables);
-    return this.enqueue(async (connection) => {
-      await connection.query('BEGIN TRANSACTION;');
-      try {
-        for (const [name, kind] of this.finalNames) {
-          await dropFinal(connection, name, kind);
-        }
-        for (const table of snapshots) {
-          await connection.insertArrowFromIPCStream(table.ipc, {
-            name: table.name,
-            create: true,
-          });
-        }
-        await connection.query('COMMIT;');
-        this.finalNames = new Map(snapshots.map(({ name }) => [name, 'table' as const]));
-      } catch (error) {
-        try {
-          await connection.query('ROLLBACK;');
-        } catch (rollbackError) {
-          throw new AggregateError([error, rollbackError], 'Table replacement and rollback failed.', {
-            cause: rollbackError,
-          });
-        }
-        throw error;
-      }
-    });
   }
 
   async beginIngest(options: IngestOptions): Promise<IngestSession> {

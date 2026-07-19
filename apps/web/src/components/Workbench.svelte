@@ -41,9 +41,7 @@
   let overviewSource: string | null = null;
   let activeViewerId = $state<string | null>(null);
 
-  const intakeBusy = $derived(
-    ['opening', 'normalizing', 'parsing', 'projecting', 'registering'].includes(session.phase),
-  );
+  const intakeBusy = $derived(['opening', 'normalizing', 'parsing', 'projecting'].includes(session.phase));
   const viewers = $derived.by((): ViewerCapability[] => {
     if (!session.result || !session.capabilities) return [];
     return compatibleViewers(

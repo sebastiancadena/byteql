@@ -14,11 +14,21 @@ interface AudioStats {
   loadedRows: number;
 }
 
+export interface SessionOverrides {
+  tiering?: { tierThresholdBytes?: number; rotationBytes?: number };
+}
+
 export interface BrowserE2EControl {
   armParserCrash(): void;
   workerCount(): number;
   audioStats(): AudioStats;
   spillProbe: () => Promise<SpillProbeReport>;
+  /**
+   * Plain data spread into `SessionControllerOptions` by App.svelte when it constructs the
+   * `SessionController` — e2e-build only. Empty by default so e2e specs exercise the same
+   * production tiering thresholds unless a spec opts into an override.
+   */
+  sessionOverrides?: SessionOverrides;
 }
 
 export interface BrowserE2EHarness {
@@ -69,6 +79,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       workerCount: () => workerCount,
       audioStats: () => ({ ...audioStats }),
       spillProbe: () => probeSpillCapability(),
+      sessionOverrides: {},
     },
     createParser: () => new ParseWorkerClient(createWorker),
     audioEngineFactory: () => {

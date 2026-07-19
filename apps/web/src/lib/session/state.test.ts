@@ -1,12 +1,11 @@
-import type { PackQuery, ParseIssue, TableTransfer } from '@byteql/core';
+import type { PackQuery, ParseIssue, TableOverview } from '@byteql/core';
 import type { Table } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
 import { initialSessionState, reduceSession } from './state.js';
 
-const tables: readonly TableTransfer[] = [
-  { name: 'events', ipc: new Uint8Array([1, 2, 3]), rowCount: 1, columns: [] },
-];
+const tables: readonly TableOverview[] = [{ name: 'events', rowCount: 1, columns: [] }];
+const format = { id: 'standard_midi_file', title: 'Standard MIDI file' };
 const queries: readonly PackQuery[] = [
   { id: 'overview', title: 'Overview', kind: 'grid', sql: 'select 1 limit 1;' },
 ];
@@ -37,6 +36,8 @@ describe('reduceSession', () => {
       issues: [],
       result: null,
     });
+    expect(state.openStartedAt).toEqual(expect.any(Number));
+    const openStartedAt = state.openStartedAt;
 
     state = reduceSession(state, {
       type: 'progress',
@@ -44,11 +45,14 @@ describe('reduceSession', () => {
       completed: 0,
       total: 2,
       label: 'Normalizing tracks',
+      bytes: 0,
     });
     expect(state).toMatchObject({
       phase: 'normalizing',
-      progress: { completed: 0, total: 2, label: 'Normalizing tracks' },
+      progress: { completed: 0, total: 2, label: 'Normalizing tracks', bytes: 0 },
     });
+    // openStartedAt survives every progress update — it anchors the throughput rate computation.
+    expect(state.openStartedAt).toBe(openStartedAt);
 
     state = reduceSession(state, {
       type: 'progress',
@@ -56,8 +60,10 @@ describe('reduceSession', () => {
       completed: 1,
       total: 2,
       label: 'Parsing track 1',
+      bytes: 128,
     });
     expect(state.phase).toBe('parsing');
+    expect(state.progress).toMatchObject({ bytes: 128 });
 
     state = reduceSession(state, {
       type: 'progress',
@@ -65,15 +71,15 @@ describe('reduceSession', () => {
       completed: 2,
       total: 2,
       label: 'Projecting tables',
+      bytes: 256,
     });
     expect(state.phase).toBe('projecting');
+    expect(state.openStartedAt).toBe(openStartedAt);
 
-    state = reduceSession(state, { type: 'registering', format: { id: 'midi', title: 'MIDI' } });
-    expect(state).toMatchObject({ phase: 'registering', format: { id: 'midi', title: 'MIDI' } });
-
-    state = reduceSession(state, { type: 'ready', tables, issues: [issue], queries, capabilities });
+    state = reduceSession(state, { type: 'ready', format, tables, issues: [issue], queries, capabilities });
     expect(state).toMatchObject({
       phase: 'ready',
+      format,
       tables,
       issues: [issue],
       queries,
@@ -81,11 +87,13 @@ describe('reduceSession', () => {
       progress: null,
       fatalError: null,
     });
+    expect(state.openStartedAt).toBeNull();
   });
 
   it('starts and completes a query while resetting selection and prior errors', () => {
     const ready = reduceSession(initialSessionState, {
       type: 'ready',
+      format,
       tables,
       issues: [],
       queries,
@@ -126,7 +134,12 @@ describe('reduceSession', () => {
     ).toMatchObject({ phase: 'ready', tables });
     expect(
       reduceSession(
-        { ...initialSessionState, phase: 'parsing', source: { name: 'x.mid', size: 2 } },
+        {
+          ...initialSessionState,
+          phase: 'parsing',
+          source: { name: 'x.mid', size: 2 },
+          openStartedAt: 1000,
+        },
         { type: 'cancelled' },
       ),
     ).toEqual(initialSessionState);
@@ -141,7 +154,12 @@ describe('reduceSession', () => {
 
   it('fails safely after a worker crash while retaining only retry-safe source metadata', () => {
     const failed = reduceSession(
-      { ...initialSessionState, phase: 'parsing', source: { name: 'bad.mid', size: 9 } },
+      {
+        ...initialSessionState,
+        phase: 'parsing',
+        source: { name: 'bad.mid', size: 9 },
+        openStartedAt: 1000,
+      },
       { type: 'failed', message: 'The parser worker stopped unexpectedly.' },
     );
     expect(failed).toMatchObject({
@@ -152,6 +170,7 @@ describe('reduceSession', () => {
       tables: [],
       result: null,
     });
+    expect(failed.openStartedAt).toBeNull();
   });
 
   it('clears every prior session artifact when loading a replacement file', () => {
@@ -171,10 +190,12 @@ describe('reduceSession', () => {
       capabilities,
     };
 
-    expect(reduceSession(previous, { type: 'opening', source: { name: 'new.mid', size: 20 } })).toEqual({
+    const next = reduceSession(previous, { type: 'opening', source: { name: 'new.mid', size: 20 } });
+    expect(next).toMatchObject({
       ...initialSessionState,
       phase: 'opening',
       source: { name: 'new.mid', size: 20 },
+      openStartedAt: expect.any(Number),
     });
     expect(initialSessionState.capabilities).toBeNull();
   });

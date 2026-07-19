@@ -1,4 +1,4 @@
-import type { TableSchema, TableTransfer } from '@byteql/core';
+import type { TableSchema } from '@byteql/core';
 import { Table } from 'apache-arrow';
 import {
   Int32 as DuckdbInt32,
@@ -71,13 +71,6 @@ const HARDENING_STATEMENTS = [
   'SET allow_community_extensions = false;',
   'SET lock_configuration = true;',
 ] as const;
-
-const transfer = (name: string, bytes = [1, 2, 3]): TableTransfer => ({
-  name,
-  ipc: new Uint8Array(bytes),
-  rowCount: 0,
-  columns: [],
-});
 
 const resultTable = () =>
   new DuckdbTable({
@@ -206,105 +199,7 @@ describe('createBrowserDatabase', () => {
     );
   });
 
-  it.each(['9events', 'bad-name', 'has space', 'semi;drop', 'quote"name', ''])(
-    'rejects invalid table identifier %j before touching DuckDB',
-    async (name) => {
-      const database = await createBrowserDatabase();
-
-      await expect(database.replaceTables([transfer(name)])).rejects.toThrow('Invalid table identifier');
-
-      expect(duckdbMocks.database.instantiate).not.toHaveBeenCalled();
-      expect(duckdbMocks.connection.query).not.toHaveBeenCalled();
-      expect(duckdbMocks.connection.insertArrowFromIPCStream).not.toHaveBeenCalled();
-    },
-  );
-
-  it('rejects duplicate table names before touching DuckDB', async () => {
-    const database = await createBrowserDatabase();
-
-    await expect(database.replaceTables([transfer('events'), transfer('events')])).rejects.toThrow(
-      'Duplicate table identifier',
-    );
-
-    expect(duckdbMocks.database.instantiate).not.toHaveBeenCalled();
-  });
-
-  it('rejects table names that differ only by ASCII case as duplicates', async () => {
-    const database = await createBrowserDatabase();
-
-    await expect(database.replaceTables([transfer('Events'), transfer('events')])).rejects.toThrow(
-      'Duplicate table identifier',
-    );
-
-    expect(duckdbMocks.database.instantiate).not.toHaveBeenCalled();
-  });
-
-  it('transactionally replaces only registered tables and copies IPC buffers', async () => {
-    const database = await createBrowserDatabase();
-    const original = transfer('events', [4, 5, 6]);
-
-    await database.replaceTables([original, transfer('_errors')]);
-    await database.replaceTables([transfer('tempo')]);
-
-    expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([
-      ...HARDENING_STATEMENTS,
-      'BEGIN TRANSACTION;',
-      'COMMIT;',
-      'BEGIN TRANSACTION;',
-      'DROP TABLE IF EXISTS "events";',
-      'DROP TABLE IF EXISTS "_errors";',
-      'COMMIT;',
-    ]);
-    expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenCalledTimes(3);
-    expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenNthCalledWith(
-      1,
-      expect.any(Uint8Array),
-      { name: 'events', create: true },
-    );
-    const inserted = duckdbMocks.connection.insertArrowFromIPCStream.mock.calls[0]?.[0] as Uint8Array;
-    expect(inserted).not.toBe(original.ipc);
-    expect([...inserted]).toEqual([4, 5, 6]);
-    expect([...original.ipc]).toEqual([4, 5, 6]);
-    expect(await database.listTables()).toEqual(['tempo']);
-  });
-
-  it('rolls back a failed replacement and preserves the previous registry', async () => {
-    const database = await createBrowserDatabase();
-    await database.replaceTables([transfer('events')]);
-    duckdbMocks.connection.insertArrowFromIPCStream.mockRejectedValueOnce(new Error('bad IPC'));
-
-    await expect(database.replaceTables([transfer('tempo')])).rejects.toThrow('bad IPC');
-
-    expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql).slice(-3)).toEqual([
-      'BEGIN TRANSACTION;',
-      'DROP TABLE IF EXISTS "events";',
-      'ROLLBACK;',
-    ]);
-    expect(await database.listTables()).toEqual(['events']);
-  });
-
-  it('preserves both the replacement and rollback failures', async () => {
-    const database = await createBrowserDatabase();
-    const insertionError = new Error('bad IPC');
-    const rollbackError = new Error('rollback failed');
-    duckdbMocks.connection.insertArrowFromIPCStream.mockRejectedValueOnce(insertionError);
-    duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
-      if (sql === 'ROLLBACK;') {
-        throw rollbackError;
-      }
-      return {} as Table;
-    });
-
-    const replacement = database.replaceTables([transfer('events')]);
-
-    await expect(replacement).rejects.toMatchObject({
-      errors: [insertionError, rollbackError],
-      cause: rollbackError,
-    });
-    expect(await database.listTables()).toEqual([]);
-  });
-
-  it('measures query time and serializes queries and replacements', async () => {
+  it('measures query time and serializes queries and ingest appends', async () => {
     const database = await createBrowserDatabase();
     await database.initialize();
     const pending = deferred<readonly unknown[]>();
@@ -314,7 +209,8 @@ describe('createBrowserDatabase', () => {
     now.mockReturnValueOnce(10).mockReturnValueOnce(16.25);
 
     const query = database.query('SELECT * FROM events;');
-    const replacement = database.replaceTables([transfer('tempo')]);
+    const session = await database.beginIngest({ schemas: [eventsSchema], tier: 'memory', generation: 1 });
+    const append = session.appendBatch('events', ipcBatch(1));
     await vi.waitFor(() => expect(duckdbMocks.connection.send).toHaveBeenCalledOnce());
     expect(duckdbMocks.connection.insertArrowFromIPCStream).not.toHaveBeenCalled();
     pending.resolve(table.batches);
@@ -331,7 +227,7 @@ describe('createBrowserDatabase', () => {
       { note: 60, label: 'kick' },
       { note: 64, label: 'snare' },
     ]);
-    await replacement;
+    await append;
     expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenCalledOnce();
   });
 
@@ -360,7 +256,9 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.connection.close).toHaveBeenCalledOnce();
     expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
     await expect(database.query('SELECT 1;')).rejects.toThrow('disposed');
-    await expect(database.replaceTables([])).rejects.toThrow('disposed');
+    await expect(
+      database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 1 }),
+    ).rejects.toThrow('disposed');
     await expect(database.cancelQuery()).resolves.toBe(false);
   });
 
@@ -412,17 +310,18 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
   });
 
-  it('does not start a replacement after disposal is requested during cold initialization', async () => {
+  it('does not start an ingest append after disposal is requested during cold initialization', async () => {
     const initialization = deferred<null>();
     duckdbMocks.database.instantiate.mockImplementationOnce(() => initialization.promise);
     const database = await createBrowserDatabase();
 
-    const replacement = database.replaceTables([transfer('events')]);
+    const session = await database.beginIngest({ schemas: [eventsSchema], tier: 'memory', generation: 1 });
+    const append = session.appendBatch('events', ipcBatch(1));
     await vi.waitFor(() => expect(duckdbMocks.database.instantiate).toHaveBeenCalledOnce());
     const disposal = database.dispose();
     initialization.resolve(null);
 
-    await expect(replacement).rejects.toThrow('disposed');
+    await expect(append).rejects.toThrow('disposed');
     await disposal;
     expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([...HARDENING_STATEMENTS]);
     expect(duckdbMocks.connection.insertArrowFromIPCStream).not.toHaveBeenCalled();
@@ -441,32 +340,6 @@ describe('createBrowserDatabase', () => {
     await database.dispose();
     expect(duckdbMocks.connection.close).toHaveBeenCalledOnce();
     expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
-  });
-
-  it('snapshots names and IPC bytes before queued replacement work', async () => {
-    const database = await createBrowserDatabase();
-    await database.initialize();
-    const pending = deferred<readonly unknown[]>();
-    duckdbMocks.connection.send.mockImplementationOnce(() => pending.promise);
-    const activeQuery = database.query('SELECT 1;');
-    await vi.waitFor(() => expect(duckdbMocks.connection.send).toHaveBeenCalledOnce());
-
-    const original = transfer('events', [4, 5, 6]);
-    const input = [original];
-    const replacement = database.replaceTables(input);
-    original.name = 'mutated';
-    original.ipc[0] = 99;
-    input[0] = transfer('other', [8, 8, 8]);
-    input.push(transfer('late', [7, 7, 7]));
-    pending.resolve(resultTable().batches);
-    await activeQuery;
-    await replacement;
-
-    expect(duckdbMocks.connection.insertArrowFromIPCStream).toHaveBeenCalledOnce();
-    const [inserted, options] = duckdbMocks.connection.insertArrowFromIPCStream.mock.calls[0]!;
-    expect(options).toEqual({ name: 'events', create: true });
-    expect([...inserted]).toEqual([4, 5, 6]);
-    expect(await database.listTables()).toEqual(['events']);
   });
 
   describe('beginIngest', () => {
@@ -632,6 +505,32 @@ describe('createBrowserDatabase', () => {
 
       await expect(second.finalize()).rejects.toThrow('rename failed');
       expect(await database.listTables()).toEqual(['events']);
+    });
+
+    it('preserves both the finalize and rollback failures', async () => {
+      const database = await createBrowserDatabase();
+      const session = await database.beginIngest({
+        schemas: [eventsSchema],
+        tier: 'memory',
+        generation: 1,
+      });
+      await session.appendBatch('events', ipcBatch(1));
+      const renameError = new Error('rename failed');
+      const rollbackError = new Error('rollback failed');
+      duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
+        if (sql.startsWith('ALTER TABLE')) {
+          throw renameError;
+        }
+        if (sql === 'ROLLBACK;') {
+          throw rollbackError;
+        }
+        return {} as Table;
+      });
+
+      await expect(session.finalize()).rejects.toMatchObject({
+        errors: [renameError, rollbackError],
+        cause: rollbackError,
+      });
     });
 
     it('abort reclaims staging tables after a failed finalize', async () => {
@@ -959,27 +858,6 @@ describe('createBrowserDatabase', () => {
           'ALTER TABLE "__ingest_10_errors" RENAME TO "errors";',
           'COMMIT;',
         ]);
-      });
-
-      it('replaceTables drops a spill-finalized view old final with DROP VIEW IF EXISTS, not DROP TABLE', async () => {
-        const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({
-          schemas: 'discover',
-          tier: 'spill',
-          generation: 3,
-        });
-        await session.appendBatch('events', ipcBatch(1));
-        await session.finalize();
-        duckdbMocks.connection.query.mockClear();
-
-        await database.replaceTables([transfer('events')]);
-
-        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual([
-          'BEGIN TRANSACTION;',
-          'DROP VIEW IF EXISTS "events";',
-          'COMMIT;',
-        ]);
-        expect(await database.listTables()).toEqual(['events']);
       });
 
       it('abort deletes the new generation spill directory and staging, never the committed one', async () => {

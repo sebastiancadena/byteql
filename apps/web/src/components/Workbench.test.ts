@@ -37,10 +37,10 @@ const readyState = (): SessionState => ({
   source: { name: 'capture.bin', size: 1536 },
   format: { id: 'example_format', title: 'Example records' },
   progress: null,
+  openStartedAt: null,
   tables: [
     {
       name: 'records',
-      ipc: new Uint8Array(),
       rowCount: 42,
       columns: [
         { name: 'record_id', type: 'int64', nullable: false },

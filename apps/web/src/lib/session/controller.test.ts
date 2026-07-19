@@ -3,10 +3,8 @@ import {
   type BatchTransfer,
   type FormatPack,
   type ParseProgress as PackProgress,
-  type ParseResult,
-  type TableTransfer,
 } from '@byteql/core';
-import type { ByteqlDatabase, QueryResult } from '@byteql/db';
+import type { ByteqlDatabase, IngestOptions, IngestSession, TableSummary } from '@byteql/db';
 import { tableFromArrays, type Table } from 'apache-arrow';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -26,6 +24,11 @@ import {
 } from '../../workers/parse.worker.js';
 import { SessionController } from './controller.js';
 import { initialSessionState } from './state.js';
+
+const { sweepSpillOrphansMock } = vi.hoisted(() => ({
+  sweepSpillOrphansMock: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('@byteql/db', () => ({ sweepSpillOrphans: sweepSpillOrphansMock }));
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -50,69 +53,133 @@ const flush = async (): Promise<void> => {
   for (let tick = 0; tick < 32; tick += 1) await Promise.resolve();
 };
 
-const transfer = (name: string, values: readonly number[]): TableTransfer => ({
-  name,
-  ipc: new Uint8Array(values),
-  rowCount: 1,
-  columns: [],
-});
-
-const parseResult = (name: string, values: readonly number[] = [1, 2, 3]): ParseResult => ({
+const streamedResult = (name: string, rowCount = 1): StreamedParseResult => ({
   format: { id: 'standard_midi_file', title: 'Standard MIDI file' },
-  tables: [transfer(name, values)],
+  tables: [{ name, rowCount, columns: [] }],
   issues: [],
   queries: [{ id: 'overview', title: 'Overview', kind: 'grid', sql: 'select 1 limit 1;' }],
   capabilities: { audio: { enabled: true, reason: null } },
 });
 
+interface FakeParseCall {
+  readonly name: string;
+  readonly blob: Blob;
+  emitProgress(progress: ParseProgress): void;
+  emitBatch(batch: BatchMessage): Promise<void>;
+  finish(result: StreamedParseResult): void;
+  reject(error: unknown): void;
+}
+
+/**
+ * Stands in for the streaming `ParseClientPort`. `cancel()` rejects whichever call is still
+ * outstanding with an AbortError — mirroring `ParseWorkerClient.cancel()` — so controller tests
+ * exercising supersession/cancel don't need to hand-simulate that cascade. `emitBatch` likewise
+ * propagates an `onBatch` rejection into the call's own rejection, mirroring the real client's
+ * ack-chain `.catch` that cancels the whole task when a single batch handler throws.
+ */
 class FakeParser implements ParseClientPort {
-  readonly calls: Array<{
-    name: string;
-    bytes: Uint8Array;
-    onProgress: (progress: ParseProgress) => void;
-    operation: Deferred<ParseResult>;
-  }> = [];
-  cancel = vi.fn();
+  readonly calls: FakeParseCall[] = [];
+  private active: FakeParseCall | null = null;
+  cancel = vi.fn(() => {
+    this.active?.reject(new DOMException('The parse was cancelled.', 'AbortError'));
+  });
   dispose = vi.fn();
 
-  // The controller calls only `parseToResult` (Task 9 migrates it to the streaming `parse`); this
-  // stub keeps FakeParser assignable to ParseClientPort without exercising the streaming path.
-  parse(): Promise<StreamedParseResult> {
-    throw new Error('FakeParser.parse is not exercised by SessionController tests.');
+  parse(input: { name: string; blob: Blob }, handlers: ParseHandlers): Promise<StreamedParseResult> {
+    let settled = false;
+    let resolveTask!: (value: StreamedParseResult) => void;
+    let rejectTask!: (error: unknown) => void;
+    const promise = new Promise<StreamedParseResult>((resolve, reject) => {
+      resolveTask = resolve;
+      rejectTask = reject;
+    });
+    const call: FakeParseCall = {
+      name: input.name,
+      blob: input.blob,
+      emitProgress: (progress) => handlers.onProgress(progress),
+      emitBatch: (batch) => {
+        const outcome = handlers.onBatch(batch);
+        outcome.catch((error: unknown) => call.reject(error));
+        return outcome;
+      },
+      finish: (result) => {
+        if (settled) return;
+        settled = true;
+        if (this.active === call) this.active = null;
+        resolveTask(result);
+      },
+      reject: (error) => {
+        if (settled) return;
+        settled = true;
+        if (this.active === call) this.active = null;
+        rejectTask(error);
+      },
+    };
+    this.active = call;
+    this.calls.push(call);
+    return promise;
+  }
+}
+
+/** A recorded `IngestSession` whose `appendBatch` stays pending until the test resolves it. */
+class FakeIngestSession implements IngestSession {
+  readonly appendCalls: Array<{
+    table: string;
+    ipc: Uint8Array;
+    resolve(): void;
+    reject(error: unknown): void;
+  }> = [];
+  finalizeCalls = 0;
+  abortCalls = 0;
+  finalizeResult: readonly TableSummary[] = [];
+
+  constructor(readonly options: IngestOptions) {}
+
+  appendBatch(table: string, ipc: Uint8Array): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.appendCalls.push({ table, ipc, resolve, reject });
+    });
   }
 
-  parseToResult(
-    input: { name: string; bytes: Uint8Array },
-    onProgress: (progress: ParseProgress) => void,
-  ): Promise<ParseResult> {
-    const operation = deferred<ParseResult>();
-    this.calls.push({ ...input, onProgress, operation });
-    return operation.promise;
+  async finalize(): Promise<readonly TableSummary[]> {
+    this.finalizeCalls += 1;
+    return this.finalizeResult;
+  }
+
+  async abort(): Promise<void> {
+    this.abortCalls += 1;
   }
 }
 
 const queryTable = (value: number): Table => tableFromArrays({ value: [value] });
 
-const fakeDatabase = (): ByteqlDatabase => ({
-  initialize: vi.fn().mockResolvedValue(undefined),
-  // Minimal stub until the controller migrates to ingest sessions; the ingest-path
-  // controller tests replace this fake wholesale.
-  beginIngest: vi.fn().mockRejectedValue(new Error('beginIngest is not faked yet')),
-  replaceTables: vi.fn().mockResolvedValue(undefined),
-  query: vi.fn().mockResolvedValue({ table: queryTable(1), elapsedMs: 2 }),
-  cancelQuery: vi.fn().mockResolvedValue(false),
-  listTables: vi.fn().mockResolvedValue([]),
-  dispose: vi.fn().mockResolvedValue(undefined),
-});
+const fakeDatabase = (): { database: ByteqlDatabase; sessions: FakeIngestSession[] } => {
+  const sessions: FakeIngestSession[] = [];
+  const database: ByteqlDatabase = {
+    initialize: vi.fn().mockResolvedValue(undefined),
+    beginIngest: vi.fn(async (options: IngestOptions) => {
+      const session = new FakeIngestSession(options);
+      sessions.push(session);
+      return session;
+    }),
+    query: vi.fn().mockResolvedValue({ table: queryTable(1), elapsedMs: 2 }),
+    cancelQuery: vi.fn().mockResolvedValue(false),
+    listTables: vi.fn().mockResolvedValue([]),
+    dispose: vi.fn().mockResolvedValue(undefined),
+  };
+  return { database, sessions };
+};
 
 describe('SessionController', () => {
   let parser: FakeParser;
   let database: ByteqlDatabase;
+  let sessions: FakeIngestSession[];
   let stopViewer: ReturnType<typeof vi.fn<() => void>>;
 
   beforeEach(() => {
+    sweepSpillOrphansMock.mockClear();
     parser = new FakeParser();
-    database = fakeDatabase();
+    ({ database, sessions } = fakeDatabase());
     stopViewer = vi.fn<() => void>();
   });
 
@@ -137,15 +204,19 @@ describe('SessionController', () => {
     const opening = controller.openSample();
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
     expect(parser.calls[0]?.name).toBe('demo.mid');
-    expect(Array.from(parser.calls[0]!.bytes)).toEqual(Array.from(sample));
-    parser.calls[0]!.operation.resolve(parseResult('events'));
+    expect(Array.from(new Uint8Array(await parser.calls[0]!.blob.arrayBuffer()))).toEqual(Array.from(sample));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
+    parser.calls[0]!.finish(streamedResult('events', 3));
     await opening;
 
     const reopened = controller.openSample();
     expect(fetchSample).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
-    expect(Array.from(parser.calls[1]!.bytes)).toEqual(Array.from(sample));
-    parser.calls[1]!.operation.resolve(parseResult('events'));
+    expect(Array.from(new Uint8Array(await parser.calls[1]!.blob.arrayBuffer()))).toEqual(Array.from(sample));
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    sessions[1]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
+    parser.calls[1]!.finish(streamedResult('events', 3));
     await reopened;
   });
 
@@ -157,12 +228,7 @@ describe('SessionController', () => {
 
     const opening = controller.openFile(file);
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
-    parser.calls[0]!.onProgress({
-      stage: 'parsing',
-      completed: 1,
-      total: 3,
-      label: 'Parsing track 1',
-    });
+    parser.calls[0]!.emitProgress({ stage: 'parsing', completed: 1, total: 3, label: 'Parsing track 1' });
 
     expect(controller.getState()).toMatchObject({
       phase: 'parsing',
@@ -172,16 +238,21 @@ describe('SessionController', () => {
     expect(observed).toHaveBeenCalled();
 
     unsubscribe();
-    parser.calls[0]!.operation.resolve(parseResult('events'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
+    parser.calls[0]!.finish(streamedResult('events', 3));
     await opening;
-    expect(controller.getState().queries).toEqual(parseResult('events').queries);
-    expect(controller.getState().capabilities).toEqual(parseResult('events').capabilities);
+    const result = streamedResult('events', 3);
+    expect(controller.getState().queries).toEqual(result.queries);
+    expect(controller.getState().capabilities).toEqual(result.capabilities);
   });
 
-  it('cancels parse, query, and viewer immediately and ignores stale replacement results', async () => {
+  it('cancels parse, query, and viewer immediately and ignores stale ingest results', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
     const first = controller.openFile(new File([new Uint8Array([1])], 'old.mid'));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const oldSession = sessions[0]!;
     const second = controller.openFile(new File([new Uint8Array([2])], 'new.mid'));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
 
@@ -190,67 +261,50 @@ describe('SessionController', () => {
     expect(stopViewer).toHaveBeenCalledTimes(2);
     expect(controller.getState()).toMatchObject({ source: { name: 'new.mid', size: 1 } });
 
-    parser.calls[0]!.operation.resolve(parseResult('old'));
     await first;
-    expect(database.replaceTables).not.toHaveBeenCalled();
+    expect(oldSession.abortCalls).toBe(1);
+    expect(oldSession.finalizeCalls).toBe(0);
 
-    parser.calls[1]!.operation.resolve(parseResult('new'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    sessions[1]!.finalizeResult = [{ name: 'new', rowCount: 1 }];
+    parser.calls[1]!.finish(streamedResult('new', 1));
     await second;
-    expect(database.replaceTables).toHaveBeenCalledTimes(1);
-    expect(database.replaceTables).toHaveBeenCalledWith(parseResult('new').tables);
-    expect(controller.getState()).toMatchObject({ phase: 'ready', tables: parseResult('new').tables });
+    expect(controller.getState()).toMatchObject({
+      phase: 'ready',
+      source: { name: 'new.mid', size: 1 },
+      tables: streamedResult('new', 1).tables,
+    });
   });
 
-  it('does not replace database tables until the complete parse result arrives', async () => {
+  it('does not finalize the ingest until the complete parse result arrives', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
     const opening = controller.openFile(new File([new Uint8Array([1])], 'wait.mid'));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
 
-    parser.calls[0]!.onProgress({
+    parser.calls[0]!.emitProgress({
       stage: 'projecting',
       completed: 1,
       total: 2,
       label: 'Projecting track 1',
     });
-    expect(database.replaceTables).not.toHaveBeenCalled();
+    expect(sessions[0]!.finalizeCalls).toBe(0);
 
-    parser.calls[0]!.operation.resolve(parseResult('complete'));
+    sessions[0]!.finalizeResult = [{ name: 'complete', rowCount: 3 }];
+    parser.calls[0]!.finish(streamedResult('complete', 3));
     await opening;
-    expect(database.replaceTables).toHaveBeenCalledOnce();
-  });
-
-  it('restores the prior committed tables when registration is cancelled after it starts', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
-    const firstResult = parseResult('prior', [8, 9]);
-    const first = controller.openFile(new File([new Uint8Array([1])], 'prior.mid'));
-    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
-    parser.calls[0]!.operation.resolve(firstResult);
-    await first;
-
-    const registration = deferred<void>();
-    vi.mocked(database.replaceTables).mockReturnValueOnce(registration.promise);
-    const replacement = controller.openFile(new File([new Uint8Array([2])], 'cancelled.mid'));
-    await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
-    parser.calls[1]!.operation.resolve(parseResult('cancelled'));
-    await vi.waitFor(() => expect(database.replaceTables).toHaveBeenCalledTimes(2));
-
-    const cancellation = controller.cancel();
-    registration.resolve();
-    await Promise.all([replacement, cancellation]);
-    await vi.waitFor(() => expect(database.replaceTables).toHaveBeenCalledTimes(3));
-
-    expect(database.replaceTables).toHaveBeenLastCalledWith(firstResult.tables);
-    expect(controller.getState()).toEqual(initialSessionState);
+    expect(sessions[0]!.finalizeCalls).toBe(1);
   });
 
   it('ignores stale query completion after a replacement session begins', async () => {
-    const query = deferred<QueryResult>();
+    const query = deferred<{ table: Table; elapsedMs: number }>();
     vi.mocked(database.query).mockReturnValueOnce(query.promise);
     const controller = new SessionController({ database, parser, stopViewer });
 
     const firstOpen = controller.openFile(new File([new Uint8Array([1])], 'first.mid'));
-    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
-    parser.calls[0]!.operation.resolve(parseResult('first'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'first', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('first', 1));
     await firstOpen;
 
     const runningQuery = controller.runQuery('select * from first');
@@ -261,7 +315,9 @@ describe('SessionController', () => {
     expect(controller.getState().result).toBeNull();
     expect(controller.getState().source?.name).toBe('second.mid');
 
-    parser.calls[1]!.operation.resolve(parseResult('second'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    sessions[1]!.finalizeResult = [{ name: 'second', rowCount: 1 }];
+    parser.calls[1]!.finish(streamedResult('second', 1));
     await replacement;
   });
 
@@ -272,8 +328,9 @@ describe('SessionController', () => {
       .mockRejectedValueOnce(new Error('syntax error'));
     const controller = new SessionController({ database, parser, stopViewer });
     const opening = controller.openFile(new File([new Uint8Array([1])], 'query.mid'));
-    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
-    parser.calls[0]!.operation.resolve(parseResult('events'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
+    parser.calls[0]!.finish(streamedResult('events', 3));
     await opening;
 
     await controller.runQuery('select 7');
@@ -354,9 +411,10 @@ describe('SessionController', () => {
   it('releases all state-held local data during idempotent disposal', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
     const opening = controller.openFile(new File([new Uint8Array([1])], 'private.mid'));
-    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
-    parser.calls[0]!.operation.resolve({
-      ...parseResult('events'),
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
+    parser.calls[0]!.finish({
+      ...streamedResult('events', 3),
       issues: [
         {
           stage: 'parsing',
@@ -394,8 +452,9 @@ describe('SessionController', () => {
     controller.subscribe(healthy);
 
     const opening = controller.openFile(new File([new Uint8Array([1])], 'listeners.mid'));
-    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
-    parser.calls[0]!.operation.resolve(parseResult('events'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
+    parser.calls[0]!.finish(streamedResult('events', 3));
     await opening;
 
     expect(controller.getState().phase).toBe('ready');
@@ -411,6 +470,259 @@ describe('SessionController', () => {
     expect(() => controller.subscribe(listener)).toThrow('listener failed');
     controller.selectResultRow(null);
     expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it('opens a file through ingest: begin → per-batch append+ack → finalize → ready', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const file = new File([new Uint8Array([1, 2, 3])], 'song.mid');
+
+    const opening = controller.openFile(file);
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    expect(database.beginIngest).toHaveBeenCalledWith({
+      schemas: 'discover',
+      tier: 'memory',
+      generation: 1,
+    });
+    const session = sessions[0]!;
+
+    const ipc1 = new Uint8Array([9]);
+    const emit1 = parser.calls[0]!.emitBatch({ seq: 1, table: 'events', ipc: ipc1, rowCount: 1 });
+    await vi.waitFor(() => expect(session.appendCalls).toHaveLength(1));
+    expect(session.appendCalls[0]).toMatchObject({ table: 'events', ipc: ipc1 });
+    let firstAcked = false;
+    void emit1.then(() => {
+      firstAcked = true;
+    });
+    await flush();
+    expect(firstAcked).toBe(false);
+    session.appendCalls[0]!.resolve();
+    await emit1;
+    expect(firstAcked).toBe(true);
+
+    const ipc2 = new Uint8Array([10]);
+    const emit2 = parser.calls[0]!.emitBatch({ seq: 2, table: 'events', ipc: ipc2, rowCount: 1 });
+    await vi.waitFor(() => expect(session.appendCalls).toHaveLength(2));
+    expect(session.finalizeCalls).toBe(0);
+    session.appendCalls[1]!.resolve();
+    await emit2;
+
+    session.finalizeResult = [{ name: 'events', rowCount: 2 }];
+    parser.calls[0]!.finish({
+      format: { id: 'standard_midi_file', title: 'Standard MIDI file' },
+      tables: [{ name: 'events', rowCount: 0, columns: [] }],
+      issues: [],
+      queries: [],
+      capabilities: {},
+    });
+    await opening;
+
+    expect(session.finalizeCalls).toBe(1);
+    expect(controller.getState()).toMatchObject({
+      phase: 'ready',
+      tables: [{ name: 'events', rowCount: 2, columns: [] }],
+    });
+  });
+
+  it('waits for a straggling append to settle before finalizing, even if finish arrives first', async () => {
+    // Regression: the real ParseWorkerClient resolves `parse()` as soon as the worker's `finish`
+    // message arrives, and the worker sends `finish` without waiting for the last batch's ack —
+    // so `finish` can race ahead of an in-flight `appendBatch`. Finalizing before that append
+    // settles would silently drop rows.
+    const controller = new SessionController({ database, parser, stopViewer });
+    const opening = controller.openFile(new File([new Uint8Array([1])], 'race.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const session = sessions[0]!;
+
+    const emit = parser.calls[0]!.emitBatch({
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array([1]),
+      rowCount: 1,
+    });
+    await vi.waitFor(() => expect(session.appendCalls).toHaveLength(1));
+
+    // `finish` arrives while the append above is still pending.
+    session.finalizeResult = [{ name: 'events', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('events', 1));
+    await flush();
+    expect(session.finalizeCalls).toBe(0);
+
+    session.appendCalls[0]!.resolve();
+    await emit;
+    await opening;
+
+    expect(session.finalizeCalls).toBe(1);
+    expect(controller.getState().phase).toBe('ready');
+  });
+
+  it('chooses the spill tier at the threshold and fails fast when unsupported', async () => {
+    vi.mocked(database.beginIngest).mockRejectedValueOnce(
+      new Error('SPILL_UNSUPPORTED: OPFS storage is not available in this environment.'),
+    );
+    const tierThresholdBytes = 2 * 1024 * 1024;
+    const controller = new SessionController({
+      database,
+      parser,
+      stopViewer,
+      tiering: { tierThresholdBytes },
+    });
+    const file = new File([new Uint8Array(tierThresholdBytes)], 'huge.mid');
+
+    await controller.openFile(file);
+
+    expect(database.beginIngest).toHaveBeenCalledOnce();
+    expect(database.beginIngest).toHaveBeenCalledWith(expect.objectContaining({ tier: 'spill' }));
+    expect(parser.calls).toHaveLength(0);
+    expect(parser.cancel).toHaveBeenCalledOnce();
+    expect(controller.getState()).toMatchObject({
+      phase: 'failed',
+      fatalError: 'This browser cannot analyze files over 2 MB.',
+    });
+  });
+
+  it('supersession mid-ingest aborts the new generation and leaves state on the new open', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+
+    const first = controller.openFile(new File([new Uint8Array([1])], 'old.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const oldSession = sessions[0]!;
+
+    const second = controller.openFile(new File([new Uint8Array([2])], 'new.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    const newSession = sessions[1]!;
+
+    await first;
+    expect(oldSession.abortCalls).toBe(1);
+    expect(oldSession.finalizeCalls).toBe(0);
+
+    newSession.finalizeResult = [{ name: 'events', rowCount: 5 }];
+    parser.calls[1]!.finish(streamedResult('events', 5));
+    await second;
+
+    expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'new.mid', size: 1 } });
+    expect(newSession.finalizeCalls).toBe(1);
+  });
+
+  it('parse failure and quota failure abort the ingest session', async () => {
+    const parseFailure = new FakeParser();
+    const { database: databaseA, sessions: sessionsA } = fakeDatabase();
+    const controllerA = new SessionController({ database: databaseA, parser: parseFailure, stopViewer });
+    const openingA = controllerA.openFile(new File([new Uint8Array([1])], 'broken.mid'));
+    await vi.waitFor(() => expect(sessionsA).toHaveLength(1));
+    parseFailure.calls[0]!.reject(new Error('Unexpected end of track data.'));
+    await openingA;
+    expect(sessionsA[0]!.abortCalls).toBe(1);
+    expect(controllerA.getState()).toMatchObject({
+      phase: 'failed',
+      fatalError: 'Unexpected end of track data.',
+    });
+
+    const quotaParser = new FakeParser();
+    const { database: databaseB, sessions: sessionsB } = fakeDatabase();
+    const controllerB = new SessionController({ database: databaseB, parser: quotaParser, stopViewer });
+    const openingB = controllerB.openFile(new File([new Uint8Array([1])], 'huge.mid'));
+    await vi.waitFor(() => expect(sessionsB).toHaveLength(1));
+    const sessionB = sessionsB[0]!;
+    const emit = quotaParser.calls[0]!.emitBatch({
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array([1]),
+      rowCount: 1,
+    });
+    await vi.waitFor(() => expect(sessionB.appendCalls).toHaveLength(1));
+    sessionB.appendCalls[0]!.reject(new Error('SPILL_QUOTA_EXCEEDED: failed to spill "events" to OPFS.'));
+    await expect(emit).rejects.toThrow('SPILL_QUOTA_EXCEEDED');
+    await openingB;
+    expect(sessionB.abortCalls).toBe(1);
+    expect(controllerB.getState()).toMatchObject({
+      phase: 'failed',
+      fatalError: 'Local storage ran out of space while analyzing this file. Free up space and try again.',
+    });
+  });
+
+  it('cancel aborts ingest and dispatches cancelled', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const opening = controller.openFile(new File([new Uint8Array([1])], 'song.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const session = sessions[0]!;
+
+    const cancellation = controller.cancel();
+    expect(controller.getState()).toEqual(initialSessionState);
+    await Promise.all([cancellation, opening]);
+    await vi.waitFor(() => expect(session.abortCalls).toBe(1));
+    expect(session.finalizeCalls).toBe(0);
+  });
+
+  it('openSample wraps sampleBytes in a Blob and parses through the same path', async () => {
+    const sample = new Uint8Array([0x4d, 0x54, 0x68, 0x64, 1, 2, 3]);
+    const fetchSample = vi.fn().mockResolvedValue(new Response(sample));
+    const controller = new SessionController({
+      database,
+      parser,
+      fetch: fetchSample,
+      demoUrl: '/assets/demo.mid',
+      stopViewer,
+    });
+    await controller.initialize();
+
+    const opening = controller.openSample();
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    expect(parser.calls[0]!.name).toBe('demo.mid');
+    expect(parser.calls[0]!.blob).toBeInstanceOf(Blob);
+    expect(parser.calls[0]!.blob.size).toBe(sample.byteLength);
+    expect(Array.from(new Uint8Array(await parser.calls[0]!.blob.arrayBuffer()))).toEqual(Array.from(sample));
+
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('events', 1));
+    await opening;
+    expect(controller.getState().phase).toBe('ready');
+  });
+
+  it('sweeps spill orphans once at initialization', async () => {
+    const controller = new SessionController({
+      database,
+      parser,
+      fetch: vi.fn().mockResolvedValue(new Response(new Uint8Array([1]))),
+      demoUrl: '/demo.mid',
+      stopViewer,
+    });
+
+    await Promise.all([controller.initialize(), controller.initialize()]);
+
+    expect(sweepSpillOrphansMock).toHaveBeenCalledExactlyOnceWith([]);
+  });
+
+  it('progress dispatches bytes and openStartedAt enables rate computation', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const opening = controller.openFile(new File([new Uint8Array([1])], 'song.mid'));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const session = sessions[0]!;
+    const openStartedAt = controller.getState().openStartedAt;
+    expect(openStartedAt).toEqual(expect.any(Number));
+
+    parser.calls[0]!.emitProgress({ stage: 'parsing', completed: 1, total: 3, label: 'Parsing track 1' });
+    expect(controller.getState()).toMatchObject({
+      phase: 'parsing',
+      progress: { completed: 1, total: 3, bytes: 0 },
+      openStartedAt,
+    });
+
+    const emit = parser.calls[0]!.emitBatch({
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array(10),
+      rowCount: 1,
+    });
+    await vi.waitFor(() => expect(session.appendCalls).toHaveLength(1));
+    expect(controller.getState()).toMatchObject({ progress: { bytes: 10 }, openStartedAt });
+
+    session.appendCalls[0]!.resolve();
+    await emit;
+    session.finalizeResult = [{ name: 'events', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('events', 1));
+    await opening;
+    expect(controller.getState().openStartedAt).toBeNull();
   });
 });
 
@@ -439,14 +751,6 @@ class FakeWorker implements WorkerPort {
     this.onmessage?.(new MessageEvent('message', { data: message }));
   }
 }
-
-const streamedResult = (name: string, rowCount = 1): StreamedParseResult => ({
-  format: { id: 'standard_midi_file', title: 'Standard MIDI file' },
-  tables: [{ name, rowCount, columns: [] }],
-  issues: [],
-  queries: [{ id: 'overview', title: 'Overview', kind: 'grid', sql: 'select 1 limit 1;' }],
-  capabilities: { audio: { enabled: true, reason: null } },
-});
 
 const noopHandlers = (): ParseHandlers => ({
   onProgress: vi.fn(),
@@ -594,6 +898,85 @@ describe('ParseWorkerClient', () => {
 
     workers[0]!.emit({ type: 'finish', taskId: 1, ...streamedResult('events') });
     await expect(parsing).resolves.toEqual(streamedResult('events'));
+  });
+
+  it('does not resolve on finish until every outstanding onBatch call has settled', async () => {
+    // Regression: the worker sends `finish` right after its last `nextBatch()`, without waiting
+    // for that batch's ack — so `finish` can arrive while an `onBatch` call (e.g. a slow DB
+    // append) is still pending. A caller must never observe a resolved `parse()` while a batch it
+    // handed off is still being processed.
+    const workers: FakeWorker[] = [];
+    const client = new ParseWorkerClient(() => {
+      const worker = new FakeWorker();
+      workers.push(worker);
+      return worker;
+    });
+    const gate = deferred<void>();
+    const onBatch = vi.fn(async () => {
+      await gate.promise;
+    });
+    const parsing = client.parse(
+      { name: 'race.mid', blob: new Blob([new Uint8Array([1])]) },
+      { onProgress: vi.fn(), onBatch },
+    );
+
+    workers[0]!.emit({
+      type: 'batch',
+      taskId: 1,
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array([9]),
+      rowCount: 1,
+    });
+    await flush();
+    expect(onBatch).toHaveBeenCalledOnce();
+
+    // `finish` arrives while the batch above is still mid-flight.
+    workers[0]!.emit({ type: 'finish', taskId: 1, ...streamedResult('events') });
+    await flush();
+
+    let settled = false;
+    void parsing.then(() => {
+      settled = true;
+    });
+    await flush();
+    expect(settled).toBe(false);
+
+    gate.resolve();
+    await expect(parsing).resolves.toEqual(streamedResult('events'));
+  });
+
+  it('rejects with the real error when a batch fails after finish has already arrived', async () => {
+    const workers: FakeWorker[] = [];
+    const client = new ParseWorkerClient(() => {
+      const worker = new FakeWorker();
+      workers.push(worker);
+      return worker;
+    });
+    const gate = deferred<void>();
+    const onBatch = vi.fn(async () => {
+      await gate.promise;
+      throw new Error('append failed');
+    });
+    const parsing = client.parse(
+      { name: 'race-fail.mid', blob: new Blob([new Uint8Array([1])]) },
+      { onProgress: vi.fn(), onBatch },
+    );
+
+    workers[0]!.emit({
+      type: 'batch',
+      taskId: 1,
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array([9]),
+      rowCount: 1,
+    });
+    await flush();
+    workers[0]!.emit({ type: 'finish', taskId: 1, ...streamedResult('events') });
+    await flush();
+
+    gate.resolve();
+    await expect(parsing).rejects.toThrow('append failed');
   });
 });
 

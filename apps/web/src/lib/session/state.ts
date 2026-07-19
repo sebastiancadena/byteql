@@ -1,23 +1,29 @@
-import type { PackQuery, ParseIssue, ParseResult, TableTransfer } from '@byteql/core';
+import type { PackQuery, ParseIssue, ParseResult, TableOverview } from '@byteql/core';
 import type { Table } from 'apache-arrow';
 
 export type SessionPhase =
-  | 'idle'
-  | 'opening'
-  | 'normalizing'
-  | 'parsing'
-  | 'projecting'
-  | 'registering'
-  | 'ready'
-  | 'querying'
-  | 'failed';
+  'idle' | 'opening' | 'normalizing' | 'parsing' | 'projecting' | 'ready' | 'querying' | 'failed';
+
+export interface SessionProgress {
+  completed: number;
+  total: number | null;
+  label: string;
+  /** Cumulative bytes ingested (streamed batch IPC) so far this open, for a throughput readout. */
+  bytes: number;
+}
 
 export interface SessionState {
   phase: SessionPhase;
   source: { name: string; size: number } | null;
   format: { id: string; title: string } | null;
-  progress: { completed: number; total: number | null; label: string } | null;
-  tables: readonly TableTransfer[];
+  progress: SessionProgress | null;
+  /**
+   * Wall-clock start time (ms, `Date.now()`) of the current open — paired with `progress.bytes`
+   * to compute a throughput rate. Set on `opening`, kept through `progress`, cleared on
+   * `ready`/`failed`/`cancelled`.
+   */
+  openStartedAt: number | null;
+  tables: readonly TableOverview[];
   issues: readonly ParseIssue[];
   queries: readonly PackQuery[];
   capabilities: ParseResult['capabilities'] | null;
@@ -37,11 +43,12 @@ export type SessionEvent =
       completed: number;
       total: number | null;
       label: string;
+      bytes: number;
     }
-  | { type: 'registering'; format: { id: string; title: string } }
   | {
       type: 'ready';
-      tables: readonly TableTransfer[];
+      format: { id: string; title: string };
+      tables: readonly TableOverview[];
       issues: readonly ParseIssue[];
       queries: readonly PackQuery[];
       capabilities: ParseResult['capabilities'];
@@ -58,6 +65,7 @@ export const initialSessionState: SessionState = {
   source: null,
   format: null,
   progress: null,
+  openStartedAt: null,
   tables: [],
   issues: [],
   queries: [],
@@ -73,7 +81,7 @@ export const initialSessionState: SessionState = {
 export function reduceSession(state: SessionState, event: SessionEvent): SessionState {
   switch (event.type) {
     case 'opening':
-      return { ...initialSessionState, phase: 'opening', source: event.source };
+      return { ...initialSessionState, phase: 'opening', source: event.source, openStartedAt: Date.now() };
     case 'progress':
       return {
         ...state,
@@ -82,20 +90,21 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
           completed: event.completed,
           total: event.total,
           label: event.label,
+          bytes: event.bytes,
         },
         fatalError: null,
       };
-    case 'registering':
-      return { ...state, phase: 'registering', format: event.format, progress: null };
     case 'ready':
       return {
         ...state,
         phase: 'ready',
+        format: event.format,
         tables: event.tables,
         issues: event.issues,
         queries: event.queries,
         capabilities: event.capabilities,
         progress: null,
+        openStartedAt: null,
         fatalError: null,
       };
     case 'queryStarted':
@@ -135,6 +144,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         ...state,
         phase: 'failed',
         progress: null,
+        openStartedAt: null,
         tables: [],
         issues: [],
         queries: [],

@@ -1,14 +1,4 @@
-import {
-  ipcToTable,
-  tableToIpc,
-  type FormatCapability,
-  type PackQuery,
-  type ParseIssue,
-  type ParseResult,
-  type TableOverview,
-  type TableTransfer,
-} from '@byteql/core';
-import { Table } from 'apache-arrow';
+import type { FormatCapability, PackQuery, ParseIssue, TableOverview } from '@byteql/core';
 
 import InlineParseWorker from '../workers/parse.worker.ts?worker&inline';
 
@@ -41,15 +31,6 @@ export interface ParseHandlers {
 
 export interface ParseClientPort {
   parse(input: { name: string; blob: Blob }, handlers: ParseHandlers): Promise<StreamedParseResult>;
-  /**
-   * Legacy bridge kept only for `SessionController`, which still wants a single merged
-   * `ParseResult` (IPC included) rather than the streaming batch protocol. Implemented on top
-   * of `parse()`; deleted once the controller migrates to the streaming API.
-   */
-  parseToResult(
-    input: { name: string; bytes: Uint8Array },
-    onProgress: (progress: ParseProgress) => void,
-  ): Promise<ParseResult>;
   cancel(): void;
   dispose(): void;
 }
@@ -64,6 +45,8 @@ export interface WorkerPort {
 
 interface ActiveTask {
   id: number;
+  /** True once `resolve`/`reject` has taken effect; both are no-ops after that. */
+  settled: boolean;
   resolve(result: StreamedParseResult): void;
   reject(error: unknown): void;
   onProgress(progress: ParseProgress): void;
@@ -84,9 +67,6 @@ const abortError = (): DOMException => new DOMException('The parse was cancelled
 export const createInlineParseWorker = (): WorkerPort =>
   new InlineParseWorker({ name: 'byteql-midi-parser' });
 
-const concatIpc = (parts: readonly Uint8Array[]): Uint8Array =>
-  tableToIpc(new Table(parts.flatMap((part) => ipcToTable(part).batches)));
-
 export class ParseWorkerClient implements ParseClientPort {
   private worker: WorkerPort;
   private workerGeneration = 0;
@@ -103,16 +83,30 @@ export class ParseWorkerClient implements ParseClientPort {
     if (this.active) this.cancel();
 
     const taskId = ++this.nextTaskId;
+    let settleResolve!: (result: StreamedParseResult) => void;
+    let settleReject!: (error: unknown) => void;
     const promise = new Promise<StreamedParseResult>((resolve, reject) => {
-      this.active = {
-        id: taskId,
-        resolve,
-        reject,
-        onProgress: handlers.onProgress,
-        onBatch: handlers.onBatch,
-        ackChain: Promise.resolve(),
-      };
+      settleResolve = resolve;
+      settleReject = reject;
     });
+    const active: ActiveTask = {
+      id: taskId,
+      settled: false,
+      resolve: (result) => {
+        if (active.settled) return;
+        active.settled = true;
+        settleResolve(result);
+      },
+      reject: (error) => {
+        if (active.settled) return;
+        active.settled = true;
+        settleReject(error);
+      },
+      onProgress: handlers.onProgress,
+      onBatch: handlers.onBatch,
+      ackChain: Promise.resolve(),
+    };
+    this.active = active;
 
     try {
       this.worker.postMessage({ type: 'parse', taskId, name: input.name, blob: input.blob });
@@ -123,52 +117,6 @@ export class ParseWorkerClient implements ParseClientPort {
     }
 
     return promise;
-  }
-
-  parseToResult(
-    input: { name: string; bytes: Uint8Array },
-    onProgress: (progress: ParseProgress) => void,
-  ): Promise<ParseResult> {
-    const blob = new Blob([input.bytes as BlobPart]);
-    const order: string[] = [];
-    const parts = new Map<string, Uint8Array[]>();
-    const rowCounts = new Map<string, number>();
-
-    return this.parse(
-      { name: input.name, blob },
-      {
-        onProgress,
-        onBatch: async (batch) => {
-          let list = parts.get(batch.table);
-          if (!list) {
-            list = [];
-            parts.set(batch.table, list);
-            rowCounts.set(batch.table, 0);
-            order.push(batch.table);
-          }
-          list.push(batch.ipc);
-          rowCounts.set(batch.table, (rowCounts.get(batch.table) ?? 0) + batch.rowCount);
-        },
-      },
-    ).then((streamed) => {
-      const columnsByTable = new Map(streamed.tables.map((table) => [table.name, table.columns]));
-      const tables: TableTransfer[] = order.map((name) => {
-        const tableParts = parts.get(name)!;
-        return {
-          name,
-          ipc: tableParts.length === 1 ? tableParts[0]! : concatIpc(tableParts),
-          rowCount: rowCounts.get(name) ?? 0,
-          columns: columnsByTable.get(name) ?? [],
-        };
-      });
-      return {
-        format: streamed.format,
-        tables,
-        issues: streamed.issues,
-        queries: streamed.queries,
-        capabilities: streamed.capabilities,
-      };
-    });
   }
 
   cancel(): void {
@@ -263,9 +211,12 @@ export class ParseWorkerClient implements ParseClientPort {
             this.worker.postMessage({ type: 'batchAck', taskId: active.id, seq: batch.seq });
           })
           .catch((error: unknown) => {
+            // Always attempt to settle the task with the real failure — a no-op if `finish`'s
+            // ack-chain wait (below) already resolved it first. Only touch the shared worker if
+            // this task still owns it; a newer task (or none) may already have replaced it.
+            active.reject(error);
             if (this.active !== active) return;
             this.active = null;
-            active.reject(error);
             try {
               this.worker.postMessage({ type: 'cancel', taskId: active.id });
             } catch {
@@ -275,16 +226,29 @@ export class ParseWorkerClient implements ParseClientPort {
           });
         break;
       }
-      case 'finish':
+      case 'finish': {
+        // The worker sends `finish` as soon as its pull loop is exhausted — it does NOT wait for
+        // outstanding batch acks first, so up to BATCH_CREDIT_WINDOW `onBatch` calls can still be
+        // in flight. Resolving immediately would let a caller (e.g. an ingest sink) act on a
+        // result before every batch has actually been handled. Waiting on `ackChain` — captured
+        // now, since every `batch` message for this task has already been synchronously chained
+        // onto it by the time `finish` arrives — guarantees every `onBatch` call has settled
+        // first. If one of them failed, its own `.catch` above already rejected the task with the
+        // real error, and `resolve` below becomes the (guarded) no-op.
         this.active = null;
-        active.resolve({
+        const result: StreamedParseResult = {
           format: message.format,
           tables: message.tables,
           issues: message.issues,
           queries: message.queries,
           capabilities: message.capabilities,
-        });
+        };
+        void active.ackChain.then(
+          () => active.resolve(result),
+          () => undefined,
+        );
         break;
+      }
       case 'error':
         this.active = null;
         active.reject(new Error(message.message));

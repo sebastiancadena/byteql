@@ -38,7 +38,14 @@
 
         const stopViewer = (): void => workbench?.closeActiveViewer();
         ownedController = new SessionController(
-          e2eHarness ? { database, parser: e2eHarness.createParser(), stopViewer } : { database, stopViewer },
+          e2eHarness
+            ? {
+                database,
+                parser: e2eHarness.createParser(),
+                stopViewer,
+                ...e2eHarness.control.sessionOverrides,
+              }
+            : { database, stopViewer },
         );
         currentController = ownedController;
         await ownedController.initialize();

@@ -21,6 +21,7 @@ const { database, databaseDispose, initialize, dispose, createBrowserDatabase, S
             source: null,
             format: null,
             progress: null,
+            openStartedAt: null,
             tables: [],
             issues: [],
             queries: [],

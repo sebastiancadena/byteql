@@ -1,4 +1,4 @@
-import type { TableSchema, TableTransfer } from '@byteql/core';
+import type { TableSchema } from '@byteql/core';
 import type { Table } from 'apache-arrow';
 
 export interface QueryResult {
@@ -28,7 +28,6 @@ export interface IngestSession {
 
 export interface ByteqlDatabase {
   initialize(): Promise<void>;
-  replaceTables(tables: readonly TableTransfer[]): Promise<void>;
   beginIngest(options: IngestOptions): Promise<IngestSession>;
   query(sql: string): Promise<QueryResult>;
   cancelQuery(): Promise<boolean>;

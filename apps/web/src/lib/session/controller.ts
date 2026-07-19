@@ -1,9 +1,9 @@
-import type { ParseResult, TableTransfer } from '@byteql/core';
-import type { ByteqlDatabase } from '@byteql/db';
+import { sweepSpillOrphans, type ByteqlDatabase, type IngestSession } from '@byteql/db';
 
 import demoUrl from '../../assets/demo.mid?url';
 import { ParseWorkerClient, type ParseClientPort, type ParseProgress } from '../parse-worker-client.js';
 import { initialSessionState, reduceSession, type SessionEvent, type SessionState } from './state.js';
+import { TIER_THRESHOLD_BYTES, chooseTier } from './tiering.js';
 
 export interface SessionControllerOptions {
   database: ByteqlDatabase;
@@ -11,6 +11,8 @@ export interface SessionControllerOptions {
   fetch?: typeof fetch;
   demoUrl?: string;
   stopViewer?: () => void;
+  /** Test/e2e override of the tiering thresholds; production uses the tiering.ts defaults. */
+  tiering?: { tierThresholdBytes?: number; rotationBytes?: number };
 }
 
 const disposedError = (): Error => new Error('The session controller is disposed.');
@@ -26,6 +28,8 @@ const errorMessage = (error: unknown, fallback: string): string =>
 const isAbortError = (error: unknown): boolean =>
   error instanceof DOMException ? error.name === 'AbortError' : false;
 
+const bytesToMb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
+
 export class SessionController {
   private state: SessionState = initialSessionState;
   private readonly subscribers = new Set<(state: SessionState) => void>();
@@ -34,16 +38,18 @@ export class SessionController {
   private readonly fetchSample: typeof fetch;
   private readonly demoUrl: string;
   private readonly stopViewer: () => void;
+  private readonly tiering: { tierThresholdBytes?: number; rotationBytes?: number } | undefined;
   private initialization: Promise<void> | null = null;
   private readonly initializationAbort = new AbortController();
   private sampleBytes: Uint8Array | null = null;
-  private committedTables: readonly TableTransfer[] = [];
-  private registrationGeneration: number | null = null;
   private sessionGeneration = 0;
   private queryGeneration = 0;
   private retainedFile: File | null = null;
   private disposed = false;
   private disposal: Promise<void> | null = null;
+  /** Cumulative IPC bytes ingested this open, and the last parser-reported stage, for progress. */
+  private bytesIngested = 0;
+  private lastProgress: ParseProgress | null = null;
 
   constructor(options: SessionControllerOptions) {
     this.database = options.database;
@@ -51,6 +57,7 @@ export class SessionController {
     this.fetchSample = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.demoUrl = options.demoUrl ?? demoUrl;
     this.stopViewer = options.stopViewer ?? (() => undefined);
+    this.tiering = options.tiering;
   }
 
   initialize(): Promise<void> {
@@ -78,10 +85,7 @@ export class SessionController {
   openFile(file: File): Promise<void> {
     this.assertUsable();
     this.retainedFile = file;
-    return this.open(
-      { name: basename(file.name), size: file.size },
-      async () => new Uint8Array(await file.arrayBuffer()),
-    );
+    return this.open({ name: basename(file.name), size: file.size }, file);
   }
 
   openSample(): Promise<void> {
@@ -91,9 +95,7 @@ export class SessionController {
     }
     this.retainedFile = null;
     const retained = this.sampleBytes;
-    return this.open({ name: 'demo.mid', size: retained.byteLength }, () =>
-      Promise.resolve(retained.slice()),
-    );
+    return this.open({ name: 'demo.mid', size: retained.byteLength }, new Blob([retained as BlobPart]));
   }
 
   runQuery(sql: string): Promise<void> {
@@ -120,7 +122,6 @@ export class SessionController {
       this.state.phase === 'normalizing' ||
       this.state.phase === 'parsing' ||
       this.state.phase === 'projecting' ||
-      this.state.phase === 'registering' ||
       this.state.phase === 'querying'
     ) {
       this.dispatch({ type: 'cancelled' });
@@ -144,7 +145,6 @@ export class SessionController {
     void this.initialization?.catch(() => undefined);
     this.sampleBytes = null;
     this.retainedFile = null;
-    this.committedTables = [];
     this.stopActiveViewer();
     try {
       this.parser.dispose();
@@ -164,6 +164,9 @@ export class SessionController {
     const [response] = await Promise.all([
       this.fetchSample(this.demoUrl, { signal: this.initializationAbort.signal }),
       this.database.initialize(),
+      // Best-effort: reclaim any OPFS spill directories orphaned by a prior crashed session.
+      // No generation is "kept" — a fresh controller never inherits an in-flight ingest.
+      sweepSpillOrphans([]).catch(() => undefined),
     ]);
     if (!response.ok) throw new Error('The bundled demo MIDI could not be loaded.');
     const bytes = new Uint8Array(await response.arrayBuffer());
@@ -171,43 +174,129 @@ export class SessionController {
     this.sampleBytes = bytes;
   }
 
-  private open(source: { name: string; size: number }, readBytes: () => Promise<Uint8Array>): Promise<void> {
+  private open(source: { name: string; size: number }, blob: Blob): Promise<void> {
     const generation = ++this.sessionGeneration;
     ++this.queryGeneration;
     this.cancelParser();
     this.stopActiveViewer();
     const queryCancellation = this.cancelDatabaseQuery();
+    this.bytesIngested = 0;
+    this.lastProgress = null;
     this.dispatch({ type: 'opening', source });
-    return this.completeOpen(generation, source.name, readBytes, queryCancellation);
+    return this.completeOpen(generation, source.name, blob, queryCancellation);
   }
 
   private async completeOpen(
     generation: number,
     name: string,
-    readBytes: () => Promise<Uint8Array>,
+    blob: Blob,
     queryCancellation: Promise<boolean>,
   ): Promise<void> {
+    await queryCancellation;
+    if (!this.isCurrent(generation)) return;
+
+    const tierThresholdBytes = this.tiering?.tierThresholdBytes ?? TIER_THRESHOLD_BYTES;
+    const tier = chooseTier(blob.size, tierThresholdBytes);
+    if (tier === 'spill') {
+      // Fire-and-forget: best-effort request not to have OPFS spill data evicted under pressure.
+      // `navigator.storage` is absent in non-browser test environments, hence the guard.
+      void navigator.storage?.persist?.().catch(() => undefined);
+    }
+
+    const rotationBytes = this.tiering?.rotationBytes;
+    let ingest: IngestSession;
     try {
-      const [, bytes] = await Promise.all([queryCancellation, readBytes()]);
-      if (!this.isCurrent(generation)) return;
-      const result = await this.parser.parseToResult({ name, bytes }, (progress) => {
-        if (this.isCurrent(generation)) this.progress(progress);
+      ingest = await this.database.beginIngest({
+        schemas: 'discover',
+        tier,
+        generation,
+        ...(rotationBytes !== undefined ? { rotationBytes } : {}),
       });
-      if (!this.isCurrent(generation)) return;
-      this.dispatch({ type: 'registering', format: result.format });
-      if (!(await this.registerTables(generation, result.tables))) return;
-      this.dispatchReady(result);
     } catch (error) {
+      if (this.isCurrent(generation)) {
+        this.dispatch({ type: 'failed', message: this.openFailureMessage(error, tierThresholdBytes) });
+      }
+      return;
+    }
+
+    if (!this.isCurrent(generation)) {
+      await ingest.abort().catch(() => undefined);
+      return;
+    }
+
+    // The client resolves `parse()` as soon as the worker's `finish` message arrives, and the
+    // worker sends `finish` right after its last `nextBatch()` — it does NOT wait for that last
+    // batch (or up to BATCH_CREDIT_WINDOW batches still in flight) to be acked first. So `finish`
+    // can race ahead of one or more `onBatch` calls that are still awaiting `appendBatch`. Every
+    // `appendBatch` promise is tracked here and awaited below, after `parse()` settles but before
+    // `finalize()` — otherwise finalize can commit while a batch is still mid-append, silently
+    // dropping rows (or, once the session is finalized under it, rejecting that straggling append).
+    const pendingAppends: Promise<void>[] = [];
+
+    try {
+      const result = await this.parser.parse(
+        { name, blob },
+        {
+          onProgress: (progress) => {
+            if (this.isCurrent(generation)) this.progress(generation, progress);
+          },
+          onBatch: async (batch) => {
+            // Generation-guard only: the client can still deliver up to BATCH_CREDIT_WINDOW - 1
+            // queued `onBatch` calls after this generation is superseded or cancelled (already
+            // in-flight batch messages keep draining through the client's ack chain). Dropping
+            // them here — before touching `ingest` at all — means we never call `appendBatch` on
+            // an ingest whose abort may or may not have completed yet, without needing a second
+            // local "aborted" flag: every path that supersedes or cancels this generation bumps
+            // `sessionGeneration` synchronously before anything else happens.
+            if (!this.isCurrent(generation)) return;
+            this.bytesIngested += batch.ipc.byteLength;
+            this.progressBytes(generation);
+            const append = ingest.appendBatch(batch.table, batch.ipc);
+            pendingAppends.push(append);
+            await append;
+          },
+        },
+      );
+
+      if (!this.isCurrent(generation)) {
+        await ingest.abort().catch(() => undefined);
+        return;
+      }
+
+      await Promise.all(pendingAppends);
+      const summaries = await ingest.finalize();
+      const rowCounts = new Map(summaries.map((summary) => [summary.name, summary.rowCount]));
+      this.dispatch({
+        type: 'ready',
+        format: result.format,
+        tables: result.tables.map((table) => ({
+          ...table,
+          rowCount: rowCounts.get(table.name) ?? table.rowCount,
+        })),
+        issues: result.issues,
+        queries: result.queries,
+        capabilities: result.capabilities,
+      });
+    } catch (error) {
+      await ingest.abort().catch(() => undefined);
       if (!this.isCurrent(generation)) return;
       if (isAbortError(error)) {
         this.dispatch({ type: 'cancelled' });
         return;
       }
-      this.dispatch({
-        type: 'failed',
-        message: errorMessage(error, 'The local file could not be parsed.'),
-      });
+      this.dispatch({ type: 'failed', message: this.openFailureMessage(error, tierThresholdBytes) });
     }
+  }
+
+  private openFailureMessage(error: unknown, tierThresholdBytes: number): string {
+    const raw = errorMessage(error, 'The local file could not be parsed.');
+    if (raw.includes('SPILL_UNSUPPORTED')) {
+      return `This browser cannot analyze files over ${bytesToMb(tierThresholdBytes)} MB.`;
+    }
+    if (raw.includes('SPILL_QUOTA_EXCEEDED')) {
+      return 'Local storage ran out of space while analyzing this file. Free up space and try again.';
+    }
+    return raw;
   }
 
   private async executeQuery(sql: string, session: number, query: number): Promise<void> {
@@ -225,18 +314,21 @@ export class SessionController {
     }
   }
 
-  private progress(progress: ParseProgress): void {
-    this.dispatch({ type: 'progress', ...progress });
+  private progress(generation: number, progress: ParseProgress): void {
+    if (!this.isCurrent(generation)) return;
+    this.lastProgress = progress;
+    this.dispatch({ type: 'progress', ...progress, bytes: this.bytesIngested });
   }
 
-  private dispatchReady(result: ParseResult): void {
-    this.dispatch({
-      type: 'ready',
-      tables: result.tables,
-      issues: result.issues,
-      queries: result.queries,
-      capabilities: result.capabilities,
-    });
+  private progressBytes(generation: number): void {
+    if (!this.isCurrent(generation)) return;
+    const base = this.lastProgress ?? {
+      stage: 'parsing' as const,
+      completed: 0,
+      total: null,
+      label: 'Streaming data into the local database',
+    };
+    this.dispatch({ type: 'progress', ...base, bytes: this.bytesIngested });
   }
 
   private dispatch(event: SessionEvent): void {
@@ -248,28 +340,6 @@ export class SessionController {
         this.subscribers.delete(listener);
       }
     }
-  }
-
-  private async registerTables(generation: number, tables: readonly TableTransfer[]): Promise<boolean> {
-    this.registrationGeneration = generation;
-    try {
-      await this.database.replaceTables(tables);
-    } catch (error) {
-      if (this.registrationGeneration === generation) this.registrationGeneration = null;
-      throw error;
-    }
-
-    if (!this.isCurrent(generation)) {
-      if (!this.disposed && this.registrationGeneration === generation) {
-        await this.database.replaceTables(this.committedTables);
-        if (this.registrationGeneration === generation) this.registrationGeneration = null;
-      }
-      return false;
-    }
-
-    this.registrationGeneration = null;
-    this.committedTables = tables;
-    return true;
   }
 
   private cancelParser(): void {
