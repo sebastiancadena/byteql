@@ -197,8 +197,11 @@ degradation, never a silent in-memory attempt.
 
 ### Progress
 
-Status bar shows stage, bytes-based percentage, rolling MB/s, and cumulative per-table row
-counts from ack'd batches.
+Status bar shows stage, a percentage (bytes-based for pcap; MIDI reports track counts instead —
+see the amendment below), and a cumulative-average MB/s rate once enough of the file has been
+seen for the rate to be meaningful. Per-table row counts are not shown live during intake; the
+Explorer's per-table counts come from the terminal `finish`/`finalize` summary once the file is
+ready (see the amendment below).
 
 ## Error handling
 
@@ -243,7 +246,10 @@ issues arrive in the `finish` message.
 ## Implementation notes (recorded post-execution)
 
 Recorded 2026-07-19 after all 12 implementation tasks plus reviews landed
-(`71cb8c5..74596de`, 25 commits on main).
+(`71cb8c5..74596de`, 25 commits on main). The full slice-2 span, from the implementation plan
+through the doc-status commit that closed it out, is `f38aa7b..728f172` (26 commits) — the
+final-review fix wave below (C1, I1, I2, and trivia items) landed as further commits on top of
+that range.
 
 ### Measured numbers
 
@@ -307,3 +313,21 @@ first batch it sees for that table rather than requiring the caller to predeclar
   (`YIELD_INTERVAL_PACKETS`). Replacing it with an unclamped yield (`scheduler.yield()`,
   `MessageChannel` fallback) is what closed the 1 GB metric from an initial 80.6 s miss to the
   44.25 s reported above (Task 12).
+- **`finish` carries `schemas` after all — this field was dropped during implementation and
+  restored in the final-review fix wave (C1).** The Worker protocol section above always
+  documented `{ type: 'finish', ..., schemas }`, but the shipped worker omitted it, and
+  discover-mode `finalize()` only ever created tables an `appendBatch` had actually touched. A
+  capture that produces zero rows for a pack table (e.g. no `tcp` packets) therefore left that
+  table entirely absent from the catalog — regressing pre-slice-2 behavior, where every compiled
+  table always existed — and broke the AUTO-RUN `overview` query (a `UNION ALL` across every
+  table) with a Catalog Error. The fix wave restores `schemas: pack.schemas()` on `finish`,
+  threads it through `ParseWorkerClient`'s `StreamedParseResult`, and has `IngestSession.finalize`
+  accept an optional `backfillSchemas` argument: any schema table that received no `appendBatch`
+  call is created as an empty table at finalize, in both the memory and spill tiers, reusing the
+  Task 6 empty-table `CREATE TABLE` path. The controller mirrors the same backfill into the
+  `ready` state's `tables` list so the Explorer shows the zero-row table too.
+- **Progress section corrected (see "Progress" above):** per-table live row counts were never
+  actually shipped in the status bar (only the Explorer's post-`ready` summary shows per-table
+  counts); the reported MB/s is a cumulative average over the whole open so far, not a rolling
+  (windowed) rate; and the bytes-based percentage is pcap-only — MIDI's `progress.total` reports
+  track counts by design, since a MIDI file has no meaningful byte-position notion for the UI.
