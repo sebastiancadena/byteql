@@ -456,13 +456,10 @@
     if (!coverage) return;
     const offset = pointFromEvent(event);
     if (offset === null) return;
-    const spans = coverage.spansIn(offset, offset + 1);
-    let smallest: { start: number; end: number } | null = null;
-    for (const span of spans) {
-      if (!smallest || span.end - span.start < smallest.end - smallest.start) smallest = span;
-    }
-    if (!smallest) return;
-    apply({ type: 'record', start: smallest.start, end: smallest.end });
+    // spansIn clips to its window (degenerating to one byte here); rangeAt is unclipped.
+    const record = coverage.rangeAt(offset);
+    if (!record) return;
+    apply({ type: 'record', start: record.start, end: record.end });
     onreveal(offset);
   }
 

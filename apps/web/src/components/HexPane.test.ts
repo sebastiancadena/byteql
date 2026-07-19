@@ -1,10 +1,21 @@
 // @vitest-environment jsdom
 // apps/web/src/components/HexPane.test.ts
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { CoverageIndex } from '../lib/hex/coverage.js';
 import HexPane from './HexPane.svelte';
+
+/** A coverage stub whose rangeAt always returns one fixed record. */
+function fixedCoverage(record: { start: number; end: number }): CoverageIndex {
+  return {
+    rowCount: 1,
+    rowsAt: () => [],
+    rangeAt: () => record,
+    spansIn: () => [],
+  };
+}
 
 const blob = new Blob([new Uint8Array(64).map((_, i) => i)]);
 
@@ -106,6 +117,25 @@ describe('HexPane', () => {
     await user.keyboard('{Shift>}{ArrowRight}{/Shift}');
     await user.click(getByRole('button', { name: 'Filter results to selection' }));
     expect(onfilter).toHaveBeenCalledWith({ start: 4, end: 6 });
+  });
+
+  it('double-click records the full covering interval via rangeAt, not a clipped byte', async () => {
+    // jsdom canvas rects are zero-origin, so client coords pass straight through byteAtPoint.
+    // x=455 lands in the ascii column (index 0) of row 0 → offset 0; the stub records [2, 9).
+    const onreveal = vi.fn();
+    const onselectionchange = vi.fn();
+    const { container } = renderPane({
+      coverage: fixedCoverage({ start: 2, end: 9 }),
+      coverageReason: 'ok',
+      onreveal,
+      onselectionchange,
+    });
+    const canvas = container.querySelector('canvas') as HTMLCanvasElement;
+    await fireEvent.dblClick(canvas, { clientX: 455, clientY: 5 });
+    const root = container.querySelector('[data-hex-pane]');
+    expect(root?.getAttribute('data-hex-selection')).toBe('2-9');
+    expect(onselectionchange).toHaveBeenLastCalledWith({ start: 2, end: 9 });
+    expect(onreveal).toHaveBeenCalledWith(0);
   });
 
   it('collapses to the toolbar strip and persists the flag', async () => {

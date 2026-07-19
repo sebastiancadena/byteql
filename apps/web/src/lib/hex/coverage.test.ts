@@ -1,7 +1,7 @@
 import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { buildCoverage, COVERAGE_ROW_CAP, provenanceOfRow } from './coverage.js';
+import { buildCoverage, COVERAGE_ROW_CAP, createCoverageMemo, provenanceOfRow } from './coverage.js';
 
 function provenanceTable(rows: Array<[number, number]>) {
   return tableFromArrays({
@@ -61,6 +61,59 @@ describe('buildCoverage', () => {
   it('declines to index past the cap', () => {
     expect(COVERAGE_ROW_CAP).toBe(2_000_000);
     // Cap check is on numRows alone — no need to materialize 2M rows here; verified by contract.
+  });
+});
+
+describe('CoverageIndex.rangeAt', () => {
+  // row 0: packet [0, 100); row 1: tcp [20, 100); row 2: dns [40, 60); row 3: next packet [100, 200)
+  const nested = () =>
+    buildCoverage(
+      provenanceTable([
+        [0, 100],
+        [20, 100],
+        [40, 60],
+        [100, 200],
+      ]),
+    ).index;
+
+  it('returns the smallest covering interval UNCLIPPED', () => {
+    // spansIn(50, 51) would clip every span to a single byte; rangeAt keeps the dns full range.
+    expect(nested()?.rangeAt(50)).toEqual({ start: 40, end: 60 });
+  });
+
+  it('returns null when nothing covers the offset', () => {
+    expect(nested()?.rangeAt(250)).toBeNull();
+    expect(nested()?.rangeAt(-1)).toBeNull();
+  });
+
+  it('treats an interval exclusive end as uncovered', () => {
+    const { index } = buildCoverage(provenanceTable([[40, 60]]));
+    expect(index?.rangeAt(59)).toEqual({ start: 40, end: 60 });
+    expect(index?.rangeAt(60)).toBeNull();
+  });
+
+  it('breaks size ties by later start (same ordering as rowsAt)', () => {
+    // Two equal-size covering intervals over offset 30: [0, 40) and [10, 50); later start wins.
+    const { index } = buildCoverage(
+      provenanceTable([
+        [0, 40],
+        [10, 50],
+      ]),
+    );
+    expect(index?.rangeAt(30)).toEqual({ start: 10, end: 50 });
+  });
+});
+
+describe('createCoverageMemo', () => {
+  it('reuses the result for the same table reference and rebuilds for a new one', () => {
+    const memo = createCoverageMemo();
+    const table = provenanceTable([[0, 10]]);
+    const first = memo(table);
+    const second = memo(table);
+    expect(second).toBe(first); // reference-identical across calls with the same table
+    expect(memo(null)).toEqual({ index: null, reason: 'no-provenance' });
+    const other = provenanceTable([[0, 20]]);
+    expect(memo(other)).not.toBe(first);
   });
 });
 

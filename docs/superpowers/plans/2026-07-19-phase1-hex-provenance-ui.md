@@ -1764,13 +1764,13 @@ Key implementation notes the code must follow:
 5. **Pointer handling on the canvas:** `pointerdown` → `byteAtPoint(...)`; hit → apply
    `{ type: 'point', offset, extend: event.shiftKey }`, `setPointerCapture`, and (no shift)
    `onreveal(offset)`; `pointermove` while captured → `{ type: 'drag', offset }`;
-   `dblclick` → `coverage?.rowsAt(offset)`, take the FIRST row (smallest interval), get its
-   range via the `highlight`-independent path: `{ type: 'record', ...span }` where span comes
-   from a `rangeOfRows` helper prop-free: use `coverage.rowsAt` + `provenanceOfRow` is
-   Workbench-side, so `HexPane` receives `onselectrecord`? — NO: keep it simple, dblclick calls
-   `onreveal(offset)` too and applies `record` using the widest span in
-   `coverage.spansIn(offset, offset + 1)` filtered to the SMALLEST (min `end - start`).
-   Every selection change calls `onselectionchange(range)` (or `null`).
+   `dblclick` → `coverage?.rangeAt(offset)`, the smallest UNCLIPPED interval covering the byte
+   (ties: later start, matching `rowsAt` ordering). Apply `{ type: 'record', ...range }` and call
+   `onreveal(offset)`. Do NOT use `coverage.spansIn(offset, offset + 1)`: `spansIn` clips every
+   span to its query window, so a one-byte window degenerates each record to a single byte and the
+   double-click behaves like a plain click. `rangeAt` reuses the same sorted arrays +
+   `maxEndPrefix` early-exit as `rowsAt`. Every selection change calls `onselectionchange(range)`
+   (or `null`).
 6. **Scroll:** wheel → `scrollRow = clampScrollRow(scrollRow + 3 * Math.sign(event.deltaY), total, view)`
    (Shift → `± view`); thumb drag maps via `scrollRowForThumbTop`; track click pages by `view`.
 7. **Highlight prop:** `$effect` on `highlight` — when non-null, if its start row is outside

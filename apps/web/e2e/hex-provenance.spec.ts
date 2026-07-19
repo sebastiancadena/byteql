@@ -38,6 +38,18 @@ test('midi: grid row lights up bytes and a byte click reveals the row back', asy
     'aria-selected',
     'true',
   );
+
+  // Double-click selects the WHOLE covering record (rangeAt, unclipped), not one byte. The caret
+  // sits on a covered byte after the reveal above, so dblclicking the canvas there records a span
+  // wider than a single byte — the regression this guards against degenerated it to one byte.
+  await page.locator('[data-hex-pane] canvas').dblclick();
+  await expect
+    .poll(async () => {
+      const raw = (await pane(page).getAttribute('data-hex-selection')) ?? '';
+      const [start, end] = raw.split('-').map(Number);
+      return Number.isFinite(start) && Number.isFinite(end) ? end - start : 0;
+    })
+    .toBeGreaterThan(1);
 });
 
 test('pcap: browse, reveal, filter-to-selection, and hidden columns chip', async ({ page }) => {

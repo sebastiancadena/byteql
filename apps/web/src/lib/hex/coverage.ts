@@ -11,6 +11,8 @@ export interface ByteSpan {
 export interface CoverageIndex {
   rowCount: number;
   rowsAt(offset: number): number[];
+  /** Smallest UNCLIPPED interval covering `offset` (ties: later start), or null. */
+  rangeAt(offset: number): { start: number; end: number } | null;
   spansIn(start: number, end: number): ByteSpan[];
 }
 
@@ -96,6 +98,24 @@ export function buildCoverage(table: Table): CoverageResult {
       });
       return matches.map((i) => rows[i] as number);
     },
+    rangeAt(offset) {
+      let best = -1;
+      for (let i = upperBound(starts, count, offset) - 1; i >= 0; i -= 1) {
+        if ((maxEndPrefix[i] as number) <= offset) break;
+        if ((ends[i] as number) <= offset) continue;
+        if (best === -1) {
+          best = i;
+          continue;
+        }
+        const size = (ends[i] as number) - (starts[i] as number);
+        const bestSize = (ends[best] as number) - (starts[best] as number);
+        // Smaller interval wins; on a size tie the later start wins. Descending `i`
+        // visits larger starts first, so a strict `<` keeps the later-start winner.
+        if (size < bestSize) best = i;
+      }
+      if (best === -1) return null;
+      return { start: starts[best] as number, end: ends[best] as number };
+    },
     spansIn(start, end) {
       const spans: ByteSpan[] = [];
       for (let i = upperBound(starts, count, end - 1) - 1; i >= 0; i -= 1) {
@@ -112,4 +132,20 @@ export function buildCoverage(table: Table): CoverageResult {
     },
   };
   return { index, reason: 'ok' };
+}
+
+/**
+ * Builds a `buildCoverage` wrapper that memoizes on table reference identity, so
+ * repeated session publishes carrying the SAME result do not re-index (spec: once
+ * per result). Returns a stable `CoverageResult` for an unchanged table.
+ */
+export function createCoverageMemo(): (table: Table | null) => CoverageResult {
+  let cache: { table: Table; value: CoverageResult } | null = null;
+  return (table) => {
+    if (!table) return { index: null, reason: 'no-provenance' };
+    if (cache && cache.table === table) return cache.value;
+    const value = buildCoverage(table);
+    cache = { table, value };
+    return value;
+  };
 }
