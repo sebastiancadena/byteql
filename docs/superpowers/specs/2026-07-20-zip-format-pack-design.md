@@ -198,6 +198,9 @@ failure) applies unchanged. Registering `zipFormatPack` in `REGISTERED_PACKS` is
 - **Encrypted entries**: structure still parses; member contents are never inspected anyway.
 - **Self-extracting stubs**: not detected (see Probe).
 - **Extra fields**: surfaced only as `extra_len`; individual extra records are not a table.
+- **Filename encoding**: `file_name` / `comment` are decoded as UTF-8. Legacy archives that
+  store names in CP437 without the UTF-8 flag (bit 11) may show replacement characters for
+  non-ASCII bytes. CP437 decoding is out of scope for v1.
 
 ## Testing
 
