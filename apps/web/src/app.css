@@ -1382,6 +1382,7 @@ button {
     width: min(18rem, 88vw);
     visibility: visible;
     opacity: 1;
+    background: var(--color-surface);
     box-shadow: var(--shadow-pane);
   }
 

@@ -15,6 +15,7 @@
 <style>
   .brand-mark {
     display: inline-grid;
+    position: relative;
     width: 2rem;
     height: 2rem;
     flex: 0 0 auto;
@@ -34,7 +35,11 @@
 
   img {
     display: block;
-    width: 255%;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 170%;
     max-width: none;
+    transform: translate(-50%, -45.5%);
   }
 </style>
