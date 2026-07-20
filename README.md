@@ -222,9 +222,10 @@ pnpm release:pages
 
 The release command runs the production checks and privacy/bundle audit, prepares the oversized
 DuckDB modules as content-hashed gzip assets, verifies Cloudflare's 25 MiB per-file limit and the
-Pages header contract, then publishes only `apps/web/dist` to `byteql` on production branch `main`.
-It never publishes the instrumented `dist-e2e` directory. The `byteql.dev` custom domain is not
-attached yet.
+Pages header contract, and verifies that both signed Parquet extensions are available locally.
+It then publishes only `apps/web/dist` to `byteql` on production branch `main`; DuckDB never needs
+its default external extension repository at runtime. The instrumented `dist-e2e` directory is
+never published. The `byteql.dev` custom domain is not attached yet.
 
 ## Status and roadmap
 

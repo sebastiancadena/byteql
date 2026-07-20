@@ -27,13 +27,11 @@ import type {
 } from './types.js';
 import { deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 
-// The parquet extension ships statically linked into the eh/mvp wasm binaries this project
-// bundles (no separate extension file, no network fetch) — but duckdb-wasm still requires an
-// explicit `LOAD` to activate it. It MUST run before `autoload_known_extensions` is turned off
-// below (Task 11 found this the hard way: the spill tier's `COPY ... FORMAT parquet` and
-// `parquet_scan(...)` both fail with a Catalog Error otherwise, since nothing ever loads it once
-// auto-load is disabled and the configuration is locked).
-const LOAD_PARQUET_STATEMENT = 'LOAD parquet;';
+// DuckDB-WASM loads parquet dynamically. ByteQL mirrors both signed platform variants under this
+// same-origin repository; letting LOAD use DuckDB's default would leak a request to
+// extensions.duckdb.org during startup. Set the repository before LOAD, then disable all further
+// extension loading below.
+const LOCAL_EXTENSION_REPOSITORY_PATH = '/duckdb-extensions';
 
 // Order matters: the spill whitelist must be set BEFORE external access is disabled
 // (DuckDB rejects changing allowed_directories once external access is off), then lock.
@@ -77,6 +75,16 @@ const defaultSpillSupported = (): boolean =>
   typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory;
 
 const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
+
+const loadLocalParquetStatement = (moduleUrl: string): string => {
+  const base = typeof location === 'undefined' ? 'http://localhost' : location.origin;
+  const platform = moduleUrl.includes('mvp') ? 'wasm_mvp' : 'wasm_eh';
+  const extension = new URL(
+    `${LOCAL_EXTENSION_REPOSITORY_PATH}/v1.5.4/${platform}/parquet.duckdb_extension.wasm`,
+    base,
+  ).href;
+  return `LOAD '${extension.replaceAll("'", "''")}';`;
+};
 
 const prepareWasmModule = async (
   moduleUrl: string,
@@ -484,7 +492,7 @@ class BrowserDatabase implements ByteqlDatabase {
       }
       const connection = await this.database.connect();
       this.connection = connection;
-      await connection.query(LOAD_PARQUET_STATEMENT);
+      await connection.query(loadLocalParquetStatement(this.bundle.mainModule));
       for (const statement of HARDENING_STATEMENTS) {
         await connection.query(statement);
       }

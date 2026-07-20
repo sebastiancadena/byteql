@@ -126,6 +126,14 @@ try {
 
   releaseWasm();
   await appPage.locator('[data-app-ready="true"]').waitFor();
+  const appOrigin = new URL(origin).origin;
+  const externalAppRequests = appRequests.filter((url) => {
+    const requestUrl = new URL(url);
+    return requestUrl.protocol.startsWith('http') && requestUrl.origin !== appOrigin;
+  });
+  if (externalAppRequests.length > 0) {
+    throw new Error(`The production app made external requests:\n${externalAppRequests.join('\n')}`);
+  }
   const readyRequestCount = appRequests.length;
   await appPage.waitForTimeout(150);
   const postAppReadyRequests = appRequests.slice(readyRequestCount);
@@ -303,6 +311,7 @@ try {
     JSON.stringify({
       postReadyRequests: requests,
       postAppReadyRequests,
+      externalAppRequests,
       postInteractionRequests,
       postSmpteReadyRequests,
       audioResumeCalls,

@@ -12,11 +12,19 @@ const expectedHeaders = `/*.wasm
   Content-Type: application/gzip
   Cache-Control: public, max-age=31536000, immutable
 
+/duckdb-extensions/*
+  Content-Type: application/wasm
+  Cache-Control: public, max-age=31536000, immutable
+
 /index.html
   Cache-Control: no-cache
 `;
 const hashedCompressedWasm = /-[A-Za-z0-9_-]{8,}\.wasm\.gz$/u;
 const threadedAsset = /(?:pthread|duckdb-browser-coi|sharedworker)/iu;
+const requiredExtensions = [
+  'duckdb-extensions/v1.5.4/wasm_eh/parquet.duckdb_extension.wasm',
+  'duckdb-extensions/v1.5.4/wasm_mvp/parquet.duckdb_extension.wasm',
+];
 
 async function walk(root) {
   const paths = [];
@@ -35,6 +43,13 @@ if (actualHeaders !== expectedHeaders) {
 }
 
 const files = await walk(directory);
+const relativeFiles = files.map((path) => relative(directory, path));
+const missingExtensions = requiredExtensions.filter((path) => !relativeFiles.includes(path));
+if (missingExtensions.length > 0) {
+  throw new Error(
+    `Prepared Pages artifact is missing local DuckDB extensions: ${missingExtensions.join(', ')}`,
+  );
+}
 const oversized = [];
 for (const path of files) {
   const size = (await stat(path)).size;
@@ -47,7 +62,9 @@ if (oversized.length > 0) {
 }
 
 const names = files.map((path) => basename(path));
-const rawWasm = names.filter((name) => name.endsWith('.wasm'));
+const rawWasm = relativeFiles.filter(
+  (path) => path.endsWith('.wasm') && !path.startsWith('duckdb-extensions/'),
+);
 if (rawWasm.length > 0) {
   throw new Error(`Prepared Pages artifact still contains raw WASM: ${rawWasm.join(', ')}`);
 }

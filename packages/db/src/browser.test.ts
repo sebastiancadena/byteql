@@ -66,10 +66,10 @@ import { deleteSpillGeneration } from './spill-files.js';
 
 const deleteSpillGenerationMock = vi.mocked(deleteSpillGeneration);
 
-// The parquet extension must be loaded before autoload is disabled and the configuration is
-// locked below — see the comment on `LOAD_PARQUET_STATEMENT` in browser.ts.
+// The local parquet extension must be loaded before extension loading is disabled and the
+// configuration is locked below — see the same-origin repository comment in browser.ts.
 const HARDENING_STATEMENTS = [
-  'LOAD parquet;',
+  "LOAD 'http://localhost/duckdb-extensions/v1.5.4/wasm_eh/parquet.duckdb_extension.wasm';",
   "SET allowed_directories = ['opfs://byteql-spill/'];",
   'SET enable_external_access = false;',
   'SET autoinstall_known_extensions = false;',
@@ -222,6 +222,21 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.connection.send).toHaveBeenCalledWith('SELECT 42;');
     expect(duckdbMocks.connection.query.mock.invocationCallOrder.at(-1)).toBeLessThan(
       duckdbMocks.connection.send.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('loads the local MVP parquet extension when the MVP bundle is selected', async () => {
+    duckdbMocks.selectBundle.mockResolvedValueOnce({
+      mainModule: '/assets/duckdb-mvp.wasm',
+      mainWorker: '/assets/duckdb-browser-mvp.worker.js',
+      pthreadWorker: null,
+    });
+    const database = await createBrowserDatabase();
+
+    await database.initialize();
+
+    expect(duckdbMocks.connection.query).toHaveBeenCalledWith(
+      "LOAD 'http://localhost/duckdb-extensions/v1.5.4/wasm_mvp/parquet.duckdb_extension.wasm';",
     );
   });
 

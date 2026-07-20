@@ -18,6 +18,10 @@ const headers = `/*.wasm
   Content-Type: application/gzip
   Cache-Control: public, max-age=31536000, immutable
 
+/duckdb-extensions/*
+  Content-Type: application/wasm
+  Cache-Control: public, max-age=31536000, immutable
+
 /index.html
   Cache-Control: no-cache
 `;
@@ -29,6 +33,11 @@ async function fixture(): Promise<string> {
   await writeFile(join(directory, '_headers'), headers);
   await writeFile(join(directory, 'assets/duckdb-eh-AbCd1234.wasm.gz'), 'compressed');
   await writeFile(join(directory, 'assets/index-AbCd1234.js'), 'export {};\n');
+  for (const platform of ['wasm_eh', 'wasm_mvp']) {
+    const extensionDirectory = join(directory, `duckdb-extensions/v1.5.4/${platform}`);
+    await mkdir(extensionDirectory, { recursive: true });
+    await writeFile(join(extensionDirectory, 'parquet.duckdb_extension.wasm'), 'extension');
+  }
   return directory;
 }
 
