@@ -86,10 +86,12 @@ regression bar).
 
 ### Stamping point
 
-The projection engine never sees `_src_file`. The web app's ingestion path (parse-worker
-client → `database.append`) extends each table's schema with `_src_file` and stamps the
-current file's display name on every appended batch. One choke point; the engine's only
-involvement is the reserved-name validation noted above.
+The projection engine never sees `_src_file`. The parse worker stamps the column onto every
+batch's Arrow IPC (and extends the pack schemas it reports) immediately after the pack yields
+the batch — off the main thread, so gigabyte-scale ingest throughput is unaffected. One choke
+point; the engine's only involvement is the reserved-name validation noted above.
+*(Amended during planning: originally the main-thread append boundary; moved into the worker
+for throughput.)*
 
 ## Ingest flow & session lifecycle
 
@@ -131,9 +133,13 @@ monotonic across the batch. Status bar example: `parsing capture3.pcap (3/5) —
 
 - **Sniff mismatch** → skip file, record issue + `_files` row (`skipped`, reason).
 - **Mid-parse hard failure** (truncated mid-stream, worker error) → remove that file's
-  partial rows with `DELETE FROM <staging> WHERE _src_file = <name>` (works on both memory
-  and spill tiers), record `skipped` + error, continue with the next file. The surviving
-  dataset always contains whole files only.
+  partial rows, record `skipped` + error, continue with the next file. The surviving dataset
+  always contains whole files only. Mechanics per tier *(amended during planning — spill-tier
+  rows rotate into immutable parquet chunks, so a plain DELETE cannot reach them)*: the ingest
+  session gains file boundaries (`beginFile`/`discardCurrentFile`). `beginFile` rotates any
+  residual staged rows on the spill tier so no chunk ever mixes files; discard then deletes by
+  `_src_file` on the memory tier, and on the spill tier truncates staging and drops the
+  chunks rotated for that file.
 - **Every file fails** → the open fails as a whole with the collected errors.
 - File names flow into SQL literals (cleanup DELETE, hex filter). Every such literal goes
   through one escaping helper (or a bound parameter) — never ad-hoc concatenation.
