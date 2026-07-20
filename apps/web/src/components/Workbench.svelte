@@ -58,8 +58,8 @@
 
   function choosePickedFile(event: Event): void {
     const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (file) perform(() => controller.openFile(file));
+    const files = Array.from(input.files ?? []);
+    if (files.length > 0) perform(() => controller.openFiles(files));
     input.value = '';
   }
 
@@ -87,8 +87,8 @@
     event.preventDefault();
     dragCounter = 0;
     dropActive = false;
-    const file = event.dataTransfer?.files[0];
-    if (file) perform(() => controller.openFile(file));
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length > 0) perform(() => controller.openFiles(files));
   }
 
   const intakeBusy = $derived(['opening', 'normalizing', 'parsing', 'projecting'].includes(session.phase));
@@ -115,11 +115,45 @@
   // Memoize on result identity: session is reassigned on every publish (caret moves, progress
   // events), but buildCoverage must run once per result, not once per publish.
   const coverageMemo = createCoverageMemo();
-  // Task 8 replaces these with a real multi-file switcher; for now the hex pane and byte
-  // selection always operate on the first file in the batch.
-  const primaryFile = $derived(session.source?.files[0] ?? null);
-  const coverageResult = $derived(coverageMemo(session.result, primaryFile?.name ?? null));
-  const sourceBlob = $derived(primaryFile ? controller.getSourceBlob(primaryFile.name) : null);
+
+  // The hex pane's active file. Defaults to the first source file and repairs itself if that
+  // file leaves the session (e.g. a fresh open replaces the batch).
+  let hexFile = $state<string | null>(null);
+  const sourceFiles = $derived(session.source?.files ?? []);
+  $effect(() => {
+    if (sourceFiles.length === 0) {
+      hexFile = null;
+    } else if (hexFile === null || !sourceFiles.some((file) => file.name === hexFile)) {
+      hexFile = sourceFiles[0]!.name;
+    }
+  });
+  const hexFileSize = $derived(sourceFiles.find((file) => file.name === hexFile)?.size ?? 0);
+  const sourceBlob = $derived(hexFile ? controller.getSourceBlob(hexFile) : null);
+  const coverageResult = $derived(coverageMemo(session.result, hexFile));
+  // Memoize on (result, file) so the reset-key object stays reference-stable across publishes
+  // that don't touch either — otherwise every unrelated session field change (selectedRow,
+  // byteSelection, ...) would look like "a new result" to HexPane and wipe its local selection
+  // out from under the user (e.g. right after a goto/selection just set it).
+  let hexResetKeyMemo: {
+    result: SessionState['result'];
+    file: string | null;
+    value: { result: SessionState['result']; file: string | null };
+  } | null = null;
+  const hexResetKey = $derived.by(() => {
+    const result = session.result;
+    const file = hexFile;
+    if (hexResetKeyMemo && hexResetKeyMemo.result === result && hexResetKeyMemo.file === file) {
+      return hexResetKeyMemo.value;
+    }
+    const value = { result, file };
+    hexResetKeyMemo = { result, file, value };
+    return value;
+  });
+
+  function switchHexFile(file: string): void {
+    controller.selectByteRange(null);
+    hexFile = file;
+  }
   // Memoize on (result, selectedRow) so the highlight object stays reference-stable across
   // publishes; otherwise HexPane's identity guard re-flashes and re-centers on every publish
   // (including each caret move's byteRangeSelected dispatch), fighting user navigation.
@@ -138,6 +172,15 @@
     const value = provenanceOfRow(result, row);
     highlightMemo = { result, row, value };
     return value;
+  });
+
+  // Auto-switch: follow the selected row's provenance file, but only to a file still present
+  // in the session.
+  $effect(() => {
+    const file = rowHighlight?.file;
+    if (file && file !== hexFile && sourceFiles.some((candidate) => candidate.name === file)) {
+      hexFile = file;
+    }
   });
 
   let lastRevealOffset: number | null = null;
@@ -317,7 +360,7 @@
       <EmptyState
         busy={intakeBusy}
         error={actionError ?? session.fatalError}
-        onopen={(file) => perform(() => controller.openFile(file))}
+        onopen={(files) => perform(() => controller.openFiles(files))}
         onsample={() => perform(() => controller.openSample())}
       />
     </main>
@@ -471,19 +514,23 @@
           <HexPane
             bind:this={hexPane}
             blob={sourceBlob}
-            fileSize={primaryFile?.size ?? 0}
+            fileSize={hexFileSize}
             coverage={coverageResult.index}
             coverageReason={coverageResult.reason}
-            highlight={rowHighlight ? { start: rowHighlight.start, end: rowHighlight.end } : null}
+            highlight={rowHighlight && rowHighlight.file === hexFile
+              ? { start: rowHighlight.start, end: rowHighlight.end }
+              : null}
             filterAvailable={coverageResult.reason === 'ok'}
-            resetKey={session.result}
+            resetKey={hexResetKey}
             compact={compactMode}
+            files={sourceFiles}
+            currentFile={hexFile}
             onreveal={revealAt}
             onselectionchange={(range) =>
-              controller.selectByteRange(range && primaryFile ? { file: primaryFile.name, ...range } : null)}
+              controller.selectByteRange(range && hexFile ? { file: hexFile, ...range } : null)}
             onfilter={(range) =>
-              primaryFile &&
-              run(wrapFilterSql(draftSql || session.sql, { file: primaryFile.name, ...range }))}
+              hexFile && run(wrapFilterSql(draftSql || session.sql, { file: hexFile, ...range }))}
+            onfilechange={switchHexFile}
           />
         {/if}
       </section>

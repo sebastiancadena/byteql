@@ -6,7 +6,7 @@
   interface Props {
     busy?: boolean;
     error?: string | null;
-    onopen: (file: File) => void;
+    onopen: (files: File[]) => void;
     onsample: () => void;
   }
 
@@ -15,16 +15,16 @@
 
   function chooseFile(event: Event): void {
     const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (file) onopen(file);
+    const files = Array.from(input.files ?? []);
+    if (files.length > 0) onopen(files);
     input.value = '';
   }
 
   function dropFile(event: DragEvent): void {
     event.preventDefault();
     dragging = false;
-    const file = event.dataTransfer?.files[0];
-    if (file) onopen(file);
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length > 0) onopen(files);
   }
 
   const filePickerSupported = 'showOpenFilePicker' in window;
@@ -32,10 +32,10 @@
   function browseFiles(): void {
     if (!window.showOpenFilePicker) return;
     window
-      .showOpenFilePicker()
-      .then(([handle]) => {
-        if (!handle) throw new DOMException('No file was selected.', 'AbortError');
-        return handle.getFile();
+      .showOpenFilePicker({ multiple: true })
+      .then((handles) => {
+        if (handles.length === 0) throw new DOMException('No file was selected.', 'AbortError');
+        return Promise.all(handles.map((handle) => handle.getFile()));
       })
       .then(onopen)
       .catch((err: unknown) => {
@@ -76,7 +76,7 @@
     <div class="empty-actions">
       <label class="button button-primary">
         Open file
-        <input type="file" aria-label="Open file" disabled={busy} onchange={chooseFile} />
+        <input type="file" multiple aria-label="Open file" disabled={busy} onchange={chooseFile} />
       </label>
       <button class="button button-secondary" type="button" disabled={busy} onclick={onsample}>
         Try sample
@@ -87,7 +87,7 @@
         </button>
       {/if}
     </div>
-    <p class="drop-hint">Drop a binary file anywhere in this panel</p>
+    <p class="drop-hint">Drop binary files anywhere in this panel</p>
   </div>
 
   <div class="empty-proof-grid" aria-label="Privacy guarantees">

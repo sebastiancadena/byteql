@@ -25,6 +25,16 @@ describe('EmptyState native file picker intake', () => {
     expect(screen.getByRole('button', { name: 'Browse files' })).toBeTruthy();
   });
 
+  it('forwards every picked file and marks the input multiple', async () => {
+    const onopen = vi.fn();
+    render(EmptyState, { onopen, onsample: vi.fn() });
+    const input = screen.getByLabelText<HTMLInputElement>('Open file');
+    expect(input.multiple).toBe(true);
+    const files = [new File([new Uint8Array([1])], 'a.pcap'), new File([new Uint8Array([2])], 'b.pcap')];
+    await fireEvent.change(input, { target: { files } });
+    expect(onopen).toHaveBeenCalledWith(files);
+  });
+
   it('picker selection forwards the file to onopen and dismissal is silent', async () => {
     const file = new File([new Uint8Array([1, 2, 3])], 'capture.pcap');
     const handle = { getFile: vi.fn(async () => file) };
@@ -34,7 +44,8 @@ describe('EmptyState native file picker intake', () => {
     render(EmptyState, { onopen, onsample: vi.fn() });
 
     await fireEvent.click(screen.getByRole('button', { name: 'Browse files' }));
-    await vi.waitFor(() => expect(onopen).toHaveBeenCalledWith(file));
+    await vi.waitFor(() => expect(onopen).toHaveBeenCalledWith([file]));
+    expect(picker).toHaveBeenCalledWith({ multiple: true });
     cleanup();
 
     const abortError = new DOMException('The user aborted a request.', 'AbortError');

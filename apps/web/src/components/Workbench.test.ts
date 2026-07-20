@@ -569,8 +569,70 @@ describe('Inspector Workbench', () => {
     expect(screen.getByText('Drop to open')).toBeTruthy();
 
     await fireEvent.drop(appShell, { dataTransfer: { files: [file] } });
-    expect(controller.openFile).toHaveBeenCalledWith(file);
+    expect(controller.openFiles).toHaveBeenCalledWith([file]);
     expect(screen.queryByText('Drop to open')).toBeNull();
+  });
+
+  it('dropping multiple files opens them as one batch', async () => {
+    const controller = new FakeController(readyState());
+    const { container } = render(Workbench, { controller });
+    const appShell = container.querySelector('.app-shell') as HTMLElement;
+    const fileA = new File([new Uint8Array([1, 2, 3])], 'a.pcap');
+    const fileB = new File([new Uint8Array([4, 5, 6])], 'b.pcap');
+
+    await fireEvent.dragEnter(appShell, { dataTransfer: { types: ['Files'] } });
+    await fireEvent.drop(appShell, { dataTransfer: { files: [fileA, fileB] } });
+    expect(controller.openFiles).toHaveBeenCalledWith([fileA, fileB]);
+  });
+
+  it("selecting a row auto-switches the hex pane to that row's source file", async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      source: {
+        files: [
+          { name: 'a.pcap', size: 8 },
+          { name: 'b.pcap', size: 8 },
+        ],
+        totalSize: 16,
+      },
+      result: tableFromArrays({
+        record_id: [1n, 2n],
+        _src_file: ['b.pcap', 'a.pcap'],
+        _src_start: [4n, 4n],
+        _src_end: [6n, 6n],
+      }),
+    });
+    render(Workbench, { controller });
+
+    await fireEvent.click(screen.getByRole('row', { name: /row 1/i }));
+    expect(controller.selectResultRow).toHaveBeenCalledWith(0);
+
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    await vi.waitFor(() => {
+      const select = within(pane).getByLabelText('Hex file') as HTMLSelectElement;
+      expect(select.value).toBe('b.pcap');
+    });
+  });
+
+  it('manually switching the hex file clears the byte selection', async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      source: {
+        files: [
+          { name: 'a.pcap', size: 8 },
+          { name: 'b.pcap', size: 8 },
+        ],
+        totalSize: 16,
+      },
+      byteSelection: { file: 'a.pcap', start: 0, end: 2 },
+    });
+    render(Workbench, { controller });
+
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    const select = within(pane).getByLabelText('Hex file') as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: 'b.pcap' } });
+
+    expect(controller.selectByteRange).toHaveBeenCalledWith(null);
   });
 
   it('opens the shortcuts overlay with ? and toggles panes with Mod+B / Mod+I', async () => {
