@@ -635,6 +635,44 @@ describe('Inspector Workbench', () => {
     expect(controller.selectByteRange).toHaveBeenCalledWith(null);
   });
 
+  it('does not snap a manual hex-file switch back to the still-selected row provenance file', async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      source: {
+        files: [
+          { name: 'a.pcap', size: 8 },
+          { name: 'b.pcap', size: 8 },
+        ],
+        totalSize: 16,
+      },
+      result: tableFromArrays({
+        record_id: [1n, 2n],
+        _src_file: ['a.pcap', 'b.pcap'],
+        _src_start: [4n, 4n],
+        _src_end: [6n, 6n],
+      }),
+    });
+    render(Workbench, { controller });
+
+    // Select the row provenanced to a.pcap: the auto-switch effect follows it.
+    await fireEvent.click(screen.getByRole('row', { name: /row 1/i }));
+    expect(controller.selectResultRow).toHaveBeenCalledWith(0);
+
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    const select = within(pane).getByLabelText('Hex file') as HTMLSelectElement;
+    await vi.waitFor(() => expect(select.value).toBe('a.pcap'));
+
+    // Manually switch to b.pcap while the selected row's provenance is still a.pcap.
+    await fireEvent.change(select, { target: { value: 'b.pcap' } });
+    expect(controller.selectByteRange).toHaveBeenCalledWith(null);
+
+    // The auto-switch effect must not read hexFile as a dependency and re-fire, snapping
+    // the switcher back to a.pcap because rowHighlight.file is still 'a.pcap'.
+    await vi.waitFor(() => expect(select.value).toBe('b.pcap'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(select.value).toBe('b.pcap');
+  });
+
   it('opens the shortcuts overlay with ? and toggles panes with Mod+B / Mod+I', async () => {
     const user = userEvent.setup();
     const controller = new FakeController(readyState());
@@ -653,6 +691,19 @@ describe('Inspector Workbench', () => {
     expect(appShell.classList.contains('inspector-collapsed')).toBe(false);
     await user.keyboard('{Control>}i{/Control}');
     expect(appShell.classList.contains('inspector-collapsed')).toBe(true);
+  });
+
+  it('marks the workbench file picker input multi-select and forwards every picked file', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    const input = screen.getByLabelText<HTMLInputElement>('Open file picker');
+    expect(input.multiple).toBe(true);
+
+    const fileA = new File([new Uint8Array([1])], 'a.pcap');
+    const fileB = new File([new Uint8Array([2])], 'b.pcap');
+    await fireEvent.change(input, { target: { files: [fileA, fileB] } });
+    expect(controller.openFiles).toHaveBeenCalledWith([fileA, fileB]);
   });
 
   it('opens the file picker with Mod+O and focuses the hex goto input with Mod+G', async () => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   /* global Blob, DragEvent, Event, File, HTMLButtonElement, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
 
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
 
   import { createCoverageMemo, provenanceOfRow } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
@@ -122,8 +122,13 @@
   const sourceFiles = $derived(session.source?.files ?? []);
   $effect(() => {
     if (sourceFiles.length === 0) {
-      hexFile = null;
-    } else if (hexFile === null || !sourceFiles.some((file) => file.name === hexFile)) {
+      if (untrack(() => hexFile) !== null) hexFile = null;
+      return;
+    }
+    if (
+      untrack(() => hexFile) === null ||
+      !sourceFiles.some((file) => file.name === untrack(() => hexFile))
+    ) {
       hexFile = sourceFiles[0]!.name;
     }
   });
@@ -176,11 +181,24 @@
 
   // Auto-switch: follow the selected row's provenance file, but only to a file still present
   // in the session.
+  // rowHighlight is only reference-stable (see its memo above) across publishes that don't
+  // touch result/selectedRow — sourceFiles is NOT reference-stable across publishes (a fresh
+  // derived array on every session reassignment), so gating purely on "did this effect fire"
+  // would re-apply the auto-switch on every unrelated publish (e.g. the selectByteRange(null)
+  // a manual switch triggers), fighting the user. Gate on the memoized highlight's identity
+  // instead: only act the first time a given highlight is seen.
+  let lastAutoSwitchedHighlight: typeof rowHighlight = null;
   $effect(() => {
-    const file = rowHighlight?.file;
-    if (file && file !== hexFile && sourceFiles.some((candidate) => candidate.name === file)) {
-      hexFile = file;
+    const highlight = rowHighlight;
+    if (
+      highlight &&
+      highlight !== lastAutoSwitchedHighlight &&
+      sourceFiles.some((candidate) => candidate.name === highlight.file) &&
+      untrack(() => hexFile) !== highlight.file
+    ) {
+      hexFile = highlight.file;
     }
+    lastAutoSwitchedHighlight = highlight;
   });
 
   let lastRevealOffset: number | null = null;
@@ -351,6 +369,7 @@
       class="visually-hidden"
       type="file"
       aria-label="Open file picker"
+      multiple
       onchange={choosePickedFile}
     />
   {/if}
