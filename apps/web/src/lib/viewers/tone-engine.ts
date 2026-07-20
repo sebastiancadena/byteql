@@ -1,6 +1,8 @@
-import { getTransport, PolySynth, start, Synth } from 'tone';
+import { Frequency, getTransport, MembraneSynth, MetalSynth, NoiseSynth, PolySynth, start, Synth } from 'tone';
 
-const Tone = { getTransport, PolySynth, start, Synth };
+import { drumVoiceSpec, gmFamily, melodicVoiceSpec, type VoiceSpec } from './gm-voices.js';
+
+const Tone = { Frequency, getTransport, MembraneSynth, MetalSynth, NoiseSynth, PolySynth, start, Synth };
 
 export interface AudioRow {
   seconds: number;
@@ -8,6 +10,7 @@ export interface AudioRow {
   velocity: number;
   kind: 'note_on' | 'note_off';
   channel: number | null;
+  program: number | null;
 }
 
 export interface AudioEngine {
@@ -38,24 +41,81 @@ export interface SynthPort {
 
 export interface ToneEngineDependencies {
   startAudio(): Promise<void>;
-  createSynth(channel: number | null): SynthPort;
+  createMelodicVoice(spec: VoiceSpec): SynthPort;
+  createDrumVoice(): SynthPort;
   transport: TransportPort;
 }
 
+const midiToHz = (note: number): number => Tone.Frequency(note, 'midi').toFrequency();
+
+const buildMelodicVoice = (spec: VoiceSpec): SynthPort => {
+  const synth = new Tone.PolySynth(Tone.Synth, {
+    oscillator: spec.oscillator,
+    envelope: spec.envelope,
+  }).toDestination();
+  return {
+    triggerAttack: (note, time, velocity) => synth.triggerAttack(midiToHz(note), time, velocity),
+    triggerRelease: (note, time) => synth.triggerRelease(midiToHz(note), time),
+    releaseAll: () => synth.releaseAll(),
+    dispose: () => {
+      synth.dispose();
+    },
+  };
+};
+
+const buildDrumVoice = (): SynthPort => {
+  const kick = new Tone.MembraneSynth().toDestination();
+  const tom = new Tone.MembraneSynth({ pitchDecay: 0.1, octaves: 4 }).toDestination();
+  const snare = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.001, decay: 0.2, sustain: 0 } }).toDestination();
+  const hat = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.001, decay: 0.05, sustain: 0 } }).toDestination();
+  const cymbal = new Tone.MetalSynth().toDestination();
+  const all = [kick, tom, snare, hat, cymbal];
+  return {
+    triggerAttack: (note, time, velocity) => {
+      switch (drumVoiceSpec(note)) {
+        case 'kick':
+          kick.triggerAttackRelease('C1', '8n', time, velocity);
+          break;
+        case 'tom':
+          tom.triggerAttackRelease('G2', '8n', time, velocity);
+          break;
+        case 'snare':
+          snare.triggerAttackRelease('16n', time, velocity);
+          break;
+        case 'hat':
+          hat.triggerAttackRelease('32n', time, velocity);
+          break;
+        case 'cymbal':
+          cymbal.triggerAttackRelease('C4', '4n', time, velocity);
+          break;
+      }
+    },
+    triggerRelease: () => undefined,
+    releaseAll: () => undefined,
+    dispose: () => {
+      for (const node of all) node.dispose();
+    },
+  };
+};
+
 const localToneDependencies: ToneEngineDependencies = {
   startAudio: () => Tone.start(),
-  createSynth: () => new Tone.PolySynth(Tone.Synth).toDestination(),
+  createMelodicVoice: (spec) => buildMelodicVoice(spec),
+  createDrumVoice: () => buildDrumVoice(),
   transport: Tone.getTransport(),
 };
 
 const keyFor = ({ note, channel }: AudioRow): string => `${channel ?? 'none'}:${note}`;
 
+const voiceKeyFor = ({ channel, program }: AudioRow): string =>
+  channel === 9 ? `${channel}:drum` : `${channel ?? 'none'}:${gmFamily(program ?? 0)}`;
+
 export class ToneAudioEngine implements AudioEngine {
   private readonly dependencies: ToneEngineDependencies;
   private rows: readonly AudioRow[] = [];
   private readonly scheduledIds = new Set<number>();
-  private readonly activeNotes = new Map<string, number>();
-  private readonly synths = new Map<number | null, SynthPort>();
+  private readonly activeNotes = new Map<string, { synth: SynthPort; count: number }>();
+  private readonly synths = new Map<string, SynthPort>();
   private audioStarted: Promise<void> | null = null;
   private operationGeneration = 0;
   private playing = false;
@@ -139,20 +199,27 @@ export class ToneAudioEngine implements AudioEngine {
       let id = 0;
       id = this.dependencies.transport.scheduleOnce((time) => {
         this.scheduledIds.delete(id);
-        const synth = this.synths.get(row.channel);
-        if (this.disposed || !synth) return;
+        if (this.disposed) return;
         const key = keyFor(row);
         if (row.kind === 'note_on') {
-          this.activeNotes.set(key, (this.activeNotes.get(key) ?? 0) + 1);
+          const synth = this.synths.get(voiceKeyFor(row));
+          if (!synth) return;
+          // Drums are one-shot; do not track them for release so a matching
+          // note_off never triggers a (meaningless) release on the drum voice.
+          if (row.channel !== 9) {
+            const active = this.activeNotes.get(key);
+            if (active) active.count += 1;
+            else this.activeNotes.set(key, { synth, count: 1 });
+          }
           synth.triggerAttack(row.note, time, Math.min(127, Math.max(0, row.velocity)) / 127);
           return;
         }
 
-        const count = this.activeNotes.get(key) ?? 0;
-        if (count === 0) return;
-        if (count === 1) this.activeNotes.delete(key);
-        else this.activeNotes.set(key, count - 1);
-        synth.triggerRelease(row.note, time);
+        const active = this.activeNotes.get(key);
+        if (!active) return;
+        if (active.count === 1) this.activeNotes.delete(key);
+        else active.count -= 1;
+        active.synth.triggerRelease(row.note, time);
       }, row.seconds);
       this.scheduledIds.add(id);
     }
@@ -167,8 +234,14 @@ export class ToneAudioEngine implements AudioEngine {
 
   private ensureSynths(): void {
     for (const row of this.rows) {
-      if (!this.synths.has(row.channel)) {
-        this.synths.set(row.channel, this.dependencies.createSynth(row.channel));
+      const key = voiceKeyFor(row);
+      if (!this.synths.has(key)) {
+        this.synths.set(
+          key,
+          row.channel === 9
+            ? this.dependencies.createDrumVoice()
+            : this.dependencies.createMelodicVoice(melodicVoiceSpec(gmFamily(row.program ?? 0))),
+        );
       }
     }
   }
