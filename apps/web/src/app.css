@@ -1433,6 +1433,11 @@ button {
 }
 
 .hex-resize {
+  /* Sits above the toolbar it overlaps (margin-bottom pulls the toolbar up over
+     its lower half); without this, static stacking lets the toolbar swallow the
+     pointerdown and the drag-to-resize never starts. */
+  position: relative;
+  z-index: 1;
   height: 6px;
   margin-bottom: -3px;
   cursor: row-resize;
