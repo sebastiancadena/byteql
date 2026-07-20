@@ -388,18 +388,22 @@
           onchange={(sql) => (draftSql = sql)}
         />
 
-        {#if session.queryError || actionError}
-          <div class="query-diagnostic" role="alert">
-            <strong>Query diagnostic</strong>
-            <span>{session.queryError ?? actionError}</span>
-          </div>
-        {/if}
+        <!-- Always present so the workspace grid's positional rows never shift when
+             diagnostics come and go; empty it collapses to a zero-height row. -->
+        <div class="query-notices">
+          {#if session.queryError || actionError}
+            <div class="query-diagnostic" role="alert">
+              <strong>Query diagnostic</strong>
+              <span>{session.queryError ?? actionError}</span>
+            </div>
+          {/if}
 
-        {#each disabledCapabilityReasons as reason (reason)}
-          <div class="format-notice" role="status" aria-label="Format capability notice">
-            {reason}
-          </div>
-        {/each}
+          {#each disabledCapabilityReasons as reason (reason)}
+            <div class="format-notice" role="status" aria-label="Format capability notice">
+              {reason}
+            </div>
+          {/each}
+        </div>
 
         <div class="results-heading">
           <div>

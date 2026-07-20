@@ -275,6 +275,26 @@ describe('Inspector Workbench', () => {
     expect(destroy).toHaveBeenCalledOnce();
   });
 
+  it('keeps the hex pane anchored after the flexible results panel as diagnostics come and go', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    const workspace = document.querySelector('.sql-workspace') as HTMLElement;
+    const hexPane = workspace.querySelector('[data-hex-pane]') as HTMLElement;
+    // The workspace grid sizes rows positionally, and the pane's resize math reads its
+    // previous sibling as the flexible results row it grows into — so conditional
+    // diagnostics must never shift how children map to grid rows.
+    expect(workspace.lastElementChild).toBe(hexPane);
+    expect(hexPane.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+    const childCount = workspace.children.length;
+
+    controller.publish({ ...controller.state, queryError: 'Unexpected token near FROM' });
+    await vi.waitFor(() => expect(within(workspace).getByRole('alert')).toBeTruthy());
+    expect(workspace.children.length).toBe(childCount);
+    expect(workspace.lastElementChild).toBe(hexPane);
+    expect(hexPane.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+  });
+
   it('retains successful results and places a failed-query diagnostic beside the editor', () => {
     const controller = new FakeController({ ...readyState(), queryError: 'Unexpected token near FROM' });
     render(Workbench, { controller });

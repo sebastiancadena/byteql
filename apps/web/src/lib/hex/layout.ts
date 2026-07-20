@@ -67,6 +67,31 @@ export function byteAtPoint(
   return offset < fileSize ? offset : null;
 }
 
+export interface PaneResizeBoundsInput {
+  /** Current pane height in px. */
+  paneHeight: number;
+  rowHeight: number;
+  /** Current height of the flexible sibling row the pane grows into, or null if unknown. */
+  flexHeight: number | null;
+  /** The CSS minimum of that flexible row (the `minmax(min, 1fr)` floor). */
+  flexMinPx: number;
+  /** How far the workspace already overflows its box (scrollHeight - clientHeight). */
+  overflowPx: number;
+}
+
+/**
+ * Resize limits for the hex pane. The pane may only claim the slack its flexible
+ * sibling row can still yield before hitting its own minimum, less any overflow the
+ * workspace already has (so an oversized stored height can be clamped back into view).
+ */
+export function paneResizeBounds(input: PaneResizeBoundsInput): { min: number; max: number } {
+  const min = 44 + 4 * input.rowHeight;
+  if (input.flexHeight === null) return { min, max: Math.max(min, input.paneHeight) };
+  const give = Math.max(0, input.flexHeight - input.flexMinPx);
+  const overflow = Math.max(0, input.overflowPx);
+  return { min, max: Math.max(min, input.paneHeight + give - overflow) };
+}
+
 export const rowsInView = (heightPx: number, rowHeight: number): number =>
   Math.max(1, Math.floor(heightPx / rowHeight));
 

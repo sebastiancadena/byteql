@@ -672,6 +672,11 @@ button {
 
 .sql-workspace {
   display: grid;
+
+  /* Positional rows — the template relies on a fixed child order: editor heading,
+     SQL editor, query notices (always rendered, empty → 0), results heading,
+     results panel (the flexible row), hex pane (sized by its own drag height).
+     Growing the hex pane therefore shrinks the results panel above it. */
   grid-template-rows: auto minmax(8rem, 24%) auto auto minmax(8rem, 1fr) auto;
   height: 100%;
   min-height: 0;

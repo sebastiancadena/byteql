@@ -7,6 +7,7 @@ import {
   columnLayout,
   hexByteX,
   offsetDigits,
+  paneResizeBounds,
   rowsInView,
   scrollRowForThumbTop,
   thumbGeometry,
@@ -80,5 +81,37 @@ describe('scrollbar mapping', () => {
 
   it('pins the thumb to the top when everything fits', () => {
     expect(thumbGeometry(300, 10, 20, 0)).toEqual({ thumbPx: 300, thumbTop: 0 });
+  });
+});
+
+describe('pane resize bounds', () => {
+  const base = { paneHeight: 260, rowHeight: 18, flexMinPx: 128, overflowPx: 0 };
+
+  it('keeps a minimum of the toolbar plus four rows', () => {
+    expect(paneResizeBounds({ ...base, flexHeight: 400 }).min).toBe(44 + 4 * 18);
+  });
+
+  it('lets the pane grow by exactly the slack the flexible row can yield', () => {
+    // Results row at 400px can give up 400 - 128 = 272px before hitting its minimum.
+    expect(paneResizeBounds({ ...base, flexHeight: 400 }).max).toBe(260 + 272);
+  });
+
+  it('allows no growth once the flexible row sits at its minimum', () => {
+    expect(paneResizeBounds({ ...base, flexHeight: 128 }).max).toBe(260);
+  });
+
+  it('pulls max below the current height to recover clipped overflow', () => {
+    // Workspace already overflows by 100px (e.g. oversized stored height): the pane
+    // must shrink by that much even though the results row has nothing left to give.
+    expect(paneResizeBounds({ ...base, flexHeight: 128, overflowPx: 100 }).max).toBe(160);
+  });
+
+  it('never reports a max below the min', () => {
+    const bounds = paneResizeBounds({ ...base, paneHeight: 120, flexHeight: 128, overflowPx: 500 });
+    expect(bounds.max).toBe(bounds.min);
+  });
+
+  it('falls back to the current height when the flexible row is unknown', () => {
+    expect(paneResizeBounds({ ...base, flexHeight: null }).max).toBe(260);
   });
 });

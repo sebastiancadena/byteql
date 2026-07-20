@@ -4,6 +4,11 @@ import { expect, test } from '@playwright/test';
 // negative margin). It must stay stacked above that toolbar, otherwise the toolbar
 // swallows the pointerdown and drag-to-resize silently does nothing — the cursor
 // changes on hover but the pane never moves.
+// A taller viewport than the default: at 720p the workspace rows already sit at
+// their minimums, so the pane honestly has no room to grow (it no longer fakes
+// growth by extending into clipped overflow below the viewport).
+test.use({ viewport: { width: 1280, height: 960 } });
+
 test('hex pane resize grabber drags the pane taller', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Try sample' }).click();
@@ -33,7 +38,10 @@ test('hex pane resize grabber drags the pane taller', async ({ page }) => {
   );
   expect(topmostClass).toContain('hex-resize');
 
-  const before = await pane.evaluate((el) => (el as HTMLElement).getBoundingClientRect().height);
+  const before = await pane.evaluate((el) => {
+    const rect = (el as HTMLElement).getBoundingClientRect();
+    return { top: rect.top, height: rect.height };
+  });
 
   // Drag the top grabber upward → the pane grows.
   await page.mouse.move(x, y);
@@ -42,6 +50,16 @@ test('hex pane resize grabber drags the pane taller', async ({ page }) => {
   await page.mouse.move(x, y - 100, { steps: 8 });
   await page.mouse.up();
 
-  const after = await pane.evaluate((el) => (el as HTMLElement).getBoundingClientRect().height);
-  expect(after).toBeGreaterThan(before + 40);
+  const after = await pane.evaluate((el) => {
+    const rect = (el as HTMLElement).getBoundingClientRect();
+    return { top: rect.top, height: rect.height };
+  });
+  expect(after.height).toBeGreaterThan(before.height + 40);
+  // The pane must grow UPWARD — its top edge follows the pointer while the results
+  // panel above yields the space — not extend downward into clipped overflow.
+  expect(after.top).toBeLessThan(before.top - 40);
+  // And the grown pane must still fit the viewport (no clipped bottom edge).
+  const paneBottom = after.top + after.height;
+  const viewport = page.viewportSize();
+  expect(paneBottom).toBeLessThanOrEqual((viewport?.height ?? 0) + 1);
 });

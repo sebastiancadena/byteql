@@ -13,6 +13,7 @@
     clampScrollRow,
     columnLayout,
     offsetDigits,
+    paneResizeBounds,
     rowsInView,
     scrollRowForThumbTop,
     thumbGeometry,
@@ -556,10 +557,20 @@
   let resizing = $state(false);
   let resizeStartY = 0;
   let resizeStartHeight = 0;
+  // The workspace grid gives the pane a fixed (auto) row and lets the row directly
+  // above — the results panel, always the pane's previous sibling — flex. Growing is
+  // therefore bounded by the slack that sibling can still yield, measured live.
   function resizeBounds(): { min: number; max: number } {
-    const min = 44 + 4 * metrics.rowHeight;
-    const parentHeight = rootEl?.parentElement?.clientHeight ?? paneHeight / 0.7;
-    return { min, max: Math.max(min, 0.7 * parentHeight) };
+    const parent = rootEl?.parentElement;
+    const flexRow = rootEl?.previousElementSibling;
+    const remPx = Number.parseFloat(getComputedStyle(window.document.documentElement).fontSize) || 16;
+    return paneResizeBounds({
+      paneHeight,
+      rowHeight: metrics.rowHeight,
+      flexHeight: flexRow ? flexRow.clientHeight : null,
+      flexMinPx: 8 * remPx, // keep in sync with the workspace's minmax(8rem, 1fr) row
+      overflowPx: parent ? parent.scrollHeight - parent.clientHeight : 0,
+    });
   }
   function onResizePointerdown(event: PointerEvent): void {
     event.preventDefault();
@@ -592,6 +603,20 @@
       localStorage.setItem(HEIGHT_KEY, String(Math.round(paneHeight)));
     }
   }
+
+  // Clamp the pane back into the workspace when it shrinks (window resize, or an
+  // oversized stored height on first layout — the observer fires once on observe).
+  $effect(() => {
+    const parent = rootEl?.parentElement;
+    if (!parent || collapsed) return;
+    if (typeof window.ResizeObserver !== 'function') return;
+    const observer = new window.ResizeObserver(() => {
+      const { min, max } = resizeBounds();
+      if (paneHeight > max) paneHeight = Math.max(min, max);
+    });
+    observer.observe(parent);
+    return () => observer.disconnect();
+  });
 
   // Track viewport height so the canvas fills the pane body.
   $effect(() => {
