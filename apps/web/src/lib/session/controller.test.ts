@@ -1455,10 +1455,9 @@ describe('parse worker boundary', () => {
           { name: 'id', type: 'Int32', nullable: false },
           { name: 'value', type: 'Int32', nullable: true },
           { name: 'flag', type: 'Float64', nullable: true },
-          // The stamped `_src_file` column is absent from the fake pack's schemas() above, so its
-          // nullability falls back to the stamped batch's own Arrow field (Utf8 columns default to
-          // nullable), same as `flag` above.
-          { name: '_src_file', type: 'Utf8', nullable: true },
+          // The stamped `_src_file` column is absent from the fake pack's schemas() above, but
+          // deriveColumns forces it to non-nullable since the provenance column is always populated.
+          { name: '_src_file', type: 'Utf8', nullable: false },
         ],
       },
     ]);
@@ -1511,7 +1510,7 @@ describe('parse worker boundary', () => {
         rowCount: totalBatches,
         columns: [
           { name: 'id', type: 'Int32', nullable: false },
-          { name: '_src_file', type: 'Utf8', nullable: true },
+          { name: '_src_file', type: 'Utf8', nullable: false },
         ],
       },
     ]);

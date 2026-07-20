@@ -71,7 +71,8 @@ const deriveColumns = (pack: FormatPack, table: string, ipc: Uint8Array): readon
   return arrow.schema.fields.map((field) => ({
     name: field.name,
     type: field.type.toString(),
-    nullable: nullable?.get(field.name) ?? field.nullable,
+    // The stamped provenance column is always populated; Arrow's field flag over-reports it as nullable.
+    nullable: field.name === '_src_file' ? false : (nullable?.get(field.name) ?? field.nullable),
   }));
 };
 
