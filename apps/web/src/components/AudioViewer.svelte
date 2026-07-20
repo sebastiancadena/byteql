@@ -60,6 +60,7 @@
     const velocityColumn = value.getChild('velocity');
     const kindColumn = value.getChild('kind');
     const channelColumn = value.getChild('channel');
+    const programColumn = value.getChild('program');
     const valid: AudioRow[] = [];
     let invalid = 0;
 
@@ -70,6 +71,12 @@
       const kind = kindColumn?.get(index);
       const channelValue = channelColumn?.get(index);
       const channel = channelColumn ? numeric(channelValue) : null;
+      const programValue = programColumn?.get(index);
+      const programNumber = programColumn ? numeric(programValue) : null;
+      const program =
+        programNumber !== null && Number.isInteger(programNumber) && programNumber >= 0 && programNumber <= 127
+          ? programNumber
+          : null;
       if (
         seconds === null ||
         seconds < 0 ||
@@ -90,7 +97,7 @@
         invalid += 1;
         continue;
       }
-      valid.push({ seconds, note, velocity, kind, channel });
+      valid.push({ seconds, note, velocity, kind, channel, program });
     }
 
     return {
