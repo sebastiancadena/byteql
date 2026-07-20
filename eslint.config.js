@@ -6,6 +6,7 @@ export default [
   {
     ignores: [
       '.superpowers/**',
+      '.wrangler/**',
       '**/node_modules/**',
       '**/dist/**',
       '**/dist-e2e/**',
