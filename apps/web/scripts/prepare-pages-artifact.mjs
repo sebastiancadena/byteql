@@ -19,7 +19,7 @@ async function walk(root) {
 }
 
 const files = await walk(directory);
-const wasmFiles = files.filter((path) => path.endsWith('.wasm'));
+const wasmFiles = (await walk(join(directory, 'assets'))).filter((path) => path.endsWith('.wasm'));
 if (wasmFiles.length === 0) {
   throw new Error(`Pages preparation found no raw WASM assets in ${directory}.`);
 }
