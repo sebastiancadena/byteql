@@ -27,8 +27,21 @@ Author `apps/web/public/_headers` so Vite copies it unchanged to `apps/web/dist/
 - `/index.html` sets `Cache-Control: no-cache` so a new deployment's entry point propagates without
   retaining references to an older asset graph.
 
-Immutable WASM caching is safe only while Vite emits content-hashed WASM filenames. The release
-artifact verification must reject a stable `.wasm` filename before deployment.
+The normal Vite build emits 34.3 MiB and 39.4 MiB DuckDB modules, above Cloudflare Pages' 25 MiB
+per-file limit. The Pages preparation step therefore gzip-compresses each content-hashed `.wasm`
+asset, rewrites its generated JavaScript reference to `.wasm.gz`, and removes the oversized raw
+module from the deployable artifact. The compressed modules are about 8-9 MiB each.
+
+The database runtime recognizes `.wasm.gz`, fetches and decompresses it with the browser's
+`DecompressionStream`, creates an `application/wasm` blob URL, and gives that URL to DuckDB's worker.
+DuckDB therefore retains its `WebAssembly.instantiateStreaming()` fast path against a correctly
+typed response without relying on Pages to decode a precompressed static file. The blob URL is
+revoked after DuckDB finishes instantiation.
+
+The `_headers` file also gives `/*.wasm.gz` an explicit gzip content type and the same immutable
+cache policy. Immutable caching is safe only while Vite emits content-hashed WASM filenames. The
+release artifact verification must reject a stable WASM filename, a remaining raw `.wasm`, or any
+file above 25 MiB before deployment.
 
 Do not add `Cross-Origin-Opener-Policy` or `Cross-Origin-Embedder-Policy`. ByteQL registers only
 DuckDB-WASM's MVP and exception-handling bundles and provides no `pthreadWorker`, so the deployed
@@ -42,18 +55,21 @@ than source intent:
 
 1. `dist/index.html` and `dist/_headers` exist.
 2. The `_headers` rules and values match the deployment contract.
-3. At least one WASM asset exists and every WASM basename carries Vite's content-hash segment.
-4. No threaded DuckDB/PThread worker asset is present unless the header policy is deliberately
+3. At least one `.wasm.gz` asset exists and every module basename carries Vite's content-hash
+   segment.
+4. No raw `.wasm` or file above 25 MiB remains in the deployable directory.
+5. No threaded DuckDB/PThread worker asset is present unless the header policy is deliberately
    updated in the same change.
 
 The verifier receives co-located Vitest coverage for accepted and rejected temporary artifacts.
 
 Expose repository-level commands with distinct responsibilities:
 
-- `verify:pages` validates the built Pages artifact.
+- `prepare:pages` gzip-compresses and rewrites the production WASM assets.
+- `verify:pages` validates the prepared Pages artifact.
 - `deploy:pages` verifies the existing artifact and uploads it to project `byteql`, branch `main`.
-- `release:pages` runs the full production check, the privacy/bundle audit, artifact verification,
-  and then `deploy:pages`.
+- `release:pages` runs the full production check, the privacy/bundle audit, Pages preparation,
+  artifact verification, and then `deploy:pages`.
 
 The deployment command uses Wrangler's explicit project and branch flags. It must not publish
 `dist-e2e`; only `apps/web/dist` is deployable.
@@ -73,13 +89,15 @@ Before the first upload:
 
 1. Run the verifier's unit tests through the web package test suite.
 2. Run the full production release preflight without its external upload step.
-3. Inspect `apps/web/dist` to confirm hashed `.wasm` assets and `_headers` placement.
+3. Inspect `apps/web/dist` to confirm hashed `.wasm.gz` assets, no raw `.wasm`, the 25 MiB ceiling,
+   and `_headers` placement.
 4. Create the `byteql` project with production branch `main`, then deploy the verified directory.
 
 After upload, request the live production URL and confirm:
 
 - the application reaches its ready state;
-- a WASM response is `Content-Type: application/wasm` with immutable caching;
+- a compressed WASM response has immutable caching and DuckDB initializes from its locally
+  decompressed `application/wasm` blob;
 - `/index.html` is served with `Cache-Control: no-cache`;
 - the response does not carry COOP/COEP headers;
 - no runtime request leaves the site origin after readiness, consistent with ByteQL's privacy
