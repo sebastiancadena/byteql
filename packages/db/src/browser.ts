@@ -77,11 +77,10 @@ const defaultSpillSupported = (): boolean =>
 const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
 
 const loadLocalParquetStatement = (moduleUrl: string): string => {
-  const base = typeof location === 'undefined' ? 'http://localhost' : location.origin;
   const platform = moduleUrl.includes('mvp') ? 'wasm_mvp' : 'wasm_eh';
   const extension = new URL(
     `${LOCAL_EXTENSION_REPOSITORY_PATH}/v1.5.4/${platform}/parquet.duckdb_extension.wasm`,
-    base,
+    location.origin,
   ).href;
   return `LOAD '${extension.replaceAll("'", "''")}';`;
 };

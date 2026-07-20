@@ -138,6 +138,7 @@ describe('createBrowserDatabase', () => {
     vi.clearAllMocks();
     FakeWorker.instances = [];
     vi.stubGlobal('Worker', FakeWorker);
+    vi.stubGlobal('location', { origin: 'http://localhost' });
 
     duckdbMocks.selectBundle.mockResolvedValue({
       mainModule: '/assets/duckdb-eh.wasm',
