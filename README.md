@@ -10,7 +10,7 @@ join and aggregate them, and click any result row to light up its bytes in the h
 
 ## Why
 
-Analysts and engineers constantly need to *query* binary files — packet captures, event logs,
+Analysts and engineers constantly need to _query_ binary files — packet captures, event logs,
 registry hives, MIDI, proprietary telemetry — but existing tooling forces a bad choice:
 
 - **Format-specific GUIs** (Wireshark is superb for pcap, useless for everything else), with
@@ -19,7 +19,7 @@ registry hives, MIDI, proprietary telemetry — but existing tooling forces a ba
   suspicious record back to the bytes that produced it.
 - **One-off parsing scripts** written per investigation and thrown away.
 
-There is no general tool that turns *any* record-oriented binary into relational tables you can
+There is no general tool that turns _any_ record-oriented binary into relational tables you can
 join, filter, and aggregate — while preserving the link back to the exact bytes. ByteQL is that
 tool. Its differentiators:
 
@@ -77,14 +77,14 @@ parser), cheap worker communication, and Parquet export for free.
 pnpm workspace (`apps/*`, `packages/*`, `packages/formats/*`). The dependency direction **is**
 the architecture: `app → db → core ← formats`.
 
-| Path | Package | Role |
-|---|---|---|
-| `packages/core` | `@byteql/core` | The engine: projection spec schema + validation, sandboxed expression evaluator, anchor-path walker, `ProjectionSession`, TCP stream reassembly, Arrow batch builders, the `FormatPack`/`RecordSource` plugin contract. Zero-DOM — runs in Node, workers, and plain vitest. |
-| `packages/formats/midi` | `@byteql/midi` | First format pack: Standard MIDI File. |
-| `packages/formats/pcap` | `@byteql/pcap` | Network capture pack: 10-parser dissect chain (ethernet → ipv4/ipv6 → tcp/udp → dns/icmp/icmpv6/tls) with TCP stream reassembly. |
-| `packages/db` | `@byteql/db` | DuckDB-WASM wrapper: local-asset init, hardening PRAGMAs, Arrow registration, OPFS Parquet spill tier, serialized query path. |
-| `apps/web` | `@byteql/web` | Svelte UI: parse worker with probe registry, session state machine, virtualized grid, CodeMirror SQL console, canvas hex pane, capability-gated viewers (MIDI audio playback via Tone.js). |
-| `crates/byteql` | — | Name-reservation placeholder for the future Rust/wasm component work (e.g. an EVTX parser). No functionality yet. |
+| Path                    | Package        | Role                                                                                                                                                                                                                                                                        |
+| ----------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/core`         | `@byteql/core` | The engine: projection spec schema + validation, sandboxed expression evaluator, anchor-path walker, `ProjectionSession`, TCP stream reassembly, Arrow batch builders, the `FormatPack`/`RecordSource` plugin contract. Zero-DOM — runs in Node, workers, and plain vitest. |
+| `packages/formats/midi` | `@byteql/midi` | First format pack: Standard MIDI File.                                                                                                                                                                                                                                      |
+| `packages/formats/pcap` | `@byteql/pcap` | Network capture pack: 10-parser dissect chain (ethernet → ipv4/ipv6 → tcp/udp → dns/icmp/icmpv6/tls) with TCP stream reassembly.                                                                                                                                            |
+| `packages/db`           | `@byteql/db`   | DuckDB-WASM wrapper: local-asset init, hardening PRAGMAs, Arrow registration, OPFS Parquet spill tier, serialized query path.                                                                                                                                               |
+| `apps/web`              | `@byteql/web`  | Svelte UI: parse worker with probe registry, session state machine, virtualized grid, CodeMirror SQL console, canvas hex pane, capability-gated viewers (MIDI audio playback via Tone.js).                                                                                  |
+| `crates/byteql`         | —              | Name-reservation placeholder for the future Rust/wasm component work (e.g. an EVTX parser). No functionality yet.                                                                                                                                                           |
 
 ### Engine invariants
 
@@ -118,7 +118,7 @@ packages/formats/<name>/
 Each record type is described by a declarative `.ksy` schema. Schemas are precompiled to
 JavaScript parsers at build time (with debug mode on, which records the byte offsets of every
 parsed field — that's where provenance comes from). Kaitai's generated parsers are eager, so
-containers are *not* parsed with Kaitai: a thin streaming framer per container (pcap's 16-byte
+containers are _not_ parsed with Kaitai: a thin streaming framer per container (pcap's 16-byte
 record header, MIDI's chunk structure) slices out each record and hands its bytes to the
 generated parser. Containers are few; record types are many; Kaitai covers the many.
 
@@ -158,7 +158,7 @@ small, no component overhead); the component boundary exists for what Kaitai can
 EVTX's chunked binary XML is the first planned case (`crates/byteql`). Components will run
 sandboxed with no I/O beyond the interface: bytes in, Arrow out, no network, no file system.
 
-The trust model follows from this split: community format packs on the gallery path are *data*
+The trust model follows from this split: community format packs on the gallery path are _data_
 (`.ksy` + YAML) — reviewable, with no code execution beyond the shared engine. Only components
 carry code.
 
@@ -204,6 +204,27 @@ Notes:
   output is `dist`.
 - The project is developed test-first, and the privacy guarantee is itself under test
   (`apps/web/e2e/privacy.spec.ts` asserts zero network requests after app readiness).
+
+### Cloudflare Pages
+
+The production site uses a Cloudflare Pages Direct Upload project named `byteql`. Create the
+project once with an authenticated Wrangler 4.x installation:
+
+```bash
+wrangler pages project create byteql --production-branch=main
+```
+
+Release subsequent versions with:
+
+```bash
+pnpm release:pages
+```
+
+The release command runs the production checks and privacy/bundle audit, prepares the oversized
+DuckDB modules as content-hashed gzip assets, verifies Cloudflare's 25 MiB per-file limit and the
+Pages header contract, then publishes only `apps/web/dist` to `byteql` on production branch `main`.
+It never publishes the instrumented `dist-e2e` directory. The `byteql.dev` custom domain is not
+attached yet.
 
 ## Status and roadmap
 

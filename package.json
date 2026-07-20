@@ -12,6 +12,10 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "prepare:pages": "node apps/web/scripts/prepare-pages-artifact.mjs apps/web/dist",
+    "verify:pages": "node apps/web/scripts/verify-pages-artifact.mjs apps/web/dist",
+    "deploy:pages": "pnpm verify:pages && wrangler pages deploy apps/web/dist --project-name=byteql --branch=main",
+    "release:pages": "pnpm check && pnpm check:bundle && pnpm prepare:pages && pnpm deploy:pages",
     "test": "pnpm build && pnpm -r test",
     "test:e2e": "pnpm --filter @byteql/web test:e2e"
   },

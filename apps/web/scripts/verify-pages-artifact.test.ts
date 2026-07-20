@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, truncate, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 
 const webRoot = fileURLToPath(new URL('../', import.meta.url));
+const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const maximumFileBytes = 25 * 1024 * 1024;
 const headers = `/*.wasm
   Content-Type: application/wasm
@@ -81,5 +82,19 @@ describe('Pages artifact verifier', () => {
     await writeFile(join(directory, 'assets/duckdb-browser-coi.pthread.worker-AbCd1234.js'), '');
 
     expect(verify(directory).stderr).toContain('threaded asset');
+  });
+});
+
+test('root scripts compose preparation, verification, and an explicit production deploy', async () => {
+  const packageJson = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')) as {
+    scripts: Record<string, string>;
+  };
+
+  expect(packageJson.scripts).toMatchObject({
+    'prepare:pages': 'node apps/web/scripts/prepare-pages-artifact.mjs apps/web/dist',
+    'verify:pages': 'node apps/web/scripts/verify-pages-artifact.mjs apps/web/dist',
+    'deploy:pages':
+      'pnpm verify:pages && wrangler pages deploy apps/web/dist --project-name=byteql --branch=main',
+    'release:pages': 'pnpm check && pnpm check:bundle && pnpm prepare:pages && pnpm deploy:pages',
   });
 });
