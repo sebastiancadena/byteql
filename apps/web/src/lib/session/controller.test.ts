@@ -282,27 +282,28 @@ describe('SessionController', () => {
     stopViewer = vi.fn<() => void>();
   });
 
-  it('fetches and retains the bundled sample during initialize and never refetches it to open', async () => {
+  it('fetches the midi sample lazily on open and caches it across opens', async () => {
     const sample = new Uint8Array([0x4d, 0x54, 0x68, 0x64, 1, 2, 3]);
     const fetchSample = vi.fn().mockResolvedValue(new Response(sample));
     const controller = new SessionController({
       database,
       parser,
       fetch: fetchSample,
-      demoUrl: '/assets/demo.mid',
+      sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
       stopViewer,
     });
 
-    await Promise.all([controller.initialize(), controller.initialize()]);
-    expect(fetchSample).toHaveBeenCalledTimes(1);
+    await controller.initialize();
+    // Init no longer fetches any sample.
+    expect(fetchSample).not.toHaveBeenCalled();
+
+    const opening = controller.openSample('midi');
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
     expect(fetchSample).toHaveBeenCalledWith(
-      '/assets/demo.mid',
+      '/assets/fur_Elise_opening.mid',
       expect.objectContaining({ signal: expect.anything() }),
     );
-
-    const opening = controller.openSample();
-    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
-    expect(parser.calls[0]?.name).toBe('demo.mid');
+    expect(parser.calls[0]?.name).toBe('fur_Elise_opening.mid');
     expect(Array.from(new Uint8Array(await parser.calls[0]!.blob.arrayBuffer()))).toEqual(Array.from(sample));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
@@ -310,15 +311,42 @@ describe('SessionController', () => {
     await resolveFilesAppend(sessions[0]!);
     await opening;
 
-    const reopened = controller.openSample();
-    expect(fetchSample).toHaveBeenCalledTimes(1);
+    // Second open reuses the cache — no second fetch for the same url.
+    const reopening = controller.openSample('midi');
     await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
-    expect(Array.from(new Uint8Array(await parser.calls[1]!.blob.arrayBuffer()))).toEqual(Array.from(sample));
+    expect(fetchSample).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(sessions).toHaveLength(2));
     sessions[1]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
     parser.calls[1]!.finish(streamedResult('events', 3));
     await resolveFilesAppend(sessions[1]!);
-    await reopened;
+    await reopening;
+  });
+
+  it('opens the pcap sample as a two-file batch', async () => {
+    const sample = new Uint8Array([0xd4, 0xc3, 0xb2, 0xa1, 1, 2, 3]);
+    // A fresh Response per call: two distinct urls are fetched, and a Response body can only be read once.
+    const fetchSample = vi.fn().mockImplementation(() => Promise.resolve(new Response(sample)));
+    const controller = new SessionController({
+      database,
+      parser,
+      fetch: fetchSample,
+      sampleUrlOverrides: { pcap: ['/assets/SkypeIRC.cap', '/assets/v6.pcap'] },
+      stopViewer,
+    });
+    await controller.initialize();
+
+    const opening = controller.openSample('pcap');
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    expect(fetchSample).toHaveBeenCalledTimes(2);
+    expect(parser.calls[0]!.name).toBe('SkypeIRC.cap');
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'packets', rowCount: 2 }];
+    parser.calls[0]!.finish(streamedResult('packets', 1));
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
+    expect(parser.calls[1]!.name).toBe('v6.pcap');
+    parser.calls[1]!.finish(streamedResult('packets', 1));
+    await resolveFilesAppend(sessions[0]!);
+    await opening;
   });
 
   it('publishes UI-safe source metadata and progress without exposing the file', async () => {
@@ -491,7 +519,6 @@ describe('SessionController', () => {
       database,
       parser,
       fetch: fetchSample,
-      demoUrl: '/demo.mid',
       stopViewer,
     });
     const listener = vi.fn();
@@ -506,7 +533,7 @@ describe('SessionController', () => {
     expect(database.cancelQuery).toHaveBeenCalled();
     expect(database.dispose).toHaveBeenCalledOnce();
     expect(stopViewer).toHaveBeenCalled();
-    expect(() => controller.openSample()).toThrow(/disposed/i);
+    expect(() => controller.openSample('midi')).toThrow(/disposed/i);
     expect(() => controller.subscribe(vi.fn())).toThrow(/disposed/i);
   });
 
@@ -516,7 +543,6 @@ describe('SessionController', () => {
       database,
       parser,
       fetch: vi.fn().mockReturnValue(response.promise),
-      demoUrl: '/demo.mid',
       stopViewer,
     });
     const initialization = controller.initialize();
@@ -979,14 +1005,14 @@ describe('SessionController', () => {
       database,
       parser,
       fetch: fetchSample,
-      demoUrl: '/assets/demo.mid',
+      sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
       stopViewer,
     });
     await controller.initialize();
 
-    const opening = controller.openSample();
+    const opening = controller.openSample('midi');
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
-    expect(parser.calls[0]!.name).toBe('demo.mid');
+    expect(parser.calls[0]!.name).toBe('fur_Elise_opening.mid');
     expect(parser.calls[0]!.blob).toBeInstanceOf(Blob);
     expect(parser.calls[0]!.blob.size).toBe(sample.byteLength);
     expect(Array.from(new Uint8Array(await parser.calls[0]!.blob.arrayBuffer()))).toEqual(Array.from(sample));
@@ -1004,7 +1030,6 @@ describe('SessionController', () => {
       database,
       parser,
       fetch: vi.fn().mockResolvedValue(new Response(new Uint8Array([1]))),
-      demoUrl: '/demo.mid',
       stopViewer,
     });
 
@@ -1073,13 +1098,13 @@ describe('SessionController', () => {
       database,
       parser,
       fetch: fetchSample,
-      demoUrl: '/assets/demo.mid',
+      sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
       stopViewer,
     });
     await controller.initialize();
 
-    const opening = controller.openSample();
-    await vi.waitFor(() => expect(controller.getSourceBlob('demo.mid')).toBeInstanceOf(Blob));
+    const opening = controller.openSample('midi');
+    await vi.waitFor(() => expect(controller.getSourceBlob('fur_Elise_opening.mid')).toBeInstanceOf(Blob));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 1 }];
     parser.calls[0]!.finish(streamedResult('events', 1));
@@ -1087,7 +1112,7 @@ describe('SessionController', () => {
     await opening;
 
     await controller.dispose();
-    expect(controller.getSourceBlob('demo.mid')).toBeNull();
+    expect(controller.getSourceBlob('fur_Elise_opening.mid')).toBeNull();
   });
 
   it('batch happy path: two files parse sequentially into one ingest with a _files batch', async () => {

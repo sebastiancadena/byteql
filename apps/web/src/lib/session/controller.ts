@@ -1,7 +1,6 @@
 import type { ParseIssue, TableOverview } from '@byteql/core';
 import { sweepSpillOrphans, type ByteqlDatabase, type IngestSession } from '@byteql/db';
 
-import demoUrl from '../../assets/demo.mid?url';
 import {
   ParseWorkerClient,
   type ParseClientPort,
@@ -17,6 +16,7 @@ import {
   type FilesRow,
   type PlannedFile,
 } from './batch.js';
+import { SAMPLES, type SampleDefinition, type SampleId } from './samples.js';
 import {
   initialSessionState,
   reduceSession,
@@ -30,8 +30,9 @@ export interface SessionControllerOptions {
   database: ByteqlDatabase;
   parser?: ParseClientPort;
   fetch?: typeof fetch;
-  demoUrl?: string;
   stopViewer?: () => void;
+  /** Test override of per-sample asset URLs; production uses the samples.ts registry. */
+  sampleUrlOverrides?: Partial<Record<SampleId, readonly string[]>>;
   /** Test/e2e override of the tiering thresholds; production uses the tiering.ts defaults. */
   tiering?: { tierThresholdBytes?: number; rotationBytes?: number };
 }
@@ -57,12 +58,12 @@ export class SessionController {
   private readonly database: ByteqlDatabase;
   private readonly parser: ParseClientPort;
   private readonly fetchSample: typeof fetch;
-  private readonly demoUrl: string;
   private readonly stopViewer: () => void;
   private readonly tiering: { tierThresholdBytes?: number; rotationBytes?: number } | undefined;
   private initialization: Promise<void> | null = null;
   private readonly initializationAbort = new AbortController();
-  private sampleBytes: Uint8Array | null = null;
+  private readonly sampleUrlOverrides: Partial<Record<SampleId, readonly string[]>> | undefined;
+  private readonly sampleCache = new Map<string, Uint8Array>();
   private sessionGeneration = 0;
   private queryGeneration = 0;
   private retainedBlobs = new Map<string, Blob>();
@@ -85,7 +86,7 @@ export class SessionController {
     this.database = options.database;
     this.parser = options.parser ?? new ParseWorkerClient();
     this.fetchSample = options.fetch ?? globalThis.fetch.bind(globalThis);
-    this.demoUrl = options.demoUrl ?? demoUrl;
+    this.sampleUrlOverrides = options.sampleUrlOverrides;
     this.stopViewer = options.stopViewer ?? (() => undefined);
     this.tiering = options.tiering;
   }
@@ -126,14 +127,33 @@ export class SessionController {
     return this.openFiles([file]);
   }
 
-  openSample(): Promise<void> {
+  openSample(id: SampleId): Promise<void> {
     this.assertUsable();
-    if (!this.sampleBytes) {
-      return this.initialize().then(() => this.openSample());
+    const definition = SAMPLES.find((sample) => sample.id === id);
+    if (!definition) return Promise.reject(new Error(`Unknown sample: ${id}`));
+    return this.initialize().then(() => this.loadSample(definition));
+  }
+
+  private async loadSample(definition: SampleDefinition): Promise<void> {
+    const urls = this.sampleUrlOverrides?.[definition.id] ?? definition.files.map((file) => file.url);
+    const entries: BatchEntry[] = [];
+    for (const [index, file] of definition.files.entries()) {
+      const bytes = await this.fetchSampleBytes(urls[index]!);
+      if (this.disposed) throw disposedError();
+      const blob = new Blob([bytes as BlobPart]);
+      entries.push({ name: file.name, size: blob.size, blob });
     }
-    const retained = this.sampleBytes;
-    const blob = new Blob([retained as BlobPart]);
-    return this.openBatch([{ name: 'demo.mid', size: blob.size, blob }]);
+    return this.openBatch(entries);
+  }
+
+  private async fetchSampleBytes(url: string): Promise<Uint8Array> {
+    const cached = this.sampleCache.get(url);
+    if (cached) return cached;
+    const response = await this.fetchSample(url, { signal: this.initializationAbort.signal });
+    if (!response.ok) throw new Error('A bundled sample could not be loaded.');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    this.sampleCache.set(url, bytes);
+    return bytes;
   }
 
   runQuery(sql: string): Promise<void> {
@@ -190,7 +210,7 @@ export class SessionController {
     this.subscribers.clear();
     this.state = { ...initialSessionState, tables: [], issues: [] };
     void this.initialization?.catch(() => undefined);
-    this.sampleBytes = null;
+    this.sampleCache.clear();
     this.retainedBlobs = new Map();
     this.stopActiveViewer();
     try {
@@ -208,17 +228,13 @@ export class SessionController {
   }
 
   private async initializeOnce(): Promise<void> {
-    const [response] = await Promise.all([
-      this.fetchSample(this.demoUrl, { signal: this.initializationAbort.signal }),
+    await Promise.all([
       this.database.initialize(),
       // Best-effort: reclaim any OPFS spill directories orphaned by a prior crashed session.
       // No generation is "kept" — a fresh controller never inherits an in-flight ingest.
       sweepSpillOrphans([]).catch(() => undefined),
     ]);
-    if (!response.ok) throw new Error('The bundled demo MIDI could not be loaded.');
-    const bytes = new Uint8Array(await response.arrayBuffer());
     if (this.disposed) throw disposedError();
-    this.sampleBytes = bytes;
   }
 
   private async openBatch(entries: readonly BatchEntry[]): Promise<void> {

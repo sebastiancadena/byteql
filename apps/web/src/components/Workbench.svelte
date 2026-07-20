@@ -5,6 +5,7 @@
 
   import { createCoverageMemo, provenanceOfRow } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
+  import type { SampleId } from '../lib/session/samples.js';
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import { compatibleViewers, type ViewerCapability } from '../lib/viewers/registry.js';
@@ -22,7 +23,7 @@
     subscribe(listener: (state: SessionState) => void): () => void;
     openFile(file: File): Promise<void>;
     openFiles(files: readonly File[]): Promise<void>;
-    openSample(): Promise<void>;
+    openSample(id: SampleId): Promise<void>;
     runQuery(sql: string): Promise<void>;
     cancel(): Promise<void>;
     selectResultRow(row: number | null): void;
@@ -380,7 +381,7 @@
         busy={intakeBusy}
         error={actionError ?? session.fatalError}
         onopen={(files) => perform(() => controller.openFiles(files))}
-        onsample={() => perform(() => controller.openSample())}
+        onsample={() => perform(() => controller.openSample('midi'))}
       />
     </main>
   {:else}
