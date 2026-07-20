@@ -273,7 +273,7 @@
       ascii: readColor(style, '--color-text-muted') || '#aebdca',
       shadeA: readColor(style, '--color-shade-a'),
       shadeB: readColor(style, '--color-shade-b'),
-      selection: readColor(style, '--color-selection') || '#102e49',
+      selection: readColor(style, '--color-hex-selection') || '#1e558a',
       highlight: readColor(style, '--color-hex-highlight'),
       caret: readColor(style, '--color-focus') || '#ffca68',
       placeholder: readColor(style, '--color-hex-placeholder'),

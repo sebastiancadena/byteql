@@ -101,7 +101,7 @@ describe('SQL editor color contract', () => {
   });
 
   it('keeps canvas fallbacks aligned with the Command Deck cyan theme', () => {
-    expect(hexPaneSource).toContain("readColor(style, '--color-selection') || '#102e49'");
+    expect(hexPaneSource).toContain("readColor(style, '--color-hex-selection') || '#1e558a'");
     expect(hexPaneSource).toContain("readColor(style, '--color-accent-wash') || 'rgb(54 194 255 / 8%)'");
     expect(hexPaneSource).not.toContain('#183b3a');
     expect(hexPaneSource).not.toContain('rgb(85 216 190 / 8%)');

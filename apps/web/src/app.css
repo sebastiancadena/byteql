@@ -28,6 +28,7 @@
   --color-danger: #ff8f91;
   --color-danger-surface: #331820;
   --color-selection: #102e49;
+  --color-hex-selection: #1e558a;
   --color-focus: #ffbd66;
   --color-editor-text: #e4efff;
   --color-editor-background: #070c16;
@@ -47,8 +48,8 @@
   --color-transparent: transparent;
   --font-mono:
     'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', Consolas, 'Liberation Mono', monospace;
-  --color-shade-a: rgb(54 194 255 / 9%);
-  --color-shade-b: rgb(83 109 255 / 9%);
+  --color-shade-a: rgb(54 194 255 / 22%);
+  --color-shade-b: rgb(83 109 255 / 40%);
   --color-hex-highlight: rgb(255 189 102 / 38%);
   --color-hex-placeholder: rgb(58 77 116 / 45%);
   --color-canvas-glow: rgb(25 132 255 / 17%);
