@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { VoiceSpec } from './gm-voices.js';
 import {
   ToneAudioEngine,
   type AudioRow,
@@ -74,58 +75,71 @@ class FakeTransport implements TransportPort {
 }
 
 const rows: readonly AudioRow[] = [
-  { seconds: 0.5, note: 60, velocity: 64, kind: 'note_on', channel: 0 },
-  { seconds: 1.25, note: 60, velocity: 0, kind: 'note_off', channel: 0 },
+  { seconds: 0.5, note: 60, velocity: 64, kind: 'note_on', channel: 0, program: null },
+  { seconds: 1.25, note: 60, velocity: 0, kind: 'note_off', channel: 0, program: null },
 ];
 
 function setup(startAudio: () => Promise<void> = async () => undefined) {
   const transport = new FakeTransport();
-  const synths = new Map<number | null, SynthPort>();
-  const dependencies: ToneEngineDependencies = {
-    startAudio: vi.fn(startAudio),
-    createSynth: vi.fn((channel: number | null) => {
-      const synth: SynthPort = {
-        triggerAttack: vi.fn(),
-        triggerRelease: vi.fn(),
-        releaseAll: vi.fn(),
-        dispose: vi.fn(),
-      };
-      synths.set(channel, synth);
-      return synth;
-    }),
-    transport,
-  };
-  const synthFor = (channel: number | null): SynthPort => {
-    const synth = synths.get(channel);
-    if (!synth) throw new Error(`No synth was created for channel ${String(channel)}.`);
+  const created: { spec: VoiceSpec | null; synth: SynthPort }[] = [];
+  const makeSynth = (spec: VoiceSpec | null): SynthPort => {
+    const synth: SynthPort = {
+      triggerAttack: vi.fn(),
+      triggerRelease: vi.fn(),
+      releaseAll: vi.fn(),
+      dispose: vi.fn(),
+    };
+    created.push({ spec, synth });
     return synth;
   };
-  return { engine: new ToneAudioEngine(dependencies), transport, synthFor, synths, dependencies };
+  const dependencies: ToneEngineDependencies = {
+    startAudio: vi.fn(startAudio),
+    createMelodicVoice: vi.fn((spec: VoiceSpec) => makeSynth(spec)),
+    createDrumVoice: vi.fn(() => makeSynth(null)),
+    transport,
+  };
+  const melodicByOsc = (type: VoiceSpec['oscillator']['type']): SynthPort => {
+    const match = created.find((entry) => entry.spec?.oscillator.type === type);
+    if (!match) throw new Error(`No melodic synth with oscillator ${type}.`);
+    return match.synth;
+  };
+  const drumSynth = (): SynthPort => {
+    const match = created.find((entry) => entry.spec === null);
+    if (!match) throw new Error('No drum synth created.');
+    return match.synth;
+  };
+  return {
+    engine: new ToneAudioEngine(dependencies),
+    transport,
+    created,
+    melodicByOsc,
+    drumSynth,
+    dependencies,
+  };
 }
 
 describe('ToneAudioEngine', () => {
   it('starts audio only from play and schedules exact seconds with normalized velocity', async () => {
-    const { engine, transport, synthFor, dependencies } = setup();
+    const { engine, transport, melodicByOsc, dependencies } = setup();
 
     await engine.load(rows);
     expect(dependencies.startAudio).not.toHaveBeenCalled();
-    expect(dependencies.createSynth).not.toHaveBeenCalled();
+    expect(dependencies.createMelodicVoice).not.toHaveBeenCalled();
 
     await engine.play();
     expect(dependencies.startAudio).toHaveBeenCalledOnce();
-    expect(dependencies.createSynth).toHaveBeenCalledOnce();
-    expect(dependencies.createSynth).toHaveBeenCalledWith(0);
+    expect(dependencies.createMelodicVoice).toHaveBeenCalledOnce();
     expect([...transport.callbacks.values()].map(({ at }) => at)).toEqual([0.5, 1.25]);
 
     transport.run(0.5);
     transport.run(1.25);
-    const synth = synthFor(0);
+    const synth = melodicByOsc('triangle');
     expect(synth.triggerAttack).toHaveBeenCalledWith(60, 0.5, 64 / 127);
     expect(synth.triggerRelease).toHaveBeenCalledWith(60, 1.25);
   });
 
   it('removes completed timeline events before replay schedules exactly one copy', async () => {
-    const { engine, transport, synthFor } = setup();
+    const { engine, transport, melodicByOsc } = setup();
     await engine.load(rows);
     await engine.play();
 
@@ -137,11 +151,11 @@ describe('ToneAudioEngine', () => {
     await engine.play();
     expect(transport.callbacks.size).toBe(rows.length);
     transport.run(0.5);
-    expect(synthFor(0).triggerAttack).toHaveBeenCalledTimes(2);
+    expect(melodicByOsc('triangle').triggerAttack).toHaveBeenCalledTimes(2);
   });
 
   it('clears fired and pending timeline events before replaying a partial result', async () => {
-    const { engine, transport, synthFor } = setup();
+    const { engine, transport, melodicByOsc } = setup();
     await engine.load(rows);
     await engine.play();
 
@@ -152,54 +166,61 @@ describe('ToneAudioEngine', () => {
     await engine.play();
     expect(transport.callbacks.size).toBe(rows.length);
     transport.run(0.5);
-    expect(synthFor(0).triggerAttack).toHaveBeenCalledTimes(2);
+    expect(melodicByOsc('triangle').triggerAttack).toHaveBeenCalledTimes(2);
   });
 
   it('releases interleaved same-pitch notes through their own channel synths', async () => {
-    const { engine, transport, synthFor } = setup();
+    const { engine, transport, created } = setup();
     await engine.load([
-      { seconds: 0, note: 60, velocity: 127, kind: 'note_on', channel: 0 },
-      { seconds: 0.1, note: 60, velocity: 127, kind: 'note_on', channel: 1 },
-      { seconds: 0.2, note: 60, velocity: 0, kind: 'note_off', channel: 1 },
-      { seconds: 0.3, note: 60, velocity: 0, kind: 'note_off', channel: 0 },
+      { seconds: 0, note: 60, velocity: 127, kind: 'note_on', channel: 0, program: null },
+      { seconds: 0.1, note: 60, velocity: 127, kind: 'note_on', channel: 1, program: null },
+      { seconds: 0.2, note: 60, velocity: 0, kind: 'note_off', channel: 1, program: null },
+      { seconds: 0.3, note: 60, velocity: 0, kind: 'note_off', channel: 0, program: null },
     ]);
     await engine.play();
 
     for (const at of [0, 0.1, 0.2, 0.3]) transport.run(at);
-    expect(synthFor(0).triggerAttack).toHaveBeenCalledWith(60, 0, 1);
-    expect(synthFor(1).triggerAttack).toHaveBeenCalledWith(60, 0.1, 1);
-    expect(synthFor(1).triggerRelease).toHaveBeenCalledWith(60, 0.2);
-    expect(synthFor(0).triggerRelease).toHaveBeenCalledWith(60, 0.3);
-    expect(synthFor(0).triggerRelease).toHaveBeenCalledOnce();
-    expect(synthFor(1).triggerRelease).toHaveBeenCalledOnce();
+
+    // Both channels use program: null → piano → triangle, but the engine keys
+    // voices by channel:family, so it creates two distinct triangle synths
+    // (keys 0:piano and 1:piano).
+    const triangles = created.filter((entry) => entry.spec?.oscillator.type === 'triangle');
+    expect(triangles).toHaveLength(2);
+    for (const { synth } of triangles) {
+      expect(synth.triggerAttack).toHaveBeenCalledOnce();
+      expect(synth.triggerAttack).toHaveBeenCalledWith(60, expect.any(Number), 1);
+      expect(synth.triggerRelease).toHaveBeenCalledOnce();
+      expect(synth.triggerRelease).toHaveBeenCalledWith(60, expect.any(Number));
+    }
   });
 
   it('keeps null-channel rows in their own synth domain and disposes every domain', async () => {
-    const { engine, transport, synthFor } = setup();
+    const { engine, transport, created } = setup();
     await engine.load([
-      { seconds: 0, note: 60, velocity: 127, kind: 'note_on', channel: null },
-      { seconds: 0.1, note: 60, velocity: 127, kind: 'note_on', channel: 0 },
+      { seconds: 0, note: 60, velocity: 127, kind: 'note_on', channel: null, program: null },
+      { seconds: 0.1, note: 60, velocity: 127, kind: 'note_on', channel: 0, program: null },
     ]);
     await engine.play();
 
     transport.run(0);
     transport.run(0.1);
-    const defaultSynth = synthFor(null);
-    const channelSynth = synthFor(0);
+    // Keys none:piano and 0:piano → two distinct triangle synths.
+    const triangles = created.filter((entry) => entry.spec?.oscillator.type === 'triangle');
+    expect(triangles).toHaveLength(2);
     engine.dispose();
 
-    expect(defaultSynth.releaseAll).toHaveBeenCalledOnce();
-    expect(channelSynth.releaseAll).toHaveBeenCalledOnce();
-    expect(defaultSynth.dispose).toHaveBeenCalledOnce();
-    expect(channelSynth.dispose).toHaveBeenCalledOnce();
+    for (const { synth } of triangles) {
+      expect(synth.releaseAll).toHaveBeenCalledOnce();
+      expect(synth.dispose).toHaveBeenCalledOnce();
+    }
     expect(transport.callbacks.size).toBe(0);
   });
 
   it('releases notes and clears every callback on stop and before replacement load', async () => {
-    const { engine, transport, synthFor } = setup();
+    const { engine, transport, melodicByOsc } = setup();
     await engine.load(rows);
     await engine.play();
-    const synth = synthFor(0);
+    const synth = melodicByOsc('triangle');
     const firstIds = [...transport.callbacks.keys()];
 
     engine.stop();
@@ -209,17 +230,19 @@ describe('ToneAudioEngine', () => {
 
     await engine.play();
     const replacementIds = [...transport.callbacks.keys()];
-    await engine.load([{ seconds: 2, note: 72, velocity: 127, kind: 'note_on', channel: null }]);
+    await engine.load([
+      { seconds: 2, note: 72, velocity: 127, kind: 'note_on', channel: null, program: null },
+    ]);
     expect(transport.cleared).toEqual([...firstIds, ...replacementIds]);
     expect(synth.releaseAll).toHaveBeenCalledTimes(2);
     expect(transport.callbacks.size).toBe(0);
   });
 
   it('pauses, seeks, stops, and disposes without leaving callbacks or notes behind', async () => {
-    const { engine, transport, synthFor } = setup();
+    const { engine, transport, melodicByOsc } = setup();
     await engine.load(rows);
     await engine.play();
-    const synth = synthFor(0);
+    const synth = melodicByOsc('triangle');
 
     transport.run(0.5);
     engine.pause();
@@ -234,6 +257,61 @@ describe('ToneAudioEngine', () => {
     expect(transport.callbacks.size).toBe(0);
     expect(synth.releaseAll).toHaveBeenCalledTimes(3);
     expect(synth.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('routes channel 9 notes to a drum voice and ignores note-off release', async () => {
+    const { engine, transport, drumSynth, dependencies } = setup();
+    await engine.load([
+      { seconds: 0, note: 36, velocity: 100, kind: 'note_on', channel: 9, program: null },
+      { seconds: 0.2, note: 36, velocity: 0, kind: 'note_off', channel: 9, program: null },
+    ]);
+    await engine.play();
+    transport.run(0);
+    transport.run(0.2);
+
+    expect(dependencies.createDrumVoice).toHaveBeenCalledOnce();
+    expect(dependencies.createMelodicVoice).not.toHaveBeenCalled();
+    const drum = drumSynth();
+    expect(drum.triggerAttack).toHaveBeenCalledWith(36, 0, 100 / 127);
+    expect(drum.triggerRelease).not.toHaveBeenCalled();
+  });
+
+  it('silences the drum voice on stop', async () => {
+    const { engine, transport, drumSynth } = setup();
+    await engine.load([{ seconds: 0, note: 36, velocity: 100, kind: 'note_on', channel: 9, program: null }]);
+    await engine.play();
+    transport.run(0);
+    engine.stop();
+    expect(drumSynth().releaseAll).toHaveBeenCalled();
+  });
+
+  it('selects a melodic voice from the note program family', async () => {
+    const { engine, dependencies } = setup();
+    await engine.load([{ seconds: 0, note: 40, velocity: 100, kind: 'note_on', channel: 3, program: 48 }]);
+    await engine.play();
+
+    // program 48 → 'strings' → sawtooth oscillator
+    expect(dependencies.createMelodicVoice).toHaveBeenCalledWith(
+      expect.objectContaining({ oscillator: { type: 'sawtooth' } }),
+    );
+  });
+
+  it('releases a note on the synth that attacked it across a program change', async () => {
+    const { engine, transport, melodicByOsc } = setup();
+    await engine.load([
+      { seconds: 0, note: 60, velocity: 100, kind: 'note_on', channel: 3, program: 0 }, // piano/triangle
+      { seconds: 0.5, note: 60, velocity: 0, kind: 'note_off', channel: 3, program: 40 }, // strings/sawtooth
+    ]);
+    await engine.play();
+    transport.run(0);
+    transport.run(0.5);
+
+    const attacker = melodicByOsc('triangle');
+    const other = melodicByOsc('sawtooth');
+    expect(attacker.triggerAttack).toHaveBeenCalledWith(60, 0, 100 / 127);
+    expect(attacker.triggerRelease).toHaveBeenCalledWith(60, 0.5);
+    // the later-program voice must not receive the release for a note it never attacked
+    expect(other.triggerRelease).not.toHaveBeenCalled();
   });
 
   it.each(['stop', 'pause', 'seek', 'load', 'dispose'] as const)(
@@ -252,7 +330,7 @@ describe('ToneAudioEngine', () => {
 
       audioStart.resolve(undefined);
       await pendingPlay;
-      expect(dependencies.createSynth).not.toHaveBeenCalled();
+      expect(dependencies.createMelodicVoice).not.toHaveBeenCalled();
       expect(transport.callbacks.size).toBe(0);
       expect(transport.calls).not.toContain('start');
     },
@@ -269,7 +347,7 @@ describe('ToneAudioEngine', () => {
     await Promise.all([firstPlay, authoritativePlay]);
 
     expect(dependencies.startAudio).toHaveBeenCalledOnce();
-    expect(dependencies.createSynth).toHaveBeenCalledOnce();
+    expect(dependencies.createMelodicVoice).toHaveBeenCalledOnce();
     expect(transport.calls.filter((call) => call === 'start')).toHaveLength(1);
     expect([...transport.callbacks.values()].map(({ at }) => at)).toEqual([0.5, 1.25]);
   });
