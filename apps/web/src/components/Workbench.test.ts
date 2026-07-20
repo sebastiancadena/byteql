@@ -184,6 +184,7 @@ describe('Inspector Workbench', () => {
     render(Workbench, { controller });
 
     const navigation = screen.getByRole('navigation', { name: 'Data explorer' });
+    expect(within(navigation).getByText('Capture map')).toBeTruthy();
     expect(within(navigation).getByText('capture.bin')).toBeTruthy();
     expect(within(navigation).getByText('Example records')).toBeTruthy();
     expect(within(navigation).getByText('records')).toBeTruthy();
@@ -194,10 +195,14 @@ describe('Inspector Workbench', () => {
 
     const workspace = screen.getByRole('main', { name: 'Results' });
     expect(workspace).toBeTruthy();
+    expect(within(workspace).getByRole('heading', { name: 'Ask the capture' })).toBeTruthy();
+    expect(within(workspace).getByText('Result set')).toBeTruthy();
     expect(screen.getByRole('textbox', { name: 'SQL query' })).toBeTruthy();
     expect(within(workspace).getByText('2 rows')).toBeTruthy();
     expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
-    expect(screen.getByRole('complementary', { name: 'Inspector' })).toBeTruthy();
+    expect(
+      within(screen.getByRole('complementary', { name: 'Inspector' })).getByText('Selected evidence'),
+    ).toBeTruthy();
   });
 
   it('runs the bounded overview when a source first becomes ready', async () => {

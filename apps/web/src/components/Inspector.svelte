@@ -61,7 +61,7 @@
 <aside class:collapsed class:mobile-open={mobileOpen} class="inspector" aria-label="Inspector">
   <div class="pane-heading inspector-heading">
     <div>
-      <p class="eyebrow">Context</p>
+      <p class="eyebrow">Selected evidence</p>
       <h2>Inspector</h2>
     </div>
     <div class="inspector-actions">

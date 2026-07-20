@@ -22,7 +22,7 @@
 <nav class:collapsed class="explorer" aria-label="Data explorer">
   <div class="pane-heading">
     <div>
-      <p class="eyebrow">Session</p>
+      <p class="eyebrow">Capture map</p>
       <h2>Explorer</h2>
     </div>
   </div>

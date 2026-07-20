@@ -356,8 +356,8 @@
       <section class="sql-workspace" aria-label="SQL workspace">
         <div class="editor-heading">
           <div>
-            <p class="eyebrow">Query</p>
-            <h1>SQL workspace</h1>
+            <p class="eyebrow">Query console</p>
+            <h1>Ask the capture</h1>
           </div>
           <div class="query-actions">
             <span class="shortcut" aria-hidden="true">⌘ Enter</span>
@@ -403,7 +403,7 @@
 
         <div class="results-heading">
           <div>
-            <p class="eyebrow">Output</p>
+            <p class="eyebrow">Result set</p>
             <h2>Results</h2>
           </div>
           <div class="results-heading-meta">

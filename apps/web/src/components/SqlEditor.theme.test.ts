@@ -24,6 +24,16 @@ const editorColorTokens = [
   '--color-syntax-invalid',
 ] as const;
 
+const commandDeckTokens = [
+  '--color-canvas',
+  '--color-surface',
+  '--color-surface-inset',
+  '--color-surface-raised',
+  '--color-accent',
+  '--color-accent-dim',
+  '--color-evidence',
+] as const;
+
 describe('SQL editor color contract', () => {
   it('sources every CodeMirror theme and token color from app CSS custom properties', () => {
     expect(editorSource).not.toMatch(/#[\da-f]{3,8}\b/iu);
@@ -32,5 +42,10 @@ describe('SQL editor color contract', () => {
       expect(editorSource, token).toContain(`var(${token})`);
       expect(appCss, token).toMatch(new RegExp(`${token}:\\s*#[\\da-f]{6}`, 'iu'));
     }
+  });
+
+  it('defines the Command Deck shell without the former mint accent', () => {
+    for (const token of commandDeckTokens) expect(appCss).toContain(`${token}:`);
+    expect(appCss).not.toContain('#55d8be');
   });
 });
