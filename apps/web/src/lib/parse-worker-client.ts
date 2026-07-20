@@ -192,7 +192,15 @@ export class ParseWorkerClient implements ParseClientPort {
   private handleCrash(): void {
     const active = this.active;
     this.active = null;
-    active?.reject(new Error('The parser worker stopped unexpectedly.'));
+    if (active) {
+      // Same ack-chain deferral as `case 'error'` above: don't reject ahead of queued-but-not-
+      // yet-started `onBatch` calls, or a caller's failure cleanup can race a batch write for the
+      // task it just discarded.
+      void active.ackChain.then(
+        () => active.reject(new Error('The parser worker stopped unexpectedly.')),
+        () => active.reject(new Error('The parser worker stopped unexpectedly.')),
+      );
+    }
     this.replaceWorker();
   }
 
@@ -264,10 +272,24 @@ export class ParseWorkerClient implements ParseClientPort {
         );
         break;
       }
-      case 'error':
+      case 'error': {
+        // Mirror `finish`'s deferral: up to BATCH_CREDIT_WINDOW `batch` messages can already be
+        // chained onto `ackChain` (queued but not yet started) by the time `error` arrives.
+        // Rejecting immediately would let a caller (e.g. an ingest sink) run its failure cleanup
+        // — which may delete rows for this task — before a still-queued `onBatch` fires and
+        // writes rows for the very task being discarded. Waiting on `ackChain` — captured now —
+        // guarantees every `onBatch` call has started (and settled) before the task rejects. If
+        // one of them failed first, its own `.catch` above already rejected the task with that
+        // error, and `reject` below becomes the (guarded) no-op; otherwise this rejects with the
+        // worker's reported error once the chain has drained.
         this.active = null;
-        active.reject(new Error(message.message));
+        const errorMessage = message.message;
+        void active.ackChain.then(
+          () => active.reject(new Error(errorMessage)),
+          () => active.reject(new Error(errorMessage)),
+        );
         break;
+      }
       case 'cancelled':
         this.active = null;
         active.reject(abortError());

@@ -1520,6 +1520,69 @@ describe('ParseWorkerClient', () => {
     gate.resolve();
     await expect(parsing).rejects.toThrow('append failed');
   });
+
+  it('drains queued onBatch calls before rejecting on a worker error', async () => {
+    // Regression: up to BATCH_CREDIT_WINDOW `batch` messages can be in flight when the worker
+    // posts `error`. A queued-but-not-yet-started `onBatch` must still run before the task
+    // rejects — otherwise a caller's failure cleanup (e.g. deleting a failed file's rows) can run
+    // before that handler fires and leak the failed file's rows into the dataset afterward.
+    const workers: FakeWorker[] = [];
+    const client = new ParseWorkerClient(() => {
+      const worker = new FakeWorker();
+      workers.push(worker);
+      return worker;
+    });
+    const appended: number[] = [];
+    const gates = [deferred<void>(), deferred<void>()];
+    const onBatch = vi.fn(async (batch: BatchMessage) => {
+      await gates[batch.seq - 1]!.promise;
+      appended.push(batch.seq);
+    });
+    const parsing = client.parse(
+      { name: 'error-mid-parse.mid', blob: new Blob([new Uint8Array([1])]) },
+      { onProgress: vi.fn(), onBatch },
+    );
+
+    // Two batches followed immediately by `error`, with no acks in between — mirrors the worker
+    // posting `error` while several batches are still outstanding.
+    workers[0]!.emit({
+      type: 'batch',
+      taskId: 1,
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array([9]),
+      rowCount: 1,
+    });
+    workers[0]!.emit({
+      type: 'batch',
+      taskId: 1,
+      seq: 2,
+      table: 'events',
+      ipc: new Uint8Array([9]),
+      rowCount: 1,
+    });
+    workers[0]!.emit({ type: 'error', taskId: 1, message: 'boom' });
+    await flush();
+
+    let settled = false;
+    void parsing.catch(() => {
+      settled = true;
+    });
+    await flush();
+    expect(settled).toBe(false);
+    expect(appended).toEqual([]);
+
+    // Batch 1's onBatch completes; batch 2's is still queued behind it on the ack chain.
+    gates[0]!.resolve();
+    await flush();
+    expect(appended).toEqual([1]);
+    expect(settled).toBe(false);
+
+    // Only once batch 2's onBatch has also run does the task reject.
+    gates[1]!.resolve();
+    await expect(parsing).rejects.toThrow('boom');
+    expect(appended).toEqual([1, 2]);
+  });
 });
 
 class FakeWorkerScope implements ParseWorkerScope {
