@@ -99,20 +99,36 @@ export interface FilesRow {
 export function buildFilesTableIpc(rows: readonly FilesRow[]): Uint8Array {
   return tableToIpc(
     new Table({
-      file: vectorFromArray(rows.map((row) => row.file), new Utf8()),
-      original_name: vectorFromArray(rows.map((row) => row.originalName), new Utf8()),
-      size: vectorFromArray(rows.map((row) => BigInt(row.size)), new Uint64()),
-      ingest_order: vectorFromArray(rows.map((row) => row.ingestOrder), new Int32()),
-      status: vectorFromArray(rows.map((row) => row.status), new Utf8()),
-      error: vectorFromArray(rows.map((row) => row.error), new Utf8()),
+      file: vectorFromArray(
+        rows.map((row) => row.file),
+        new Utf8(),
+      ),
+      original_name: vectorFromArray(
+        rows.map((row) => row.originalName),
+        new Utf8(),
+      ),
+      size: vectorFromArray(
+        rows.map((row) => BigInt(row.size)),
+        new Uint64(),
+      ),
+      ingest_order: vectorFromArray(
+        rows.map((row) => row.ingestOrder),
+        new Int32(),
+      ),
+      status: vectorFromArray(
+        rows.map((row) => row.status),
+        new Utf8(),
+      ),
+      error: vectorFromArray(
+        rows.map((row) => row.error),
+        new Utf8(),
+      ),
     }),
   );
 }
 
 /** Unions per-file parse overviews: row counts sum by name; first-seen order and columns win. */
-export function mergeTableOverviews(
-  perFile: readonly (readonly TableOverview[])[],
-): TableOverview[] {
+export function mergeTableOverviews(perFile: readonly (readonly TableOverview[])[]): TableOverview[] {
   const merged: TableOverview[] = [];
   const index = new Map<string, number>();
   for (const overviews of perFile) {

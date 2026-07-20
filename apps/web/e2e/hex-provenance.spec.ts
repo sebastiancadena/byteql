@@ -60,7 +60,9 @@ test('pcap: browse, reveal, filter-to-selection, and hidden columns chip', async
   await page.getByRole('button', { name: 'Browse packets' }).click();
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
 
-  await expect(page.getByRole('button', { name: 'Toggle hidden columns' })).toHaveText('+2 hidden');
+  // packets now carries three `_`-prefixed provenance columns: `_src_start`, `_src_end`, and the
+  // multi-file-session `_src_file` stamp appended to every batch (single-file or not).
+  await expect(page.getByRole('button', { name: 'Toggle hidden columns' })).toHaveText('+3 hidden');
   await expect(page.getByRole('columnheader').filter({ hasText: '_src_start' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Toggle hidden columns' }).click();
   await expect(page.getByRole('columnheader').filter({ hasText: '_src_start' })).toHaveCount(1);
