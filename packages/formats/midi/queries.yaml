@@ -39,15 +39,20 @@ queries:
                  over (order by tick rows unbounded preceding) as seconds_at_tick
         from boundaries
         cross join header h
+      ), program_map as (
+        select channel, tick, program
+        from events
+        where kind = 'program_change' and program is not null
       )
       select case
                when h.division > 0 then
                  tm.seconds_at_tick
                    + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0
              end as seconds,
-             e.note, e.velocity, e.kind, e.channel
+             e.note, e.velocity, e.kind, e.channel, pm.program
       from events e
       asof join tempo_map tm on e.tick >= tm.tick
+      asof left join program_map pm on e.channel = pm.channel and e.tick >= pm.tick
       cross join header h
       where e.note is not null
       order by seconds, e.event_id
@@ -80,15 +85,20 @@ queries:
                  over (order by tick rows unbounded preceding) as seconds_at_tick
         from boundaries
         cross join header h
+      ), program_map as (
+        select channel, tick, program
+        from events
+        where kind = 'program_change' and program is not null
       )
       select case
                when h.division > 0 then
                  tm.seconds_at_tick
                    + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0
              end as seconds,
-             e.note, e.velocity, e.kind, e.channel
+             e.note, e.velocity, e.kind, e.channel, pm.program
       from events e
       asof join tempo_map tm on e.tick >= tm.tick
+      asof left join program_map pm on e.channel = pm.channel and e.tick >= pm.tick
       cross join header h
       where e.note is not null and e.channel = 9
       order by seconds, e.event_id
@@ -121,15 +131,20 @@ queries:
                  over (order by tick rows unbounded preceding) as seconds_at_tick
         from boundaries
         cross join header h
+      ), program_map as (
+        select channel, tick, program
+        from events
+        where kind = 'program_change' and program is not null
       )
       select case
                when h.division > 0 then
                  tm.seconds_at_tick
                    + (e.tick - tm.tick) * tm.us_per_quarter / h.division / 1000000.0
              end as seconds,
-             e.note, e.velocity, e.kind, e.channel
+             e.note, e.velocity, e.kind, e.channel, pm.program
       from events e
       asof join tempo_map tm on e.tick >= tm.tick
+      asof left join program_map pm on e.channel = pm.channel and e.tick >= pm.tick
       cross join header h
       where e.note is not null and e.note < 48
       order by seconds, e.event_id
