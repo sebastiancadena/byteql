@@ -32,7 +32,10 @@ export interface ParseHandlers {
 }
 
 export interface ParseClientPort {
-  parse(input: { name: string; blob: Blob }, handlers: ParseHandlers): Promise<StreamedParseResult>;
+  parse(
+    input: { name: string; blob: Blob; formatId?: string },
+    handlers: ParseHandlers,
+  ): Promise<StreamedParseResult>;
   cancel(): void;
   dispose(): void;
 }
@@ -80,7 +83,10 @@ export class ParseWorkerClient implements ParseClientPort {
     this.worker = this.createWorker();
   }
 
-  parse(input: { name: string; blob: Blob }, handlers: ParseHandlers): Promise<StreamedParseResult> {
+  parse(
+    input: { name: string; blob: Blob; formatId?: string },
+    handlers: ParseHandlers,
+  ): Promise<StreamedParseResult> {
     this.assertUsable();
     if (this.active) this.cancel();
 
@@ -111,7 +117,13 @@ export class ParseWorkerClient implements ParseClientPort {
     this.active = active;
 
     try {
-      this.worker.postMessage({ type: 'parse', taskId, name: input.name, blob: input.blob });
+      this.worker.postMessage({
+        type: 'parse',
+        taskId,
+        name: input.name,
+        blob: input.blob,
+        ...(input.formatId !== undefined ? { formatId: input.formatId } : {}),
+      });
     } catch (error) {
       this.active = null;
       this.replaceWorker();

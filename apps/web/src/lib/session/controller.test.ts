@@ -1,4 +1,5 @@
 import {
+  ipcToTable,
   tableToIpc,
   type BatchTransfer,
   type FormatPack,
@@ -1389,7 +1390,13 @@ describe('parse worker boundary', () => {
     await flush();
 
     const finishMessage = postsOfType(scope, 'finish').at(-1)?.message as { schemas?: unknown };
-    expect(finishMessage?.schemas).toEqual(packSchemas);
+    // Every declared schema also carries the stamped `_src_file` provenance column.
+    expect(finishMessage?.schemas).toEqual(
+      packSchemas.map((schema) => ({
+        ...schema,
+        columns: [...schema.columns, { name: '_src_file', type: 'utf8', nullable: false }],
+      })),
+    );
   });
 
   it('derives a table columns once from its first batch, in first-arrival order, using pack.schemas() nullability', async () => {
@@ -1448,6 +1455,10 @@ describe('parse worker boundary', () => {
           { name: 'id', type: 'Int32', nullable: false },
           { name: 'value', type: 'Int32', nullable: true },
           { name: 'flag', type: 'Float64', nullable: true },
+          // The stamped `_src_file` column is absent from the fake pack's schemas() above, so its
+          // nullability falls back to the stamped batch's own Arrow field (Utf8 columns default to
+          // nullable), same as `flag` above.
+          { name: '_src_file', type: 'Utf8', nullable: true },
         ],
       },
     ]);
@@ -1495,7 +1506,14 @@ describe('parse worker boundary', () => {
     const finishMessage = postsOfType(scope, 'finish').at(-1)?.message as
       { tables?: readonly { name: string; rowCount: number; columns: unknown }[] } | undefined;
     expect(finishMessage?.tables).toEqual([
-      { name: 'events', rowCount: totalBatches, columns: [{ name: 'id', type: 'Int32', nullable: false }] },
+      {
+        name: 'events',
+        rowCount: totalBatches,
+        columns: [
+          { name: 'id', type: 'Int32', nullable: false },
+          { name: '_src_file', type: 'Utf8', nullable: true },
+        ],
+      },
     ]);
   });
 
@@ -1619,5 +1637,47 @@ describe('parse worker boundary', () => {
     operation.reject(new DOMException('aborted', 'AbortError'));
     await flush();
     expect(scope.posts.at(-1)?.message).toEqual({ type: 'cancelled', taskId: 9 });
+  });
+
+  it('stamps every batch with _src_file and extends finish schemas with the _src_file column', async () => {
+    const scope = new FakeWorkerScope();
+    const eventsIpc = arrowIpc([1, 2, 3]);
+    const pack = fakePack({
+      schemas: () => [{ name: 'events', columns: [{ name: 'value', type: 'int32', nullable: false }] }],
+      open: () => {
+        const batches: BatchTransfer[] = [{ table: 'events', ipc: eventsIpc, rowCount: 3 }];
+        let index = 0;
+        return {
+          nextBatch: async () => (index < batches.length ? batches[index++]! : null),
+          finish: () => ({ issues: [], capabilities: {} }),
+        };
+      },
+    });
+    installParseWorker(scope, [pack]);
+
+    scope.receive({
+      type: 'parse',
+      taskId: 13,
+      name: 'capture (2).pcap',
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
+    });
+    await flush();
+
+    const batchMessage = postsOfType(scope, 'batch').at(-1)?.message as { ipc: Uint8Array } | undefined;
+    const stampedTable = ipcToTable(batchMessage!.ipc);
+    expect(stampedTable.schema.fields.map((field) => field.name)).toEqual(['value', '_src_file']);
+    expect([0, 1, 2].map((row) => stampedTable.getChild('_src_file')!.get(row))).toEqual([
+      'capture (2).pcap',
+      'capture (2).pcap',
+      'capture (2).pcap',
+    ]);
+
+    const finishMessage = postsOfType(scope, 'finish').at(-1)?.message as
+      { schemas?: readonly TableSchema[] } | undefined;
+    expect(finishMessage?.schemas?.[0]?.columns.at(-1)).toEqual({
+      name: '_src_file',
+      type: 'utf8',
+      nullable: false,
+    });
   });
 });

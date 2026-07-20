@@ -7,6 +7,7 @@ import {
 } from '@byteql/core';
 
 import { PROBE_HEAD_BYTES, REGISTERED_PACKS, selectPack } from '../lib/packs.js';
+import { stampSourceFile, withSourceFileColumn } from './stamp-source-file.js';
 
 export interface ParseWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
@@ -131,6 +132,8 @@ export function installParseWorker(
         const batch = await source.nextBatch();
         if (batch === null) break;
 
+        const stamped = stampSourceFile(batch.ipc, name);
+
         seq += 1;
         let position = index.get(batch.table);
         if (position === undefined) {
@@ -139,15 +142,15 @@ export function installParseWorker(
           overview.push({
             name: batch.table,
             rowCount: 0,
-            columns: deriveColumns(pack, batch.table, batch.ipc),
+            columns: deriveColumns(pack, batch.table, stamped),
           });
         }
         const current = overview[position]!;
         overview[position] = { ...current, rowCount: current.rowCount + batch.rowCount };
 
         scope.postMessage(
-          { type: 'batch', taskId, seq, table: batch.table, ipc: batch.ipc, rowCount: batch.rowCount },
-          [batch.ipc.buffer],
+          { type: 'batch', taskId, seq, table: batch.table, ipc: stamped, rowCount: batch.rowCount },
+          [stamped.buffer],
         );
       }
 
@@ -168,7 +171,7 @@ export function installParseWorker(
         // Every table the pack declares, not just the ones this capture happened to populate —
         // lets the DB backfill zero-row tables (e.g. no `tcp` packets) as empty tables at
         // finalize, so queries assuming every pack table exists don't hit a Catalog Error (C1).
-        schemas: pack.schemas(),
+        schemas: withSourceFileColumn(pack.schemas()),
       });
     } catch (error) {
       if (controller.signal.aborted || cancelled.has(taskId) || isAbortError(error)) {
