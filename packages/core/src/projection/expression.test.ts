@@ -283,6 +283,23 @@ describe('projection expressions', () => {
     expect(evaluate('ip6_str(_.a)', { _: { a: addr } })).toBe('1234:0:5678:0:9abc:0:def0:0');
   });
 
+  it('dos_dttm decodes a packed DOS date/time to epoch microseconds', () => {
+    // 2021-06-15 12:30:44 UTC.
+    const date = (41 << 9) | (6 << 5) | 15; // year-1980=41, month=6, day=15
+    const time = (12 << 11) | (30 << 5) | 22; // hour=12, minute=30, second/2=22
+    const packed = date * 65536 + time;
+    expect(evaluate('dos_dttm(_.p)', { _: { p: packed } })).toBe(
+      Date.UTC(2021, 5, 15, 12, 30, 44) * 1000,
+    );
+  });
+
+  it('dos_dttm returns null for a zero or invalid date', () => {
+    expect(evaluate('dos_dttm(_.p)', { _: { p: 0 } })).toBeNull();
+    expect(evaluate('dos_dttm(_.p)', { _: { p: null } })).toBeNull();
+    // month 0 is invalid (DOS months are 1-12).
+    expect(evaluate('dos_dttm(_.p)', { _: { p: (41 << 9) * 65536 } })).toBeNull();
+  });
+
   it('reads wildcard indexes only from own data properties', () => {
     const inherited = new Array<number>(1);
     Object.setPrototypeOf(inherited, { 0: 9 });
