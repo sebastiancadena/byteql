@@ -5,15 +5,13 @@ import {
   type TableColumn,
   type TableOverview,
 } from '@byteql/core';
-import { midiFormatPack } from '@byteql/midi';
-import { pcapFormatPack } from '@byteql/pcap';
+
+import { PROBE_HEAD_BYTES, REGISTERED_PACKS, selectPack } from '../lib/packs.js';
 
 export interface ParseWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: unknown, transfer?: readonly Transferable[]): void;
 }
-
-const PROBE_HEAD_BYTES = 4096;
 
 /** In-flight batch messages a worker may have outstanding for one task before it must wait for acks. */
 export const BATCH_CREDIT_WINDOW = 4;
@@ -62,21 +60,6 @@ const blobByteSource = (blob: Blob): ByteSource => ({
     new Uint8Array(await blob.slice(offset, Math.min(offset + length, blob.size)).arrayBuffer()),
 });
 
-const selectPack = (packs: readonly FormatPack[], head: Uint8Array, formatId?: string): FormatPack | null => {
-  if (formatId !== undefined) return packs.find((pack) => pack.id === formatId) ?? null;
-  let best: FormatPack | null = null;
-  let bestConfidence = 0;
-  // Strict `>`: the first-registered pack wins ties, and a confidence of 0 is never selected.
-  for (const pack of packs) {
-    const confidence = pack.probe(head);
-    if (confidence !== null && confidence > bestConfidence) {
-      best = pack;
-      bestConfidence = confidence;
-    }
-  }
-  return best;
-};
-
 /** Derives a table's reported columns from its first batch's IPC schema, once per table. */
 const deriveColumns = (pack: FormatPack, table: string, ipc: Uint8Array): readonly TableColumn[] => {
   const arrow = ipcToTable(ipc);
@@ -101,7 +84,7 @@ const errorMessage = (error: unknown, packTitle: string): string =>
 
 export function installParseWorker(
   scope: ParseWorkerScope,
-  packs: readonly FormatPack[] = [midiFormatPack, pcapFormatPack],
+  packs: readonly FormatPack[] = REGISTERED_PACKS,
 ): void {
   const active = new Map<number, AbortController>();
   const cancelled = new Set<number>();
