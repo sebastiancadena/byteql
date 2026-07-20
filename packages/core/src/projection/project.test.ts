@@ -456,4 +456,17 @@ describe('compileProjection and projectTree', () => {
       ),
     ).toThrowError(new RegExp(`PROJECTION_SPEC_INVALID.*tables\\.0\\.${path.replaceAll('.', '\\.')}`));
   });
+
+  it('rejects a declared _src_file column as reserved provenance', () => {
+    expect(() =>
+      compileProjection(
+        projection({
+          name: 'rows',
+          rows: '$',
+          key: 'id',
+          columns: { _src_file: { expr: '1', type: 'utf8' } },
+        }),
+      ),
+    ).toThrowError(/reserved for automatic provenance/u);
+  });
 });
