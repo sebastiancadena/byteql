@@ -50,10 +50,15 @@ describe('EmptyState native file picker intake', () => {
     expect(onopenAfterDismiss).not.toHaveBeenCalled();
   });
 
-  it('shows the supported-format badges and the privacy line', () => {
-    const { getByText } = render(EmptyState, { props: { onopen: vi.fn(), onsample: vi.fn() } });
-    expect(getByText('MIDI')).toBeTruthy();
-    expect(getByText('pcap')).toBeTruthy();
-    expect(getByText(/never leave this browser/iu)).toBeTruthy();
+  it('presents the Command Deck promise, formats, and local-only proof', () => {
+    const { container } = render(EmptyState, { props: { onopen: vi.fn(), onsample: vi.fn() } });
+
+    expect(screen.getByRole('heading', { name: 'Query the file. Prove the answer.' })).toBeTruthy();
+    expect(screen.getByText('Browser-native binary intelligence')).toBeTruthy();
+    expect(screen.getByText('No upload. No server.')).toBeTruthy();
+    expect(screen.getByText(/files never leave this browser/iu)).toBeTruthy();
+    expect(screen.getByText('MIDI')).toBeTruthy();
+    expect(screen.getByText('pcap')).toBeTruthy();
+    expect(container.querySelector('[data-brand-mark]')).toBeTruthy();
   });
 });

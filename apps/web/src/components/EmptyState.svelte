@@ -1,6 +1,8 @@
 <script lang="ts">
   /* global DOMException, DragEvent, Event, File, HTMLInputElement, window */
 
+  import BrandMark from './BrandMark.svelte';
+
   interface Props {
     busy?: boolean;
     error?: string | null;
@@ -55,34 +57,47 @@
   ondragleave={() => (dragging = false)}
   ondrop={dropFile}
 >
-  <div class="empty-mark" aria-hidden="true">⌁</div>
-  <p class="eyebrow">Private by design</p>
-  <h1 id="empty-title">Inspect structured data at its source</h1>
-  <p class="empty-copy">
-    Open a local file to explore its generated tables with SQL. Files never leave this browser — parsing,
-    storage, and SQL all run locally.
-  </p>
-
-  <ul class="format-badges" aria-label="Supported formats">
-    <li>MIDI</li>
-    <li>pcap</li>
-  </ul>
-
-  <div class="empty-actions">
-    <label class="button button-primary">
-      Open file
-      <input type="file" aria-label="Open file" disabled={busy} onchange={chooseFile} />
-    </label>
-    <button class="button button-secondary" type="button" disabled={busy} onclick={onsample}>
-      Try sample
-    </button>
-    {#if filePickerSupported}
-      <button class="button button-secondary" type="button" disabled={busy} onclick={browseFiles}>
-        Browse files
-      </button>
-    {/if}
+  <div class="empty-hero-copy">
+    <BrandMark size="medium" />
+    <p class="eyebrow">Browser-native binary intelligence</p>
+    <h1 id="empty-title">Query the file. <span>Prove the answer.</span></h1>
+    <p class="empty-copy">
+      Turn local binary files into queryable tables, then trace every result back to its exact source
+      bytes. Files never leave this browser.
+    </p>
+    <ul class="format-badges" aria-label="Supported formats">
+      <li>MIDI</li>
+      <li>pcap</li>
+    </ul>
   </div>
-  <p class="drop-hint">or drop a file anywhere in this panel</p>
+
+  <div class="empty-intake">
+    <p class="empty-intake-label">Start a local investigation</p>
+    <div class="empty-actions">
+      <label class="button button-primary">
+        Open file
+        <input type="file" aria-label="Open file" disabled={busy} onchange={chooseFile} />
+      </label>
+      <button class="button button-secondary" type="button" disabled={busy} onclick={onsample}>
+        Try sample
+      </button>
+      {#if filePickerSupported}
+        <button class="button button-secondary" type="button" disabled={busy} onclick={browseFiles}>
+          Browse files
+        </button>
+      {/if}
+    </div>
+    <p class="drop-hint">Drop a binary file anywhere in this panel</p>
+  </div>
+
+  <div class="empty-proof-grid" aria-label="Privacy guarantees">
+    <div>
+      <strong>No upload. No server.</strong><span>Parsing, storage, and SQL stay on this device.</span>
+    </div>
+    <div>
+      <strong>Source-linked evidence.</strong><span>Every projected row retains its byte range.</span>
+    </div>
+  </div>
   {#if error}
     <p class="inline-diagnostic" role="alert">{error}</p>
   {/if}
