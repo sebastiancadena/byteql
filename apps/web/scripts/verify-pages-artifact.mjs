@@ -12,10 +12,6 @@ const expectedHeaders = `/*.wasm
   Content-Type: application/gzip
   Cache-Control: public, max-age=31536000, immutable
 
-/duckdb-extensions/*
-  Content-Type: application/wasm
-  Cache-Control: public, max-age=31536000, immutable
-
 /index.html
   Cache-Control: no-cache
 `;

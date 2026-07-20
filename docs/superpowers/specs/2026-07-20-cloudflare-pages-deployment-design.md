@@ -20,15 +20,16 @@ command is therefore part of the repository contract.
 ## Static response headers
 
 Author `apps/web/public/_headers` so Vite copies it unchanged to `apps/web/dist/_headers`, beside
-`index.html`. The file contains four rules:
+`index.html`. The file contains three rules:
 
 - `/*.wasm` sets `Content-Type: application/wasm` and
   `Cache-Control: public, max-age=31536000, immutable`.
 - `/*.wasm.gz` sets `Content-Type: application/gzip` and the same immutable cache policy.
-- `/duckdb-extensions/*` explicitly preserves the WASM MIME type and immutable cache policy for
-  the locally mirrored, versioned DuckDB extension binaries.
 - `/index.html` sets `Cache-Control: no-cache` so a new deployment's entry point propagates without
   retaining references to an older asset graph.
+
+The broad `/*.wasm` rule also covers the locally mirrored extension paths. Do not add an overlapping
+extension-specific rule: Pages combines matching header values, producing a duplicate MIME value.
 
 The normal Vite build emits 34.3 MiB and 39.4 MiB DuckDB modules, above Cloudflare Pages' 25 MiB
 per-file limit. The Pages preparation step therefore gzip-compresses each content-hashed `.wasm`
