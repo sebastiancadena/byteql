@@ -513,12 +513,9 @@ describe('SessionController', () => {
   });
 
   it('propagates cancellation and disposes safely during initialization', async () => {
-    const response = deferred<Response>();
-    const fetchSample = vi.fn().mockReturnValue(response.promise);
     const controller = new SessionController({
       database,
       parser,
-      fetch: fetchSample,
       stopViewer,
     });
     const listener = vi.fn();
@@ -526,7 +523,6 @@ describe('SessionController', () => {
 
     const initialization = controller.initialize();
     const disposal = controller.dispose();
-    response.resolve(new Response(new Uint8Array([1])));
     await Promise.allSettled([initialization, disposal]);
 
     expect(parser.dispose).toHaveBeenCalledOnce();
@@ -543,9 +539,14 @@ describe('SessionController', () => {
       database,
       parser,
       fetch: vi.fn().mockReturnValue(response.promise),
+      sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
       stopViewer,
     });
-    const initialization = controller.initialize();
+    await controller.initialize();
+    // The only startup fetch is now the sample fetch; kick it off so a hanging,
+    // abort-ignoring fetch is genuinely in flight.
+    const opening = controller.openSample('midi');
+    await Promise.resolve();
 
     const disposal = controller.dispose();
     const outcome = await Promise.race([
@@ -555,7 +556,7 @@ describe('SessionController', () => {
     expect(outcome).toBe('disposed');
 
     response.resolve(new Response(new Uint8Array([1])));
-    await Promise.allSettled([initialization]);
+    await Promise.allSettled([opening]);
   });
 
   it('continues disposal when parser and viewer cleanup callbacks throw', async () => {
@@ -1029,7 +1030,6 @@ describe('SessionController', () => {
     const controller = new SessionController({
       database,
       parser,
-      fetch: vi.fn().mockResolvedValue(new Response(new Uint8Array([1]))),
       stopViewer,
     });
 
