@@ -1,4 +1,13 @@
-import { Frequency, getTransport, MembraneSynth, MetalSynth, NoiseSynth, PolySynth, start, Synth } from 'tone';
+import {
+  Frequency,
+  getTransport,
+  MembraneSynth,
+  MetalSynth,
+  NoiseSynth,
+  PolySynth,
+  start,
+  Synth,
+} from 'tone';
 
 import { drumVoiceSpec, gmFamily, melodicVoiceSpec, type VoiceSpec } from './gm-voices.js';
 
@@ -66,8 +75,14 @@ const buildMelodicVoice = (spec: VoiceSpec): SynthPort => {
 const buildDrumVoice = (): SynthPort => {
   const kick = new Tone.MembraneSynth().toDestination();
   const tom = new Tone.MembraneSynth({ pitchDecay: 0.1, octaves: 4 }).toDestination();
-  const snare = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.001, decay: 0.2, sustain: 0 } }).toDestination();
-  const hat = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.001, decay: 0.05, sustain: 0 } }).toDestination();
+  const snare = new Tone.NoiseSynth({
+    noise: { type: 'white' },
+    envelope: { attack: 0.001, decay: 0.2, sustain: 0 },
+  }).toDestination();
+  const hat = new Tone.NoiseSynth({
+    noise: { type: 'white' },
+    envelope: { attack: 0.001, decay: 0.05, sustain: 0 },
+  }).toDestination();
   const cymbal = new Tone.MetalSynth().toDestination();
   const all = [kick, tom, snare, hat, cymbal];
   return {

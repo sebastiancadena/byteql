@@ -74,7 +74,10 @@
       const programValue = programColumn?.get(index);
       const programNumber = programColumn ? numeric(programValue) : null;
       const program =
-        programNumber !== null && Number.isInteger(programNumber) && programNumber >= 0 && programNumber <= 127
+        programNumber !== null &&
+        Number.isInteger(programNumber) &&
+        programNumber >= 0 &&
+        programNumber <= 127
           ? programNumber
           : null;
       if (

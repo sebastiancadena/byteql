@@ -32,9 +32,7 @@ describe('gmFamily', () => {
 
 describe('melodicVoiceSpec', () => {
   it('returns a distinct, well-formed spec for every family', () => {
-    const families = [
-      'piano', 'organ', 'guitar', 'bass', 'strings', 'brass', 'reed', 'synth',
-    ] as const;
+    const families = ['piano', 'organ', 'guitar', 'bass', 'strings', 'brass', 'reed', 'synth'] as const;
     for (const family of families) {
       const spec = melodicVoiceSpec(family);
       expect(['triangle', 'sawtooth', 'square', 'sine']).toContain(spec.oscillator.type);

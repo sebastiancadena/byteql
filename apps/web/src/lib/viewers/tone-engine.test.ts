@@ -108,7 +108,14 @@ function setup(startAudio: () => Promise<void> = async () => undefined) {
     if (!match) throw new Error('No drum synth created.');
     return match.synth;
   };
-  return { engine: new ToneAudioEngine(dependencies), transport, created, melodicByOsc, drumSynth, dependencies };
+  return {
+    engine: new ToneAudioEngine(dependencies),
+    transport,
+    created,
+    melodicByOsc,
+    drumSynth,
+    dependencies,
+  };
 }
 
 describe('ToneAudioEngine', () => {
@@ -223,7 +230,9 @@ describe('ToneAudioEngine', () => {
 
     await engine.play();
     const replacementIds = [...transport.callbacks.keys()];
-    await engine.load([{ seconds: 2, note: 72, velocity: 127, kind: 'note_on', channel: null, program: null }]);
+    await engine.load([
+      { seconds: 2, note: 72, velocity: 127, kind: 'note_on', channel: null, program: null },
+    ]);
     expect(transport.cleared).toEqual([...firstIds, ...replacementIds]);
     expect(synth.releaseAll).toHaveBeenCalledTimes(2);
     expect(transport.callbacks.size).toBe(0);
@@ -269,9 +278,7 @@ describe('ToneAudioEngine', () => {
 
   it('selects a melodic voice from the note program family', async () => {
     const { engine, dependencies } = setup();
-    await engine.load([
-      { seconds: 0, note: 40, velocity: 100, kind: 'note_on', channel: 3, program: 48 },
-    ]);
+    await engine.load([{ seconds: 0, note: 40, velocity: 100, kind: 'note_on', channel: 3, program: 48 }]);
     await engine.play();
 
     // program 48 → 'strings' → sawtooth oscillator
