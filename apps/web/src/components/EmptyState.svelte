@@ -1,7 +1,7 @@
 <script lang="ts">
   /* global DOMException, DragEvent, Event, File, HTMLInputElement, window */
 
-  import BrandMark from './BrandMark.svelte';
+  import BrandLockup from './BrandLockup.svelte';
 
   interface Props {
     busy?: boolean;
@@ -58,12 +58,12 @@
   ondrop={dropFile}
 >
   <div class="empty-hero-copy">
-    <BrandMark size="medium" />
+    <BrandLockup />
     <p class="eyebrow">Browser-native binary intelligence</p>
     <h1 id="empty-title">Query the file. <span>Prove the answer.</span></h1>
     <p class="empty-copy">
-      Turn local binary files into queryable tables, then trace every result back to its exact source
-      bytes. Files never leave this browser.
+      Turn local binary files into queryable tables, then trace every result back to its exact source bytes.
+      Files never leave this browser.
     </p>
     <ul class="format-badges" aria-label="Supported formats">
       <li>MIDI</li>

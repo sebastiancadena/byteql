@@ -1,6 +1,4 @@
 <script lang="ts">
-  import BrandMark from './BrandMark.svelte';
-
   interface Props {
     sourceName?: string | null;
     sourceSize?: number | null;
@@ -44,7 +42,6 @@
       <span aria-hidden="true">☷</span>
     </button>
     <a class="wordmark" href="/" aria-label="ByteQL home">
-      <BrandMark size="small" />
       <span>ByteQL</span>
     </a>
     <span class="product-kicker">Forensic Workbench</span>

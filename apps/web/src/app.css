@@ -103,6 +103,8 @@ body {
 }
 
 .startup-card {
+  /* Full-screen moment — the logo can read much larger here than in the homepage hero. */
+  --brand-lockup-size: clamp(7rem, 16vw, 11rem);
   color: var(--color-text-muted);
   text-align: center;
 }

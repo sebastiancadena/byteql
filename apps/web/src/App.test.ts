@@ -87,7 +87,7 @@ describe('App lifecycle', () => {
     expect(createBrowserDatabase).toHaveBeenCalledOnce();
     expect(SessionController).toHaveBeenCalledWith({ database, stopViewer: expect.any(Function) });
     expect(screen.getByText('Browser-native binary intelligence')).toBeTruthy();
-    expect(view.container.querySelector('[data-brand-mark] img')).toBeTruthy();
+    expect(view.container.querySelector('[data-brand-lockup] img')).toBeTruthy();
     expect(screen.queryByText(/files never leave this browser/i)).toBeNull();
     expect(view.container.querySelector('[data-app-ready="true"]')).toBeNull();
 
