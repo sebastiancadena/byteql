@@ -288,23 +288,36 @@ class IngestSessionImpl implements IngestSession {
     if (this.tier === 'spill') {
       // File-boundary flush: chunks must never mix files, so the previous file's residual
       // staged rows rotate out before this file's first append. Quota failures get the same
-      // SPILL_QUOTA_EXCEEDED tagging as appendBatch so the controller's messaging applies.
-      await this.enqueue(async (connection) => {
-        for (const table of this.sessionTables()) {
-          if (this.created.has(table) && (this.stagedBytes.get(table) ?? 0) > 0) {
-            try {
-              await this.rotateChunk(connection, table);
-            } catch (error) {
-              if (!isQuotaError(error)) {
-                throw error;
+      // SPILL_QUOTA_EXCEEDED tagging as appendBatch so the controller's messaging applies, and
+      // the same terminalization: abort the session, drop staging, and reclaim the generation.
+      let quotaAborted = false;
+      try {
+        await this.enqueue(async (connection) => {
+          for (const table of this.sessionTables()) {
+            if (this.created.has(table) && (this.stagedBytes.get(table) ?? 0) > 0) {
+              try {
+                await this.rotateChunk(connection, table);
+              } catch (error) {
+                if (!isQuotaError(error)) {
+                  throw error;
+                }
+                quotaAborted = true;
+                this.state = 'aborted';
+                await this.dropStaging(connection);
+                throw new Error(`SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`, {
+                  cause: error,
+                });
               }
-              throw new Error(`SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`, {
-                cause: error,
-              });
             }
           }
+        });
+      } catch (error) {
+        if (quotaAborted) {
+          await deleteSpillGeneration(this.generation);
+          this.onSettled();
         }
-      });
+        throw error;
+      }
     }
     this.currentFile = file;
     this.currentFileChunks.clear();

@@ -1205,6 +1205,27 @@ describe('createBrowserDatabase', () => {
         expect(deleteIndex).toBeGreaterThan(copyIndex);
       });
 
+      it('a quota error rotating residual staging at beginFile rejects SPILL_QUOTA_EXCEEDED and aborts the session', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 9 });
+        // Small batch stays well under the default rotation threshold, so it remains a residual
+        // staged row that beginFile's boundary rotation must flush.
+        await session.appendBatch('events', ipcBatch(2));
+
+        const quotaError = new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
+          if (sql.startsWith('COPY')) {
+            throw quotaError;
+          }
+          return {} as Table;
+        });
+
+        await expect(session.beginFile('b.pcap')).rejects.toThrow(/SPILL_QUOTA_EXCEEDED/);
+
+        await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow(/aborted/i);
+        expect(deleteSpillGenerationMock).toHaveBeenCalledWith(9);
+      });
+
       it('discardCurrentFile on the memory tier deletes by _src_file with an escaped literal', async () => {
         const database = await createBrowserDatabase();
         const session = await database.beginIngest({
