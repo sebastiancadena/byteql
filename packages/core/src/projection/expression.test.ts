@@ -288,9 +288,7 @@ describe('projection expressions', () => {
     const date = (41 << 9) | (6 << 5) | 15; // year-1980=41, month=6, day=15
     const time = (12 << 11) | (30 << 5) | 22; // hour=12, minute=30, second/2=22
     const packed = date * 65536 + time;
-    expect(evaluate('dos_dttm(_.p)', { _: { p: packed } })).toBe(
-      Date.UTC(2021, 5, 15, 12, 30, 44) * 1000,
-    );
+    expect(evaluate('dos_dttm(_.p)', { _: { p: packed } })).toBe(Date.UTC(2021, 5, 15, 12, 30, 44) * 1000);
   });
 
   it('dos_dttm returns null for a zero or invalid date', () => {

@@ -194,10 +194,7 @@ export async function readZipContainer(source: ByteSource): Promise<ZipContainer
 }
 
 /** Best-effort forward scan of local headers when the central directory is unavailable. */
-async function forwardScan(
-  source: ByteSource,
-  issues: ZipIssue[],
-): Promise<Omit<ZipContainer, 'issues'>> {
+async function forwardScan(source: ByteSource, issues: ZipIssue[]): Promise<Omit<ZipContainer, 'issues'>> {
   const localFiles: LocalFileRecord[] = [];
   let offset = 0;
   const size = source.size;

@@ -25,12 +25,12 @@ describe('zipFormatPack', () => {
   });
 
   it('declares local_files, central_dir_entries, end_of_central_dir, and errors', () => {
-    expect(zipFormatPack.schemas().map((s) => s.name).sort()).toEqual([
-      'central_dir_entries',
-      'end_of_central_dir',
-      'errors',
-      'local_files',
-    ]);
+    expect(
+      zipFormatPack
+        .schemas()
+        .map((s) => s.name)
+        .sort(),
+    ).toEqual(['central_dir_entries', 'end_of_central_dir', 'errors', 'local_files']);
   });
 
   it('opens an archive and emits per-table batches', async () => {
