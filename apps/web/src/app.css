@@ -19,7 +19,7 @@
   --color-border-strong: #3a4d74;
   --color-text: #edf5ff;
   --color-text-muted: #9baaca;
-  --color-text-subtle: #71809f;
+  --color-text-subtle: #8493b2;
   --color-accent: #36c2ff;
   --color-accent-strong: #72d8ff;
   --color-accent-dim: #167fbd;
@@ -33,14 +33,14 @@
   --color-editor-background: #070c16;
   --color-editor-caret: #72d8ff;
   --color-editor-selection: #143b5a;
-  --color-editor-gutter-text: #61708e;
+  --color-editor-gutter-text: #7584a2;
   --color-editor-gutter-background: #0d1424;
   --color-editor-border: #263352;
   --color-editor-active-line: #101c32;
   --color-syntax-keyword: #60d1ff;
   --color-syntax-string: #ffbd66;
   --color-syntax-number: #a8b8ff;
-  --color-syntax-comment: #71809f;
+  --color-syntax-comment: #7584a3;
   --color-syntax-operator: #d5a7ff;
   --color-syntax-name: #edf5ff;
   --color-syntax-invalid: #ff8f91;

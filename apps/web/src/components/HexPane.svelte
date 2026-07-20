@@ -272,7 +272,7 @@
       ascii: readColor(style, '--color-text-muted') || '#aebdca',
       shadeA: readColor(style, '--color-shade-a'),
       shadeB: readColor(style, '--color-shade-b'),
-      selection: readColor(style, '--color-selection') || '#183b3a',
+      selection: readColor(style, '--color-selection') || '#102e49',
       highlight: readColor(style, '--color-hex-highlight'),
       caret: readColor(style, '--color-focus') || '#ffca68',
       placeholder: readColor(style, '--color-hex-placeholder'),
@@ -301,7 +301,7 @@
     if (flashRow !== null) {
       const bandY = (flashRow - scrollRow) * metrics.rowHeight;
       if (bandY >= -metrics.rowHeight && bandY < cssHeight) {
-        context.fillStyle = readColor(style, '--color-accent-wash') || 'rgb(85 216 190 / 8%)';
+        context.fillStyle = readColor(style, '--color-accent-wash') || 'rgb(54 194 255 / 8%)';
         context.fillRect(0, bandY, cssWidth, metrics.rowHeight);
       }
     }
