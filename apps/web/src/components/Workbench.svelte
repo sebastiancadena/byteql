@@ -381,7 +381,7 @@
         busy={intakeBusy}
         error={actionError ?? session.fatalError}
         onopen={(files) => perform(() => controller.openFiles(files))}
-        onsample={() => perform(() => controller.openSample('midi'))}
+        onsample={(id) => perform(() => controller.openSample(id))}
       />
     </main>
   {:else}

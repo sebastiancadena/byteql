@@ -2,12 +2,14 @@
   /* global DOMException, DragEvent, Event, File, HTMLInputElement, window */
 
   import BrandLockup from './BrandLockup.svelte';
+  import SampleMenu from './SampleMenu.svelte';
+  import type { SampleId } from '../lib/session/samples.js';
 
   interface Props {
     busy?: boolean;
     error?: string | null;
     onopen: (files: File[]) => void;
-    onsample: () => void;
+    onsample: (id: SampleId) => void;
   }
 
   let { busy = false, error = null, onopen, onsample }: Props = $props();
@@ -78,9 +80,7 @@
         Open file
         <input type="file" multiple aria-label="Open file" disabled={busy} onchange={chooseFile} />
       </label>
-      <button class="button button-secondary" type="button" disabled={busy} onclick={onsample}>
-        Try sample
-      </button>
+      <SampleMenu {busy} onselect={onsample} />
       {#if filePickerSupported}
         <button class="button button-secondary" type="button" disabled={busy} onclick={browseFiles}>
           Browse files

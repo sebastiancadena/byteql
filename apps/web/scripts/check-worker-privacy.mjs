@@ -151,6 +151,7 @@ try {
   }
 
   await appPage.getByRole('button', { name: 'Try sample' }).click();
+  await appPage.getByRole('menuitem', { name: 'MIDI song (.mid)' }).click();
   await appPage.getByRole('textbox', { name: 'SQL query' }).waitFor();
   await appPage.waitForFunction(() => document.querySelectorAll('.sql-editor .cm-content span').length >= 3);
 

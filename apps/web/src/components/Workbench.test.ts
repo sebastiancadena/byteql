@@ -68,7 +68,7 @@ class FakeController {
   listeners = new Set<(state: SessionState) => void>();
   openFile = vi.fn(async () => undefined);
   openFiles = vi.fn(async () => undefined);
-  openSample = vi.fn(async () => undefined);
+  openSample = vi.fn(async (_id: string) => undefined);
   runQuery = vi.fn(async (sql: string) => {
     this.publish({ ...this.state, sql });
   });
@@ -167,7 +167,8 @@ describe('Inspector Workbench', () => {
     expect((screen.getByRole('button', { name: 'Try sample' }) as HTMLButtonElement).disabled).toBe(false);
 
     await fireEvent.click(screen.getByRole('button', { name: 'Try sample' }));
-    expect(controller.openSample).toHaveBeenCalledOnce();
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Network capture (pcap)' }));
+    expect(controller.openSample).toHaveBeenCalledWith('pcap');
   });
 
   it('hides the header Open button when no session can receive the picker click', () => {
