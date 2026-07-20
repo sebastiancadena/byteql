@@ -162,7 +162,7 @@ The trust model follows from this split: community format packs on the gallery p
 (`.ksy` + YAML) — reviewable, with no code execution beyond the shared engine. Only components
 carry code.
 
-## Building and running
+## Build and publish
 
 ### Prerequisites
 
@@ -171,21 +171,34 @@ carry code.
 - **A Chromium-based browser** for the app itself. The File System Access API and stable OPFS
   are Chromium-only today; Firefox/Safari fall back to `<input type=file>` with an in-memory
   size cap.
+- **Wrangler 4.x** for Cloudflare Pages releases. The release scripts use the already installed
+  `wrangler` command rather than a workspace dependency.
 
 No JVM or other toolchain is needed — the Kaitai Struct compiler runs as an npm package during
 the build, generating parsers into each format pack's `gen/` directory.
 
-### Build and run the app
+### Install and run locally
 
 ```bash
 pnpm install
-pnpm build                          # builds all workspace packages in dependency order
 pnpm --filter @byteql/web dev       # Vite dev server — open the printed URL in Chromium
 ```
 
 Then drop a `.mid` or `.pcap` file onto the page (or use the built-in demo sample), and query
-the resulting tables from the SQL console. Production output is `apps/web/dist` after
-`pnpm --filter @byteql/web build`.
+the resulting tables from the SQL console.
+
+### Create a production build
+
+From the repository root:
+
+```bash
+pnpm install
+pnpm build
+```
+
+This builds every workspace package in dependency order and writes the production web app to
+`apps/web/dist`. A normal build still contains DuckDB modules larger than Cloudflare Pages' file
+limit, so do not upload that directory until `pnpm prepare:pages` has prepared it.
 
 ### Tests and checks
 
@@ -205,27 +218,57 @@ Notes:
 - The project is developed test-first, and the privacy guarantee is itself under test
   (`apps/web/e2e/privacy.spec.ts` asserts zero network requests after app readiness).
 
-### Cloudflare Pages
+### Publish to Cloudflare Pages
 
-The production site uses a Cloudflare Pages Direct Upload project named `byteql`. Create the
-project once with an authenticated Wrangler 4.x installation:
+The production site at [byteql.pages.dev](https://byteql.pages.dev) uses a Direct Upload project
+named `byteql`. Authenticate Wrangler before the first release from a new machine:
+
+```bash
+wrangler login
+wrangler whoami
+```
+
+The `byteql` project already exists. Only create it when bootstrapping an independent Cloudflare
+account or replacing a deleted project:
 
 ```bash
 wrangler pages project create byteql --production-branch=main
 ```
 
-Release subsequent versions with:
+For a routine production release, run this from the repository root:
 
 ```bash
 pnpm release:pages
 ```
 
-The release command runs the production checks and privacy/bundle audit, prepares the oversized
-DuckDB modules as content-hashed gzip assets, verifies Cloudflare's 25 MiB per-file limit and the
-Pages header contract, and verifies that both signed Parquet extensions are available locally.
-It then publishes only `apps/web/dist` to `byteql` on production branch `main`; DuckDB never needs
-its default external extension repository at runtime. The instrumented `dist-e2e` directory is
-never published. The `byteql.dev` custom domain is not attached yet.
+That command performs the complete release pipeline:
+
+1. `pnpm check` builds, type-checks, lints, and checks formatting.
+2. `pnpm check:bundle` enforces the bundle-size and zero-external-URL privacy contract.
+3. `pnpm prepare:pages` gzip-compresses the oversized, content-hashed DuckDB modules and rewrites
+   their generated references in `apps/web/dist`.
+4. `pnpm verify:pages` checks the `_headers` contract, the 25 MiB per-file limit, the absence of
+   threaded assets, and the presence of both same-origin signed Parquet extensions.
+5. `pnpm deploy:pages` uploads only `apps/web/dist` to project `byteql`, production branch `main`.
+
+To inspect or retry individual release stages, run them in this order:
+
+```bash
+pnpm check
+pnpm check:bundle
+pnpm prepare:pages
+pnpm verify:pages
+pnpm deploy:pages
+```
+
+`prepare:pages` modifies `apps/web/dist` in place and expects a fresh ordinary build. Run
+`pnpm build` before repeating the preparation step manually. Never publish `apps/web/dist-e2e`;
+Playwright creates that instrumented directory only for browser acceptance tests.
+
+The source-controlled `apps/web/public/_headers` file is copied beside `index.html`. It serves
+WASM with the correct MIME type, caches immutable generated modules for one year, and keeps
+`index.html` uncached. Cross-origin isolation headers are intentionally absent because this is not
+a threaded build. The `byteql.dev` custom domain is not attached yet.
 
 ## Status and roadmap
 
