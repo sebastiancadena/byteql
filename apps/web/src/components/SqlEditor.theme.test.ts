@@ -46,9 +46,7 @@ function relativeLuminance(hex: string): number {
     .slice(1)
     .match(/../gu)!
     .map((channel) => Number.parseInt(channel, 16) / 255)
-    .map((channel) =>
-      channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
-    );
+    .map((channel) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
   const [red, green, blue] = channels;
   if (red === undefined || green === undefined || blue === undefined) {
     throw new Error(`Invalid hexadecimal color: ${hex}`);
@@ -90,28 +88,21 @@ describe('SQL editor color contract', () => {
         '--color-editor-gutter-text',
         '--color-editor-gutter-background',
       ],
-      [
-        'editor gutter text on active line',
-        '--color-editor-gutter-text',
-        '--color-editor-active-line',
-      ],
+      ['editor gutter text on active line', '--color-editor-gutter-text', '--color-editor-active-line'],
       ['syntax comments on editor', '--color-syntax-comment', '--color-editor-background'],
       ['syntax comments on active line', '--color-syntax-comment', '--color-editor-active-line'],
     ] as const;
 
     for (const [label, foreground, background] of pairs) {
-      expect(
-        contrastRatio(cssHexToken(foreground), cssHexToken(background)),
-        label,
-      ).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(cssHexToken(foreground), cssHexToken(background)), label).toBeGreaterThanOrEqual(
+        4.5,
+      );
     }
   });
 
   it('keeps canvas fallbacks aligned with the Command Deck cyan theme', () => {
     expect(hexPaneSource).toContain("readColor(style, '--color-selection') || '#102e49'");
-    expect(hexPaneSource).toContain(
-      "readColor(style, '--color-accent-wash') || 'rgb(54 194 255 / 8%)'",
-    );
+    expect(hexPaneSource).toContain("readColor(style, '--color-accent-wash') || 'rgb(54 194 255 / 8%)'");
     expect(hexPaneSource).not.toContain('#183b3a');
     expect(hexPaneSource).not.toContain('rgb(85 216 190 / 8%)');
   });
