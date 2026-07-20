@@ -15,7 +15,7 @@ declare global {
      * File System Access API entry point (not yet in TypeScript's bundled DOM lib). Absent in
      * browsers/environments without support (e.g. Firefox, Safari, jsdom) — always feature-detect.
      */
-    showOpenFilePicker?: () => Promise<FileSystemFileHandle[]>;
+    showOpenFilePicker?: (options?: { multiple?: boolean }) => Promise<FileSystemFileHandle[]>;
   }
 }
 

@@ -4,7 +4,9 @@ test('opens the bundled sample, queries five events, and inspects provenance', a
   await page.goto('/');
   await page.getByRole('button', { name: 'Try sample' }).click();
   const explorerTables = page.getByRole('region', { name: 'Tables' });
-  await expect(explorerTables.getByText('4', { exact: true })).toBeVisible();
+  // MIDI's own 4 tables (header, events, tempo, errors) plus the multi-file-session `_files`
+  // catalog table, which every batch session gets even at N=1.
+  await expect(explorerTables.getByText('5', { exact: true })).toBeVisible();
 
   await page.getByRole('textbox', { name: 'SQL query' }).fill('select * from events limit 5');
   await page.getByRole('button', { name: 'Run query' }).click();

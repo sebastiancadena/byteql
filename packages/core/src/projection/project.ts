@@ -107,7 +107,7 @@ export interface ProjectedTable {
   readonly rowCount: number;
 }
 
-const reservedOutputNames = new Set(['_src_start', '_src_end']);
+const reservedOutputNames = new Set(['_src_start', '_src_end', '_src_file']);
 
 const compileAtPath = (source: string, path: string): CompiledExpression => {
   try {

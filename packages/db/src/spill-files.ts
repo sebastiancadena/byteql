@@ -72,6 +72,33 @@ export const sweepSpillOrphans = async (keep: readonly number[]): Promise<void> 
   );
 };
 
+/** Parses `opfs://byteql-spill/<generation>/<table>/<file>` into its path segments, or null. */
+const parseChunkPath = (path: string): { generation: string; table: string; file: string } | null => {
+  const match = /^opfs:\/\/byteql-spill\/([^/]+)\/([^/]+)\/([^/]+)$/u.exec(path);
+  return match ? { generation: match[1]!, table: match[2]!, file: match[3]! } : null;
+};
+
+/** Best-effort removal of individual spill chunk files (a discarded file's rotated chunks). */
+export const deleteSpillChunks = async (paths: readonly string[]): Promise<void> => {
+  const spillRoot = await getSpillRoot();
+  if (!spillRoot) {
+    return;
+  }
+  for (const path of paths) {
+    const parsed = parseChunkPath(path);
+    if (!parsed) {
+      continue;
+    }
+    try {
+      const generationDir = await spillRoot.getDirectoryHandle(parsed.generation, { create: false });
+      const tableDir = await generationDir.getDirectoryHandle(parsed.table, { create: false });
+      await tableDir.removeEntry(parsed.file);
+    } catch {
+      // Already absent, or removed concurrently; deletion is best-effort.
+    }
+  }
+};
+
 const QUOTA_MESSAGE_PATTERN = /quota exceeded|no space left/i;
 
 /** Matches a `QuotaExceededError` (DOM or duck-typed) or DuckDB/OS quota-exhaustion message text. */

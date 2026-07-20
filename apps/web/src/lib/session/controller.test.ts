@@ -1,8 +1,10 @@
 import {
+  ipcToTable,
   tableToIpc,
   type BatchTransfer,
   type FormatPack,
   type ParseProgress as PackProgress,
+  type TableOverview,
   type TableSchema,
 } from '@byteql/core';
 import type { ByteqlDatabase, IngestOptions, IngestSession, TableSummary } from '@byteql/db';
@@ -66,6 +68,7 @@ const streamedResult = (name: string, rowCount = 1): StreamedParseResult => ({
 interface FakeParseCall {
   readonly name: string;
   readonly blob: Blob;
+  readonly formatId: string | undefined;
   emitProgress(progress: ParseProgress): void;
   emitBatch(batch: BatchMessage): Promise<void>;
   finish(result: StreamedParseResult): void;
@@ -87,7 +90,10 @@ class FakeParser implements ParseClientPort {
   });
   dispose = vi.fn();
 
-  parse(input: { name: string; blob: Blob }, handlers: ParseHandlers): Promise<StreamedParseResult> {
+  parse(
+    input: { name: string; blob: Blob; formatId?: string },
+    handlers: ParseHandlers,
+  ): Promise<StreamedParseResult> {
     let settled = false;
     let resolveTask!: (value: StreamedParseResult) => void;
     let rejectTask!: (error: unknown) => void;
@@ -98,6 +104,7 @@ class FakeParser implements ParseClientPort {
     const call: FakeParseCall = {
       name: input.name,
       blob: input.blob,
+      formatId: input.formatId,
       emitProgress: (progress) => handlers.onProgress(progress),
       emitBatch: (batch) => {
         const outcome = handlers.onBatch(batch);
@@ -175,6 +182,15 @@ class FakeIngestSession implements IngestSession {
     this.abortCalls += 1;
     this.onSettled();
   }
+
+  readonly beginFileCalls: string[] = [];
+  discardCalls = 0;
+  beginFile = vi.fn(async (file: string) => {
+    this.beginFileCalls.push(file);
+  });
+  discardCurrentFile = vi.fn(async () => {
+    this.discardCalls += 1;
+  });
 }
 
 const queryTable = (value: number): Table => tableFromArrays({ value: [value] });
@@ -220,6 +236,39 @@ const fakeDatabase = (): { database: ByteqlDatabase; sessions: FakeIngestSession
   return { database, sessions };
 };
 
+const MIDI_MAGIC = [0x4d, 0x54, 0x68, 0x64] as const;
+
+/** A minimal recognizable MIDI head (`MThd`) plus distinguishing filler — `openFiles` probes head
+ * bytes via `planBatch`, so every test file must carry real format magic to be accepted. */
+const midiFile = (name: string, ...extra: number[]): File =>
+  new File([new Uint8Array([...MIDI_MAGIC, ...extra])], name);
+
+const midiBlob = (): Blob => new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6])]);
+
+/**
+ * Every batch open now appends a `_files` catalog row before `finalize()`, and
+ * `FakeIngestSession.appendBatch` never auto-resolves — so any test driving an open through to
+ * `ready` must resolve this trailing append, or the awaited `opening` promise hangs forever.
+ */
+const resolveFilesAppend = async (session: FakeIngestSession): Promise<void> => {
+  await vi.waitFor(() => expect(session.appendCalls.some((call) => call.table === '_files')).toBe(true));
+  session.appendCalls.find((call) => call.table === '_files')!.resolve();
+};
+
+/** The `_files` overview entry every ready batch appends to `tables` (spec-documented columns). */
+const filesOverview = (rowCount: number): TableOverview => ({
+  name: '_files',
+  rowCount,
+  columns: [
+    { name: 'file', type: 'Utf8', nullable: false },
+    { name: 'original_name', type: 'Utf8', nullable: false },
+    { name: 'size', type: 'Uint64', nullable: false },
+    { name: 'ingest_order', type: 'Int32', nullable: false },
+    { name: 'status', type: 'Utf8', nullable: false },
+    { name: 'error', type: 'Utf8', nullable: true },
+  ],
+});
+
 describe('SessionController', () => {
   let parser: FakeParser;
   let database: ByteqlDatabase;
@@ -258,6 +307,7 @@ describe('SessionController', () => {
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
     parser.calls[0]!.finish(streamedResult('events', 3));
+    await resolveFilesAppend(sessions[0]!);
     await opening;
 
     const reopened = controller.openSample();
@@ -267,6 +317,7 @@ describe('SessionController', () => {
     await vi.waitFor(() => expect(sessions).toHaveLength(2));
     sessions[1]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
     parser.calls[1]!.finish(streamedResult('events', 3));
+    await resolveFilesAppend(sessions[1]!);
     await reopened;
   });
 
@@ -274,7 +325,7 @@ describe('SessionController', () => {
     const controller = new SessionController({ database, parser, stopViewer });
     const observed = vi.fn();
     const unsubscribe = controller.subscribe(observed);
-    const file = new File([new Uint8Array([1, 2])], 'private.mid');
+    const file = midiFile('private.mid', 1, 2);
 
     const opening = controller.openFile(file);
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
@@ -282,7 +333,7 @@ describe('SessionController', () => {
 
     expect(controller.getState()).toMatchObject({
       phase: 'parsing',
-      source: { name: 'private.mid', size: 2 },
+      source: { files: [{ name: 'private.mid', size: 6 }], totalSize: 6 },
     });
     expect(JSON.stringify(controller.getState())).not.toContain('File');
     expect(observed).toHaveBeenCalled();
@@ -291,6 +342,7 @@ describe('SessionController', () => {
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
     parser.calls[0]!.finish(streamedResult('events', 3));
+    await resolveFilesAppend(sessions[0]!);
     await opening;
     const result = streamedResult('events', 3);
     expect(controller.getState().queries).toEqual(result.queries);
@@ -302,7 +354,7 @@ describe('SessionController', () => {
     // packets) must still be listed for the Explorer/UNION-ALL-overview to work — it is backfilled
     // as a rowCount-0 entry from `result.schemas`, not silently dropped.
     const controller = new SessionController({ database, parser, stopViewer });
-    const opening = controller.openFile(new File([new Uint8Array([1])], 'capture.pcap'));
+    const opening = controller.openFile(midiFile('capture.pcap', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;
     session.finalizeResult = [{ name: 'packets', rowCount: 2 }];
@@ -319,28 +371,32 @@ describe('SessionController', () => {
       capabilities: {},
       schemas,
     });
+    await resolveFilesAppend(session);
     await opening;
 
     expect(session.finalizeSchemaCalls).toEqual([schemas]);
     expect(controller.getState().tables).toEqual([
       { name: 'packets', rowCount: 2, columns: schemas[0]!.columns },
       { name: 'tcp', rowCount: 0, columns: schemas[1]!.columns },
+      filesOverview(1),
     ]);
   });
 
   it('cancels parse, query, and viewer immediately and ignores stale ingest results', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
-    const first = controller.openFile(new File([new Uint8Array([1])], 'old.mid'));
+    const first = controller.openFile(midiFile('old.mid', 1));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const oldSession = sessions[0]!;
-    const second = controller.openFile(new File([new Uint8Array([2])], 'new.mid'));
+    const second = controller.openFile(midiFile('new.mid', 2));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
 
     expect(parser.cancel).toHaveBeenCalledTimes(2);
     expect(database.cancelQuery).toHaveBeenCalledTimes(2);
     expect(stopViewer).toHaveBeenCalledTimes(2);
-    expect(controller.getState()).toMatchObject({ source: { name: 'new.mid', size: 1 } });
+    expect(controller.getState()).toMatchObject({
+      source: { files: [{ name: 'new.mid', size: 5 }], totalSize: 5 },
+    });
 
     await first;
     expect(oldSession.abortCalls).toBe(1);
@@ -349,17 +405,18 @@ describe('SessionController', () => {
     await vi.waitFor(() => expect(sessions).toHaveLength(2));
     sessions[1]!.finalizeResult = [{ name: 'new', rowCount: 1 }];
     parser.calls[1]!.finish(streamedResult('new', 1));
+    await resolveFilesAppend(sessions[1]!);
     await second;
     expect(controller.getState()).toMatchObject({
       phase: 'ready',
-      source: { name: 'new.mid', size: 1 },
-      tables: streamedResult('new', 1).tables,
+      source: { files: [{ name: 'new.mid', size: 5 }], totalSize: 5 },
+      tables: [...streamedResult('new', 1).tables, filesOverview(1)],
     });
   });
 
   it('does not finalize the ingest until the complete parse result arrives', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
-    const opening = controller.openFile(new File([new Uint8Array([1])], 'wait.mid'));
+    const opening = controller.openFile(midiFile('wait.mid', 1));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
 
@@ -373,6 +430,7 @@ describe('SessionController', () => {
 
     sessions[0]!.finalizeResult = [{ name: 'complete', rowCount: 3 }];
     parser.calls[0]!.finish(streamedResult('complete', 3));
+    await resolveFilesAppend(sessions[0]!);
     await opening;
     expect(sessions[0]!.finalizeCalls).toBe(1);
   });
@@ -382,23 +440,25 @@ describe('SessionController', () => {
     vi.mocked(database.query).mockReturnValueOnce(query.promise);
     const controller = new SessionController({ database, parser, stopViewer });
 
-    const firstOpen = controller.openFile(new File([new Uint8Array([1])], 'first.mid'));
+    const firstOpen = controller.openFile(midiFile('first.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'first', rowCount: 1 }];
     parser.calls[0]!.finish(streamedResult('first', 1));
+    await resolveFilesAppend(sessions[0]!);
     await firstOpen;
 
     const runningQuery = controller.runQuery('select * from first');
-    const replacement = controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
+    const replacement = controller.openFile(midiFile('second.mid', 2));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
     query.resolve({ table: queryTable(99), elapsedMs: 50 });
     await runningQuery;
     expect(controller.getState().result).toBeNull();
-    expect(controller.getState().source?.name).toBe('second.mid');
+    expect(controller.getState().source?.files[0]?.name).toBe('second.mid');
 
     await vi.waitFor(() => expect(sessions).toHaveLength(2));
     sessions[1]!.finalizeResult = [{ name: 'second', rowCount: 1 }];
     parser.calls[1]!.finish(streamedResult('second', 1));
+    await resolveFilesAppend(sessions[1]!);
     await replacement;
   });
 
@@ -408,10 +468,11 @@ describe('SessionController', () => {
       .mockResolvedValueOnce({ table: prior, elapsedMs: 3 })
       .mockRejectedValueOnce(new Error('syntax error'));
     const controller = new SessionController({ database, parser, stopViewer });
-    const opening = controller.openFile(new File([new Uint8Array([1])], 'query.mid'));
+    const opening = controller.openFile(midiFile('query.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
     parser.calls[0]!.finish(streamedResult('events', 3));
+    await resolveFilesAppend(sessions[0]!);
     await opening;
 
     await controller.runQuery('select 7');
@@ -491,7 +552,7 @@ describe('SessionController', () => {
 
   it('releases all state-held local data during idempotent disposal', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
-    const opening = controller.openFile(new File([new Uint8Array([1])], 'private.mid'));
+    const opening = controller.openFile(midiFile('private.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
     parser.calls[0]!.finish({
@@ -508,10 +569,11 @@ describe('SessionController', () => {
         },
       ],
     });
+    await resolveFilesAppend(sessions[0]!);
     await opening;
     await controller.runQuery('select * from events');
     expect(controller.getState()).toMatchObject({
-      source: { name: 'private.mid', size: 1 },
+      source: { files: [{ name: 'private.mid', size: 5 }], totalSize: 5 },
       sql: 'select * from events',
       result: expect.anything(),
     });
@@ -532,10 +594,11 @@ describe('SessionController', () => {
     const healthy = vi.fn();
     controller.subscribe(healthy);
 
-    const opening = controller.openFile(new File([new Uint8Array([1])], 'listeners.mid'));
+    const opening = controller.openFile(midiFile('listeners.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
     parser.calls[0]!.finish(streamedResult('events', 3));
+    await resolveFilesAppend(sessions[0]!);
     await opening;
 
     expect(controller.getState().phase).toBe('ready');
@@ -555,7 +618,7 @@ describe('SessionController', () => {
 
   it('opens a file through ingest: begin → per-batch append+ack → finalize → ready', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
-    const file = new File([new Uint8Array([1, 2, 3])], 'song.mid');
+    const file = midiFile('song.mid', 1, 2, 3);
 
     const opening = controller.openFile(file);
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
@@ -596,12 +659,15 @@ describe('SessionController', () => {
       capabilities: {},
       schemas: [],
     });
+    await vi.waitFor(() => expect(session.appendCalls).toHaveLength(3));
+    expect(session.appendCalls[2]!.table).toBe('_files');
+    session.appendCalls[2]!.resolve();
     await opening;
 
     expect(session.finalizeCalls).toBe(1);
     expect(controller.getState()).toMatchObject({
       phase: 'ready',
-      tables: [{ name: 'events', rowCount: 2, columns: [] }],
+      tables: [{ name: 'events', rowCount: 2, columns: [] }, filesOverview(1)],
     });
   });
 
@@ -611,7 +677,7 @@ describe('SessionController', () => {
     // so `finish` can race ahead of an in-flight `appendBatch`. Finalizing before that append
     // settles would silently drop rows.
     const controller = new SessionController({ database, parser, stopViewer });
-    const opening = controller.openFile(new File([new Uint8Array([1])], 'race.mid'));
+    const opening = controller.openFile(midiFile('race.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;
 
@@ -631,6 +697,7 @@ describe('SessionController', () => {
 
     session.appendCalls[0]!.resolve();
     await emit;
+    await resolveFilesAppend(session);
     await opening;
 
     expect(session.finalizeCalls).toBe(1);
@@ -648,7 +715,9 @@ describe('SessionController', () => {
       stopViewer,
       tiering: { tierThresholdBytes },
     });
-    const file = new File([new Uint8Array(tierThresholdBytes)], 'huge.mid');
+    const bytes = new Uint8Array(tierThresholdBytes);
+    bytes.set(MIDI_MAGIC);
+    const file = new File([bytes], 'huge.mid');
 
     await controller.openFile(file);
 
@@ -665,11 +734,11 @@ describe('SessionController', () => {
   it('supersession mid-ingest aborts the new generation and leaves state on the new open', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
 
-    const first = controller.openFile(new File([new Uint8Array([1])], 'old.mid'));
+    const first = controller.openFile(midiFile('old.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const oldSession = sessions[0]!;
 
-    const second = controller.openFile(new File([new Uint8Array([2])], 'new.mid'));
+    const second = controller.openFile(midiFile('new.mid', 2));
     await vi.waitFor(() => expect(sessions).toHaveLength(2));
     const newSession = sessions[1]!;
 
@@ -679,9 +748,13 @@ describe('SessionController', () => {
 
     newSession.finalizeResult = [{ name: 'events', rowCount: 5 }];
     parser.calls[1]!.finish(streamedResult('events', 5));
+    await resolveFilesAppend(newSession);
     await second;
 
-    expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'new.mid', size: 1 } });
+    expect(controller.getState()).toMatchObject({
+      phase: 'ready',
+      source: { files: [{ name: 'new.mid', size: 5 }], totalSize: 5 },
+    });
     expect(newSession.finalizeCalls).toBe(1);
   });
 
@@ -690,7 +763,7 @@ describe('SessionController', () => {
     // must never reach `finalize()` — committing a superseded generation's staging tables would
     // clobber catalog state the new generation assumes.
     const controller = new SessionController({ database, parser, stopViewer });
-    const first = controller.openFile(new File([new Uint8Array([1])], 'first.mid'));
+    const first = controller.openFile(midiFile('first.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const firstSession = sessions[0]!;
 
@@ -713,12 +786,15 @@ describe('SessionController', () => {
     // eventual abort hasn't happened yet), and the real DB refuses a second `beginIngest` while a
     // prior session is open (I1) — so the controller's own `beginIngest` for gen 2 is blocked
     // awaiting gen 1's settlement, and no second `FakeIngestSession` exists yet. Dispatching
-    // 'opening' still happens immediately; it never touches the ingest session.
-    const second = controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
-    expect(controller.getState()).toMatchObject({
-      phase: 'opening',
-      source: { name: 'second.mid', size: 1 },
-    });
+    // 'opening' happens once gen 2's `planBatch` probe resolves (an async head-bytes read, no
+    // longer synchronous) — it never touches the ingest session.
+    const second = controller.openFile(midiFile('second.mid', 2));
+    await vi.waitFor(() =>
+      expect(controller.getState()).toMatchObject({
+        phase: 'opening',
+        source: { files: [{ name: 'second.mid', size: 5 }], totalSize: 5 },
+      }),
+    );
     expect(sessions).toHaveLength(1);
 
     // Now let the straggling append settle; gen 1 then notices it's superseded and aborts,
@@ -733,8 +809,12 @@ describe('SessionController', () => {
     await vi.waitFor(() => expect(sessions).toHaveLength(2));
     sessions[1]!.finalizeResult = [{ name: 'second', rowCount: 1 }];
     parser.calls[1]!.finish(streamedResult('second', 1));
+    await resolveFilesAppend(sessions[1]!);
     await second;
-    expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'second.mid', size: 1 } });
+    expect(controller.getState()).toMatchObject({
+      phase: 'ready',
+      source: { files: [{ name: 'second.mid', size: 5 }], totalSize: 5 },
+    });
   });
 
   it('suppresses a stale ready dispatch when finalize resolves after supersession, without aborting the committed ingest', async () => {
@@ -743,31 +823,37 @@ describe('SessionController', () => {
     // left to roll back) but dispatching `ready` for it would clobber the new generation's state
     // with the stale file's tables.
     const controller = new SessionController({ database, parser, stopViewer });
-    const first = controller.openFile(new File([new Uint8Array([1])], 'first.mid'));
+    const first = controller.openFile(midiFile('first.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const firstSession = sessions[0]!;
     const finalizeGate = firstSession.holdFinalize();
     firstSession.finalizeResult = [{ name: 'first', rowCount: 1 }];
 
     parser.calls[0]!.finish(streamedResult('first', 1));
+    await resolveFilesAppend(firstSession);
     await vi.waitFor(() => expect(firstSession.finalizeCalls).toBe(1));
     expect(controller.getState().phase).not.toBe('ready');
 
     // Supersede while gen 1's finalize is still in flight (I1: the real DB refuses a second
     // `beginIngest` while gen 1's session is still open, since `finalize()` hasn't resolved yet).
     // The controller's own `beginIngest` for gen 2 is now blocked awaiting gen 1's settlement, so
-    // no second `FakeIngestSession` exists yet even though 'opening' dispatches immediately.
-    const second = controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
-    expect(controller.getState()).toMatchObject({
-      phase: 'opening',
-      source: { name: 'second.mid', size: 1 },
-    });
+    // no second `FakeIngestSession` exists yet even though 'opening' dispatches once gen 2's own
+    // `planBatch` probe resolves.
+    const second = controller.openFile(midiFile('second.mid', 2));
+    await vi.waitFor(() =>
+      expect(controller.getState()).toMatchObject({
+        phase: 'opening',
+        source: { files: [{ name: 'second.mid', size: 5 }], totalSize: 5 },
+      }),
+    );
     expect(sessions).toHaveLength(1);
 
     finalizeGate.resolve();
     await first;
 
-    expect(controller.getState()).toMatchObject({ source: { name: 'second.mid', size: 1 } });
+    expect(controller.getState()).toMatchObject({
+      source: { files: [{ name: 'second.mid', size: 5 }], totalSize: 5 },
+    });
     expect(controller.getState().tables).not.toEqual(streamedResult('first', 1).tables);
     expect(firstSession.abortCalls).toBe(0);
 
@@ -776,8 +862,12 @@ describe('SessionController', () => {
     const secondSession = sessions[1]!;
     secondSession.finalizeResult = [{ name: 'second', rowCount: 1 }];
     parser.calls[1]!.finish(streamedResult('second', 1));
+    await resolveFilesAppend(secondSession);
     await second;
-    expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'second.mid', size: 1 } });
+    expect(controller.getState()).toMatchObject({
+      phase: 'ready',
+      source: { files: [{ name: 'second.mid', size: 5 }], totalSize: 5 },
+    });
   });
 
   it('skips ingest claim for generations superseded while awaiting settlement', async () => {
@@ -789,26 +879,27 @@ describe('SessionController', () => {
     const controller = new SessionController({ database, parser, stopViewer });
 
     // Open A, hold its finalize to keep its ingest session open.
-    const openA = controller.openFile(new File([new Uint8Array([1])], 'first.mid'));
+    const openA = controller.openFile(midiFile('first.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const sessionA = sessions[0]!;
     const gateA = sessionA.holdFinalize();
     sessionA.finalizeResult = [{ name: 'first', rowCount: 1 }];
     parser.calls[0]!.finish(streamedResult('first', 1));
+    await resolveFilesAppend(sessionA);
     await vi.waitFor(() => expect(sessionA.finalizeCalls).toBe(1));
 
-    // Open B while A's finalize is pending. B's `completeOpen` is now blocked waiting on A's
+    // Open B while A's finalize is pending. B's `completeBatchOpen` is now blocked waiting on A's
     // `ingestSettlement` to resolve (it awaits ingestSettlement before calling beginIngest).
-    void controller.openFile(new File([new Uint8Array([2])], 'second.mid'));
-    expect(controller.getState().source?.name).toBe('second.mid');
+    void controller.openFile(midiFile('second.mid', 2));
+    await vi.waitFor(() => expect(controller.getState().source?.files[0]?.name).toBe('second.mid'));
     expect(sessions).toHaveLength(1);
 
-    // Open C to supersede B. C's `completeOpen` is also blocked on A's settlement.
-    const openC = controller.openFile(new File([new Uint8Array([3])], 'third.mid'));
-    expect(controller.getState().source?.name).toBe('third.mid');
+    // Open C to supersede B. C's `completeBatchOpen` is also blocked on A's settlement.
+    const openC = controller.openFile(midiFile('third.mid', 3));
+    await vi.waitFor(() => expect(controller.getState().source?.files[0]?.name).toBe('third.mid'));
     expect(sessions).toHaveLength(1);
 
-    // Release A's finalize. A settles and unblocks both B and C's waiting `completeOpen`.
+    // Release A's finalize. A settles and unblocks both B and C's waiting `completeBatchOpen`.
     // B is stale by now (C superseded it), so after A's ingestSettlement resolves,
     // B's isCurrent check should return false and skip the beginIngest call.
     // Only C should reach `beginIngest` and create a session.
@@ -822,16 +913,20 @@ describe('SessionController', () => {
 
     // C's parse finishes and it reaches ready state.
     parser.calls[1]!.finish(streamedResult('third', 1));
+    await resolveFilesAppend(sessionC);
     await openC;
 
-    expect(controller.getState()).toMatchObject({ phase: 'ready', source: { name: 'third.mid', size: 1 } });
+    expect(controller.getState()).toMatchObject({
+      phase: 'ready',
+      source: { files: [{ name: 'third.mid', size: 5 }], totalSize: 5 },
+    });
   });
 
   it('parse failure and quota failure abort the ingest session', async () => {
     const parseFailure = new FakeParser();
     const { database: databaseA, sessions: sessionsA } = fakeDatabase();
     const controllerA = new SessionController({ database: databaseA, parser: parseFailure, stopViewer });
-    const openingA = controllerA.openFile(new File([new Uint8Array([1])], 'broken.mid'));
+    const openingA = controllerA.openFile(midiFile('broken.mid', 1));
     await vi.waitFor(() => expect(sessionsA).toHaveLength(1));
     parseFailure.calls[0]!.reject(new Error('Unexpected end of track data.'));
     await openingA;
@@ -844,7 +939,7 @@ describe('SessionController', () => {
     const quotaParser = new FakeParser();
     const { database: databaseB, sessions: sessionsB } = fakeDatabase();
     const controllerB = new SessionController({ database: databaseB, parser: quotaParser, stopViewer });
-    const openingB = controllerB.openFile(new File([new Uint8Array([1])], 'huge.mid'));
+    const openingB = controllerB.openFile(midiFile('huge.mid', 1));
     await vi.waitFor(() => expect(sessionsB).toHaveLength(1));
     const sessionB = sessionsB[0]!;
     const emit = quotaParser.calls[0]!.emitBatch({
@@ -866,7 +961,7 @@ describe('SessionController', () => {
 
   it('cancel aborts ingest and dispatches cancelled', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
-    const opening = controller.openFile(new File([new Uint8Array([1])], 'song.mid'));
+    const opening = controller.openFile(midiFile('song.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;
 
@@ -899,6 +994,7 @@ describe('SessionController', () => {
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 1 }];
     parser.calls[0]!.finish(streamedResult('events', 1));
+    await resolveFilesAppend(sessions[0]!);
     await opening;
     expect(controller.getState().phase).toBe('ready');
   });
@@ -919,7 +1015,7 @@ describe('SessionController', () => {
 
   it('progress dispatches bytes and openStartedAt enables rate computation', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
-    const opening = controller.openFile(new File([new Uint8Array([1])], 'song.mid'));
+    const opening = controller.openFile(midiFile('song.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;
     const openStartedAt = controller.getState().openStartedAt;
@@ -945,26 +1041,28 @@ describe('SessionController', () => {
     await emit;
     session.finalizeResult = [{ name: 'events', rowCount: 1 }];
     parser.calls[0]!.finish(streamedResult('events', 1));
+    await resolveFilesAppend(session);
     await opening;
     expect(controller.getState().openStartedAt).toBeNull();
   });
 
   it('retains the source blob for the session and exposes byte selection', async () => {
     const controller = new SessionController({ database, parser, stopViewer });
-    expect(controller.getSourceBlob()).toBeNull();
+    expect(controller.getSourceBlob('x.mid')).toBeNull();
 
-    const file = new File([new Uint8Array([1, 2, 3])], 'x.mid');
+    const file = midiFile('x.mid', 1, 2, 3);
     const opening = controller.openFile(file);
-    expect(controller.getSourceBlob()).toBe(file);
+    await vi.waitFor(() => expect(controller.getSourceBlob('x.mid')).toBe(file));
 
-    controller.selectByteRange({ start: 0, end: 2 });
-    expect(controller.getState().byteSelection).toEqual({ start: 0, end: 2 });
+    controller.selectByteRange({ file: 'x.mid', start: 0, end: 2 });
+    expect(controller.getState().byteSelection).toEqual({ file: 'x.mid', start: 0, end: 2 });
     controller.selectByteRange(null);
     expect(controller.getState().byteSelection).toBeNull();
 
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 1 }];
     parser.calls[0]!.finish(streamedResult('events', 1));
+    await resolveFilesAppend(sessions[0]!);
     await opening;
   });
 
@@ -981,14 +1079,192 @@ describe('SessionController', () => {
     await controller.initialize();
 
     const opening = controller.openSample();
-    expect(controller.getSourceBlob()).toBeInstanceOf(Blob);
+    await vi.waitFor(() => expect(controller.getSourceBlob('demo.mid')).toBeInstanceOf(Blob));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 1 }];
     parser.calls[0]!.finish(streamedResult('events', 1));
+    await resolveFilesAppend(sessions[0]!);
     await opening;
 
     await controller.dispose();
-    expect(controller.getSourceBlob()).toBeNull();
+    expect(controller.getSourceBlob('demo.mid')).toBeNull();
+  });
+
+  it('batch happy path: two files parse sequentially into one ingest with a _files batch', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const fileA = new File([midiBlob()], 'a.mid');
+    const fileB = new File([midiBlob()], 'b.mid');
+
+    const opening = controller.openFiles([fileA, fileB]);
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    expect(parser.calls[0]!.name).toBe('a.mid');
+    expect(parser.calls[0]!.formatId).toBe('standard_midi_file');
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const session = sessions[0]!;
+
+    session.finalizeResult = [{ name: 'notes', rowCount: 2 }];
+    parser.calls[0]!.finish(streamedResult('notes', 1));
+
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
+    expect(parser.calls[1]!.name).toBe('b.mid');
+    parser.calls[1]!.finish(streamedResult('notes', 1));
+
+    await resolveFilesAppend(session);
+    await opening;
+
+    expect(session.beginFileCalls).toEqual(['a.mid', 'b.mid']);
+    const filesAppend = session.appendCalls.find((call) => call.table === '_files')!;
+    const filesTable = ipcToTable(filesAppend.ipc);
+    expect(filesTable.numRows).toBe(2);
+    expect(filesTable.getChild('status')!.get(0)).toBe('ok');
+    expect(filesTable.getChild('status')!.get(1)).toBe('ok');
+
+    expect(controller.getState().phase).toBe('ready');
+    expect(controller.getState().source?.files.map((file) => file.name)).toEqual(['a.mid', 'b.mid']);
+    expect(controller.getState().tables.map((table) => table.name)).toEqual(
+      expect.arrayContaining(['notes', '_files']),
+    );
+  });
+
+  it('mid-parse failure discards the file and continues with the rest', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const fileA = new File([midiBlob()], 'a.mid');
+    const fileB = new File([midiBlob()], 'b.mid');
+
+    const opening = controller.openFiles([fileA, fileB]);
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const session = sessions[0]!;
+
+    parser.calls[0]!.reject(new Error('truncated'));
+
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
+    expect(parser.calls[1]!.name).toBe('b.mid');
+    session.finalizeResult = [{ name: 'notes', rowCount: 1 }];
+    parser.calls[1]!.finish(streamedResult('notes', 1));
+
+    await resolveFilesAppend(session);
+    await opening;
+
+    expect(session.discardCalls).toBe(1);
+    expect(controller.getState().phase).toBe('ready');
+    expect(controller.getState().source?.files).toEqual([{ name: 'b.mid', size: 8 }]);
+    expect(controller.getState().issues).toContainEqual(
+      expect.objectContaining({
+        code: 'FILE_SKIPPED',
+        message: expect.stringMatching(/a\.mid was skipped: truncated/),
+      }),
+    );
+
+    const filesAppend = session.appendCalls.find((call) => call.table === '_files')!;
+    const filesTable = ipcToTable(filesAppend.ipc);
+    expect(filesTable.getChild('file')!.get(0)).toBe('a.mid');
+    expect(filesTable.getChild('file')!.get(1)).toBe('b.mid');
+    expect(filesTable.getChild('status')!.get(0)).toBe('skipped');
+    expect(filesTable.getChild('status')!.get(1)).toBe('ok');
+    expect(filesTable.getChild('error')!.get(0)).toBe('truncated');
+    expect(filesTable.getChild('error')!.get(1)).toBeNull();
+  });
+
+  it('all files failing rejects the open with abort, not finalize', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const fileA = new File([midiBlob()], 'a.mid');
+    const fileB = new File([midiBlob()], 'b.mid');
+
+    const opening = controller.openFiles([fileA, fileB]);
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const session = sessions[0]!;
+
+    parser.calls[0]!.reject(new Error('truncated a'));
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
+    parser.calls[1]!.reject(new Error('truncated b'));
+
+    await opening;
+
+    expect(controller.getState().phase).toBe('failed');
+    expect(session.abortCalls).toBe(1);
+    expect(session.finalizeCalls).toBe(0);
+  });
+
+  it('a second openFiles supersedes an in-flight batch', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const first = controller.openFiles([new File([midiBlob()], 'a.mid'), new File([midiBlob()], 'b.mid')]);
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    expect(parser.calls[0]!.name).toBe('a.mid');
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const firstSession = sessions[0]!;
+
+    const second = controller.openFiles([new File([midiBlob()], 'c.mid')]);
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    const secondSession = sessions[1]!;
+
+    await first;
+    expect(firstSession.abortCalls).toBe(1);
+    expect(firstSession.finalizeCalls).toBe(0);
+
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
+    expect(parser.calls[1]!.name).toBe('c.mid');
+    secondSession.finalizeResult = [{ name: 'notes', rowCount: 1 }];
+    parser.calls[1]!.finish(streamedResult('notes', 1));
+    await resolveFilesAppend(secondSession);
+    await second;
+
+    expect(controller.getState()).toMatchObject({
+      phase: 'ready',
+      source: { files: [{ name: 'c.mid', size: 8 }], totalSize: 8 },
+    });
+  });
+
+  it('cancel() mid-batch abandons the whole batch', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const opening = controller.openFiles([new File([midiBlob()], 'a.mid'), new File([midiBlob()], 'b.mid')]);
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const session = sessions[0]!;
+
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    expect(parser.calls[0]!.name).toBe('a.mid');
+    session.finalizeResult = [{ name: 'notes', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('notes', 1));
+
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
+    expect(parser.calls[1]!.name).toBe('b.mid');
+
+    const cancellation = controller.cancel();
+    expect(controller.getState().phase).toBe('idle');
+    await Promise.all([cancellation, opening]);
+
+    await vi.waitFor(() => expect(session.abortCalls).toBe(1));
+    expect(session.finalizeCalls).toBe(0);
+    expect(parser.calls).toHaveLength(2);
+  });
+
+  it('unrecognized-only batches fail without touching the database', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    await controller.openFiles([new File([new Uint8Array([0, 0, 0, 0])], 'junk.bin')]);
+
+    expect(controller.getState().phase).toBe('failed');
+    expect(database.beginIngest).not.toHaveBeenCalled();
+  });
+
+  it('progress events carry the batch position', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const opening = controller.openFiles([new File([midiBlob()], 'a.mid'), new File([midiBlob()], 'b.mid')]);
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    const session = sessions[0]!;
+
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
+    session.finalizeResult = [{ name: 'notes', rowCount: 1 }];
+    parser.calls[0]!.finish(streamedResult('notes', 1));
+
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
+    parser.calls[1]!.emitProgress({ stage: 'parsing', completed: 1, total: 2, label: 'Parsing track 1' });
+
+    expect(controller.getState().progress).toMatchObject({ fileIndex: 2, fileCount: 2 });
+
+    parser.calls[1]!.finish(streamedResult('notes', 1));
+    await resolveFilesAppend(session);
+    await opening;
   });
 });
 
@@ -1244,6 +1520,69 @@ describe('ParseWorkerClient', () => {
     gate.resolve();
     await expect(parsing).rejects.toThrow('append failed');
   });
+
+  it('drains queued onBatch calls before rejecting on a worker error', async () => {
+    // Regression: up to BATCH_CREDIT_WINDOW `batch` messages can be in flight when the worker
+    // posts `error`. A queued-but-not-yet-started `onBatch` must still run before the task
+    // rejects — otherwise a caller's failure cleanup (e.g. deleting a failed file's rows) can run
+    // before that handler fires and leak the failed file's rows into the dataset afterward.
+    const workers: FakeWorker[] = [];
+    const client = new ParseWorkerClient(() => {
+      const worker = new FakeWorker();
+      workers.push(worker);
+      return worker;
+    });
+    const appended: number[] = [];
+    const gates = [deferred<void>(), deferred<void>()];
+    const onBatch = vi.fn(async (batch: BatchMessage) => {
+      await gates[batch.seq - 1]!.promise;
+      appended.push(batch.seq);
+    });
+    const parsing = client.parse(
+      { name: 'error-mid-parse.mid', blob: new Blob([new Uint8Array([1])]) },
+      { onProgress: vi.fn(), onBatch },
+    );
+
+    // Two batches followed immediately by `error`, with no acks in between — mirrors the worker
+    // posting `error` while several batches are still outstanding.
+    workers[0]!.emit({
+      type: 'batch',
+      taskId: 1,
+      seq: 1,
+      table: 'events',
+      ipc: new Uint8Array([9]),
+      rowCount: 1,
+    });
+    workers[0]!.emit({
+      type: 'batch',
+      taskId: 1,
+      seq: 2,
+      table: 'events',
+      ipc: new Uint8Array([9]),
+      rowCount: 1,
+    });
+    workers[0]!.emit({ type: 'error', taskId: 1, message: 'boom' });
+    await flush();
+
+    let settled = false;
+    void parsing.catch(() => {
+      settled = true;
+    });
+    await flush();
+    expect(settled).toBe(false);
+    expect(appended).toEqual([]);
+
+    // Batch 1's onBatch completes; batch 2's is still queued behind it on the ack chain.
+    gates[0]!.resolve();
+    await flush();
+    expect(appended).toEqual([1]);
+    expect(settled).toBe(false);
+
+    // Only once batch 2's onBatch has also run does the task reject.
+    gates[1]!.resolve();
+    await expect(parsing).rejects.toThrow('boom');
+    expect(appended).toEqual([1, 2]);
+  });
 });
 
 class FakeWorkerScope implements ParseWorkerScope {
@@ -1389,7 +1728,13 @@ describe('parse worker boundary', () => {
     await flush();
 
     const finishMessage = postsOfType(scope, 'finish').at(-1)?.message as { schemas?: unknown };
-    expect(finishMessage?.schemas).toEqual(packSchemas);
+    // Every declared schema also carries the stamped `_src_file` provenance column.
+    expect(finishMessage?.schemas).toEqual(
+      packSchemas.map((schema) => ({
+        ...schema,
+        columns: [...schema.columns, { name: '_src_file', type: 'utf8', nullable: false }],
+      })),
+    );
   });
 
   it('derives a table columns once from its first batch, in first-arrival order, using pack.schemas() nullability', async () => {
@@ -1448,6 +1793,9 @@ describe('parse worker boundary', () => {
           { name: 'id', type: 'Int32', nullable: false },
           { name: 'value', type: 'Int32', nullable: true },
           { name: 'flag', type: 'Float64', nullable: true },
+          // The stamped `_src_file` column is absent from the fake pack's schemas() above, but
+          // deriveColumns forces it to non-nullable since the provenance column is always populated.
+          { name: '_src_file', type: 'Utf8', nullable: false },
         ],
       },
     ]);
@@ -1495,7 +1843,14 @@ describe('parse worker boundary', () => {
     const finishMessage = postsOfType(scope, 'finish').at(-1)?.message as
       { tables?: readonly { name: string; rowCount: number; columns: unknown }[] } | undefined;
     expect(finishMessage?.tables).toEqual([
-      { name: 'events', rowCount: totalBatches, columns: [{ name: 'id', type: 'Int32', nullable: false }] },
+      {
+        name: 'events',
+        rowCount: totalBatches,
+        columns: [
+          { name: 'id', type: 'Int32', nullable: false },
+          { name: '_src_file', type: 'Utf8', nullable: false },
+        ],
+      },
     ]);
   });
 
@@ -1619,5 +1974,47 @@ describe('parse worker boundary', () => {
     operation.reject(new DOMException('aborted', 'AbortError'));
     await flush();
     expect(scope.posts.at(-1)?.message).toEqual({ type: 'cancelled', taskId: 9 });
+  });
+
+  it('stamps every batch with _src_file and extends finish schemas with the _src_file column', async () => {
+    const scope = new FakeWorkerScope();
+    const eventsIpc = arrowIpc([1, 2, 3]);
+    const pack = fakePack({
+      schemas: () => [{ name: 'events', columns: [{ name: 'value', type: 'int32', nullable: false }] }],
+      open: () => {
+        const batches: BatchTransfer[] = [{ table: 'events', ipc: eventsIpc, rowCount: 3 }];
+        let index = 0;
+        return {
+          nextBatch: async () => (index < batches.length ? batches[index++]! : null),
+          finish: () => ({ issues: [], capabilities: {} }),
+        };
+      },
+    });
+    installParseWorker(scope, [pack]);
+
+    scope.receive({
+      type: 'parse',
+      taskId: 13,
+      name: 'capture (2).pcap',
+      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
+    });
+    await flush();
+
+    const batchMessage = postsOfType(scope, 'batch').at(-1)?.message as { ipc: Uint8Array } | undefined;
+    const stampedTable = ipcToTable(batchMessage!.ipc);
+    expect(stampedTable.schema.fields.map((field) => field.name)).toEqual(['value', '_src_file']);
+    expect([0, 1, 2].map((row) => stampedTable.getChild('_src_file')!.get(row))).toEqual([
+      'capture (2).pcap',
+      'capture (2).pcap',
+      'capture (2).pcap',
+    ]);
+
+    const finishMessage = postsOfType(scope, 'finish').at(-1)?.message as
+      { schemas?: readonly TableSchema[] } | undefined;
+    expect(finishMessage?.schemas?.[0]?.columns.at(-1)).toEqual({
+      name: '_src_file',
+      type: 'utf8',
+      nullable: false,
+    });
   });
 });

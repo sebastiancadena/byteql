@@ -215,6 +215,30 @@ describe('HexPane', () => {
     expect(onselectionchange.mock.calls.length).toBe(callsBefore); // no redundant null dispatch
   });
 
+  it('renders a file switcher only for multi-file sessions and emits changes', async () => {
+    const onfilechange = vi.fn();
+    const { getByLabelText } = renderPane({
+      files: [
+        { name: 'a.pcap', size: 8 },
+        { name: 'b.pcap', size: 8 },
+      ],
+      currentFile: 'a.pcap',
+      onfilechange,
+    });
+    const select = getByLabelText('Hex file') as HTMLSelectElement;
+    expect([...select.options].map((option) => option.value)).toEqual(['a.pcap', 'b.pcap']);
+    await fireEvent.change(select, { target: { value: 'b.pcap' } });
+    expect(onfilechange).toHaveBeenCalledWith('b.pcap');
+  });
+
+  it('hides the switcher for single-file sessions', () => {
+    const { queryByLabelText } = renderPane({
+      files: [{ name: 'a.pcap', size: 8 }],
+      currentFile: 'a.pcap',
+    });
+    expect(queryByLabelText('Hex file')).toBeNull();
+  });
+
   it('collapses to the toolbar strip and persists the flag', async () => {
     const user = userEvent.setup();
     const { container, getByRole } = renderPane();

@@ -1,19 +1,50 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { deleteSpillGeneration, isQuotaError, spillPath, sweepSpillOrphans } from './spill-files.js';
+import {
+  deleteSpillChunks,
+  deleteSpillGeneration,
+  isQuotaError,
+  spillPath,
+  sweepSpillOrphans,
+} from './spill-files.js';
 
 /** A minimal fake directory handle: records `removeEntry` calls and answers `entries()`. */
 class FakeDirectoryHandle {
   readonly removeEntry = vi.fn<(name: string, options?: { recursive?: boolean }) => Promise<void>>(
-    async () => undefined,
+    async (name: string) => {
+      this.children.delete(name);
+    },
   );
 
-  constructor(private readonly childNames: readonly string[] = []) {}
+  private readonly children = new Map<string, FakeDirectoryHandle>();
+
+  constructor(childNames: readonly string[] = []) {
+    for (const name of childNames) {
+      this.children.set(name, new FakeDirectoryHandle());
+    }
+  }
 
   async *entries(): AsyncIterableIterator<[string, FakeDirectoryHandle]> {
-    for (const name of this.childNames) {
-      yield [name, new FakeDirectoryHandle()];
+    for (const [name, handle] of this.children) {
+      yield [name, handle];
     }
+  }
+
+  async getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<FakeDirectoryHandle> {
+    const existing = this.children.get(name);
+    if (existing) {
+      return existing;
+    }
+    if (!options?.create) {
+      throw Object.assign(new Error(`not found: ${name}`), { name: 'NotFoundError' });
+    }
+    const created = new FakeDirectoryHandle();
+    this.children.set(name, created);
+    return created;
+  }
+
+  has(name: string): boolean {
+    return this.children.has(name);
   }
 }
 
@@ -99,6 +130,53 @@ describe('sweepSpillOrphans', () => {
     });
 
     await expect(sweepSpillOrphans([])).resolves.toBeUndefined();
+  });
+});
+
+describe('deleteSpillChunks', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('removes the named chunk files and tolerates absences', async () => {
+    const spillRoot = new FakeDirectoryHandle();
+    const generationDir = await spillRoot.getDirectoryHandle('7', { create: true });
+    const tableDir = await generationDir.getDirectoryHandle('packets', { create: true });
+    await tableDir.getDirectoryHandle('0.parquet', { create: true });
+    await tableDir.getDirectoryHandle('1.parquet', { create: true });
+    const getDirectoryHandle = vi.fn().mockResolvedValue(spillRoot);
+    vi.stubGlobal('navigator', {
+      storage: { getDirectory: vi.fn().mockResolvedValue({ getDirectoryHandle }) },
+    });
+
+    await deleteSpillChunks([
+      'opfs://byteql-spill/7/packets/0.parquet',
+      'opfs://byteql-spill/7/packets/99.parquet', // absent — must not throw
+    ]);
+
+    expect(tableDir.has('0.parquet')).toBe(false);
+    expect(tableDir.has('1.parquet')).toBe(true);
+  });
+
+  it('tolerates an absent generation directory, an absent table directory, and unparseable paths', async () => {
+    const spillRoot = new FakeDirectoryHandle();
+    const getDirectoryHandle = vi.fn().mockResolvedValue(spillRoot);
+    vi.stubGlobal('navigator', {
+      storage: { getDirectory: vi.fn().mockResolvedValue({ getDirectoryHandle }) },
+    });
+
+    await expect(
+      deleteSpillChunks([
+        'opfs://byteql-spill/7/packets/0.parquet', // generation '7' does not exist
+        'not-a-chunk-path',
+      ]),
+    ).resolves.toBeUndefined();
+  });
+
+  it('tolerates an absent spill root entirely', async () => {
+    vi.stubGlobal('navigator', {});
+
+    await expect(deleteSpillChunks(['opfs://byteql-spill/7/packets/0.parquet'])).resolves.toBeUndefined();
   });
 });
 

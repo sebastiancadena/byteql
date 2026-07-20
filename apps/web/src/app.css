@@ -1519,6 +1519,21 @@ button {
   font-size: var(--text-sm);
 }
 
+.hex-file-switcher {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  background: var(--color-surface-inset);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.hex-file-switcher:focus-visible {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
 .hex-action,
 .hex-collapse {
   padding: 0.25rem 0.6rem;

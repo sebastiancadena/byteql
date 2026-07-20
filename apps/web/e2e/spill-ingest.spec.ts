@@ -94,10 +94,16 @@ test('a large capture streams through the opfs spill tier and stays queryable', 
   await page.getByLabel('Open file').setInputFiles(asFile('scale.pcap', large.bytes));
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible({ timeout: 120_000 });
 
+  // The auto-run "overview" query is still on screen (a multi-row table listing every table's row
+  // count) until this new single-row `count(*)` result replaces it; for this capture shape `ip`
+  // and `packets` counts coincide, so a bare gridcell-text assertion can match a stale overview row
+  // instead of the new one. Wait for the `n` columnheader — unique to this query — first.
   await runSql(page, 'select count(*) as n from packets');
+  await page.getByRole('columnheader', { name: /^n /u }).waitFor();
   await expect(page.getByRole('gridcell', { name: String(large.packetCount), exact: true })).toBeVisible();
 
   await runSql(page, "select count(*) as n from dns where query_name like 'host-%'");
+  await page.getByRole('columnheader', { name: /^n /u }).waitFor();
   await expect(page.getByRole('gridcell', { name: String(large.dnsCount), exact: true })).toBeVisible();
 
   await runSql(page, 'select _src_start, _src_end from packets order by packet_id limit 1');
@@ -123,9 +129,11 @@ test('the memory tier still serves small files with identical values', async ({ 
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 
   await runSql(page, 'select count(*) as n from packets');
+  await page.getByRole('columnheader', { name: /^n /u }).waitFor();
   await expect(page.getByRole('gridcell', { name: String(packetCount), exact: true })).toBeVisible();
 
   await runSql(page, "select count(*) as n from dns where query_name like 'host-%'");
+  await page.getByRole('columnheader', { name: /^n /u }).waitFor();
   await expect(page.getByRole('gridcell', { name: String(dnsCount), exact: true })).toBeVisible();
 
   const files = await page.evaluate(() => window.__byteqlE2E!.spillFiles());

@@ -5,15 +5,14 @@ import {
   type TableColumn,
   type TableOverview,
 } from '@byteql/core';
-import { midiFormatPack } from '@byteql/midi';
-import { pcapFormatPack } from '@byteql/pcap';
+
+import { PROBE_HEAD_BYTES, REGISTERED_PACKS, selectPack } from '../lib/packs.js';
+import { stampSourceFile, withSourceFileColumn } from './stamp-source-file.js';
 
 export interface ParseWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: unknown, transfer?: readonly Transferable[]): void;
 }
-
-const PROBE_HEAD_BYTES = 4096;
 
 /** In-flight batch messages a worker may have outstanding for one task before it must wait for acks. */
 export const BATCH_CREDIT_WINDOW = 4;
@@ -62,21 +61,6 @@ const blobByteSource = (blob: Blob): ByteSource => ({
     new Uint8Array(await blob.slice(offset, Math.min(offset + length, blob.size)).arrayBuffer()),
 });
 
-const selectPack = (packs: readonly FormatPack[], head: Uint8Array, formatId?: string): FormatPack | null => {
-  if (formatId !== undefined) return packs.find((pack) => pack.id === formatId) ?? null;
-  let best: FormatPack | null = null;
-  let bestConfidence = 0;
-  // Strict `>`: the first-registered pack wins ties, and a confidence of 0 is never selected.
-  for (const pack of packs) {
-    const confidence = pack.probe(head);
-    if (confidence !== null && confidence > bestConfidence) {
-      best = pack;
-      bestConfidence = confidence;
-    }
-  }
-  return best;
-};
-
 /** Derives a table's reported columns from its first batch's IPC schema, once per table. */
 const deriveColumns = (pack: FormatPack, table: string, ipc: Uint8Array): readonly TableColumn[] => {
   const arrow = ipcToTable(ipc);
@@ -87,7 +71,8 @@ const deriveColumns = (pack: FormatPack, table: string, ipc: Uint8Array): readon
   return arrow.schema.fields.map((field) => ({
     name: field.name,
     type: field.type.toString(),
-    nullable: nullable?.get(field.name) ?? field.nullable,
+    // The stamped provenance column is always populated; Arrow's field flag over-reports it as nullable.
+    nullable: field.name === '_src_file' ? false : (nullable?.get(field.name) ?? field.nullable),
   }));
 };
 
@@ -101,7 +86,7 @@ const errorMessage = (error: unknown, packTitle: string): string =>
 
 export function installParseWorker(
   scope: ParseWorkerScope,
-  packs: readonly FormatPack[] = [midiFormatPack, pcapFormatPack],
+  packs: readonly FormatPack[] = REGISTERED_PACKS,
 ): void {
   const active = new Map<number, AbortController>();
   const cancelled = new Set<number>();
@@ -148,6 +133,8 @@ export function installParseWorker(
         const batch = await source.nextBatch();
         if (batch === null) break;
 
+        const stamped = stampSourceFile(batch.ipc, name);
+
         seq += 1;
         let position = index.get(batch.table);
         if (position === undefined) {
@@ -156,15 +143,15 @@ export function installParseWorker(
           overview.push({
             name: batch.table,
             rowCount: 0,
-            columns: deriveColumns(pack, batch.table, batch.ipc),
+            columns: deriveColumns(pack, batch.table, stamped),
           });
         }
         const current = overview[position]!;
         overview[position] = { ...current, rowCount: current.rowCount + batch.rowCount };
 
         scope.postMessage(
-          { type: 'batch', taskId, seq, table: batch.table, ipc: batch.ipc, rowCount: batch.rowCount },
-          [batch.ipc.buffer],
+          { type: 'batch', taskId, seq, table: batch.table, ipc: stamped, rowCount: batch.rowCount },
+          [stamped.buffer],
         );
       }
 
@@ -185,7 +172,7 @@ export function installParseWorker(
         // Every table the pack declares, not just the ones this capture happened to populate —
         // lets the DB backfill zero-row tables (e.g. no `tcp` packets) as empty tables at
         // finalize, so queries assuming every pack table exists don't hit a Catalog Error (C1).
-        schemas: pack.schemas(),
+        schemas: withSourceFileColumn(pack.schemas()),
       });
     } catch (error) {
       if (controller.signal.aborted || cancelled.has(taskId) || isAbortError(error)) {

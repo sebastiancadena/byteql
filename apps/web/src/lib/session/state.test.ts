@@ -27,11 +27,11 @@ describe('reduceSession', () => {
   it('advances through the file intake stages without exposing the source object', () => {
     let state = reduceSession(initialSessionState, {
       type: 'opening',
-      source: { name: 'song.mid', size: 42 },
+      source: { files: [{ name: 'song.mid', size: 42 }], totalSize: 42 },
     });
     expect(state).toMatchObject({
       phase: 'opening',
-      source: { name: 'song.mid', size: 42 },
+      source: { files: [{ name: 'song.mid', size: 42 }], totalSize: 42 },
       tables: [],
       issues: [],
       result: null,
@@ -46,10 +46,12 @@ describe('reduceSession', () => {
       total: 2,
       label: 'Normalizing tracks',
       bytes: 0,
+      fileIndex: 1,
+      fileCount: 1,
     });
     expect(state).toMatchObject({
       phase: 'normalizing',
-      progress: { completed: 0, total: 2, label: 'Normalizing tracks', bytes: 0 },
+      progress: { completed: 0, total: 2, label: 'Normalizing tracks', bytes: 0, fileIndex: 1, fileCount: 1 },
     });
     // openStartedAt survives every progress update — it anchors the throughput rate computation.
     expect(state.openStartedAt).toBe(openStartedAt);
@@ -61,6 +63,8 @@ describe('reduceSession', () => {
       total: 2,
       label: 'Parsing track 1',
       bytes: 128,
+      fileIndex: 1,
+      fileCount: 1,
     });
     expect(state.phase).toBe('parsing');
     expect(state.progress).toMatchObject({ bytes: 128 });
@@ -72,14 +76,25 @@ describe('reduceSession', () => {
       total: 2,
       label: 'Projecting tables',
       bytes: 256,
+      fileIndex: 1,
+      fileCount: 1,
     });
     expect(state.phase).toBe('projecting');
     expect(state.openStartedAt).toBe(openStartedAt);
 
-    state = reduceSession(state, { type: 'ready', format, tables, issues: [issue], queries, capabilities });
+    state = reduceSession(state, {
+      type: 'ready',
+      format,
+      files: [{ name: 'song.mid', size: 42 }],
+      tables,
+      issues: [issue],
+      queries,
+      capabilities,
+    });
     expect(state).toMatchObject({
       phase: 'ready',
       format,
+      source: { files: [{ name: 'song.mid', size: 42 }], totalSize: 42 },
       tables,
       issues: [issue],
       queries,
@@ -94,6 +109,7 @@ describe('reduceSession', () => {
     const ready = reduceSession(initialSessionState, {
       type: 'ready',
       format,
+      files: [],
       tables,
       issues: [],
       queries,
@@ -137,7 +153,7 @@ describe('reduceSession', () => {
         {
           ...initialSessionState,
           phase: 'parsing',
-          source: { name: 'x.mid', size: 2 },
+          source: { files: [{ name: 'x.mid', size: 2 }], totalSize: 2 },
           openStartedAt: 1000,
         },
         { type: 'cancelled' },
@@ -157,14 +173,14 @@ describe('reduceSession', () => {
       {
         ...initialSessionState,
         phase: 'parsing',
-        source: { name: 'bad.mid', size: 9 },
+        source: { files: [{ name: 'bad.mid', size: 9 }], totalSize: 9 },
         openStartedAt: 1000,
       },
       { type: 'failed', message: 'The parser worker stopped unexpectedly.' },
     );
     expect(failed).toMatchObject({
       phase: 'failed',
-      source: { name: 'bad.mid', size: 9 },
+      source: { files: [{ name: 'bad.mid', size: 9 }], totalSize: 9 },
       fatalError: 'The parser worker stopped unexpectedly.',
       progress: null,
       tables: [],
@@ -177,7 +193,7 @@ describe('reduceSession', () => {
     const previous = {
       ...initialSessionState,
       phase: 'ready' as const,
-      source: { name: 'old.mid', size: 10 },
+      source: { files: [{ name: 'old.mid', size: 10 }], totalSize: 10 },
       format: { id: 'midi', title: 'MIDI' },
       tables,
       issues: [issue],
@@ -190,11 +206,14 @@ describe('reduceSession', () => {
       capabilities,
     };
 
-    const next = reduceSession(previous, { type: 'opening', source: { name: 'new.mid', size: 20 } });
+    const next = reduceSession(previous, {
+      type: 'opening',
+      source: { files: [{ name: 'new.mid', size: 20 }], totalSize: 20 },
+    });
     expect(next).toMatchObject({
       ...initialSessionState,
       phase: 'opening',
-      source: { name: 'new.mid', size: 20 },
+      source: { files: [{ name: 'new.mid', size: 20 }], totalSize: 20 },
       openStartedAt: expect.any(Number),
     });
     expect(initialSessionState.capabilities).toBeNull();
@@ -205,10 +224,10 @@ describe('byteRangeSelected', () => {
   it('stores the range while a source is open and clears on lifecycle resets', () => {
     let state = reduceSession(initialSessionState, {
       type: 'opening',
-      source: { name: 'a.pcap', size: 10 },
+      source: { files: [{ name: 'a.pcap', size: 10 }], totalSize: 10 },
     });
-    state = reduceSession(state, { type: 'byteRangeSelected', range: { start: 4, end: 8 } });
-    expect(state.byteSelection).toEqual({ start: 4, end: 8 });
+    state = reduceSession(state, { type: 'byteRangeSelected', range: { file: 'a.pcap', start: 4, end: 8 } });
+    expect(state.byteSelection).toEqual({ file: 'a.pcap', start: 4, end: 8 });
     state = reduceSession(state, { type: 'byteRangeSelected', range: null });
     expect(state.byteSelection).toBeNull();
   });
@@ -216,7 +235,7 @@ describe('byteRangeSelected', () => {
   it('is a no-op when no source is open', () => {
     const state = reduceSession(initialSessionState, {
       type: 'byteRangeSelected',
-      range: { start: 0, end: 1 },
+      range: { file: 'a.pcap', start: 0, end: 1 },
     });
     expect(state).toBe(initialSessionState);
     expect(state.byteSelection).toBeNull();
@@ -225,35 +244,38 @@ describe('byteRangeSelected', () => {
   it('is kept across queryStarted, queryFailed, and rowSelected', () => {
     let state = reduceSession(initialSessionState, {
       type: 'opening',
-      source: { name: 'a.pcap', size: 10 },
+      source: { files: [{ name: 'a.pcap', size: 10 }], totalSize: 10 },
     });
-    state = reduceSession(state, { type: 'byteRangeSelected', range: { start: 2, end: 5 } });
+    state = reduceSession(state, { type: 'byteRangeSelected', range: { file: 'a.pcap', start: 2, end: 5 } });
     state = reduceSession(state, { type: 'queryStarted', sql: 'select 1' });
-    expect(state.byteSelection).toEqual({ start: 2, end: 5 });
+    expect(state.byteSelection).toEqual({ file: 'a.pcap', start: 2, end: 5 });
     state = reduceSession(state, { type: 'queryFailed', message: 'bad sql' });
-    expect(state.byteSelection).toEqual({ start: 2, end: 5 });
+    expect(state.byteSelection).toEqual({ file: 'a.pcap', start: 2, end: 5 });
     state = reduceSession(state, { type: 'rowSelected', row: 1 });
-    expect(state.byteSelection).toEqual({ start: 2, end: 5 });
+    expect(state.byteSelection).toEqual({ file: 'a.pcap', start: 2, end: 5 });
   });
 
   it('is cleared by a new query result, by failure, and by opening', () => {
     let state = reduceSession(initialSessionState, {
       type: 'opening',
-      source: { name: 'a.pcap', size: 10 },
+      source: { files: [{ name: 'a.pcap', size: 10 }], totalSize: 10 },
     });
-    state = reduceSession(state, { type: 'byteRangeSelected', range: { start: 0, end: 1 } });
+    state = reduceSession(state, { type: 'byteRangeSelected', range: { file: 'a.pcap', start: 0, end: 1 } });
     state = reduceSession(state, { type: 'querySucceeded', result, elapsedMs: 1 });
     expect(state.byteSelection).toBeNull();
 
-    state = reduceSession(state, { type: 'byteRangeSelected', range: { start: 0, end: 1 } });
+    state = reduceSession(state, { type: 'byteRangeSelected', range: { file: 'a.pcap', start: 0, end: 1 } });
     state = reduceSession(state, { type: 'failed', message: 'boom' });
     expect(state.byteSelection).toBeNull();
 
     state = reduceSession(
-      { ...initialSessionState, source: { name: 'a.pcap', size: 10 } },
-      { type: 'byteRangeSelected', range: { start: 0, end: 1 } },
+      { ...initialSessionState, source: { files: [{ name: 'a.pcap', size: 10 }], totalSize: 10 } },
+      { type: 'byteRangeSelected', range: { file: 'a.pcap', start: 0, end: 1 } },
     );
-    state = reduceSession(state, { type: 'opening', source: { name: 'b', size: 1 } });
+    state = reduceSession(state, {
+      type: 'opening',
+      source: { files: [{ name: 'b', size: 1 }], totalSize: 1 },
+    });
     expect(state.byteSelection).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 <script lang="ts">
   /* global Blob, CSSStyleDeclaration, HTMLCanvasElement, HTMLDivElement, HTMLElement,
-     HTMLInputElement, KeyboardEvent, MouseEvent, PointerEvent, WheelEvent, getComputedStyle,
-     localStorage, navigator, requestAnimationFrame, setTimeout, clearTimeout, window */
+     HTMLInputElement, HTMLSelectElement, KeyboardEvent, MouseEvent, PointerEvent, WheelEvent,
+     getComputedStyle, localStorage, navigator, requestAnimationFrame, setTimeout, clearTimeout, window */
   import { untrack } from 'svelte';
 
   import { ByteCache, COPY_LIMIT_BYTES } from '../lib/hex/byte-cache.js';
@@ -38,9 +38,12 @@
     /** Changes when a new result arrives; the pane clears its local selection to follow it. */
     resetKey?: unknown;
     compact?: boolean;
+    files?: readonly { name: string; size: number }[];
+    currentFile?: string | null;
     onreveal: (offset: number) => void;
     onselectionchange: (range: { start: number; end: number } | null) => void;
     onfilter: (range: { start: number; end: number }) => void;
+    onfilechange?: (file: string) => void;
   }
 
   let {
@@ -52,9 +55,12 @@
     filterAvailable,
     resetKey,
     compact = false,
+    files = [],
+    currentFile = null,
     onreveal,
     onselectionchange,
     onfilter,
+    onfilechange = () => undefined,
   }: Props = $props();
 
   const COLLAPSED_KEY = 'byteql.hexpane.collapsed';
@@ -708,6 +714,19 @@
         <span class="hex-goto-error" role="alert">Enter an offset like 0x1a or 42</span>
       {/if}
     </div>
+
+    {#if files.length > 1}
+      <select
+        class="hex-file-switcher"
+        aria-label="Hex file"
+        value={currentFile ?? ''}
+        onchange={(event) => onfilechange((event.currentTarget as HTMLSelectElement).value)}
+      >
+        {#each files as file (file.name)}
+          <option value={file.name}>{file.name}</option>
+        {/each}
+      </select>
+    {/if}
 
     {#if showFilter && range}
       <button

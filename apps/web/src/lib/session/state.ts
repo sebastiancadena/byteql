@@ -4,17 +4,25 @@ import type { Table } from 'apache-arrow';
 export type SessionPhase =
   'idle' | 'opening' | 'normalizing' | 'parsing' | 'projecting' | 'ready' | 'querying' | 'failed';
 
+export interface SourceFile {
+  name: string;
+  size: number;
+}
+
 export interface SessionProgress {
   completed: number;
   total: number | null;
   label: string;
   /** Cumulative bytes ingested (streamed batch IPC) so far this open, for a throughput readout. */
   bytes: number;
+  /** 1-based position of the file currently being ingested, and the batch's ok-file count. */
+  fileIndex: number;
+  fileCount: number;
 }
 
 export interface SessionState {
   phase: SessionPhase;
-  source: { name: string; size: number } | null;
+  source: { files: readonly SourceFile[]; totalSize: number } | null;
   format: { id: string; title: string } | null;
   progress: SessionProgress | null;
   /**
@@ -33,12 +41,12 @@ export interface SessionState {
   queryError: string | null;
   selectedRow: number | null;
   fatalError: string | null;
-  /** Active hex-pane byte selection: absolute file offsets, end exclusive. */
-  byteSelection: { start: number; end: number } | null;
+  /** Active hex-pane byte selection: display-name-qualified absolute offsets, end exclusive. */
+  byteSelection: { file: string; start: number; end: number } | null;
 }
 
 export type SessionEvent =
-  | { type: 'opening'; source: { name: string; size: number } }
+  | { type: 'opening'; source: { files: readonly SourceFile[]; totalSize: number } }
   | {
       type: 'progress';
       stage: 'normalizing' | 'parsing' | 'projecting';
@@ -46,10 +54,13 @@ export type SessionEvent =
       total: number | null;
       label: string;
       bytes: number;
+      fileIndex: number;
+      fileCount: number;
     }
   | {
       type: 'ready';
       format: { id: string; title: string };
+      files: readonly SourceFile[];
       tables: readonly TableOverview[];
       issues: readonly ParseIssue[];
       queries: readonly PackQuery[];
@@ -61,7 +72,7 @@ export type SessionEvent =
   | { type: 'rowSelected'; row: number | null }
   | { type: 'cancelled' }
   | { type: 'failed'; message: string }
-  | { type: 'byteRangeSelected'; range: { start: number; end: number } | null };
+  | { type: 'byteRangeSelected'; range: { file: string; start: number; end: number } | null };
 
 export const initialSessionState: SessionState = {
   phase: 'idle',
@@ -95,6 +106,8 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
           total: event.total,
           label: event.label,
           bytes: event.bytes,
+          fileIndex: event.fileIndex,
+          fileCount: event.fileCount,
         },
         fatalError: null,
       };
@@ -103,6 +116,10 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         ...state,
         phase: 'ready',
         format: event.format,
+        source: {
+          files: event.files,
+          totalSize: event.files.reduce((sum, file) => sum + file.size, 0),
+        },
         tables: event.tables,
         issues: event.issues,
         queries: event.queries,

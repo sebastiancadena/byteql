@@ -21,6 +21,7 @@ const result = tableFromArrays({
   record_id: [1n, 2n],
   label: ['alpha', 'beta'],
   optional: [null, 'available'],
+  _src_file: ['capture.bin', 'capture.bin'],
   _src_start: [12n, 28n],
   _src_end: [20n, 41n],
 });
@@ -35,7 +36,7 @@ const audioResult = tableFromArrays({
 
 const readyState = (): SessionState => ({
   phase: 'ready',
-  source: { name: 'capture.bin', size: 1536 },
+  source: { files: [{ name: 'capture.bin', size: 1536 }], totalSize: 1536 },
   format: { id: 'example_format', title: 'Example records' },
   progress: null,
   openStartedAt: null,
@@ -66,6 +67,7 @@ class FakeController {
   state: SessionState;
   listeners = new Set<(state: SessionState) => void>();
   openFile = vi.fn(async () => undefined);
+  openFiles = vi.fn(async () => undefined);
   openSample = vi.fn(async () => undefined);
   runQuery = vi.fn(async (sql: string) => {
     this.publish({ ...this.state, sql });
@@ -75,10 +77,10 @@ class FakeController {
     this.publish({ ...this.state, selectedRow: row });
   });
   sourceBlob: Blob | null = new Blob([new Uint8Array(64).map((_, i) => i)]);
-  selectByteRange = vi.fn((range: { start: number; end: number } | null) => {
+  selectByteRange = vi.fn((range: { file: string; start: number; end: number } | null) => {
     this.publish({ ...this.state, byteSelection: range });
   });
-  getSourceBlob = vi.fn(() => this.sourceBlob);
+  getSourceBlob = vi.fn((): Blob | null => this.sourceBlob);
 
   constructor(state: SessionState) {
     this.state = state;
@@ -401,7 +403,11 @@ describe('Inspector Workbench', () => {
     controller.publish({ ...controller.state, result: audioResult });
     await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Open in…' })).toBeTruthy());
     const sessionReplaced = await openAudio();
-    controller.publish({ ...initialSessionState, phase: 'opening', source: { name: 'next.mid', size: 8 } });
+    controller.publish({
+      ...initialSessionState,
+      phase: 'opening',
+      source: { files: [{ name: 'next.mid', size: 8 }], totalSize: 8 },
+    });
     await vi.waitFor(() => expect(sessionReplaced.dispose).toHaveBeenCalledOnce());
   });
 
@@ -516,7 +522,7 @@ describe('Inspector Workbench', () => {
     expect(controller.runQuery).toHaveBeenCalled();
     const query = controller.runQuery.mock.calls.at(-1)![0];
     expect(query).toContain('select * from (');
-    expect(query).toContain('where _src_start < ');
+    expect(query).toContain("where _src_file = 'capture.bin' and _src_start < ");
   });
 
   it('passes the selected row provenance to the hex pane as highlight', async () => {
@@ -524,6 +530,7 @@ describe('Inspector Workbench', () => {
       ...readyState(),
       result: tableFromArrays({
         record_id: [1n, 2n],
+        _src_file: ['capture.bin', 'capture.bin'],
         _src_start: [12n, 800n],
         _src_end: [20n, 840n],
       }),
@@ -562,8 +569,108 @@ describe('Inspector Workbench', () => {
     expect(screen.getByText('Drop to open')).toBeTruthy();
 
     await fireEvent.drop(appShell, { dataTransfer: { files: [file] } });
-    expect(controller.openFile).toHaveBeenCalledWith(file);
+    expect(controller.openFiles).toHaveBeenCalledWith([file]);
     expect(screen.queryByText('Drop to open')).toBeNull();
+  });
+
+  it('dropping multiple files opens them as one batch', async () => {
+    const controller = new FakeController(readyState());
+    const { container } = render(Workbench, { controller });
+    const appShell = container.querySelector('.app-shell') as HTMLElement;
+    const fileA = new File([new Uint8Array([1, 2, 3])], 'a.pcap');
+    const fileB = new File([new Uint8Array([4, 5, 6])], 'b.pcap');
+
+    await fireEvent.dragEnter(appShell, { dataTransfer: { types: ['Files'] } });
+    await fireEvent.drop(appShell, { dataTransfer: { files: [fileA, fileB] } });
+    expect(controller.openFiles).toHaveBeenCalledWith([fileA, fileB]);
+  });
+
+  it("selecting a row auto-switches the hex pane to that row's source file", async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      source: {
+        files: [
+          { name: 'a.pcap', size: 8 },
+          { name: 'b.pcap', size: 8 },
+        ],
+        totalSize: 16,
+      },
+      result: tableFromArrays({
+        record_id: [1n, 2n],
+        _src_file: ['b.pcap', 'a.pcap'],
+        _src_start: [4n, 4n],
+        _src_end: [6n, 6n],
+      }),
+    });
+    render(Workbench, { controller });
+
+    await fireEvent.click(screen.getByRole('row', { name: /row 1/i }));
+    expect(controller.selectResultRow).toHaveBeenCalledWith(0);
+
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    await vi.waitFor(() => {
+      const select = within(pane).getByLabelText('Hex file') as HTMLSelectElement;
+      expect(select.value).toBe('b.pcap');
+    });
+  });
+
+  it('manually switching the hex file clears the byte selection', async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      source: {
+        files: [
+          { name: 'a.pcap', size: 8 },
+          { name: 'b.pcap', size: 8 },
+        ],
+        totalSize: 16,
+      },
+      byteSelection: { file: 'a.pcap', start: 0, end: 2 },
+    });
+    render(Workbench, { controller });
+
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    const select = within(pane).getByLabelText('Hex file') as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: 'b.pcap' } });
+
+    expect(controller.selectByteRange).toHaveBeenCalledWith(null);
+  });
+
+  it('does not snap a manual hex-file switch back to the still-selected row provenance file', async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      source: {
+        files: [
+          { name: 'a.pcap', size: 8 },
+          { name: 'b.pcap', size: 8 },
+        ],
+        totalSize: 16,
+      },
+      result: tableFromArrays({
+        record_id: [1n, 2n],
+        _src_file: ['a.pcap', 'b.pcap'],
+        _src_start: [4n, 4n],
+        _src_end: [6n, 6n],
+      }),
+    });
+    render(Workbench, { controller });
+
+    // Select the row provenanced to a.pcap: the auto-switch effect follows it.
+    await fireEvent.click(screen.getByRole('row', { name: /row 1/i }));
+    expect(controller.selectResultRow).toHaveBeenCalledWith(0);
+
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    const select = within(pane).getByLabelText('Hex file') as HTMLSelectElement;
+    await vi.waitFor(() => expect(select.value).toBe('a.pcap'));
+
+    // Manually switch to b.pcap while the selected row's provenance is still a.pcap.
+    await fireEvent.change(select, { target: { value: 'b.pcap' } });
+    expect(controller.selectByteRange).toHaveBeenCalledWith(null);
+
+    // The auto-switch effect must not read hexFile as a dependency and re-fire, snapping
+    // the switcher back to a.pcap because rowHighlight.file is still 'a.pcap'.
+    await vi.waitFor(() => expect(select.value).toBe('b.pcap'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(select.value).toBe('b.pcap');
   });
 
   it('opens the shortcuts overlay with ? and toggles panes with Mod+B / Mod+I', async () => {
@@ -584,6 +691,19 @@ describe('Inspector Workbench', () => {
     expect(appShell.classList.contains('inspector-collapsed')).toBe(false);
     await user.keyboard('{Control>}i{/Control}');
     expect(appShell.classList.contains('inspector-collapsed')).toBe(true);
+  });
+
+  it('marks the workbench file picker input multi-select and forwards every picked file', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    const input = screen.getByLabelText<HTMLInputElement>('Open file picker');
+    expect(input.multiple).toBe(true);
+
+    const fileA = new File([new Uint8Array([1])], 'a.pcap');
+    const fileB = new File([new Uint8Array([2])], 'b.pcap');
+    await fireEvent.change(input, { target: { files: [fileA, fileB] } });
+    expect(controller.openFiles).toHaveBeenCalledWith([fileA, fileB]);
   });
 
   it('opens the file picker with Mod+O and focuses the hex goto input with Mod+G', async () => {
