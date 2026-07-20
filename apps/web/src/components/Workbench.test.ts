@@ -35,7 +35,7 @@ const audioResult = tableFromArrays({
 
 const readyState = (): SessionState => ({
   phase: 'ready',
-  source: { name: 'capture.bin', size: 1536 },
+  source: { files: [{ name: 'capture.bin', size: 1536 }], totalSize: 1536 },
   format: { id: 'example_format', title: 'Example records' },
   progress: null,
   openStartedAt: null,
@@ -66,6 +66,7 @@ class FakeController {
   state: SessionState;
   listeners = new Set<(state: SessionState) => void>();
   openFile = vi.fn(async () => undefined);
+  openFiles = vi.fn(async () => undefined);
   openSample = vi.fn(async () => undefined);
   runQuery = vi.fn(async (sql: string) => {
     this.publish({ ...this.state, sql });
@@ -75,10 +76,10 @@ class FakeController {
     this.publish({ ...this.state, selectedRow: row });
   });
   sourceBlob: Blob | null = new Blob([new Uint8Array(64).map((_, i) => i)]);
-  selectByteRange = vi.fn((range: { start: number; end: number } | null) => {
+  selectByteRange = vi.fn((range: { file: string; start: number; end: number } | null) => {
     this.publish({ ...this.state, byteSelection: range });
   });
-  getSourceBlob = vi.fn(() => this.sourceBlob);
+  getSourceBlob = vi.fn((): Blob | null => this.sourceBlob);
 
   constructor(state: SessionState) {
     this.state = state;
@@ -401,7 +402,11 @@ describe('Inspector Workbench', () => {
     controller.publish({ ...controller.state, result: audioResult });
     await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Open in…' })).toBeTruthy());
     const sessionReplaced = await openAudio();
-    controller.publish({ ...initialSessionState, phase: 'opening', source: { name: 'next.mid', size: 8 } });
+    controller.publish({
+      ...initialSessionState,
+      phase: 'opening',
+      source: { files: [{ name: 'next.mid', size: 8 }], totalSize: 8 },
+    });
     await vi.waitFor(() => expect(sessionReplaced.dispose).toHaveBeenCalledOnce());
   });
 

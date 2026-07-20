@@ -21,12 +21,13 @@
   interface ControllerPort {
     subscribe(listener: (state: SessionState) => void): () => void;
     openFile(file: File): Promise<void>;
+    openFiles(files: readonly File[]): Promise<void>;
     openSample(): Promise<void>;
     runQuery(sql: string): Promise<void>;
     cancel(): Promise<void>;
     selectResultRow(row: number | null): void;
-    selectByteRange(range: { start: number; end: number } | null): void;
-    getSourceBlob(): Blob | null;
+    selectByteRange(range: { file: string; start: number; end: number } | null): void;
+    getSourceBlob(file: string): Blob | null;
   }
 
   interface Props {
@@ -115,7 +116,10 @@
   // events), but buildCoverage must run once per result, not once per publish.
   const coverageMemo = createCoverageMemo();
   const coverageResult = $derived(coverageMemo(session.result));
-  const sourceBlob = $derived(session.source ? controller.getSourceBlob() : null);
+  // Task 8 replaces these with a real multi-file switcher; for now the hex pane and byte
+  // selection always operate on the first file in the batch.
+  const primaryFile = $derived(session.source?.files[0] ?? null);
+  const sourceBlob = $derived(primaryFile ? controller.getSourceBlob(primaryFile.name) : null);
   // Memoize on (result, selectedRow) so the highlight object stays reference-stable across
   // publishes; otherwise HexPane's identity guard re-flashes and re-centers on every publish
   // (including each caret move's byteRangeSelected dispatch), fighting user navigation.
@@ -166,7 +170,9 @@
       if (next.phase === 'opening') overviewSource = null;
 
       const overview = next.queries.find((query) => query.id === 'overview');
-      const sourceKey = next.source ? `${next.source.name}:${next.source.size}` : null;
+      const sourceKey = next.source
+        ? next.source.files.map((file) => `${file.name}:${file.size}`).join('|')
+        : null;
       if (
         overview &&
         sourceKey &&
@@ -273,8 +279,12 @@
   ondrop={onDrop}
 >
   <AppHeader
-    sourceName={session.source?.name ?? null}
-    sourceSize={session.source?.size ?? null}
+    sourceName={session.source
+      ? session.source.files.length === 1
+        ? session.source.files[0]!.name
+        : `${session.source.files.length} files`
+      : null}
+    sourceSize={session.source?.totalSize ?? null}
     formatTitle={session.format?.title ?? null}
     {explorerCollapsed}
     {inspectorCollapsed}
@@ -458,7 +468,7 @@
           <HexPane
             bind:this={hexPane}
             blob={sourceBlob}
-            fileSize={session.source?.size ?? 0}
+            fileSize={primaryFile?.size ?? 0}
             coverage={coverageResult.index}
             coverageReason={coverageResult.reason}
             highlight={rowHighlight}
@@ -466,7 +476,8 @@
             resetKey={session.result}
             compact={compactMode}
             onreveal={revealAt}
-            onselectionchange={(range) => controller.selectByteRange(range)}
+            onselectionchange={(range) =>
+              controller.selectByteRange(range && primaryFile ? { file: primaryFile.name, ...range } : null)}
             onfilter={(range) => run(wrapFilterSql(draftSql || session.sql, range))}
           />
         {/if}

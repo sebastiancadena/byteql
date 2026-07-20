@@ -30,13 +30,15 @@
   {#if state.source}
     <section class="explorer-section" aria-labelledby="source-heading">
       <h3 id="source-heading">Source</h3>
-      <div class="source-card">
-        <span class="file-glyph" aria-hidden="true">◇</span>
-        <div class="min-width-zero">
-          <strong class="truncate">{state.source.name}</strong>
-          <span>{state.source.size.toLocaleString()} bytes</span>
+      {#each state.source.files as file (file.name)}
+        <div class="source-card">
+          <span class="file-glyph" aria-hidden="true">◇</span>
+          <div class="min-width-zero">
+            <strong class="truncate">{file.name}</strong>
+            <span>{file.size.toLocaleString()} bytes</span>
+          </div>
         </div>
-      </div>
+      {/each}
       {#if state.format}
         <span class="format-badge">{state.format.title}</span>
       {/if}

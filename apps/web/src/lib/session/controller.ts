@@ -1,8 +1,29 @@
+import type { ParseIssue, TableOverview } from '@byteql/core';
 import { sweepSpillOrphans, type ByteqlDatabase, type IngestSession } from '@byteql/db';
 
 import demoUrl from '../../assets/demo.mid?url';
-import { ParseWorkerClient, type ParseClientPort, type ParseProgress } from '../parse-worker-client.js';
-import { initialSessionState, reduceSession, type SessionEvent, type SessionState } from './state.js';
+import {
+  ParseWorkerClient,
+  type ParseClientPort,
+  type ParseProgress,
+  type StreamedParseResult,
+} from '../parse-worker-client.js';
+import { REGISTERED_PACKS } from '../packs.js';
+import {
+  buildFilesTableIpc,
+  mergeTableOverviews,
+  planBatch,
+  type BatchEntry,
+  type FilesRow,
+  type PlannedFile,
+} from './batch.js';
+import {
+  initialSessionState,
+  reduceSession,
+  type SessionEvent,
+  type SessionState,
+  type SourceFile,
+} from './state.js';
 import { TIER_THRESHOLD_BYTES, chooseTier } from './tiering.js';
 
 export interface SessionControllerOptions {
@@ -44,8 +65,9 @@ export class SessionController {
   private sampleBytes: Uint8Array | null = null;
   private sessionGeneration = 0;
   private queryGeneration = 0;
-  private retainedFile: File | null = null;
-  private retainedBlob: Blob | null = null;
+  private retainedBlobs = new Map<string, Blob>();
+  private batchFileIndex = 0;
+  private batchFileCount = 0;
   private disposed = false;
   private disposal: Promise<void> | null = null;
   /** Cumulative IPC bytes ingested this open, and the last parser-reported stage, for progress. */
@@ -54,7 +76,7 @@ export class SessionController {
   /**
    * Resolves once the ingest session currently (or most recently) owned by this controller has
    * fully settled — its `finalize()` or `abort()` call has resolved or rejected. Starts resolved
-   * (no ingest owned yet). `completeOpen` awaits this before its own `beginIngest` call, so a
+   * (no ingest owned yet). `completeBatchOpen` awaits this before its own `beginIngest` call, so a
    * quick supersession never races the real DB's single-open-session invariant (I1).
    */
   private ingestSettlement: Promise<void> = Promise.resolve();
@@ -90,10 +112,18 @@ export class SessionController {
     return this.state;
   }
 
-  openFile(file: File): Promise<void> {
+  openFiles(files: readonly File[]): Promise<void> {
     this.assertUsable();
-    this.retainedFile = file;
-    return this.open({ name: basename(file.name), size: file.size }, file);
+    const entries: BatchEntry[] = files.map((file) => ({
+      name: basename(file.name),
+      size: file.size,
+      blob: file,
+    }));
+    return this.openBatch(entries);
+  }
+
+  openFile(file: File): Promise<void> {
+    return this.openFiles([file]);
   }
 
   openSample(): Promise<void> {
@@ -101,9 +131,9 @@ export class SessionController {
     if (!this.sampleBytes) {
       return this.initialize().then(() => this.openSample());
     }
-    this.retainedFile = null;
     const retained = this.sampleBytes;
-    return this.open({ name: 'demo.mid', size: retained.byteLength }, new Blob([retained as BlobPart]));
+    const blob = new Blob([retained as BlobPart]);
+    return this.openBatch([{ name: 'demo.mid', size: blob.size, blob }]);
   }
 
   runQuery(sql: string): Promise<void> {
@@ -142,13 +172,13 @@ export class SessionController {
     this.dispatch({ type: 'rowSelected', row });
   }
 
-  selectByteRange(range: { start: number; end: number } | null): void {
-    this.assertUsable();
-    this.dispatch({ type: 'byteRangeSelected', range });
+  getSourceBlob(file: string): Blob | null {
+    return this.retainedBlobs.get(file) ?? null;
   }
 
-  getSourceBlob(): Blob | null {
-    return this.retainedBlob;
+  selectByteRange(range: { file: string; start: number; end: number } | null): void {
+    this.assertUsable();
+    this.dispatch({ type: 'byteRangeSelected', range });
   }
 
   dispose(): Promise<void> {
@@ -161,8 +191,7 @@ export class SessionController {
     this.state = { ...initialSessionState, tables: [], issues: [] };
     void this.initialization?.catch(() => undefined);
     this.sampleBytes = null;
-    this.retainedFile = null;
-    this.retainedBlob = null;
+    this.retainedBlobs = new Map();
     this.stopActiveViewer();
     try {
       this.parser.dispose();
@@ -192,42 +221,54 @@ export class SessionController {
     this.sampleBytes = bytes;
   }
 
-  private open(source: { name: string; size: number }, blob: Blob): Promise<void> {
+  private async openBatch(entries: readonly BatchEntry[]): Promise<void> {
     const generation = ++this.sessionGeneration;
     ++this.queryGeneration;
     this.cancelParser();
     this.stopActiveViewer();
-    this.retainedBlob = blob;
     const queryCancellation = this.cancelDatabaseQuery();
     this.bytesIngested = 0;
     this.lastProgress = null;
-    this.dispatch({ type: 'opening', source });
-    return this.completeOpen(generation, source.name, blob, queryCancellation);
+
+    const plan = await planBatch(entries, REGISTERED_PACKS);
+    if (!this.isCurrent(generation)) return;
+    const okFiles = plan.files.filter((file) => file.status === 'ok');
+    if (plan.formatId === null || okFiles.length === 0) {
+      this.dispatch({ type: 'failed', message: 'No registered format recognizes the selected files.' });
+      return;
+    }
+
+    this.retainedBlobs = new Map(okFiles.map((file) => [file.displayName, file.blob]));
+    this.batchFileIndex = 1;
+    this.batchFileCount = okFiles.length;
+    this.dispatch({
+      type: 'opening',
+      source: {
+        files: okFiles.map((file) => ({ name: file.displayName, size: file.size })),
+        totalSize: plan.totalSize,
+      },
+    });
+    return this.completeBatchOpen(generation, plan.formatId, plan.files, queryCancellation);
   }
 
-  private async completeOpen(
+  private async completeBatchOpen(
     generation: number,
-    name: string,
-    blob: Blob,
+    formatId: string,
+    planned: readonly PlannedFile[],
     queryCancellation: Promise<boolean>,
   ): Promise<void> {
     await queryCancellation;
     if (!this.isCurrent(generation)) return;
 
     const tierThresholdBytes = this.tiering?.tierThresholdBytes ?? TIER_THRESHOLD_BYTES;
-    const tier = chooseTier(blob.size, tierThresholdBytes);
+    const okPlanned = planned.filter((file) => file.status === 'ok');
+    const totalSize = okPlanned.reduce((sum, file) => sum + file.size, 0);
+    const tier = chooseTier(totalSize, tierThresholdBytes);
     if (tier === 'spill') {
-      // Fire-and-forget: best-effort request not to have OPFS spill data evicted under pressure.
-      // `navigator.storage` is absent in non-browser test environments, hence the guard.
       void navigator.storage?.persist?.().catch(() => undefined);
     }
 
     const rotationBytes = this.tiering?.rotationBytes;
-    // `beginIngest` throws 'An ingest session is already open.' while the previous generation's
-    // ingest hasn't fully settled yet (its `finalize()`/`abort()` call hasn't resolved) — a real
-    // possibility since a superseding open only bumps `sessionGeneration`, it never waits for the
-    // outgoing generation's DB work to finish first. Awaiting the tracked settlement of whatever
-    // ingest currently owns the session avoids surfacing that raw internal error to the user.
     await this.ingestSettlement;
     if (!this.isCurrent(generation)) return;
 
@@ -246,10 +287,6 @@ export class SessionController {
       return;
     }
 
-    // From here on, this generation owns the ingest session; track its eventual settlement
-    // (finalize or abort resolving) so the NEXT generation's `beginIngest` can wait for it,
-    // however far along this generation currently is (still parsing, mid-append, or already
-    // finalizing) — not just from whichever point below happens to call finalize/abort.
     let settleIngest!: () => void;
     this.ingestSettlement = new Promise<void>((resolve) => {
       settleIngest = resolve;
@@ -261,72 +298,132 @@ export class SessionController {
         return;
       }
 
-      // The client resolves `parse()` as soon as the worker's `finish` message arrives, and the
-      // worker sends `finish` right after its last `nextBatch()` — it does NOT wait for that last
-      // batch (or up to BATCH_CREDIT_WINDOW batches still in flight) to be acked first. So `finish`
-      // can race ahead of one or more `onBatch` calls that are still awaiting `appendBatch`. Every
-      // `appendBatch` promise is tracked here and awaited below, after `parse()` settles but before
-      // `finalize()` — otherwise finalize can commit while a batch is still mid-append, silently
-      // dropping rows (or, once the session is finalized under it, rejecting that straggling append).
-      const pendingAppends: Promise<void>[] = [];
+      // Batch-skip bookkeeping: planner skips carry over; mid-parse failures join them.
+      const skipped = new Map<string, string>(
+        planned.filter((file) => file.status === 'skipped').map((f) => [f.displayName, f.error ?? '']),
+      );
+      const results: StreamedParseResult[] = [];
+      const succeededFiles: SourceFile[] = [];
+      const issues: ParseIssue[] = [];
 
       try {
-        const result = await this.parser.parse(
-          { name, blob },
-          {
-            onProgress: (progress) => {
-              if (this.isCurrent(generation)) this.progress(generation, progress);
-            },
-            onBatch: async (batch) => {
-              // Generation-guard only: the client can still deliver up to BATCH_CREDIT_WINDOW - 1
-              // queued `onBatch` calls after this generation is superseded or cancelled (already
-              // in-flight batch messages keep draining through the client's ack chain). Dropping
-              // them here — before touching `ingest` at all — means we never call `appendBatch` on
-              // an ingest whose abort may or may not have completed yet, without needing a second
-              // local "aborted" flag: every path that supersedes or cancels this generation bumps
-              // `sessionGeneration` synchronously before anything else happens.
-              if (!this.isCurrent(generation)) return;
-              this.bytesIngested += batch.ipc.byteLength;
-              this.progressBytes(generation);
-              const append = ingest.appendBatch(batch.table, batch.ipc);
-              pendingAppends.push(append);
-              await append;
-            },
-          },
-        );
+        for (const [index, file] of okPlanned.entries()) {
+          if (!this.isCurrent(generation)) {
+            await ingest.abort().catch(() => undefined);
+            return;
+          }
+          this.batchFileIndex = index + 1;
+          this.lastProgress = null;
+          await ingest.beginFile(file.displayName);
+
+          const pendingAppends: Promise<void>[] = [];
+          try {
+            const result = await this.parser.parse(
+              { name: file.displayName, blob: file.blob, formatId },
+              {
+                onProgress: (progress) => {
+                  if (this.isCurrent(generation)) this.progress(generation, progress);
+                },
+                onBatch: async (batch) => {
+                  if (!this.isCurrent(generation)) return;
+                  this.bytesIngested += batch.ipc.byteLength;
+                  this.progressBytes(generation);
+                  const append = ingest.appendBatch(batch.table, batch.ipc);
+                  pendingAppends.push(append);
+                  await append;
+                },
+              },
+            );
+            await Promise.all(pendingAppends);
+            if (!this.isCurrent(generation)) {
+              await ingest.abort().catch(() => undefined);
+              return;
+            }
+            results.push(result);
+            succeededFiles.push({ name: file.displayName, size: file.size });
+            issues.push(...result.issues);
+          } catch (error) {
+            await Promise.allSettled(pendingAppends);
+            if (isAbortError(error)) throw error;
+            const message = errorMessage(error, 'The local file could not be parsed.');
+            // Environment-level failures (quota, unsupported spill) doom the whole batch.
+            if (message.includes('SPILL_QUOTA_EXCEEDED') || message.includes('SPILL_UNSUPPORTED')) {
+              throw error;
+            }
+            if (!this.isCurrent(generation)) {
+              await ingest.abort().catch(() => undefined);
+              return;
+            }
+            await ingest.discardCurrentFile();
+            this.retainedBlobs.delete(file.displayName);
+            skipped.set(file.displayName, message);
+          }
+        }
 
         if (!this.isCurrent(generation)) {
           await ingest.abort().catch(() => undefined);
           return;
         }
-
-        await Promise.all(pendingAppends);
-        if (!this.isCurrent(generation)) {
-          await ingest.abort().catch(() => undefined);
-          return;
+        if (results.length === 0) {
+          const reasons = [...skipped.values()].filter(Boolean);
+          throw new Error(reasons[0] ?? 'None of the selected files could be ingested.');
         }
 
-        const summaries = await ingest.finalize(result.schemas);
+        for (const [displayName, reason] of skipped) {
+          issues.push({
+            stage: 'framing',
+            track: null,
+            code: 'FILE_SKIPPED',
+            message: `${displayName} was skipped: ${reason}`,
+            recoverable: true,
+            sourceStart: null,
+            sourceEnd: null,
+          });
+        }
+
+        const filesRows: FilesRow[] = planned.map((file, order) => ({
+          file: file.displayName,
+          originalName: file.originalName,
+          size: file.size,
+          ingestOrder: order,
+          status: skipped.has(file.displayName) || file.status === 'skipped' ? 'skipped' : 'ok',
+          error: skipped.get(file.displayName) ?? file.error,
+        }));
+        await ingest.appendBatch('_files', buildFilesTableIpc(filesRows));
+
+        const first = results[0]!;
+        const summaries = await ingest.finalize(first.schemas);
         if (!this.isCurrent(generation)) return;
 
         const rowCounts = new Map(summaries.map((summary) => [summary.name, summary.rowCount]));
-        // Backfill any pack table the capture never populated (e.g. no `tcp` packets) as a
-        // rowCount-0 entry, mirroring what `ingest.finalize()` just did in the DB — otherwise the
-        // Explorer would omit a table that actually exists (empty) in the catalog (C1).
-        const populatedNames = new Set(result.tables.map((table) => table.name));
-        const backfilledTables = result.schemas
+        const mergedTables = mergeTableOverviews(results.map((result) => result.tables));
+        const populatedNames = new Set(mergedTables.map((table) => table.name));
+        const backfilledTables = first.schemas
           .filter((schema) => !populatedNames.has(schema.name))
           .map((schema) => ({ name: schema.name, rowCount: 0, columns: schema.columns }));
+        const filesOverview: TableOverview = {
+          name: '_files',
+          rowCount: filesRows.length,
+          columns: [
+            { name: 'file', type: 'Utf8', nullable: false },
+            { name: 'original_name', type: 'Utf8', nullable: false },
+            { name: 'size', type: 'Uint64', nullable: false },
+            { name: 'ingest_order', type: 'Int32', nullable: false },
+            { name: 'status', type: 'Utf8', nullable: false },
+            { name: 'error', type: 'Utf8', nullable: true },
+          ],
+        };
         this.dispatch({
           type: 'ready',
-          format: result.format,
-          tables: [...result.tables, ...backfilledTables].map((table) => ({
+          format: first.format,
+          files: succeededFiles,
+          tables: [...mergedTables, ...backfilledTables, filesOverview].map((table) => ({
             ...table,
             rowCount: rowCounts.get(table.name) ?? table.rowCount,
           })),
-          issues: result.issues,
-          queries: result.queries,
-          capabilities: result.capabilities,
+          issues,
+          queries: first.queries,
+          capabilities: first.capabilities,
         });
       } catch (error) {
         await ingest.abort().catch(() => undefined);
@@ -371,7 +468,13 @@ export class SessionController {
   private progress(generation: number, progress: ParseProgress): void {
     if (!this.isCurrent(generation)) return;
     this.lastProgress = progress;
-    this.dispatch({ type: 'progress', ...progress, bytes: this.bytesIngested });
+    this.dispatch({
+      type: 'progress',
+      ...progress,
+      bytes: this.bytesIngested,
+      fileIndex: this.batchFileIndex,
+      fileCount: this.batchFileCount,
+    });
   }
 
   private progressBytes(generation: number): void {
@@ -382,7 +485,13 @@ export class SessionController {
       total: null,
       label: 'Streaming data into the local database',
     };
-    this.dispatch({ type: 'progress', ...base, bytes: this.bytesIngested });
+    this.dispatch({
+      type: 'progress',
+      ...base,
+      bytes: this.bytesIngested,
+      fileIndex: this.batchFileIndex,
+      fileCount: this.batchFileCount,
+    });
   }
 
   private dispatch(event: SessionEvent): void {

@@ -40,6 +40,20 @@
     return `${(megabytes / seconds).toFixed(1)} MB/s`;
   });
 
+  const fileMarker = $derived(
+    state.progress && state.progress.fileCount > 1
+      ? ` (${state.progress.fileIndex}/${state.progress.fileCount})`
+      : '',
+  );
+
+  const skippedCount = $derived(state.issues.filter((issue) => issue.code === 'FILE_SKIPPED').length);
+  const batchSummary = $derived.by(() => {
+    if (!state.source || state.source.files.length <= 1) return null;
+    const megabytes = (state.source.totalSize / 1e6).toFixed(1);
+    const base = `${state.source.files.length} files · ${megabytes} MB`;
+    return skippedCount > 0 ? `${base} · ${skippedCount} skipped` : base;
+  });
+
   const formatByteRange = ({ start, end }: { start: number; end: number }): string =>
     `0x${start.toString(16)}–0x${(end - 1).toString(16)} · ${end - start} bytes`;
 </script>
@@ -51,7 +65,10 @@
       class:failed={state.phase === 'failed'}
       class="status-dot"
     ></span>
-    <span>{statusLabel}</span>
+    <span>{statusLabel}{fileMarker}</span>
+    {#if state.phase === 'ready' && batchSummary}
+      <span>{batchSummary}</span>
+    {/if}
   </div>
   <div class="status-metrics">
     {#if progressPercent !== null}
