@@ -30,6 +30,18 @@ export interface IngestSession {
    * that assume every pack table exists. Ignored in declared mode (already covered).
    */
   finalize(backfillSchemas?: readonly TableSchema[]): Promise<readonly TableSummary[]>;
+  /**
+   * Marks a file boundary in a multi-file ingest. Spill tier: rotates every table's residual
+   * staged rows into chunks first, so no parquet chunk ever mixes files. Subsequent appends and
+   * rotations are attributed to `file` until the next `beginFile` or `discardCurrentFile`.
+   */
+  beginFile(file: string): Promise<void>;
+  /**
+   * Removes every row appended since the active `beginFile` (the failed file's partial rows):
+   * memory tier deletes by `_src_file`, spill tier truncates staging and drops the chunks
+   * rotated for this file. No-op when no file boundary is active.
+   */
+  discardCurrentFile(): Promise<void>;
   abort(): Promise<void>;
 }
 

@@ -176,6 +176,15 @@ class FakeIngestSession implements IngestSession {
     this.abortCalls += 1;
     this.onSettled();
   }
+
+  readonly beginFileCalls: string[] = [];
+  discardCalls = 0;
+  beginFile = vi.fn(async (file: string) => {
+    this.beginFileCalls.push(file);
+  });
+  discardCurrentFile = vi.fn(async () => {
+    this.discardCalls += 1;
+  });
 }
 
 const queryTable = (value: number): Table => tableFromArrays({ value: [value] });

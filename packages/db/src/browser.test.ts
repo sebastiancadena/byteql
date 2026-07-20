@@ -50,20 +50,22 @@ vi.mock('@duckdb/duckdb-wasm', () => ({
   },
 }));
 
-// Real spillPath/isQuotaError logic is exercised as-is; only deleteSpillGeneration is spied on
-// so tests can assert OPFS generation cleanup without touching real OPFS APIs.
+// Real spillPath/isQuotaError logic is exercised as-is; only deleteSpillGeneration and
+// deleteSpillChunks are spied on so tests can assert OPFS cleanup without touching real OPFS APIs.
 vi.mock('./spill-files.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./spill-files.js')>();
   return {
     ...actual,
     deleteSpillGeneration: vi.fn().mockResolvedValue(undefined),
+    deleteSpillChunks: vi.fn().mockResolvedValue(undefined),
   };
 });
 
 import { createBrowserDatabase } from './browser.js';
-import { deleteSpillGeneration } from './spill-files.js';
+import { deleteSpillChunks, deleteSpillGeneration } from './spill-files.js';
 
 const deleteSpillGenerationMock = vi.mocked(deleteSpillGeneration);
+const deleteSpillChunksMock = vi.mocked(deleteSpillChunks);
 
 // The parquet extension must be loaded before autoload is disabled and the configuration is
 // locked below — see the comment on `LOAD_PARQUET_STATEMENT` in browser.ts.
@@ -175,6 +177,8 @@ describe('createBrowserDatabase', () => {
     duckdbMocks.connection.close.mockResolvedValue(undefined);
     deleteSpillGenerationMock.mockClear();
     deleteSpillGenerationMock.mockResolvedValue(undefined);
+    deleteSpillChunksMock.mockClear();
+    deleteSpillChunksMock.mockResolvedValue(undefined);
   });
 
   it('selects only Vite-local MVP and EH bundles and accepts an injected logger', async () => {
@@ -1176,6 +1180,102 @@ describe('createBrowserDatabase', () => {
         expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toEqual(
           expect.arrayContaining(['DROP TABLE IF EXISTS "__ingest_9_events";']),
         );
+      });
+    });
+
+    describe('per-file ingest boundaries', () => {
+      it('beginFile on the spill tier rotates residual staged rows before switching files', async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 9 });
+        // Small batch stays well under the default rotation threshold, so it remains a residual
+        // staged row rather than triggering appendBatch's own rotation.
+        await session.appendBatch('events', ipcBatch(2));
+        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).not.toEqual(
+          expect.arrayContaining([expect.stringMatching(/^COPY/)]),
+        );
+
+        await session.beginFile('b.pcap');
+
+        const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+        const copyIndex = calls.indexOf(
+          'COPY "__ingest_9_events" TO \'opfs://byteql-spill/9/events/0.parquet\' (FORMAT parquet);',
+        );
+        const deleteIndex = calls.indexOf('DELETE FROM "__ingest_9_events";');
+        expect(copyIndex).toBeGreaterThanOrEqual(0);
+        expect(deleteIndex).toBeGreaterThan(copyIndex);
+      });
+
+      it('discardCurrentFile on the memory tier deletes by _src_file with an escaped literal', async () => {
+        const database = await createBrowserDatabase();
+        const session = await database.beginIngest({
+          schemas: [eventsSchema],
+          tier: 'memory',
+          generation: 1,
+        });
+
+        await session.beginFile("it's.pcap");
+        await session.appendBatch('events', ipcBatch(2));
+
+        await session.discardCurrentFile();
+
+        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toContain(
+          `DELETE FROM "__ingest_1_events" WHERE _src_file = 'it''s.pcap';`,
+        );
+
+        const summaries = await session.finalize();
+        expect(summaries).toEqual([{ name: 'events', rowCount: 0 }]);
+      });
+
+      it("discardCurrentFile on the spill tier truncates staging and forgets this file's chunks", async () => {
+        const database = await createBrowserDatabase({ spillSupported: true });
+        const batch1 = ipcBatch(2);
+        const batch2 = ipcBatch(3);
+        const rotationBytes = batch1.byteLength + 1;
+        const session = await database.beginIngest({
+          schemas: 'discover',
+          tier: 'spill',
+          generation: 9,
+          rotationBytes,
+        });
+
+        await session.beginFile('a.pcap');
+        await session.appendBatch('events', batch1);
+        await session.appendBatch('events', batch2); // rotates -> chunk 0, attributed to 'a.pcap'
+
+        await session.discardCurrentFile();
+
+        expect(duckdbMocks.connection.query.mock.calls.map(([sql]) => sql)).toContain(
+          'DELETE FROM "__ingest_9_events";',
+        );
+        expect(deleteSpillChunksMock).toHaveBeenCalledExactlyOnceWith([
+          'opfs://byteql-spill/9/events/0.parquet',
+        ]);
+
+        const summaries = await session.finalize();
+        const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
+        expect(calls).not.toEqual(expect.arrayContaining([expect.stringMatching(/^CREATE VIEW "events"/)]));
+        expect(calls).toEqual(
+          expect.arrayContaining(['ALTER TABLE "__ingest_9_events" RENAME TO "events";']),
+        );
+        expect(summaries).toEqual([{ name: 'events', rowCount: 0 }]);
+      });
+
+      it('discardCurrentFile without beginFile is a no-op', async () => {
+        const database = await createBrowserDatabase();
+        const session = await database.beginIngest({
+          schemas: [eventsSchema],
+          tier: 'memory',
+          generation: 1,
+        });
+        await session.appendBatch('events', ipcBatch(2));
+        duckdbMocks.connection.query.mockClear();
+
+        await session.discardCurrentFile();
+
+        expect(duckdbMocks.connection.query).not.toHaveBeenCalled();
+
+        const summaries = await session.finalize();
+        expect(summaries).toEqual([{ name: 'events', rowCount: 2 }]);
       });
     });
 

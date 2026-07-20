@@ -25,7 +25,7 @@ import type {
   QueryResult,
   TableSummary,
 } from './types.js';
-import { deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
+import { deleteSpillChunks, deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 
 // The parquet extension ships statically linked into the eh/mvp wasm binaries this project
 // bundles (no separate extension file, no network fetch) — but duckdb-wasm still requires an
@@ -77,6 +77,8 @@ const defaultSpillSupported = (): boolean =>
   typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory;
 
 const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
+
+const quoteStringLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
 /**
  * Issues exactly one type-correct drop for a recorded final. DuckDB (even pinned 1.33.1-dev57.0)
@@ -161,6 +163,11 @@ class IngestSessionImpl implements IngestSession {
   private readonly stagedBytes = new Map<string, number>();
   private readonly chunkIndex = new Map<string, number>();
   private readonly chunkPaths = new Map<string, string[]>();
+  // Per-file boundary tracking (multi-file batches): the display name of the file currently
+  // being appended, the chunks rotated for it, and its per-table appended row counts.
+  private currentFile: string | null = null;
+  private readonly currentFileChunks = new Map<string, string[]>();
+  private readonly currentFileRows = new Map<string, number>();
 
   constructor(
     private readonly generation: number,
@@ -192,6 +199,9 @@ class IngestSessionImpl implements IngestSession {
     this.chunkIndex.set(table, index + 1);
     this.chunkPaths.set(table, [...(this.chunkPaths.get(table) ?? []), path]);
     this.stagedBytes.set(table, 0);
+    if (this.currentFile !== null) {
+      this.currentFileChunks.set(table, [...(this.currentFileChunks.get(table) ?? []), path]);
+    }
   }
 
   /** Best-effort drop of every staging table this session owns, outside a transaction. */
@@ -236,6 +246,9 @@ class IngestSessionImpl implements IngestSession {
         await connection.insertArrowFromIPCStream(copy, { name: stagingName, create });
         this.created.add(table);
         this.rowCounts.set(table, (this.rowCounts.get(table) ?? 0) + rowCount);
+        if (this.currentFile !== null) {
+          this.currentFileRows.set(table, (this.currentFileRows.get(table) ?? 0) + rowCount);
+        }
 
         if (this.tier !== 'spill') {
           return;
@@ -266,6 +279,70 @@ class IngestSessionImpl implements IngestSession {
       }
       throw error;
     }
+  }
+
+  async beginFile(file: string): Promise<void> {
+    if (this.state !== 'open') {
+      throw new Error(`Ingest session is ${this.state}; cannot begin a file.`);
+    }
+    if (this.tier === 'spill') {
+      // File-boundary flush: chunks must never mix files, so the previous file's residual
+      // staged rows rotate out before this file's first append. Quota failures get the same
+      // SPILL_QUOTA_EXCEEDED tagging as appendBatch so the controller's messaging applies.
+      await this.enqueue(async (connection) => {
+        for (const table of this.sessionTables()) {
+          if (this.created.has(table) && (this.stagedBytes.get(table) ?? 0) > 0) {
+            try {
+              await this.rotateChunk(connection, table);
+            } catch (error) {
+              if (!isQuotaError(error)) {
+                throw error;
+              }
+              throw new Error(`SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`, {
+                cause: error,
+              });
+            }
+          }
+        }
+      });
+    }
+    this.currentFile = file;
+    this.currentFileChunks.clear();
+    this.currentFileRows.clear();
+  }
+
+  async discardCurrentFile(): Promise<void> {
+    if (this.state !== 'open' || this.currentFile === null) {
+      return;
+    }
+    const file = this.currentFile;
+    await this.enqueue(async (connection) => {
+      for (const table of this.created) {
+        const stagingName = stagingTableName(this.generation, table);
+        if (this.tier === 'spill') {
+          // Post-boundary staging only ever holds the current file's rows (see beginFile).
+          await connection.query(`DELETE FROM ${quoteIdentifier(stagingName)};`);
+          this.stagedBytes.set(table, 0);
+        } else {
+          await connection.query(
+            `DELETE FROM ${quoteIdentifier(stagingName)} WHERE _src_file = ${quoteStringLiteral(file)};`,
+          );
+        }
+      }
+    });
+    const discardedChunks = [...this.currentFileChunks.entries()];
+    for (const [table, chunks] of discardedChunks) {
+      const kept = (this.chunkPaths.get(table) ?? []).filter((path) => !chunks.includes(path));
+      if (kept.length > 0) this.chunkPaths.set(table, kept);
+      else this.chunkPaths.delete(table);
+    }
+    await deleteSpillChunks(discardedChunks.flatMap(([, chunks]) => chunks));
+    for (const [table, rows] of this.currentFileRows) {
+      this.rowCounts.set(table, Math.max(0, (this.rowCounts.get(table) ?? 0) - rows));
+    }
+    this.currentFile = null;
+    this.currentFileChunks.clear();
+    this.currentFileRows.clear();
   }
 
   async finalize(backfillSchemas?: readonly TableSchema[]): Promise<readonly TableSummary[]> {
