@@ -4,6 +4,7 @@
   import { createBrowserDatabase, type ByteqlDatabase } from '@byteql/db';
   import { onMount } from 'svelte';
 
+  import BrandMark from './components/BrandMark.svelte';
   import Workbench from './components/Workbench.svelte';
   import { createBrowserE2EHarness } from './lib/e2e-harness.js';
   import { SessionController } from './lib/session/controller.js';
@@ -100,7 +101,8 @@
 {:else}
   <main class="startup-state" aria-busy={starting}>
     <div class="startup-card">
-      <span class="startup-mark" aria-hidden="true">⌁</span>
+      <BrandMark size="large" />
+      <p class="startup-kicker">Browser-native binary intelligence</p>
       <h1>ByteQL</h1>
       {#if startupError}
         <p class="inline-diagnostic" role="alert">{startupError}</p>
