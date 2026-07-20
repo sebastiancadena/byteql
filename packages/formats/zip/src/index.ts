@@ -1,2 +1,1 @@
-export { readZipContainer } from './container.js';
-export type { ZipContainer, LocalFileRecord, CentralDirRecord, EndOfCentralDirRecord } from './container.js';
+export { zipFormatPack } from './pack.js';

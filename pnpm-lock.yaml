@@ -50,6 +50,9 @@ importers:
       '@byteql/pcap':
         specifier: workspace:*
         version: link:../../packages/formats/pcap
+      '@byteql/zip':
+        specifier: workspace:*
+        version: link:../../packages/formats/zip
       '@codemirror/lang-sql':
         specifier: ^6.10.0
         version: 6.10.0
