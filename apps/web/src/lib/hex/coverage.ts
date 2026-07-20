@@ -28,11 +28,18 @@ const toRange = (start: unknown, end: unknown): { start: number; end: number } |
   return { start: Number(start), end: Number(end) };
 };
 
-export function provenanceOfRow(table: Table, row: number): { start: number; end: number } | null {
+export function provenanceOfRow(
+  table: Table,
+  row: number,
+): { file: string; start: number; end: number } | null {
+  const fileColumn = table.getChild('_src_file');
   const startColumn = table.getChild('_src_start');
   const endColumn = table.getChild('_src_end');
-  if (!startColumn || !endColumn) return null;
-  return toRange(startColumn.get(row), endColumn.get(row));
+  if (!fileColumn || !startColumn || !endColumn) return null;
+  const file = fileColumn.get(row);
+  const range = toRange(startColumn.get(row), endColumn.get(row));
+  if (typeof file !== 'string' || !range) return null;
+  return { file, ...range };
 }
 
 /** First index in `starts[0..count)` whose value is > probe. */
@@ -47,10 +54,11 @@ function upperBound(starts: Float64Array, count: number, probe: number): number 
   return low;
 }
 
-export function buildCoverage(table: Table): CoverageResult {
+export function buildCoverage(table: Table, file: string): CoverageResult {
+  const fileColumn = table.getChild('_src_file');
   const startColumn = table.getChild('_src_start');
   const endColumn = table.getChild('_src_end');
-  if (!startColumn || !endColumn) return { index: null, reason: 'no-provenance' };
+  if (!fileColumn || !startColumn || !endColumn) return { index: null, reason: 'no-provenance' };
   if (table.numRows > COVERAGE_ROW_CAP) return { index: null, reason: 'too-large' };
 
   const capacity = table.numRows;
@@ -59,6 +67,7 @@ export function buildCoverage(table: Table): CoverageResult {
   const rawRows = new Uint32Array(capacity);
   let count = 0;
   for (let row = 0; row < capacity; row += 1) {
+    if (fileColumn.get(row) !== file) continue;
     const range = toRange(startColumn.get(row), endColumn.get(row));
     if (!range || range.end <= range.start) continue;
     rawStarts[count] = range.start;
@@ -135,17 +144,17 @@ export function buildCoverage(table: Table): CoverageResult {
 }
 
 /**
- * Builds a `buildCoverage` wrapper that memoizes on table reference identity, so
- * repeated session publishes carrying the SAME result do not re-index (spec: once
- * per result). Returns a stable `CoverageResult` for an unchanged table.
+ * Builds a `buildCoverage` wrapper that memoizes on the (table, file) pair, so
+ * repeated session publishes carrying the SAME result and file do not re-index (spec: once
+ * per result). Returns a stable `CoverageResult` for an unchanged (table, file) pair.
  */
-export function createCoverageMemo(): (table: Table | null) => CoverageResult {
-  let cache: { table: Table; value: CoverageResult } | null = null;
-  return (table) => {
-    if (!table) return { index: null, reason: 'no-provenance' };
-    if (cache && cache.table === table) return cache.value;
-    const value = buildCoverage(table);
-    cache = { table, value };
+export function createCoverageMemo(): (table: Table | null, file: string | null) => CoverageResult {
+  let cache: { table: Table; file: string; value: CoverageResult } | null = null;
+  return (table, file) => {
+    if (!table || file === null) return { index: null, reason: 'no-provenance' };
+    if (cache && cache.table === table && cache.file === file) return cache.value;
+    const value = buildCoverage(table, file);
+    cache = { table, file, value };
     return value;
   };
 }

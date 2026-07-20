@@ -21,6 +21,7 @@ const result = tableFromArrays({
   record_id: [1n, 2n],
   label: ['alpha', 'beta'],
   optional: [null, 'available'],
+  _src_file: ['capture.bin', 'capture.bin'],
   _src_start: [12n, 28n],
   _src_end: [20n, 41n],
 });
@@ -521,7 +522,7 @@ describe('Inspector Workbench', () => {
     expect(controller.runQuery).toHaveBeenCalled();
     const query = controller.runQuery.mock.calls.at(-1)![0];
     expect(query).toContain('select * from (');
-    expect(query).toContain('where _src_start < ');
+    expect(query).toContain("where _src_file = 'capture.bin' and _src_start < ");
   });
 
   it('passes the selected row provenance to the hex pane as highlight', async () => {
@@ -529,6 +530,7 @@ describe('Inspector Workbench', () => {
       ...readyState(),
       result: tableFromArrays({
         record_id: [1n, 2n],
+        _src_file: ['capture.bin', 'capture.bin'],
         _src_start: [12n, 800n],
         _src_end: [20n, 840n],
       }),

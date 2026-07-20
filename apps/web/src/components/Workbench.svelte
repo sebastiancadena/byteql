@@ -115,16 +115,19 @@
   // Memoize on result identity: session is reassigned on every publish (caret moves, progress
   // events), but buildCoverage must run once per result, not once per publish.
   const coverageMemo = createCoverageMemo();
-  const coverageResult = $derived(coverageMemo(session.result));
   // Task 8 replaces these with a real multi-file switcher; for now the hex pane and byte
   // selection always operate on the first file in the batch.
   const primaryFile = $derived(session.source?.files[0] ?? null);
+  const coverageResult = $derived(coverageMemo(session.result, primaryFile?.name ?? null));
   const sourceBlob = $derived(primaryFile ? controller.getSourceBlob(primaryFile.name) : null);
   // Memoize on (result, selectedRow) so the highlight object stays reference-stable across
   // publishes; otherwise HexPane's identity guard re-flashes and re-centers on every publish
   // (including each caret move's byteRangeSelected dispatch), fighting user navigation.
-  let highlightMemo: { result: unknown; row: number; value: { start: number; end: number } | null } | null =
-    null;
+  let highlightMemo: {
+    result: unknown;
+    row: number;
+    value: { file: string; start: number; end: number } | null;
+  } | null = null;
   const rowHighlight = $derived.by(() => {
     const result = session.result;
     const row = session.selectedRow;
@@ -471,14 +474,16 @@
             fileSize={primaryFile?.size ?? 0}
             coverage={coverageResult.index}
             coverageReason={coverageResult.reason}
-            highlight={rowHighlight}
+            highlight={rowHighlight ? { start: rowHighlight.start, end: rowHighlight.end } : null}
             filterAvailable={coverageResult.reason === 'ok'}
             resetKey={session.result}
             compact={compactMode}
             onreveal={revealAt}
             onselectionchange={(range) =>
               controller.selectByteRange(range && primaryFile ? { file: primaryFile.name, ...range } : null)}
-            onfilter={(range) => run(wrapFilterSql(draftSql || session.sql, range))}
+            onfilter={(range) =>
+              primaryFile &&
+              run(wrapFilterSql(draftSql || session.sql, { file: primaryFile.name, ...range }))}
           />
         {/if}
       </section>
