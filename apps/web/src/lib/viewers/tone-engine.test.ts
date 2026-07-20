@@ -276,6 +276,15 @@ describe('ToneAudioEngine', () => {
     expect(drum.triggerRelease).not.toHaveBeenCalled();
   });
 
+  it('silences the drum voice on stop', async () => {
+    const { engine, transport, drumSynth } = setup();
+    await engine.load([{ seconds: 0, note: 36, velocity: 100, kind: 'note_on', channel: 9, program: null }]);
+    await engine.play();
+    transport.run(0);
+    engine.stop();
+    expect(drumSynth().releaseAll).toHaveBeenCalled();
+  });
+
   it('selects a melodic voice from the note program family', async () => {
     const { engine, dependencies } = setup();
     await engine.load([{ seconds: 0, note: 40, velocity: 100, kind: 'note_on', channel: 3, program: 48 }]);

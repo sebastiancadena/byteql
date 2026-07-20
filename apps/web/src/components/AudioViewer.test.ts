@@ -89,6 +89,25 @@ describe('AudioViewer', () => {
     );
   });
 
+  it('nulls an out-of-range program without discarding the row', async () => {
+    const table = tableFromArrays({
+      seconds: [0, 0.5],
+      note: [60, 40],
+      velocity: [100, 90],
+      kind: ['note_on', 'note_on'],
+      channel: [4, 3],
+      program: [999, 35],
+    });
+    const engine = fakeEngine();
+    render(AudioViewer, { table, engineFactory: () => engine, onclose: vi.fn() });
+    await vi.waitFor(() =>
+      expect(engine.load).toHaveBeenCalledWith([
+        { seconds: 0, note: 60, velocity: 100, kind: 'note_on', channel: 4, program: null },
+        { seconds: 0.5, note: 40, velocity: 90, kind: 'note_on', channel: 3, program: 35 },
+      ]),
+    );
+  });
+
   it('starts on the Play gesture and exposes pause, stop, and seek controls', async () => {
     const table = tableFromArrays({
       seconds: [0.5, 1.25],

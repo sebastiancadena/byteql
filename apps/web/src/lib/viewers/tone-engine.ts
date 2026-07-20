@@ -106,7 +106,9 @@ const buildDrumVoice = (): SynthPort => {
       }
     },
     triggerRelease: () => undefined,
-    releaseAll: () => undefined,
+    releaseAll: () => {
+      for (const node of all) node.triggerRelease();
+    },
     dispose: () => {
       for (const node of all) node.dispose();
     },
@@ -222,6 +224,12 @@ export class ToneAudioEngine implements AudioEngine {
           // Drums are one-shot; do not track them for release so a matching
           // note_off never triggers a (meaningless) release on the drum voice.
           if (row.channel !== 9) {
+            // Known limitation: activeNotes is keyed by channel:note, not by the
+            // synth that attacked it. If the same pitch on this channel is
+            // re-attacked after a mid-note program change, both note-offs
+            // release on the first (attacking) synth, leaving the second
+            // voice's note to ring out unreleased. This is intended/accepted
+            // behavior, not a bug to "fix" here.
             const active = this.activeNotes.get(key);
             if (active) active.count += 1;
             else this.activeNotes.set(key, { synth, count: 1 });
