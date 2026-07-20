@@ -1,0 +1,23 @@
+{
+  "name": "@byteql/zip",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "generate:pack": "node scripts/generate-pack.mjs",
+    "build": "pnpm generate:pack && tsc -p tsconfig.json",
+    "check": "pnpm --filter @byteql/core build && pnpm generate:pack && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm --filter @byteql/core build && pnpm generate:pack && vitest"
+  },
+  "dependencies": {
+    "@byteql/core": "workspace:*",
+    "apache-arrow": "^21.1.0",
+    "yaml": "^2.9.0"
+  }
+}

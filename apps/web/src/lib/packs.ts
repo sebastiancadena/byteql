@@ -1,9 +1,10 @@
 import type { FormatPack } from '@byteql/core';
 import { midiFormatPack } from '@byteql/midi';
 import { pcapFormatPack } from '@byteql/pcap';
+import { zipFormatPack } from '@byteql/zip';
 
 /** Canonical pack registration order — probing ties break toward the earlier entry. */
-export const REGISTERED_PACKS: readonly FormatPack[] = [midiFormatPack, pcapFormatPack];
+export const REGISTERED_PACKS: readonly FormatPack[] = [midiFormatPack, pcapFormatPack, zipFormatPack];
 
 export const PROBE_HEAD_BYTES = 4096;
 
