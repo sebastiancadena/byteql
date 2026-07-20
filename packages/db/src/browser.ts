@@ -78,6 +78,29 @@ const defaultSpillSupported = (): boolean =>
 
 const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
 
+const prepareWasmModule = async (
+  moduleUrl: string,
+): Promise<{ readonly url: string; readonly release: () => void }> => {
+  if (!moduleUrl.endsWith('.wasm.gz')) {
+    return { url: moduleUrl, release: () => undefined };
+  }
+
+  const response = await fetch(moduleUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to load compressed DuckDB-WASM module: HTTP ${response.status}.`);
+  }
+  if (!response.body) {
+    throw new Error('Failed to load compressed DuckDB-WASM module: response body is unavailable.');
+  }
+
+  const decompressed = response.body.pipeThrough(new DecompressionStream('gzip'));
+  const blob = await new Response(decompressed, {
+    headers: { 'Content-Type': 'application/wasm' },
+  }).blob();
+  const url = URL.createObjectURL(blob);
+  return { url, release: () => URL.revokeObjectURL(url) };
+};
+
 /**
  * Issues exactly one type-correct drop for a recorded final. DuckDB (even pinned 1.33.1-dev57.0)
  * throws a Catalog Error on `DROP VIEW IF EXISTS t` when `t` is a table (and vice versa), so the
@@ -453,7 +476,12 @@ class BrowserDatabase implements ByteqlDatabase {
 
   private async initializeInternal(): Promise<void> {
     try {
-      await this.database.instantiate(this.bundle.mainModule, this.bundle.pthreadWorker);
+      const module = await prepareWasmModule(this.bundle.mainModule);
+      try {
+        await this.database.instantiate(module.url, this.bundle.pthreadWorker);
+      } finally {
+        module.release();
+      }
       const connection = await this.database.connect();
       this.connection = connection;
       await connection.query(LOAD_PARQUET_STATEMENT);

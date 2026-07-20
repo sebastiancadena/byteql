@@ -7,6 +7,7 @@ import {
   tableToIPC as duckdbTableToIPC,
   vectorFromArray as duckdbVectorFromArray,
 } from 'apache-arrow-duckdb';
+import { gzipSync } from 'node:zlib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const duckdbMocks = vi.hoisted(() => {
@@ -222,6 +223,43 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.connection.query.mock.invocationCallOrder.at(-1)).toBeLessThan(
       duckdbMocks.connection.send.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('decompresses a prepared gzip module into a typed blob URL for instantiation', async () => {
+    const wasm = Uint8Array.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+    const compressed = gzipSync(wasm);
+    const originalFetch = globalThis.fetch;
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    const revokeObjectUrl = vi.fn((url: string) => originalRevokeObjectUrl.call(URL, url));
+    vi.stubGlobal('fetch', async (input: string | URL | Request) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      if (url === '/assets/duckdb-eh.wasm.gz') {
+        return new Response(compressed);
+      }
+      return originalFetch(input);
+    });
+    vi.stubGlobal('URL', Object.assign(URL, { revokeObjectURL: revokeObjectUrl }));
+    duckdbMocks.selectBundle.mockResolvedValueOnce({
+      mainModule: '/assets/duckdb-eh.wasm.gz',
+      mainWorker: '/assets/duckdb-browser-eh.worker.js',
+      pthreadWorker: null,
+    });
+    duckdbMocks.database.instantiate.mockImplementationOnce(async (url: string) => {
+      expect(url).toMatch(/^blob:/u);
+      const response = await originalFetch(url);
+      expect(response.headers.get('content-type')).toBe('application/wasm');
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(wasm);
+    });
+
+    try {
+      const database = await createBrowserDatabase();
+      await database.initialize();
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+      vi.stubGlobal('URL', Object.assign(URL, { revokeObjectURL: originalRevokeObjectUrl }));
+    }
+
+    expect(revokeObjectUrl).toHaveBeenCalledOnce();
   });
 
   it('measures query time and serializes queries and ingest appends', async () => {
