@@ -175,6 +175,18 @@ importers:
         specifier: ^0.11.0
         version: 0.11.0
 
+  packages/formats/zip:
+    dependencies:
+      '@byteql/core':
+        specifier: workspace:*
+        version: link:../../core
+      apache-arrow:
+        specifier: ^21.1.0
+        version: 21.1.0
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
+
 packages:
 
   '@asamuzakjp/css-color@5.1.11':
