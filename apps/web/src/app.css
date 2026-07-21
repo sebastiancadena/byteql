@@ -849,7 +849,11 @@ button {
 .grid-header,
 .grid-row {
   display: grid;
-  min-width: max-content;
+  /* min-content, not max-content: size each 1fr column to its 9rem floor (content-independent)
+     so every row and the header share identical column widths. Long cell values are clipped by
+     the overflow/ellipsis on `.grid-row > div`; sizing to content here would widen a row's columns
+     to fit its longest value and break alignment with the header and other rows. */
+  min-width: min-content;
 }
 
 .grid-header {
@@ -918,14 +922,14 @@ button {
 }
 
 .grid-scroll {
-  min-width: max-content;
+  min-width: min-content;
   min-height: 0;
   overflow: auto;
 }
 
 .grid-virtual-space {
   position: relative;
-  min-width: max-content;
+  min-width: min-content;
 }
 
 .grid-row {
