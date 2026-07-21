@@ -20,5 +20,5 @@ Redistribution follows the Wireshark wiki SampleCaptures terms
 
 ## MIDI
 
-- `fur_Elise_opening.mid` — opening of Beethoven's *Für Elise* (WoO 59).
+- `fur_Elise_opening.mid` — opening of Beethoven's _Für Elise_ (WoO 59).
   The composition is public domain; the MIDI file was user-supplied.
