@@ -19,7 +19,7 @@ const queries = [
     "id": "dns_join",
     "title": "DNS queries by time",
     "kind": "grid",
-    "sql": "select p.ts, d.query_name, d.query_type\nfrom dns d\njoin packets p using (packet_id)\norder by p.ts\nlimit 100;\n"
+    "sql": "select d.*, p.ts\nfrom dns d\njoin packets p using (packet_id)\norder by p.ts\nlimit 100;\n"
   },
   {
     "id": "tcp_flows",

@@ -56,7 +56,7 @@ test('reassembles a two-segment DNS-over-TCP query and joins its stream tables',
   await expect(page.getByRole('gridcell', { name: 'ok', exact: true })).toBeVisible();
 });
 
-test('loads the bundled pcap sample as a two-file session from the picker', async ({ page }) => {
+test('loads the bundled pcap sample as a three-file session from the picker', async ({ page }) => {
   await page.goto('/');
   await waitForAppReady(page);
 
@@ -64,14 +64,23 @@ test('loads the bundled pcap sample as a two-file session from the picker', asyn
   await page.getByRole('button', { name: 'Try sample' }).click();
   await page.getByRole('menuitem', { name: 'Network capture (pcap)' }).click();
 
-  // Both captures land in one multi-file session — the _files catalog lists both.
+  // All three captures land in one multi-file session — the _files catalog lists them.
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
   await runSql(page, 'select original_name from _files order by original_name');
   await expect(page.getByRole('gridcell', { name: 'SkypeIRC.cap' })).toBeVisible();
   await expect(page.getByRole('gridcell', { name: 'v6.pcap' })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: 'dns-stream.pcap' })).toBeVisible();
 
   // v6.pcap exercises the IPv6 + DNS path: a recognizable query name proves it parsed.
   await runSql(page, "select query_name from dns where query_name = 'www.wide.ad.jp'");
   await expect(page.getByRole('gridcell', { name: 'www.wide.ad.jp' }).first()).toBeVisible();
+
+  // dns-stream.pcap is a two-segment DNS-over-TCP query, so it reassembles into the streams
+  // table — the "TCP flows" saved query is no longer empty on the bundled sample. The reassembled
+  // message produces a dns row, and the flow itself lands in streams on port 53.
+  await runSql(page, "select query_name from dns where query_name = 'stream.example'");
+  await expect(page.getByRole('gridcell', { name: 'stream.example' }).first()).toBeVisible();
+  await runSql(page, 'select src_port, dst_port from streams');
+  await expect(page.getByRole('gridcell', { name: '53', exact: true }).first()).toBeVisible();
 });

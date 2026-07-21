@@ -32,7 +32,7 @@ queries:
     title: DNS queries by time
     kind: grid
     sql: |
-      select p.ts, d.query_name, d.query_type
+      select d.*, p.ts
       from dns d
       join packets p using (packet_id)
       order by p.ts

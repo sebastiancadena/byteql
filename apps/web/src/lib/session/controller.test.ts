@@ -323,29 +323,34 @@ describe('SessionController', () => {
     await reopening;
   });
 
-  it('opens the pcap sample as a two-file batch', async () => {
+  it('opens the pcap sample as a three-file batch', async () => {
     const sample = new Uint8Array([0xd4, 0xc3, 0xb2, 0xa1, 1, 2, 3]);
-    // A fresh Response per call: two distinct urls are fetched, and a Response body can only be read once.
+    // A fresh Response per call: three distinct urls are fetched, and a Response body can only be read once.
     const fetchSample = vi.fn().mockImplementation(() => Promise.resolve(new Response(sample)));
     const controller = new SessionController({
       database,
       parser,
       fetch: fetchSample,
-      sampleUrlOverrides: { pcap: ['/assets/SkypeIRC.cap', '/assets/v6.pcap'] },
+      sampleUrlOverrides: {
+        pcap: ['/assets/SkypeIRC.cap', '/assets/v6.pcap', '/assets/dns-stream.pcap'],
+      },
       stopViewer,
     });
     await controller.initialize();
 
     const opening = controller.openSample('pcap');
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
-    expect(fetchSample).toHaveBeenCalledTimes(2);
+    expect(fetchSample).toHaveBeenCalledTimes(3);
     expect(parser.calls[0]!.name).toBe('SkypeIRC.cap');
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
-    sessions[0]!.finalizeResult = [{ name: 'packets', rowCount: 2 }];
+    sessions[0]!.finalizeResult = [{ name: 'packets', rowCount: 3 }];
     parser.calls[0]!.finish(streamedResult('packets', 1));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
     expect(parser.calls[1]!.name).toBe('v6.pcap');
     parser.calls[1]!.finish(streamedResult('packets', 1));
+    await vi.waitFor(() => expect(parser.calls).toHaveLength(3));
+    expect(parser.calls[2]!.name).toBe('dns-stream.pcap');
+    parser.calls[2]!.finish(streamedResult('packets', 1));
     await resolveFilesAppend(sessions[0]!);
     await opening;
   });

@@ -10,6 +10,10 @@ These files back the empty-state "Try sample" picker (`src/lib/session/samples.t
 - `v6.pcap` — Wireshark wiki, SampleCaptures.
   Source: https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/v6.pcap
   Contents: IPv6 (6bone) and ICMPv6 packets (classic libpcap, Ethernet).
+- `dns-stream.pcap` — byteql-generated synthetic fixture (also used by the pcap e2e).
+  Built by `packages/formats/pcap/test/build-pcap.ts`: a two-segment DNS-over-TCP query for
+  `stream.example` split across TCP seq 0/10, so it exercises TCP stream reassembly (the
+  `streams` table / "TCP flows" saved query) on the bundled sample. Not from the Wireshark wiki.
 
 Redistribution follows the Wireshark wiki SampleCaptures terms
 (https://wiki.wireshark.org/SampleCaptures).

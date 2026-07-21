@@ -1,5 +1,6 @@
 import skypeIrcUrl from '../../assets/SkypeIRC.cap?url';
 import v6Url from '../../assets/v6.pcap?url';
+import dnsStreamUrl from '../../assets/dns-stream.pcap?url';
 import furEliseUrl from '../../assets/fur_Elise_opening.mid?url';
 
 export type SampleId = 'pcap' | 'midi';
@@ -30,6 +31,7 @@ export const SAMPLES: readonly SampleDefinition[] = [
     files: [
       { name: 'SkypeIRC.cap', url: skypeIrcUrl },
       { name: 'v6.pcap', url: v6Url },
+      { name: 'dns-stream.pcap', url: dnsStreamUrl },
     ],
   },
   {
