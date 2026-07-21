@@ -70,6 +70,7 @@
     <ul class="format-badges" aria-label="Supported formats">
       <li>MIDI</li>
       <li>pcap</li>
+      <li>ZIP</li>
     </ul>
   </div>
 

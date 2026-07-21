@@ -70,6 +70,7 @@ describe('EmptyState native file picker intake', () => {
     expect(screen.getByText(/files never leave this browser/iu)).toBeTruthy();
     expect(screen.getByText('MIDI')).toBeTruthy();
     expect(screen.getByText('pcap')).toBeTruthy();
+    expect(screen.getByText('ZIP')).toBeTruthy();
     expect(container.querySelector('[data-brand-lockup]')).toBeTruthy();
   });
 });
