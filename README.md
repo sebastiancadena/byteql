@@ -324,3 +324,7 @@ and intelligence plugins (Sigma rule execution, optional local text-to-SQL). See
   binding constraints
 - [docs/privacy.md](docs/privacy.md) — the privacy threat model
 - `docs/superpowers/specs/` — approved design records for each shipped phase
+
+## License
+
+[MIT](LICENSE) © 2026 Juan Sebastián Cadena.
