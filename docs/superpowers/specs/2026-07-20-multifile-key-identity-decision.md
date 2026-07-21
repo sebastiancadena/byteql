@@ -1,7 +1,7 @@
 # Decision: cross-file key identity in multi-file sessions
 
 Date: 2026-07-20
-Status: Recommendation — awaiting decision
+Status: ACCEPTED — Option A (keep per-file keys; `_src_file` is part of identity). Docs note landed.
 Related: fix(pcap) f44b9d0 (DNS-by-time join scoped to `_src_file`), test b646fc4
 
 ## Context

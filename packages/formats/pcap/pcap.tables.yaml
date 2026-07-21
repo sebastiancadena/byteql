@@ -1,5 +1,13 @@
 version: '0.3'
 format: pcap
+# Multi-file note: the `key` columns below (packet_id, ip_id, tcp_id, stream_id, …) and the
+# `parent_key` references that point at them are assigned PER FILE — they restart at 1 for every
+# file in a session, so they are NOT unique across files. In a multi-file session a cross-table
+# join must therefore also match the provenance file, e.g.
+#   dns d join packets p on d.packet_id = p.packet_id and d._src_file = p._src_file
+# Joining `using (packet_id)` alone matches rows across files and inflates/mis-times the result.
+# The row's true cross-file identity is the composite (_src_file, _src_start). See the presets in
+# queries.yaml and docs/superpowers/specs/2026-07-20-multifile-key-identity-decision.md.
 tables:
   - name: packets
     rows: $

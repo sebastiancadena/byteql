@@ -31,6 +31,11 @@ queries:
   - id: dns_join
     title: DNS queries by time
     kind: grid
+    # The join matches _src_file as well as packet_id: keys restart per file, so joining on
+    # packet_id alone would match DNS rows against same-id packets from other files. Do not
+    # "simplify" this to `using (packet_id)`. See pcap.tables.yaml and pack.test.ts for the guard.
+    # `select d.*` (not explicit columns) keeps the hidden _src_* columns so rows carry byte
+    # provenance in the hex viewer.
     sql: |
       select d.*, p.ts
       from dns d
