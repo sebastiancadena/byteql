@@ -82,7 +82,7 @@ const binaryOperators = new Set([
   '%',
 ]);
 const unaryOperators = new Set(['-', '+', '!', 'not', '~']);
-const builtinNames = new Set(['enum_str', 'to_i', 'len', 'u24be', 'ip4_str', 'ip6_str']);
+const builtinNames = new Set(['enum_str', 'to_i', 'len', 'u24be', 'ip4_str', 'ip6_str', 'dos_dttm']);
 const contextIdentifierNames = new Set(['_', '_root', '_parent']);
 const expressionTokenNames = new Set(['true', 'false', 'null', 'and', 'or', 'not', 'this']);
 const forbiddenIdentifiers = new Set([
@@ -641,6 +641,20 @@ const builtins = {
   },
   ip4_str: formatIpv4,
   ip6_str: formatIpv6,
+  dos_dttm: (value: unknown): unknown => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    const packed = value >>> 0;
+    const date = (packed >>> 16) & 0xffff;
+    const time = packed & 0xffff;
+    const day = date & 0x1f;
+    const month = (date >> 5) & 0x0f;
+    const year = 1980 + ((date >> 9) & 0x7f);
+    const second = (time & 0x1f) * 2;
+    const minute = (time >> 5) & 0x3f;
+    const hour = (time >> 11) & 0x1f;
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    return Date.UTC(year, month - 1, day, hour, minute, second) * 1000;
+  },
 } as const;
 
 const evaluateCall = (node: CallExpression, context: ExpressionContext): unknown => {

@@ -1,0 +1,44 @@
+version: '0.1'
+format: zip
+queries:
+  - id: overview
+    title: Table overview
+    kind: grid
+    sql: |
+      select 'local_files' as table_name, count(*) as row_count from local_files
+      union all select 'central_dir_entries', count(*) from central_dir_entries
+      union all select 'end_of_central_dir', count(*) from end_of_central_dir
+      order by table_name
+      limit 100;
+
+  - id: largest_members
+    title: Largest members
+    kind: grid
+    sql: |
+      select file_name, compression, uncompressed_size, compressed_size
+      from central_dir_entries
+      order by uncompressed_size desc, file_name
+      limit 100;
+
+  - id: compression_breakdown
+    title: Compression breakdown
+    kind: grid
+    sql: |
+      select compression, count(*) as members,
+             sum(uncompressed_size) as total_uncompressed,
+             sum(compressed_size) as total_compressed
+      from central_dir_entries
+      group by compression
+      order by members desc
+      limit 100;
+
+  - id: size_disagreements
+    title: Local vs central size mismatches
+    kind: grid
+    sql: |
+      select c.file_name, l.compressed_size as local_size, c.compressed_size as central_size
+      from central_dir_entries c
+      join local_files l on l.file_name = c.file_name
+      where l.compressed_size <> c.compressed_size
+      order by c.file_name
+      limit 100;

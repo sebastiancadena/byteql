@@ -33,8 +33,8 @@ describe('selectPack', () => {
     expect(selectPack(packs, head, 'zzz')).toBeNull();
   });
 
-  it('registry lists midi then pcap and exposes the probe head size', () => {
-    expect(REGISTERED_PACKS.map((pack) => pack.id)).toEqual(['standard_midi_file', 'pcap']);
+  it('registry lists midi then pcap then zip and exposes the probe head size', () => {
+    expect(REGISTERED_PACKS.map((pack) => pack.id)).toEqual(['standard_midi_file', 'pcap', 'zip']);
     expect(PROBE_HEAD_BYTES).toBe(4096);
   });
 });

@@ -1,0 +1,65 @@
+version: '0.3'
+format: zip
+tables:
+  - name: local_files
+    rows: $.local_files[*]
+    key: local_file_id
+    columns:
+      version_needed: { expr: _.version_needed, type: uint16 }
+      flags: { expr: _.flags, type: uint16 }
+      compression_method: { expr: _.compression_method, type: uint16 }
+      compression:
+        type: utf8
+        expr: >-
+          _.compression_method == 0 ? "stored" :
+          _.compression_method == 8 ? "deflate" :
+          _.compression_method == 9 ? "deflate64" :
+          _.compression_method == 12 ? "bzip2" :
+          _.compression_method == 14 ? "lzma" :
+          _.compression_method == 93 ? "zstd" :
+          _.compression_method == 95 ? "xz" :
+          _.compression_method == 98 ? "ppmd" : "other"
+      crc32: { expr: _.crc32, type: uint32 }
+      compressed_size: { expr: _.compressed_size, type: uint32 }
+      uncompressed_size: { expr: _.uncompressed_size, type: uint32 }
+      mod_time: { expr: 'dos_dttm(_.mod_date * 65536 + _.mod_time)', type: timestamp_us }
+      file_name: { expr: _.file_name, type: utf8 }
+      extra_len: { expr: _.extra_len, type: uint16 }
+  - name: central_dir_entries
+    rows: $.central_dir_entries[*]
+    key: central_dir_id
+    columns:
+      version_made_by: { expr: _.version_made_by, type: uint16 }
+      version_needed: { expr: _.version_needed, type: uint16 }
+      flags: { expr: _.flags, type: uint16 }
+      compression_method: { expr: _.compression_method, type: uint16 }
+      compression:
+        type: utf8
+        expr: >-
+          _.compression_method == 0 ? "stored" :
+          _.compression_method == 8 ? "deflate" :
+          _.compression_method == 9 ? "deflate64" :
+          _.compression_method == 12 ? "bzip2" :
+          _.compression_method == 14 ? "lzma" :
+          _.compression_method == 93 ? "zstd" :
+          _.compression_method == 95 ? "xz" :
+          _.compression_method == 98 ? "ppmd" : "other"
+      crc32: { expr: _.crc32, type: uint32 }
+      compressed_size: { expr: _.compressed_size, type: uint32 }
+      uncompressed_size: { expr: _.uncompressed_size, type: uint32 }
+      mod_time: { expr: 'dos_dttm(_.mod_date * 65536 + _.mod_time)', type: timestamp_us }
+      file_name: { expr: _.file_name, type: utf8 }
+      extra_len: { expr: _.extra_len, type: uint16 }
+      disk_start: { expr: _.disk_start, type: uint16 }
+      internal_attrs: { expr: _.internal_attrs, type: uint16 }
+      external_attrs: { expr: _.external_attrs, type: uint32 }
+      ofs_local_header: { expr: _.ofs_local_header, type: uint32 }
+      comment: { expr: _.comment, type: utf8 }
+  - name: end_of_central_dir
+    rows: $.end_of_central_dir
+    key: eocd_id
+    columns:
+      num_entries: { expr: _.num_entries, type: uint16 }
+      central_dir_size: { expr: _.central_dir_size, type: uint32 }
+      ofs_central_dir: { expr: _.ofs_central_dir, type: uint32 }
+      comment: { expr: _.comment, type: utf8 }
