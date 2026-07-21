@@ -83,4 +83,15 @@ test('loads the bundled pcap sample as a three-file session from the picker', as
   await expect(page.getByRole('gridcell', { name: 'stream.example' }).first()).toBeVisible();
   await runSql(page, 'select src_port, dst_port from streams');
   await expect(page.getByRole('gridcell', { name: '53', exact: true }).first()).toBeVisible();
+
+  // Regression (multi-file join safety): packet_id restarts per file, so a DNS↔packets join must
+  // also match _src_file. The file-scoped join must be 1:1 with the dns table — a cross-file-unsafe
+  // `using (packet_id)` join would inflate the count by matching packets from other files.
+  await runSql(
+    page,
+    'select (select count(*) from dns) = ' +
+      '(select count(*) from dns d join packets p on d.packet_id = p.packet_id ' +
+      'and d._src_file = p._src_file) as matches',
+  );
+  await expect(page.getByRole('gridcell', { name: 'true', exact: true })).toBeVisible();
 });

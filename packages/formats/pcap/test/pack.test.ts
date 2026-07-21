@@ -134,4 +134,27 @@ describe('pcapFormatPack', () => {
     const src = pcapFormatPack.open(memoryByteSource(pcap), { signal: controller.signal });
     await expect(src.nextBatch()).rejects.toThrow();
   });
+
+  // Regression: packet_id restarts at 1 for every file in a multi-file session, so it is not
+  // unique across files. Any saved query that joins across pcap tables must also match _src_file,
+  // or a DNS row from one file matches same-id packets from other files (row inflation + wrong
+  // timestamps). See fix(pcap) "scope the DNS-by-time join to _src_file for multi-file sessions".
+  it('scopes the DNS-by-time saved query to the source file for multi-file safety', () => {
+    const dnsByTime = pcapFormatPack.queries.find((query) => query.id === 'dns_join');
+    expect(dnsByTime, 'the dns_join saved query must exist').toBeDefined();
+    const sql = dnsByTime!.sql;
+    // It joins packets, so it must also match _src_file...
+    expect(sql).toMatch(/join\s+packets/i);
+    expect(sql).toMatch(/_src_file/);
+    // ...and must NOT use the cross-file-unsafe `using (packet_id)` join.
+    expect(sql).not.toMatch(/using\s*\(\s*packet_id\s*\)/i);
+  });
+
+  it('has no saved query that joins pcap tables on packet_id without _src_file', () => {
+    for (const query of pcapFormatPack.queries) {
+      if (!/join\s+/i.test(query.sql)) continue;
+      // Every cross-table join in a preset must be file-scoped (see regression above).
+      expect(query.sql, `saved query "${query.id}" joins without _src_file`).toMatch(/_src_file/);
+    }
+  });
 });
