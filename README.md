@@ -3,10 +3,11 @@
 > **SQL for binary files.** Wireshark's dissector philosophy, generalized to every
 > record-oriented format — entirely in your browser, nothing uploaded.
 
-ByteQL turns record-oriented binary files (MIDI and pcap today; evtx, regf, and more next) into
-relational tables you query with DuckDB SQL, with every row tracing back to the exact source
-bytes it was parsed from. It runs 100% client-side: drop a file into a browser tab, get tables,
-join and aggregate them, and click any result row to light up its bytes in the hex view.
+ByteQL turns record-oriented binary files (MIDI, pcap, and ZIP today; evtx, regf, and more next)
+into relational tables you query with DuckDB SQL, with every row tracing back to the exact source
+bytes it was parsed from. It runs 100% client-side: drop one file or a same-format batch into a
+browser tab, get tables, join and aggregate them, and click any result row to light up its bytes
+in the hex view.
 
 ## Why
 
@@ -41,6 +42,37 @@ and embedded engineers inspecting captures of custom formats, and reverse engine
 semi-documented formats with hex↔SQL round-tripping.
 
 Full product requirements, roadmap, and risk analysis live in [PRD.md](PRD.md).
+
+## How I built ByteQL with Codex and GPT-5.6
+
+ByteQL started with my product thesis: analysts should be able to query binary evidence with SQL,
+trace every result back to its exact bytes, and do it without uploading the evidence or installing
+an untrusted binary. I made the defining product and engineering choices: the DFIR audience, the
+browser-only privacy boundary, SQL plus byte provenance, Arrow as the data spine, declarative
+format packs, and MIDI as the first end-to-end proof. Codex helped turn that thesis into a working
+product and repeatedly pushed the initial ideas into stronger, testable contracts.
+
+The collaboration was deliberate rather than a single generate-and-accept pass:
+
+| My decisions and review                                                                        | How Codex and GPT-5.6 accelerated the work                                                                                                                                                                                                                                | Evidence in the repository                                                                                                                                                                                                                                                       |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Defined the problem, audience, differentiators, architecture, and acceptance metrics.          | GPT-5.6 Sol challenged the initial PRD through adversarial critique and failure-mode inversion, then helped translate it into bounded designs and executable plans.                                                                                                       | [PRD.md](PRD.md), [`docs/superpowers/specs/`](docs/superpowers/specs/), [`docs/superpowers/plans/`](docs/superpowers/plans/)                                                                                                                                                     |
+| Chose MIDI as the validating slice and retained final judgment over architecture and scope.    | Sol at high reasoning implemented the critical Phase 0 path across Kaitai parsing, provenance-aware projection, Arrow IPC, DuckDB-WASM, the Svelte workbench, and MIDI playback. I used medium reasoning for narrower, non-critical tasks once the contracts were stable. | [Phase 0 design](docs/superpowers/specs/2026-07-17-byteql-phase-0-design.md), [Phase 0 plan](docs/superpowers/plans/2026-07-17-byteql-phase-0.md), [`packages/formats/midi/`](packages/formats/midi/)                                                                            |
+| Made local-only operation a non-negotiable product constraint.                                 | Codex kept that constraint active across later work and turned it into enforcement: bundle audits, browser tests that assert zero off-origin requests, same-origin DuckDB extensions, and release checks that fail closed.                                                | [Privacy model](docs/privacy.md), [`check-bundle.mjs`](apps/web/scripts/check-bundle.mjs), [`privacy.spec.ts`](apps/web/e2e/privacy.spec.ts), [`verify-pages-artifact.test.ts`](apps/web/scripts/verify-pages-artifact.test.ts)                                                  |
+| Set the performance targets and decided which implementation trade-offs were acceptable.       | Codex built the benchmark harnesses, traced browser-only failures such as detached buffers and timer clamping, and recorded discoveries back into the design documents instead of letting the specification drift away from reality.                                      | [Scale design notes](docs/superpowers/specs/2026-07-19-phase1-scale-intake-design.md#implementation-notes-recorded-post-execution), [`scale-metrics.spec.ts`](apps/web/e2e/scale-metrics.spec.ts)                                                                                |
+| Directed the signature hex-to-grid interaction and approved the final Command Deck experience. | I returned to GPT-5.6 Sol for the UI/UX pass, demo use cases, and guarded `pnpm release:pages` path. It refined the rendered product and automated verification-before-publish while preserving accessibility, responsive behavior, and privacy gates.                    | [UI design](docs/superpowers/specs/2026-07-20-command-deck-ui-redesign-design.md), [`hex-provenance.spec.ts`](apps/web/e2e/hex-provenance.spec.ts), [`package.json`](package.json), [deployment design](docs/superpowers/specs/2026-07-20-cloudflare-pages-deployment-design.md) |
+
+The working loop was **brainstorm → approved design → implementation plan → test-first build →
+review → full verification**. Repository guidance in [AGENTS.md](AGENTS.md) kept architecture,
+privacy, and completion criteria in context between tasks. Codex did not choose what ByteQL should
+be; it made the product I chose feasible on a build-week timescale, carried decisions across a
+large codebase, and converted promises into tests. I reviewed the designs, resolved trade-offs,
+and treated every “done” claim as something the build, browser tests, or benchmarks had to prove.
+
+After the base architecture and first use case were operational, I also used other models and
+tools for supporting plugin work. GPT-5.6 Sol remained the primary collaborator for the core
+architecture and Phase 0 implementation, and returned for the final UI/UX, release automation,
+and example workflows.
 
 ## Architecture
 
@@ -82,6 +114,7 @@ the architecture: `app → db → core ← formats`.
 | `packages/core`         | `@byteql/core` | The engine: projection spec schema + validation, sandboxed expression evaluator, anchor-path walker, `ProjectionSession`, TCP stream reassembly, Arrow batch builders, the `FormatPack`/`RecordSource` plugin contract. Zero-DOM — runs in Node, workers, and plain vitest. |
 | `packages/formats/midi` | `@byteql/midi` | First format pack: Standard MIDI File.                                                                                                                                                                                                                                      |
 | `packages/formats/pcap` | `@byteql/pcap` | Network capture pack: 10-parser dissect chain (ethernet → ipv4/ipv6 → tcp/udp → dns/icmp/icmpv6/tls) with TCP stream reassembly.                                                                                                                                            |
+| `packages/formats/zip`  | `@byteql/zip`  | Structural ZIP archive pack: archive and local-file metadata with exact byte provenance; file contents are deliberately not extracted.                                                                                                                                      |
 | `packages/db`           | `@byteql/db`   | DuckDB-WASM wrapper: local-asset init, hardening PRAGMAs, Arrow registration, OPFS Parquet spill tier, serialized query path.                                                                                                                                               |
 | `apps/web`              | `@byteql/web`  | Svelte UI: parse worker with probe registry, session state machine, virtualized grid, CodeMirror SQL console, canvas hex pane, capability-gated viewers (MIDI audio playback via Tone.js).                                                                                  |
 | `crates/byteql`         | —              | Name-reservation placeholder for the future Rust/wasm component work (e.g. an EVTX parser). No functionality yet.                                                                                                                                                           |
@@ -184,8 +217,10 @@ pnpm install
 pnpm --filter @byteql/web dev       # Vite dev server — open the printed URL in Chromium
 ```
 
-Then drop a `.mid` or `.pcap` file onto the page (or use the built-in demo sample), and query
-the resulting tables from the SQL console.
+Then drop a `.mid`, `.pcap`, or `.zip` file onto the page (or use the built-in demo sample), and
+query the resulting tables from the SQL console. Select several files of the same format to query
+them as one dataset; the `_src_file`, `_src_start`, and `_src_end` columns preserve file-qualified
+byte provenance.
 
 ### Create a production build
 
@@ -220,8 +255,9 @@ Notes:
 
 ### Publish to Cloudflare Pages
 
-The production site at [byteql.pages.dev](https://byteql.pages.dev) uses a Direct Upload project
-named `byteql`. Authenticate Wrangler before the first release from a new machine:
+The production site at [byteql.dev](https://byteql.dev) uses a Cloudflare Pages Direct Upload
+project named `byteql`; [byteql.pages.dev](https://byteql.pages.dev) remains its Pages hostname.
+Authenticate Wrangler before the first release from a new machine:
 
 ```bash
 wrangler login
@@ -268,16 +304,17 @@ Playwright creates that instrumented directory only for browser acceptance tests
 The source-controlled `apps/web/public/_headers` file is copied beside `index.html`. It serves
 WASM with the correct MIME type, caches immutable generated modules for one year, and keeps
 `index.html` uncached. Cross-origin isolation headers are intentionally absent because this is not
-a threaded build. The `byteql.dev` custom domain is not attached yet.
+a threaded build. The `byteql.dev` custom domain is attached to the same production Pages project.
 
 ## Status and roadmap
 
-Phase 0 (MIDI spike) and Phase 1 (pcap, streaming scale intake, hex-provenance UI) have
-shipped, including the Phase 2 TCP stream reassembly engine work. Measured against the PRD's
-exit metrics: a 1 GB pcap is queryable in ~44 s, and a 3-column query over a 4 GB capture reads
-1.7% of the file. Next up: the forensics pack (lnk, regf, utmp, systemd journal), EVTX as the
-first Rust component, and intelligence plugins (Sigma rule execution, optional local
-text-to-SQL). See [PRD.md](PRD.md) §12 for the full roadmap.
+Phase 0 (MIDI spike) and Phase 1 (pcap, streaming scale intake, hex-provenance UI) have shipped,
+including the Phase 2 TCP stream reassembly engine work. ZIP structural analysis and same-format
+multi-file sessions have also shipped. Measured against the PRD's exit metrics: a 1 GB pcap is
+queryable in ~44 s, and a 3-column query over a 4 GB capture reads 1.7% of the file. Next up:
+pcapng, the forensics pack (lnk, regf, utmp, systemd journal), EVTX as the first Rust component,
+and intelligence plugins (Sigma rule execution, optional local text-to-SQL). See [PRD.md](PRD.md)
+§12 for the full roadmap.
 
 ## Key documents
 
