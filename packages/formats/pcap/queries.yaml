@@ -34,7 +34,7 @@ queries:
     sql: |
       select d.*, p.ts
       from dns d
-      join packets p using (packet_id)
+      join packets p on d.packet_id = p.packet_id and d._src_file = p._src_file
       order by p.ts
       limit 100;
 
