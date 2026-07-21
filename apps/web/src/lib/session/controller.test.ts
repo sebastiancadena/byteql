@@ -26,6 +26,7 @@ import {
   type ParseWorkerScope,
 } from '../../workers/parse.worker.js';
 import { SessionController } from './controller.js';
+import type { SampleId } from './samples.js';
 import { initialSessionState } from './state.js';
 
 const { sweepSpillOrphansMock } = vi.hoisted(() => ({
@@ -347,6 +348,27 @@ describe('SessionController', () => {
     parser.calls[1]!.finish(streamedResult('packets', 1));
     await resolveFilesAppend(sessions[0]!);
     await opening;
+  });
+
+  it('rejects openSample with an unknown sample id', async () => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    await controller.initialize();
+
+    await expect(controller.openSample('bogus' as SampleId)).rejects.toThrow(/unknown sample/i);
+  });
+
+  it('rejects opening a bundled sample when the fetch response is not ok', async () => {
+    const fetchSample = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+    const controller = new SessionController({
+      database,
+      parser,
+      fetch: fetchSample,
+      sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
+      stopViewer,
+    });
+    await controller.initialize();
+
+    await expect(controller.openSample('midi')).rejects.toThrow(/could not be loaded/i);
   });
 
   it('publishes UI-safe source metadata and progress without exposing the file', async () => {
