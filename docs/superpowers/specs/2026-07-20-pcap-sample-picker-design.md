@@ -124,7 +124,9 @@ replacing the single-purpose `demoUrl`.
 - **`apps/web/src/components/SampleMenu.svelte`** (new): dropdown mirroring the
   existing `ViewerMenu.svelte` pattern — a `button` labelled `Try sample ▾` with
   `aria-expanded`, an options container `role="menu"` with `role="menuitem"`
-  entries rendered from `SAMPLES`, closing on select / Escape / click-outside.
+  entries rendered from `SAMPLES`, closing on select or trigger re-toggle
+  (matching `ViewerMenu`'s dismissal behavior — no separate Escape /
+  click-outside handler; the empty state unmounts on selection anyway).
   Emits `onselect(id: SampleId)`. pcap is first ⇒ visually the default.
 - **`apps/web/src/components/EmptyState.svelte`**: replace the single
   `Try sample` button with `SampleMenu`. The `onsample` prop changes from
