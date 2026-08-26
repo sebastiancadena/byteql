@@ -15,6 +15,11 @@ export type {
   FileStatisticsSummary,
   IngestOptions,
   IngestSession,
+  QueryPage,
+  QueryPageSummary,
   QueryResult,
+  QuerySession,
+  QueryStatus,
   TableSummary,
 } from './types.js';
+export { QUERY_INITIAL_ROWS, QUERY_PAGE_ROWS } from './types.js';

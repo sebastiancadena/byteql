@@ -14,17 +14,33 @@ import duckdbEhWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js
 import duckdbMvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
 import duckdbMvpWasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
 import type { TableSchema } from '@byteql/core';
-import { tableFromIPC } from 'apache-arrow';
-import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
+import { tableFromIPC, type Schema, type Table } from 'apache-arrow';
+import {
+  RecordBatchStreamWriter,
+  Table as DuckdbTable,
+  type RecordBatch as DuckdbRecordBatch,
+  type Schema as DuckdbSchema,
+} from 'apache-arrow-duckdb';
 
 import type {
   ByteqlDatabase,
   FileStatisticsSummary,
   IngestOptions,
   IngestSession,
+  QueryPage,
+  QueryPageSummary,
   QueryResult,
+  QuerySession,
+  QueryStatus,
   TableSummary,
 } from './types.js';
+import { QUERY_PAGE_ROWS } from './types.js';
+import {
+  createOpfsQueryPagePersistence,
+  QUERY_RESULT_MEMORY_BYTES,
+  QueryPageStore,
+  type StoredQueryPage,
+} from './query-pages.js';
 import { deleteSpillChunks, deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 
 // DuckDB-WASM loads parquet dynamically. ByteQL mirrors both signed platform variants under this
@@ -534,6 +550,244 @@ class IngestSessionImpl implements IngestSession {
   }
 }
 
+type DuckdbQueryReader = Awaited<ReturnType<AsyncDuckDBConnection['send']>>;
+type DuckdbQueryIterator = AsyncIterator<DuckdbRecordBatch>;
+
+const queryPage = (page: StoredQueryPage): QueryPage => ({
+  index: page.index,
+  startRow: page.startRow,
+  rowCount: page.rowCount,
+  table: page.table,
+});
+
+const convertDuckdbTable = async (
+  schema: DuckdbSchema,
+  batches: readonly DuckdbRecordBatch[],
+): Promise<Table> => {
+  const writer = RecordBatchStreamWriter.writeAll(new DuckdbTable(schema, [...batches]));
+  return tableFromIPC(await writer.toUint8Array());
+};
+
+class QuerySessionImpl implements QuerySession {
+  readonly schema: Schema;
+  private readonly iterator: DuckdbQueryIterator;
+  private readonly summaries: QueryPageSummary[] = [];
+  private fetchTail: Promise<void> = Promise.resolve();
+  private remainder: DuckdbRecordBatch | null = null;
+  private loadedRows = 0;
+  private complete = false;
+  private elapsedMs = 0;
+  private pending = false;
+  private pendingEof = false;
+  private closed = false;
+  private cancelPromise: Promise<boolean> | null = null;
+  private disposePromise: Promise<void> | null = null;
+
+  private constructor(
+    private readonly readerSchema: DuckdbSchema,
+    reader: DuckdbQueryReader,
+    private readonly store: QueryPageStore,
+    private readonly startedAt: number,
+    private readonly cancelCursor: () => Promise<boolean>,
+    private readonly onDisposed: () => void,
+    schema: Schema,
+  ) {
+    this.iterator = reader[Symbol.asyncIterator]();
+    this.schema = schema;
+    this.elapsedMs = performance.now() - startedAt;
+  }
+
+  static async create(
+    reader: DuckdbQueryReader,
+    store: QueryPageStore,
+    startedAt: number,
+    cancelCursor: () => Promise<boolean>,
+    onDisposed: () => void,
+  ): Promise<QuerySessionImpl> {
+    const readerSchema = reader.schema;
+    const schemaTable = await convertDuckdbTable(readerSchema, []);
+    return new QuerySessionImpl(
+      readerSchema,
+      reader,
+      store,
+      startedAt,
+      cancelCursor,
+      onDisposed,
+      schemaTable.schema,
+    );
+  }
+
+  status(): QueryStatus {
+    this.assertOpen();
+    return {
+      loadedRows: this.loadedRows,
+      complete: this.complete,
+      elapsedMs: this.elapsedMs,
+      storedBytes: this.store.storedBytes,
+    };
+  }
+
+  pages(): readonly QueryPageSummary[] {
+    this.assertOpen();
+    return this.summaries.map((page) => ({ ...page }));
+  }
+
+  fetchNext(targetRows = QUERY_PAGE_ROWS): Promise<QueryPage | null> {
+    return this.serializeFetch(async () => {
+      this.assertOpen();
+      if (!Number.isSafeInteger(targetRows) || targetRows <= 0) {
+        throw new RangeError('Query page target must be a positive safe integer.');
+      }
+      if (this.pending) {
+        throw new Error('A query result page write is pending retry.');
+      }
+      if (this.complete) return null;
+
+      const batches: DuckdbRecordBatch[] = [];
+      let rowCount = 0;
+      let eof = false;
+
+      while (rowCount < targetRows) {
+        let batch = this.remainder;
+        this.remainder = null;
+        if (!batch) {
+          const next = await this.iterator.next();
+          this.assertOpen();
+          if (next.done) {
+            eof = true;
+            break;
+          }
+          batch = next.value;
+        }
+
+        if (batch.numRows === 0) continue;
+        const needed = targetRows - rowCount;
+        if (batch.numRows > needed) {
+          batches.push(batch.slice(0, needed));
+          this.remainder = batch.slice(needed);
+          rowCount += needed;
+        } else {
+          batches.push(batch);
+          rowCount += batch.numRows;
+        }
+      }
+
+      if (rowCount === 0) {
+        if (eof) this.finish();
+        return null;
+      }
+
+      const table = await convertDuckdbTable(this.readerSchema, batches);
+      this.assertOpen();
+      try {
+        const stored = await this.store.put(this.summaries.length, this.loadedRows, table);
+        this.assertOpen();
+        const page = this.publish(stored);
+        if (eof) this.finish();
+        return page;
+      } catch (error) {
+        this.pending = true;
+        this.pendingEof = eof;
+        throw error;
+      }
+    });
+  }
+
+  retryPending(): Promise<QueryPage> {
+    return this.serializeFetch(async () => {
+      this.assertOpen();
+      if (!this.pending) {
+        throw new Error('No query result page write is pending retry.');
+      }
+      const stored = await this.store.retryPending();
+      this.assertOpen();
+      this.pending = false;
+      const page = this.publish(stored);
+      if (this.pendingEof) this.finish();
+      this.pendingEof = false;
+      return page;
+    });
+  }
+
+  async readPage(index: number): Promise<QueryPage> {
+    this.assertOpen();
+    return queryPage(await this.store.get(index));
+  }
+
+  pinPages(indexes: readonly number[]): void {
+    this.assertOpen();
+    this.store.pin(indexes);
+  }
+
+  async materialize(maxBytes = QUERY_RESULT_MEMORY_BYTES): Promise<Table | null> {
+    this.assertOpen();
+    return this.store.materialize(maxBytes);
+  }
+
+  cancel(): Promise<boolean> {
+    if (this.cancelPromise) return this.cancelPromise;
+    this.assertOpen();
+    this.cancelPromise = this.cancelCursor();
+    return this.cancelPromise;
+  }
+
+  dispose(): Promise<void> {
+    if (!this.disposePromise) {
+      this.closed = true;
+      this.disposePromise = (async () => {
+        const errors: unknown[] = [];
+        try {
+          await this.iterator.return?.();
+        } catch (error) {
+          errors.push(error);
+        }
+        await this.fetchTail;
+        try {
+          await this.store.dispose();
+        } catch (error) {
+          errors.push(error);
+        } finally {
+          this.onDisposed();
+        }
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) {
+          throw new AggregateError(errors, 'Failed to dispose the query result session.');
+        }
+      })();
+    }
+    return this.disposePromise;
+  }
+
+  private serializeFetch<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.fetchTail.then(operation);
+    this.fetchTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private publish(stored: StoredQueryPage): QueryPage {
+    const page = queryPage(stored);
+    this.summaries.push({ index: page.index, startRow: page.startRow, rowCount: page.rowCount });
+    this.loadedRows += page.rowCount;
+    this.elapsedMs = performance.now() - this.startedAt;
+    return page;
+  }
+
+  private finish(): void {
+    this.store.markComplete();
+    this.complete = true;
+    this.elapsedMs = performance.now() - this.startedAt;
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new Error('Query result session is closed.');
+    }
+  }
+}
+
 class BrowserDatabase implements ByteqlDatabase {
   private connection: AsyncDuckDBConnection | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -545,6 +799,9 @@ class BrowserDatabase implements ByteqlDatabase {
   private closePromise: Promise<void> | null = null;
   private terminatePromise: Promise<void> | null = null;
   private queryInFlight = false;
+  private activeQuery: QuerySessionImpl | null = null;
+  private queryGeneration = 0;
+  private ingestStarting = false;
   private activeIngest: IngestSessionImpl | null = null;
   /** The generation currently backing committed spill views, or `null` before any spill finalize. */
   private spillGeneration: number | null = null;
@@ -603,44 +860,102 @@ class BrowserDatabase implements ByteqlDatabase {
         `Ingest generation must be a non-negative integer: ${JSON.stringify(options.generation)}`,
       );
     }
-    if (this.activeIngest) {
+    if (this.activeIngest || this.ingestStarting) {
       throw new Error('An ingest session is already open.');
     }
 
-    const schemaMode: SchemaMode =
-      options.schemas === 'discover'
-        ? { kind: 'discover' }
-        : { kind: 'declared', schemas: validateIngestSchemas(options.schemas) };
+    this.ingestStarting = true;
+    try {
+      if (this.queryInFlight && this.connection) {
+        await this.connection.cancelSent();
+      }
+      await this.operationTail;
+      if (this.disposeRequested) {
+        throw new Error('ByteQL database has been disposed.');
+      }
+      await this.closeActiveQuery();
 
-    const session: IngestSessionImpl = new IngestSessionImpl(
-      options.generation,
-      schemaMode,
-      options.tier,
-      options.rotationBytes ?? ROTATION_THRESHOLD_BYTES,
-      this.database,
-      (operation) => this.enqueue(operation),
-      () => this.finalNames,
-      (finals) => {
-        this.finalNames = new Map(finals);
-      },
-      () => this.spillGeneration,
-      (generation) => {
-        this.spillGeneration = generation;
-      },
-      () => {
-        if (this.activeIngest === session) {
-          this.activeIngest = null;
-          this.activeIngestSpillGeneration = null;
-        }
-      },
-    );
-    this.activeIngest = session;
-    this.activeIngestSpillGeneration = options.tier === 'spill' ? options.generation : null;
-    return session;
+      const schemaMode: SchemaMode =
+        options.schemas === 'discover'
+          ? { kind: 'discover' }
+          : { kind: 'declared', schemas: validateIngestSchemas(options.schemas) };
+
+      const session: IngestSessionImpl = new IngestSessionImpl(
+        options.generation,
+        schemaMode,
+        options.tier,
+        options.rotationBytes ?? ROTATION_THRESHOLD_BYTES,
+        this.database,
+        (operation) => this.enqueue(operation),
+        () => this.finalNames,
+        (finals) => {
+          this.finalNames = new Map(finals);
+        },
+        () => this.spillGeneration,
+        (generation) => {
+          this.spillGeneration = generation;
+        },
+        () => {
+          if (this.activeIngest === session) {
+            this.activeIngest = null;
+            this.activeIngestSpillGeneration = null;
+          }
+        },
+      );
+      this.activeIngest = session;
+      this.activeIngestSpillGeneration = options.tier === 'spill' ? options.generation : null;
+      return session;
+    } finally {
+      this.ingestStarting = false;
+    }
   }
 
+  startQuery(sql: string): Promise<QuerySession> {
+    return this.enqueue(async (connection) => {
+      if (this.activeIngest || this.ingestStarting) {
+        throw new Error('An ingest session is already open.');
+      }
+      await this.closeActiveQuery();
+
+      const startedAt = performance.now();
+      this.queryInFlight = true;
+      let store: QueryPageStore | null = null;
+      let cursorStarted = false;
+      try {
+        const persistence = await createOpfsQueryPagePersistence(this.queryGeneration++);
+        if (this.disposeRequested) {
+          await persistence?.dispose().catch(() => undefined);
+          throw new Error('ByteQL database has been disposed.');
+        }
+        store = new QueryPageStore({ persistence });
+        const reader = await connection.send(sql);
+        cursorStarted = true;
+        let session!: QuerySessionImpl;
+        session = await QuerySessionImpl.create(
+          reader,
+          store,
+          startedAt,
+          () => connection.cancelSent(),
+          () => {
+            if (this.activeQuery === session) this.activeQuery = null;
+          },
+        );
+        this.activeQuery = session;
+        return session;
+      } catch (error) {
+        if (cursorStarted) await connection.cancelSent().catch(() => false);
+        await store?.dispose().catch(() => undefined);
+        throw error;
+      } finally {
+        this.queryInFlight = false;
+      }
+    });
+  }
+
+  /** @deprecated Temporary compatibility path until the web controller migrates to startQuery. */
   query(sql: string): Promise<QueryResult> {
     return this.enqueue(async (connection) => {
+      await this.closeActiveQuery();
       const startedAt = performance.now();
       this.queryInFlight = true;
       try {
@@ -659,6 +974,10 @@ class BrowserDatabase implements ByteqlDatabase {
     if (this.disposeRequested) {
       return false;
     }
+    if (this.activeQuery) {
+      return this.activeQuery.cancel();
+    }
+    if (!this.queryInFlight) return false;
     await this.initialize();
     return this.getConnection().cancelSent();
   }
@@ -668,11 +987,25 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   collectFileStatistics(path: string, enable: boolean): Promise<void> {
-    return this.enqueue(() => this.database.collectFileStatistics(path, enable));
+    if (this.activeQuery || this.queryInFlight) {
+      return Promise.reject(new Error('A query result session owns the database connection.'));
+    }
+    return this.enqueue(() => {
+      if (this.activeQuery || this.queryInFlight) {
+        throw new Error('A query result session owns the database connection.');
+      }
+      return this.database.collectFileStatistics(path, enable);
+    });
   }
 
   exportFileStatistics(path: string): Promise<FileStatisticsSummary> {
+    if (this.activeQuery || this.queryInFlight) {
+      return Promise.reject(new Error('A query result session owns the database connection.'));
+    }
     return this.enqueue(async () => {
+      if (this.activeQuery || this.queryInFlight) {
+        throw new Error('A query result session owns the database connection.');
+      }
       const stats = await this.database.exportFileStatistics(path);
       // Narrow to the plain-data subset ByteqlDatabase declares — drop the class's blockStats
       // buffer and getBlockStats() method (see the FileStatisticsSummary doc comment).
@@ -700,7 +1033,13 @@ class BrowserDatabase implements ByteqlDatabase {
   private async disposeInternal(): Promise<void> {
     const errors: unknown[] = [];
 
-    if (this.queryInFlight && this.connection) {
+    if (this.activeQuery) {
+      try {
+        await this.activeQuery.cancel();
+      } catch (error) {
+        errors.push(error);
+      }
+    } else if (this.queryInFlight && this.connection) {
       try {
         await this.connection.cancelSent();
       } catch (error) {
@@ -708,6 +1047,13 @@ class BrowserDatabase implements ByteqlDatabase {
       }
     }
     await this.operationTail;
+    if (this.activeQuery) {
+      try {
+        await this.activeQuery.dispose();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     if (this.initializePromise) {
       try {
         await this.initializePromise;
@@ -744,6 +1090,30 @@ class BrowserDatabase implements ByteqlDatabase {
     if (errors.length > 1) {
       throw new AggregateError(errors, 'Failed to dispose the ByteQL database.');
     }
+  }
+
+  private async closeActiveQuery(): Promise<void> {
+    const session = this.activeQuery;
+    if (!session) return;
+
+    let cancellationError: unknown;
+    try {
+      await session.cancel();
+    } catch (error) {
+      cancellationError = error;
+    }
+    try {
+      await session.dispose();
+    } catch (error) {
+      if (cancellationError !== undefined) {
+        throw new AggregateError(
+          [cancellationError, error],
+          'Failed to replace the active query result session.',
+        );
+      }
+      throw error;
+    }
+    if (cancellationError !== undefined) throw cancellationError;
   }
 
   private enqueue<T>(operation: (connection: AsyncDuckDBConnection) => Promise<T>): Promise<T> {
