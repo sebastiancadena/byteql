@@ -43,7 +43,6 @@
   $effect(() => {
     const element = scrollElement;
     const count = table.numRows;
-    if (!element || element.clientHeight === 0) return;
     untrack(() => $virtualizer.setOptions({ count, getScrollElement: () => element }));
   });
 

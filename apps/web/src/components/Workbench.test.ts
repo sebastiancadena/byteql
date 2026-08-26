@@ -15,6 +15,25 @@ import Workbench from './Workbench.svelte';
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
 
+Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+  configurable: true,
+  get() {
+    return this.classList.contains('grid-scroll') ? 360 : 0;
+  },
+});
+Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+  configurable: true,
+  get() {
+    return this.classList.contains('grid-scroll') ? 360 : 0;
+  },
+});
+Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+  configurable: true,
+  get() {
+    return this.classList.contains('grid-scroll') ? 960 : 0;
+  },
+});
+
 const textOf = (element: Element): string => element.textContent ?? '';
 
 const result = tableFromArrays({
