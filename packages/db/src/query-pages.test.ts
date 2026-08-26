@@ -14,40 +14,81 @@ class FakePersistence implements QueryPagePersistence {
   readonly writes: Array<{ index: number; ipc: Uint8Array }> = [];
   failWriteOnce = false;
   disposeCalls = 0;
+  disposeError: unknown = null;
+  writeGate: Promise<void> | null = null;
+  readGate: Promise<void> | null = null;
+  readonly events: string[] = [];
 
   async write(index: number, ipc: Uint8Array): Promise<void> {
+    this.events.push(`write:${index}:start`);
     this.writes.push({ index, ipc });
     if (this.failWriteOnce) {
       this.failWriteOnce = false;
       throw new DOMException('quota exceeded', 'QuotaExceededError');
     }
+    if (this.writeGate) await this.writeGate;
     this.files.set(index, ipc.slice());
+    this.events.push(`write:${index}:end`);
   }
 
   async read(index: number): Promise<Uint8Array> {
+    this.events.push(`read:${index}:start`);
     this.reads.push(index);
     const ipc = this.files.get(index);
     if (!ipc) throw new Error(`missing page ${index}`);
+    if (this.readGate) await this.readGate;
+    this.events.push(`read:${index}:end`);
     return ipc.slice();
   }
 
   async dispose(): Promise<void> {
     this.disposeCalls += 1;
+    this.events.push('dispose');
+    if (this.disposeError) throw this.disposeError;
     this.files.clear();
+  }
+}
+
+class FakeWritable {
+  readonly writes: Uint8Array[] = [];
+  readonly abortReasons: unknown[] = [];
+  closeCalls = 0;
+  private staged: Uint8Array | null = null;
+
+  constructor(private readonly file: FakeFileHandle) {}
+
+  async write(data: Uint8Array): Promise<void> {
+    const owned = data.slice();
+    this.writes.push(owned);
+    if (this.file.writeErrorOnce) {
+      const error = this.file.writeErrorOnce;
+      this.file.writeErrorOnce = null;
+      throw error;
+    }
+    this.staged = owned;
+  }
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+    if (this.staged) this.file.bytes = this.staged;
+  }
+
+  async abort(reason?: unknown): Promise<void> {
+    this.abortReasons.push(reason);
+    this.staged = null;
   }
 }
 
 class FakeFileHandle {
   readonly kind = 'file' as const;
+  readonly writers: FakeWritable[] = [];
   bytes = new Uint8Array();
+  writeErrorOnce: unknown = null;
 
-  async createWritable(): Promise<{ write(data: Uint8Array): Promise<void>; close(): Promise<void> }> {
-    return {
-      write: async (data: Uint8Array) => {
-        this.bytes = data.slice();
-      },
-      close: async () => undefined,
-    };
+  async createWritable(): Promise<FakeWritable> {
+    const writer = new FakeWritable(this);
+    this.writers.push(writer);
+    return writer;
   }
 
   async getFile(): Promise<{ arrayBuffer(): Promise<ArrayBuffer> }> {
@@ -63,6 +104,7 @@ class FakeDirectoryHandle {
   readonly directories = new Map<string, FakeDirectoryHandle>();
   readonly files = new Map<string, FakeFileHandle>();
   readonly removeCalls: Array<{ name: string; recursive?: boolean }> = [];
+  removeError: unknown = null;
 
   async getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<FakeDirectoryHandle> {
     const existing = this.directories.get(name);
@@ -84,6 +126,7 @@ class FakeDirectoryHandle {
 
   async removeEntry(name: string, options?: { recursive?: boolean }): Promise<void> {
     this.removeCalls.push({ name, recursive: options?.recursive });
+    if (this.removeError) throw this.removeError;
     if (this.files.delete(name)) return;
     const directory = this.directories.get(name);
     if (!directory) throw Object.assign(new Error(`not found: ${name}`), { name: 'NotFoundError' });
@@ -103,6 +146,14 @@ const stubOpfs = (root: FakeDirectoryHandle): void => {
   vi.stubGlobal('navigator', {
     storage: { getDirectory: vi.fn().mockResolvedValue(root) },
   });
+};
+
+const deferred = (): { promise: Promise<void>; resolve(): void } => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 };
 
 describe('QueryPageStore', () => {
@@ -181,6 +232,75 @@ describe('QueryPageStore', () => {
     await Promise.all([store.dispose(), store.dispose()]);
     expect(persistence.disposeCalls).toBe(1);
   });
+
+  it('surfaces persistence cleanup failures through every concurrent dispose caller', async () => {
+    const persistence = new FakePersistence();
+    const cleanupError = new DOMException('cleanup denied', 'NotAllowedError');
+    persistence.disposeError = cleanupError;
+    const store = new QueryPageStore({ persistence });
+
+    const firstDispose = store.dispose();
+    const secondDispose = store.dispose();
+
+    expect(secondDispose).toBe(firstDispose);
+    await expect(firstDispose).rejects.toBe(cleanupError);
+    expect(persistence.disposeCalls).toBe(1);
+  });
+
+  it('waits for an in-flight put before cleanup and prevents post-dispose publication', async () => {
+    const persistence = new FakePersistence();
+    const write = deferred();
+    persistence.writeGate = write.promise;
+    const store = new QueryPageStore({ persistence });
+
+    const putting = store.put(0, 0, tableFromArrays({ value: [31] }));
+    const disposing = store.dispose();
+    expect(persistence.events).toEqual(['write:0:start']);
+
+    write.resolve();
+
+    await expect(putting).rejects.toThrow('Query page store is disposed.');
+    await disposing;
+    expect(persistence.events).toEqual(['write:0:start', 'write:0:end', 'dispose']);
+    expect(store.storedBytes).toBe(0);
+  });
+
+  it('waits for an in-flight reload and does not return a page after disposal begins', async () => {
+    const persistence = new FakePersistence();
+    const store = new QueryPageStore({ persistence, memoryLimitBytes: 0 });
+    await store.put(0, 0, tableFromArrays({ value: [41] }));
+    const read = deferred();
+    persistence.readGate = read.promise;
+
+    const getting = store.get(0);
+    const disposing = store.dispose();
+    read.resolve();
+
+    await expect(getting).rejects.toThrow('Query page store is disposed.');
+    await disposing;
+    expect(persistence.events.slice(-3)).toEqual(['read:0:start', 'read:0:end', 'dispose']);
+    expect(store.storedBytes).toBe(0);
+  });
+
+  it('waits for an in-flight pending retry and prevents post-dispose publication', async () => {
+    const persistence = new FakePersistence();
+    persistence.failWriteOnce = true;
+    const store = new QueryPageStore({ persistence });
+    await expect(store.put(0, 0, tableFromArrays({ value: [51] }))).rejects.toThrow(
+      'RESULT_SPILL_QUOTA_EXCEEDED',
+    );
+    const write = deferred();
+    persistence.writeGate = write.promise;
+
+    const retrying = store.retryPending();
+    const disposing = store.dispose();
+    write.resolve();
+
+    await expect(retrying).rejects.toThrow('Query page store is disposed.');
+    await disposing;
+    expect(persistence.events.slice(-3)).toEqual(['write:0:start', 'write:0:end', 'dispose']);
+    expect(store.storedBytes).toBe(0);
+  });
 });
 
 describe('OPFS query page persistence', () => {
@@ -204,6 +324,30 @@ describe('OPFS query page persistence', () => {
     expect(await persistence!.read(3)).toEqual(ipc);
   });
 
+  it('aborts a rejected writer, preserves its quota error, and retries the exact bytes', async () => {
+    const root = new FakeDirectoryHandle();
+    stubOpfs(root);
+    const persistence = await createOpfsQueryPagePersistence(8);
+    const generation = root.directories.get('byteql-results')!.directories.get('8')!;
+    const file = await generation.getFileHandle('2.arrow', { create: true });
+    const quotaError = new DOMException('quota exceeded', 'QuotaExceededError');
+    file.writeErrorOnce = quotaError;
+    const ipc = new Uint8Array([2, 4, 6, 8]);
+
+    await expect(persistence!.write(2, ipc)).rejects.toBe(quotaError);
+
+    expect(file.writers[0]!.writes).toEqual([ipc]);
+    expect(file.writers[0]!.abortReasons).toEqual([quotaError]);
+    expect(file.writers[0]!.closeCalls).toBe(0);
+
+    await persistence!.write(2, ipc);
+
+    expect(file.writers[1]!.writes).toEqual([ipc]);
+    expect(file.writers[1]!.abortReasons).toEqual([]);
+    expect(file.writers[1]!.closeCalls).toBe(1);
+    expect(await persistence!.read(2)).toEqual(ipc);
+  });
+
   it('deletes only its generated query generation recursively', async () => {
     const root = new FakeDirectoryHandle();
     stubOpfs(root);
@@ -215,6 +359,21 @@ describe('OPFS query page persistence', () => {
 
     expect(resultRoot.removeCalls).toEqual([{ name: '11', recursive: true }]);
     expect(resultRoot.directories.has('11')).toBe(false);
+  });
+
+  it('surfaces generation cleanup failures but tolerates a concurrently absent generation', async () => {
+    const root = new FakeDirectoryHandle();
+    stubOpfs(root);
+    const persistence = await createOpfsQueryPagePersistence(12);
+    const resultRoot = root.directories.get('byteql-results')!;
+    const cleanupError = new DOMException('cleanup denied', 'NotAllowedError');
+    resultRoot.removeError = cleanupError;
+
+    await expect(persistence!.dispose()).rejects.toBe(cleanupError);
+    expect(resultRoot.directories.has('12')).toBe(true);
+
+    resultRoot.removeError = new DOMException('already removed', 'NotFoundError');
+    await expect(persistence!.dispose()).resolves.toBeUndefined();
   });
 
   it('sweeps query generations on reload without touching unrelated OPFS paths', async () => {

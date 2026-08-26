@@ -49,6 +49,9 @@ type IterableDirectoryHandle = FileSystemDirectoryHandle & {
 
 const opfsAvailable = (): boolean => typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory;
 
+const isNotFoundError = (error: unknown): boolean =>
+  (error instanceof Error ? error.name : (error as { name?: unknown } | null)?.name) === 'NotFoundError';
+
 const assertGeneratedNumber = (value: number, label: string): void => {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`${label} must be a non-negative safe integer.`);
@@ -74,6 +77,7 @@ export class QueryPageStore {
   private readonly pages = new Map<number, PageMetadata>();
   private readonly decoded = new Map<number, CachedPage>();
   private readonly pinned = new Set<number>();
+  private readonly inFlight = new Set<Promise<unknown>>();
   private decodedBytes = 0;
   private totalStoredBytes = 0;
   private pending: PendingPage | null = null;
@@ -96,84 +100,90 @@ export class QueryPageStore {
     return this.totalStoredBytes;
   }
 
-  async put(index: number, startRow: number, table: Table): Promise<StoredQueryPage> {
-    this.assertOpen();
-    assertGeneratedNumber(index, 'Page index');
-    assertGeneratedNumber(startRow, 'Page start row');
-    if (this.pending) {
-      throw new Error('A query result page write is pending retry.');
-    }
-    if (this.pages.has(index)) {
-      throw new Error(`Query result page ${index} is already stored.`);
-    }
-
-    const ipc = tableToIPC(table, 'stream');
-    const metadata: PageMetadata = {
-      index,
-      startRow,
-      rowCount: table.numRows,
-      ipcBytes: ipc.byteLength,
-    };
-
-    if (!this.persistence && this.totalStoredBytes + ipc.byteLength > this.memoryLimitBytes) {
-      throw spillUnsupported();
-    }
-
-    if (this.persistence) {
-      try {
-        await this.persistence.write(index, ipc);
-      } catch (error) {
-        if (!isQuotaError(error)) throw error;
-        this.pending = { metadata, ipc, table };
-        throw quotaExceeded(error);
+  put(index: number, startRow: number, table: Table): Promise<StoredQueryPage> {
+    return this.runOperation(async () => {
+      assertGeneratedNumber(index, 'Page index');
+      assertGeneratedNumber(startRow, 'Page start row');
+      if (this.pending) {
+        throw new Error('A query result page write is pending retry.');
       }
-    }
+      if (this.pages.has(index)) {
+        throw new Error(`Query result page ${index} is already stored.`);
+      }
 
-    return this.accept(metadata, table);
+      const ipc = tableToIPC(table, 'stream');
+      const metadata: PageMetadata = {
+        index,
+        startRow,
+        rowCount: table.numRows,
+        ipcBytes: ipc.byteLength,
+      };
+
+      if (!this.persistence && this.totalStoredBytes + ipc.byteLength > this.memoryLimitBytes) {
+        throw spillUnsupported();
+      }
+
+      if (this.persistence) {
+        try {
+          await this.persistence.write(index, ipc);
+        } catch (error) {
+          if (!isQuotaError(error)) throw error;
+          if (!this.disposed) this.pending = { metadata, ipc, table };
+          throw quotaExceeded(error);
+        }
+        this.assertOpen();
+      }
+
+      return this.accept(metadata, table);
+    });
   }
 
-  async retryPending(): Promise<StoredQueryPage> {
-    this.assertOpen();
-    const pending = this.pending;
-    if (!pending) {
-      throw new Error('No query result page write is pending retry.');
-    }
-    if (!this.persistence) {
-      throw spillUnsupported();
-    }
+  retryPending(): Promise<StoredQueryPage> {
+    return this.runOperation(async () => {
+      const pending = this.pending;
+      if (!pending) {
+        throw new Error('No query result page write is pending retry.');
+      }
+      if (!this.persistence) {
+        throw spillUnsupported();
+      }
 
-    try {
-      await this.persistence.write(pending.metadata.index, pending.ipc);
-    } catch (error) {
-      if (isQuotaError(error)) throw quotaExceeded(error);
-      throw error;
-    }
+      try {
+        await this.persistence.write(pending.metadata.index, pending.ipc);
+      } catch (error) {
+        if (isQuotaError(error)) throw quotaExceeded(error);
+        throw error;
+      }
+      this.assertOpen();
 
-    this.pending = null;
-    return this.accept(pending.metadata, pending.table);
+      this.pending = null;
+      return this.accept(pending.metadata, pending.table);
+    });
   }
 
-  async get(index: number): Promise<StoredQueryPage> {
-    this.assertOpen();
-    const metadata = this.pages.get(index);
-    if (!metadata) {
-      throw new Error(`Query result page ${index} is not stored.`);
-    }
+  get(index: number): Promise<StoredQueryPage> {
+    return this.runOperation(async () => {
+      const metadata = this.pages.get(index);
+      if (!metadata) {
+        throw new Error(`Query result page ${index} is not stored.`);
+      }
 
-    const cached = this.decoded.get(index);
-    if (cached) {
-      this.decoded.delete(index);
-      this.decoded.set(index, cached);
-      return toStoredPage(metadata, cached.table);
-    }
+      const cached = this.decoded.get(index);
+      if (cached) {
+        this.decoded.delete(index);
+        this.decoded.set(index, cached);
+        return toStoredPage(metadata, cached.table);
+      }
 
-    if (!this.persistence) {
-      throw new Error(`Query result page ${index} is not available in memory.`);
-    }
+      if (!this.persistence) {
+        throw new Error(`Query result page ${index} is not available in memory.`);
+      }
 
-    const table = tableFromIPC(await this.persistence.read(index));
-    this.cache(metadata, table);
-    return toStoredPage(metadata, table);
+      const table = tableFromIPC(await this.persistence.read(index));
+      this.assertOpen();
+      this.cache(metadata, table);
+      return toStoredPage(metadata, table);
+    });
   }
 
   pin(indexes: readonly number[]): void {
@@ -194,30 +204,40 @@ export class QueryPageStore {
     this.complete = true;
   }
 
-  async materialize(maxBytes: number): Promise<Table | null> {
-    this.assertOpen();
-    if (!this.complete || this.totalStoredBytes > maxBytes || this.pages.size === 0) {
-      return null;
-    }
+  materialize(maxBytes: number): Promise<Table | null> {
+    return this.runOperation(async () => {
+      if (!this.complete || this.totalStoredBytes > maxBytes || this.pages.size === 0) {
+        return null;
+      }
 
-    const metadata = [...this.pages.values()].sort((left, right) => left.index - right.index);
-    const tables = await Promise.all(metadata.map(async ({ index }) => (await this.get(index)).table));
-    const [first, ...rest] = tables;
-    return first!.concat(...rest);
+      const metadata = [...this.pages.values()].sort((left, right) => left.index - right.index);
+      const tables = await Promise.all(metadata.map(async ({ index }) => (await this.get(index)).table));
+      this.assertOpen();
+      const [first, ...rest] = tables;
+      return first!.concat(...rest);
+    });
   }
 
   dispose(): Promise<void> {
     if (!this.disposePromise) {
       this.disposed = true;
-      this.pages.clear();
-      this.decoded.clear();
-      this.pinned.clear();
-      this.pending = null;
-      this.decodedBytes = 0;
-      this.totalStoredBytes = 0;
-      this.disposePromise = this.persistence?.dispose().catch(() => undefined) ?? Promise.resolve();
+      const inFlight = [...this.inFlight];
+      this.disposePromise = (async () => {
+        await Promise.allSettled(inFlight);
+        this.clearState();
+        await this.persistence?.dispose();
+      })();
     }
     return this.disposePromise;
+  }
+
+  private clearState(): void {
+    this.pages.clear();
+    this.decoded.clear();
+    this.pinned.clear();
+    this.pending = null;
+    this.decodedBytes = 0;
+    this.totalStoredBytes = 0;
   }
 
   private accept(metadata: PageMetadata, table: Table): StoredQueryPage {
@@ -253,6 +273,17 @@ export class QueryPageStore {
       throw new Error('Query page store is disposed.');
     }
   }
+
+  private runOperation<T>(operation: () => Promise<T>): Promise<T> {
+    this.assertOpen();
+    const promise = operation();
+    this.inFlight.add(promise);
+    void promise.then(
+      () => this.inFlight.delete(promise),
+      () => this.inFlight.delete(promise),
+    );
+    return promise;
+  }
 }
 
 class OpfsQueryPagePersistence implements QueryPagePersistence {
@@ -266,8 +297,17 @@ class OpfsQueryPagePersistence implements QueryPagePersistence {
     assertGeneratedNumber(index, 'Page index');
     const file = await this.generationRoot.getFileHandle(`${index}.arrow`, { create: true });
     const writable = await file.createWritable();
-    await writable.write(new Uint8Array(ipc));
-    await writable.close();
+    try {
+      await writable.write(new Uint8Array(ipc));
+      await writable.close();
+    } catch (error) {
+      try {
+        await writable.abort(error);
+      } catch {
+        // Preserve the primary write/close failure even if writer cleanup also fails.
+      }
+      throw error;
+    }
   }
 
   async read(index: number): Promise<Uint8Array> {
@@ -279,8 +319,9 @@ class OpfsQueryPagePersistence implements QueryPagePersistence {
   async dispose(): Promise<void> {
     try {
       await this.resultRoot.removeEntry(this.generation, { recursive: true });
-    } catch {
-      // Query scratch cleanup is best-effort and the generation may already be absent.
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+      // The generation was already removed concurrently.
     }
   }
 }
@@ -309,8 +350,9 @@ export const sweepQueryPageOrphans = async (): Promise<void> => {
   try {
     const root = await navigator.storage.getDirectory();
     resultRoot = await root.getDirectoryHandle(QUERY_RESULT_ROOT, { create: false });
-  } catch {
-    return;
+  } catch (error) {
+    if (isNotFoundError(error)) return;
+    throw error;
   }
 
   const generations: string[] = [];
@@ -324,8 +366,9 @@ export const sweepQueryPageOrphans = async (): Promise<void> => {
     generations.map(async (generation) => {
       try {
         await resultRoot.removeEntry(generation, { recursive: true });
-      } catch {
-        // Reload cleanup is best-effort and entries may be removed concurrently.
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+        // The generation was removed concurrently.
       }
     }),
   );
