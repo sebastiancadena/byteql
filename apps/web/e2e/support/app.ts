@@ -56,6 +56,14 @@ export async function waitForAppReady(page: Page): Promise<void> {
   await page.locator('[data-app-ready="true"]').waitFor();
 }
 
+export async function openMidiSample(page: Page): Promise<void> {
+  await page.goto('/');
+  await waitForAppReady(page);
+  await page.getByRole('button', { name: /Try sample/u }).click();
+  await page.getByRole('menuitem', { name: 'MIDI song (.mid)' }).click();
+  await expect(page.getByRole('button', { name: 'Browse events' })).toBeVisible();
+}
+
 export async function openFixture(page: Page, name: string): Promise<void> {
   await page.getByLabel('Open file').setInputFiles(fixturePath(name));
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();

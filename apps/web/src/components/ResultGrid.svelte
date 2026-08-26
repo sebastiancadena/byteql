@@ -13,7 +13,7 @@
   }
 
   let { table, selectedRow = null, hiddenPrefix = '_', onselect }: Props = $props();
-  let scrollElement: HTMLDivElement | null = null;
+  let scrollElement = $state<HTMLDivElement | null>(null);
   let showHidden = $state(false);
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: untrack(() => table.numRows),
@@ -38,6 +38,13 @@
   $effect(() => {
     const row = selectedRow;
     if (row !== null) untrack(() => $virtualizer.scrollToIndex(row, { align: 'auto' }));
+  });
+
+  $effect(() => {
+    const element = scrollElement;
+    const count = table.numRows;
+    if (!element || element.clientHeight === 0) return;
+    untrack(() => $virtualizer.setOptions({ count, getScrollElement: () => element }));
   });
 
   function valueAt(row: number, column: number): unknown {
