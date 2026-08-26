@@ -23,6 +23,9 @@ const issue: ParseIssue = {
 
 const result = { marker: 'local Arrow table' } as unknown as Table;
 const pagedTable = tableFromArrays({ value: Int32Array.from([0]) });
+const oversizedPagedTable = tableFromArrays({
+  value: Int32Array.from({ length: 16_385 }, (_, index) => index),
+});
 const pagedResult: PagedResultState = {
   generation: 1,
   schema: pagedTable.schema,
@@ -174,6 +177,24 @@ describe('reduceSession', () => {
     });
   });
 
+  it.each([
+    { case: 'negative window start', result: { ...pagedResult, windowStart: -1 } },
+    { case: 'window beyond loaded rows', result: { ...pagedResult, windowStart: 1_024 } },
+    {
+      case: 'window above the render cap',
+      result: { ...pagedResult, loadedRows: 16_385, window: oversizedPagedTable },
+    },
+  ] satisfies readonly { case: string; result: PagedResultState }[])(
+    'ignores a paged initial success with $case',
+    ({ result: invalidResult }) => {
+      const querying = { ...initialSessionState, phase: 'querying' as const, pagedResult };
+
+      expect(
+        Object.is(reduceSession(querying, { type: 'querySucceeded', result: invalidResult }), querying),
+      ).toBe(true);
+    },
+  );
+
   it('preserves global and byte selections when the paged window rebases', () => {
     const ready = {
       ...initialSessionState,
@@ -231,15 +252,12 @@ describe('reduceSession', () => {
 
   it('ignores paged window updates with invalid global bounds or an oversized window', () => {
     const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
-    const oversizedWindow = tableFromArrays({
-      value: Int32Array.from({ length: 16_385 }, (_, index) => index),
-    });
     const invalidResults: readonly PagedResultState[] = [
       { ...pagedResult, windowStart: -1 },
       { ...pagedResult, windowStart: 1_024 },
       { ...pagedResult, windowStart: 0.5 },
       { ...pagedResult, loadedRows: -1 },
-      { ...pagedResult, loadedRows: 16_385, window: oversizedWindow },
+      { ...pagedResult, loadedRows: 16_385, window: oversizedPagedTable },
     ];
 
     for (const invalidResult of invalidResults) {

@@ -192,6 +192,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
           byteSelection: null,
         };
       }
+      if (!isValidPagedWindow(event.result)) return state;
       return {
         ...state,
         phase: 'ready',
