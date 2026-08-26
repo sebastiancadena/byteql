@@ -195,8 +195,10 @@ describe('QueryPageStore', () => {
     await expect(store.put(0, 0, table)).rejects.toMatchObject({
       message: expect.stringContaining('RESULT_SPILL_QUOTA_EXCEEDED'),
     });
+    expect(store.hasPendingRetry).toBe(true);
     await store.retryPending();
 
+    expect(store.hasPendingRetry).toBe(false);
     expect((await store.get(0)).table.getChild('value')!.get(0)).toBe(7);
     expect(persistence.writes.map(({ index }) => index)).toEqual([0, 0]);
     expect(persistence.writes[1]!.ipc).toEqual(persistence.writes[0]!.ipc);
@@ -212,6 +214,7 @@ describe('QueryPageStore', () => {
       'RESULT_SPILL_UNSUPPORTED',
     );
 
+    expect(store.hasPendingRetry).toBe(false);
     expect((await store.get(0)).table.getChild('value')!.get(0)).toBe(1);
     expect(store.storedBytes).toBe(firstBytes);
   });

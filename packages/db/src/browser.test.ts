@@ -2,6 +2,7 @@ import type { TableSchema } from '@byteql/core';
 import { Table } from 'apache-arrow';
 import {
   Int32 as DuckdbInt32,
+  RecordBatchStreamWriter as DuckdbRecordBatchStreamWriter,
   Table as DuckdbTable,
   Utf8 as DuckdbUtf8,
   tableToIPC as duckdbTableToIPC,
@@ -71,7 +72,7 @@ vi.mock('./query-pages.js', async (importOriginal) => {
 });
 
 import { createBrowserDatabase } from './browser.js';
-import { createOpfsQueryPagePersistence, type QueryPagePersistence } from './query-pages.js';
+import { createOpfsQueryPagePersistence, QueryPageStore, type QueryPagePersistence } from './query-pages.js';
 import { deleteSpillChunks, deleteSpillGeneration } from './spill-files.js';
 
 const deleteSpillGenerationMock = vi.mocked(deleteSpillGeneration);
@@ -137,6 +138,7 @@ class FakeQueryPagePersistence implements QueryPagePersistence {
   readonly writes: number[] = [];
   readonly reads: number[] = [];
   failWriteOnce = false;
+  writeErrorOnce: unknown = null;
   disposeCalls = 0;
 
   async write(index: number, ipc: Uint8Array): Promise<void> {
@@ -144,6 +146,11 @@ class FakeQueryPagePersistence implements QueryPagePersistence {
     if (this.failWriteOnce) {
       this.failWriteOnce = false;
       throw new DOMException('quota exceeded', 'QuotaExceededError');
+    }
+    if (this.writeErrorOnce) {
+      const error = this.writeErrorOnce;
+      this.writeErrorOnce = null;
+      throw error;
     }
     this.files.set(index, ipc.slice());
   }
@@ -429,6 +436,118 @@ describe('createBrowserDatabase', () => {
     expect(persistence.writes).toEqual([0, 0]);
   });
 
+  it('terminalizes an iterator failure without losing already-published pages or reporting EOF', async () => {
+    const table = duckdbResultTable(40, 2);
+    const iterator = {
+      pulls: 0,
+      returnCalls: 0,
+      async next() {
+        this.pulls += 1;
+        if (this.pulls === 1) return { done: false as const, value: table.batches[0]! };
+        throw new Error('cursor exploded');
+      },
+      async return() {
+        this.returnCalls += 1;
+        return { done: true as const, value: undefined };
+      },
+    };
+    duckdbMocks.connection.send.mockResolvedValueOnce({
+      schema: table.schema,
+      [Symbol.asyncIterator]: () => iterator,
+    });
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select * from events');
+    await session.fetchNext(2);
+
+    await expect(session.fetchNext()).rejects.toThrow('cursor exploded');
+
+    expect(session.status()).toMatchObject({ loadedRows: 2, complete: false });
+    expect(Array.from((await session.readPage(0)).table.getChild('value')!.toArray())).toEqual([40, 41]);
+    await expect(session.fetchNext()).rejects.toThrow('terminal failure');
+    await expect(session.retryPending()).rejects.toThrow('terminal failure');
+    expect(iterator.pulls).toBe(2);
+    expect(iterator.returnCalls).toBe(1);
+    await session.dispose();
+    expect(iterator.returnCalls).toBe(1);
+    expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
+  });
+
+  it('terminalizes Arrow page-conversion failure and closes the remaining cursor once', async () => {
+    const table = duckdbResultTable(0, 1);
+    const iterator = {
+      returned: 0,
+      next: vi
+        .fn()
+        .mockResolvedValueOnce({ done: false as const, value: table.batches[0]! })
+        .mockResolvedValue({ done: true as const, value: undefined }),
+      async return() {
+        this.returned += 1;
+        return { done: true as const, value: undefined };
+      },
+    };
+    duckdbMocks.connection.send.mockResolvedValueOnce({
+      schema: table.schema,
+      [Symbol.asyncIterator]: () => iterator,
+    });
+    const originalWriteAll = DuckdbRecordBatchStreamWriter.writeAll;
+    let writes = 0;
+    const writer = vi.spyOn(DuckdbRecordBatchStreamWriter, 'writeAll').mockImplementation(((
+      input: DuckdbTable,
+    ) => {
+      writes += 1;
+      if (writes === 2) throw new Error('Arrow conversion failed');
+      return originalWriteAll.call(DuckdbRecordBatchStreamWriter, input);
+    }) as typeof DuckdbRecordBatchStreamWriter.writeAll);
+    const database = await createBrowserDatabase();
+
+    try {
+      const session = await database.startQuery('select * from events');
+      await expect(session.fetchNext(1)).rejects.toThrow('Arrow conversion failed');
+      await expect(session.fetchNext()).rejects.toThrow('terminal failure');
+      expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
+      expect(iterator.returned).toBe(1);
+      expect(session.status()).toMatchObject({ loadedRows: 0, complete: false });
+      await session.dispose();
+      expect(iterator.returned).toBe(1);
+    } finally {
+      writer.mockRestore();
+    }
+  });
+
+  it('terminalizes a non-quota persistence failure instead of exposing a false retry', async () => {
+    const persistence = new FakeQueryPagePersistence();
+    persistence.writeErrorOnce = new DOMException('write denied', 'NotAllowedError');
+    createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
+    duckdbMocks.connection.send.mockResolvedValueOnce(batchReader([duckdbResultTable(0, 1)]));
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select * from events');
+
+    await expect(session.fetchNext(1)).rejects.toThrow('write denied');
+
+    await expect(session.fetchNext()).rejects.toThrow('terminal failure');
+    await expect(session.retryPending()).rejects.toThrow('terminal failure');
+    expect(session.status()).toMatchObject({ loadedRows: 0, complete: false, storedBytes: 0 });
+    expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
+  });
+
+  it('terminalizes RESULT_SPILL_UNSUPPORTED without classifying it as retryable', async () => {
+    const put = vi
+      .spyOn(QueryPageStore.prototype, 'put')
+      .mockRejectedValueOnce(new Error('RESULT_SPILL_UNSUPPORTED: result is too large.'));
+    duckdbMocks.connection.send.mockResolvedValueOnce(batchReader([duckdbResultTable(0, 1)]));
+    const database = await createBrowserDatabase();
+
+    try {
+      const session = await database.startQuery('select * from events');
+      await expect(session.fetchNext(1)).rejects.toThrow('RESULT_SPILL_UNSUPPORTED');
+      await expect(session.fetchNext()).rejects.toThrow('terminal failure');
+      await expect(session.retryPending()).rejects.toThrow('terminal failure');
+      expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
+    } finally {
+      put.mockRestore();
+    }
+  });
+
   it('reads, pins, and materializes stored pages only after EOF', async () => {
     const persistence = new FakeQueryPagePersistence();
     createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
@@ -481,6 +600,86 @@ describe('createBrowserDatabase', () => {
     expect(persistence.disposeCalls).toBe(1);
   });
 
+  it('cancel closes demand, settles a blocked pull, returns the reader, and disposes scratch', async () => {
+    const persistence = new FakeQueryPagePersistence();
+    createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
+    const pullStarted = deferred<void>();
+    const cancelled = deferred<void>();
+    const table = duckdbResultTable(0, 1);
+    const iterator = {
+      returnCalls: 0,
+      async next() {
+        pullStarted.resolve();
+        await cancelled.promise;
+        throw new Error('query cancelled');
+      },
+      async return() {
+        this.returnCalls += 1;
+        return { done: true as const, value: undefined };
+      },
+    };
+    duckdbMocks.connection.send.mockResolvedValueOnce({
+      schema: table.schema,
+      [Symbol.asyncIterator]: () => iterator,
+    });
+    duckdbMocks.connection.cancelSent.mockImplementationOnce(async () => {
+      cancelled.resolve();
+      return true;
+    });
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select * from events');
+    const fetch = session.fetchNext();
+    await pullStarted.promise;
+
+    await expect(session.cancel()).resolves.toBe(true);
+
+    await expect(fetch).rejects.toThrow(/query cancelled|closed/u);
+    await expect(session.fetchNext()).rejects.toThrow('closed');
+    expect(iterator.returnCalls).toBe(1);
+    expect(persistence.disposeCalls).toBe(1);
+    expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
+  });
+
+  it('direct dispose cancels before waiting for a blocked pull and cannot hang on reader return', async () => {
+    const persistence = new FakeQueryPagePersistence();
+    createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
+    const pullStarted = deferred<void>();
+    const cancelled = deferred<void>();
+    const table = duckdbResultTable(0, 1);
+    const iterator = {
+      returnCalls: 0,
+      async next() {
+        pullStarted.resolve();
+        await cancelled.promise;
+        throw new Error('query cancelled');
+      },
+      async return() {
+        this.returnCalls += 1;
+        await cancelled.promise;
+        return { done: true as const, value: undefined };
+      },
+    };
+    duckdbMocks.connection.send.mockResolvedValueOnce({
+      schema: table.schema,
+      [Symbol.asyncIterator]: () => iterator,
+    });
+    duckdbMocks.connection.cancelSent.mockImplementationOnce(async () => {
+      cancelled.resolve();
+      return true;
+    });
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select * from events');
+    const fetch = session.fetchNext();
+    await pullStarted.promise;
+
+    const disposal = session.dispose();
+    await vi.waitFor(() => expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce());
+    await expect(fetch).rejects.toThrow(/query cancelled|closed/u);
+    await expect(disposal).resolves.toBeUndefined();
+    expect(iterator.returnCalls).toBe(1);
+    expect(persistence.disposeCalls).toBe(1);
+  });
+
   it('does not leak pages or counters between query sessions', async () => {
     duckdbMocks.connection.send
       .mockResolvedValueOnce(batchReader([duckdbResultTable(0, 2)]))
@@ -519,7 +718,7 @@ describe('createBrowserDatabase', () => {
     expect((await replacement.fetchNext(2))!.table.getChild('value')!.get(0)).toBe(5);
   });
 
-  it('disposes a session published while database disposal waits for query startup', async () => {
+  it('discards a session acquired while database disposal waits for query startup', async () => {
     const persistence = new FakeQueryPagePersistence();
     createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
     const validSchema = duckdbResultTable(0, 0).schema;
@@ -536,11 +735,11 @@ describe('createBrowserDatabase', () => {
     });
     database = await createBrowserDatabase();
 
-    const session = await database.startQuery('select during disposal');
+    const starting = database.startQuery('select during disposal');
+    await expect(starting).rejects.toThrow('Query result session is closed.');
     await disposal;
 
     expect(persistence.disposeCalls).toBe(1);
-    await expect(session.fetchNext()).rejects.toThrow('Query result session is closed.');
   });
 
   it('cancels and disposes an active query before opening an ingest session', async () => {
@@ -559,6 +758,38 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
     expect(persistence.disposeCalls).toBe(1);
     await expect(ingest.appendBatch('events', ipcBatch(1))).resolves.toBeUndefined();
+  });
+
+  it('records cancellation before a queued startQuery callback can execute', async () => {
+    const operation = deferred<void>();
+    duckdbMocks.database.collectFileStatistics.mockImplementationOnce(() => operation.promise);
+    const database = await createBrowserDatabase();
+    const blocking = database.collectFileStatistics('opfs://byteql-spill/1/packets/0.parquet', true);
+    await vi.waitFor(() => expect(duckdbMocks.database.collectFileStatistics).toHaveBeenCalledOnce());
+
+    const starting = database.startQuery('select never_started');
+    await expect(database.cancelQuery()).resolves.toBe(true);
+    operation.resolve();
+    await blocking;
+
+    await expect(starting).rejects.toThrow('closed');
+    expect(duckdbMocks.connection.send).not.toHaveBeenCalled();
+  });
+
+  it('records cancellation during async persistence setup and never starts SQL afterward', async () => {
+    const setup = deferred<QueryPagePersistence | null>();
+    const persistence = new FakeQueryPagePersistence();
+    createQueryPagePersistenceMock.mockImplementationOnce(() => setup.promise);
+    const database = await createBrowserDatabase();
+
+    const starting = database.startQuery('select never_started');
+    await vi.waitFor(() => expect(createQueryPagePersistenceMock).toHaveBeenCalledOnce());
+    await expect(database.cancelQuery()).resolves.toBe(true);
+    setup.resolve(persistence);
+
+    await expect(starting).rejects.toThrow('closed');
+    expect(duckdbMocks.connection.send).not.toHaveBeenCalled();
+    expect(persistence.disposeCalls).toBe(1);
   });
 
   describe('file statistics pass-through', () => {
@@ -641,9 +872,23 @@ describe('createBrowserDatabase', () => {
   });
 
   it('cancels without waiting behind the active query', async () => {
+    const persistence = new FakeQueryPagePersistence();
+    createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
     const database = await createBrowserDatabase();
     await database.initialize();
-    const pending = deferred<ReturnType<typeof batchReader>>();
+    const table = resultTable();
+    const iterator = {
+      returnCalls: 0,
+      async next() {
+        return { done: false as const, value: table.batches[0]! };
+      },
+      async return() {
+        this.returnCalls += 1;
+        return { done: true as const, value: undefined };
+      },
+    };
+    const reader = { schema: table.schema, [Symbol.asyncIterator]: () => iterator };
+    const pending = deferred<typeof reader>();
     duckdbMocks.connection.send.mockImplementationOnce(() => pending.promise);
 
     const query = database.startQuery('SELECT * FROM events;');
@@ -652,8 +897,10 @@ describe('createBrowserDatabase', () => {
     await expect(database.cancelQuery()).resolves.toBe(true);
     expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
 
-    pending.resolve(batchReader([resultTable()]));
-    await query;
+    pending.resolve(reader);
+    await expect(query).rejects.toThrow('Query result session is closed.');
+    expect(iterator.returnCalls).toBe(1);
+    expect(persistence.disposeCalls).toBe(1);
   });
 
   it('disposes safely once and rejects later operations', async () => {
@@ -699,7 +946,6 @@ describe('createBrowserDatabase', () => {
     const disposal = database.dispose();
 
     await vi.waitFor(() => expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce());
-    expect(duckdbMocks.connection.close).not.toHaveBeenCalled();
     await expect(query).rejects.toThrow(/query cancelled|closed/u);
     await disposal;
     expect(duckdbMocks.connection.close).toHaveBeenCalledOnce();

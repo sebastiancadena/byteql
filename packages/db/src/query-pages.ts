@@ -100,6 +100,11 @@ export class QueryPageStore {
     return this.totalStoredBytes;
   }
 
+  /** Whether the last failed put retained exact IPC bytes that retryPending can republish. */
+  get hasPendingRetry(): boolean {
+    return this.pending !== null;
+  }
+
   put(index: number, startRow: number, table: Table): Promise<StoredQueryPage> {
     return this.runOperation(async () => {
       assertGeneratedNumber(index, 'Page index');

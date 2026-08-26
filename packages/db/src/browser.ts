@@ -570,45 +570,45 @@ const convertDuckdbTable = async (
 
 class QuerySessionImpl implements QuerySession {
   readonly schema: Schema;
-  private readonly iterator: DuckdbQueryIterator;
   private readonly summaries: QueryPageSummary[] = [];
   private fetchTail: Promise<void> = Promise.resolve();
   private remainder: DuckdbRecordBatch | null = null;
   private loadedRows = 0;
   private complete = false;
   private elapsedMs = 0;
-  private pending = false;
   private pendingEof = false;
-  private closed = false;
-  private cancelPromise: Promise<boolean> | null = null;
+  private demandState: 'open' | 'retry' | 'terminal' | 'closing' | 'closed' = 'open';
+  private terminalCause: unknown = null;
+  private cancelSignalPromise: Promise<boolean> | null = null;
+  private readerReturnPromise: Promise<void> | null = null;
+  private closePromise: Promise<boolean> | null = null;
   private disposePromise: Promise<void> | null = null;
 
   private constructor(
     private readonly readerSchema: DuckdbSchema,
-    reader: DuckdbQueryReader,
+    private readonly iterator: DuckdbQueryIterator,
     private readonly store: QueryPageStore,
     private readonly startedAt: number,
     private readonly cancelCursor: () => Promise<boolean>,
     private readonly onDisposed: () => void,
     schema: Schema,
   ) {
-    this.iterator = reader[Symbol.asyncIterator]();
     this.schema = schema;
     this.elapsedMs = performance.now() - startedAt;
   }
 
   static async create(
-    reader: DuckdbQueryReader,
+    readerSchema: DuckdbSchema,
+    iterator: DuckdbQueryIterator,
     store: QueryPageStore,
     startedAt: number,
     cancelCursor: () => Promise<boolean>,
     onDisposed: () => void,
   ): Promise<QuerySessionImpl> {
-    const readerSchema = reader.schema;
     const schemaTable = await convertDuckdbTable(readerSchema, []);
     return new QuerySessionImpl(
       readerSchema,
-      reader,
+      iterator,
       store,
       startedAt,
       cancelCursor,
@@ -618,7 +618,7 @@ class QuerySessionImpl implements QuerySession {
   }
 
   status(): QueryStatus {
-    this.assertOpen();
+    this.assertReadable();
     return {
       loadedRows: this.loadedRows,
       complete: this.complete,
@@ -628,66 +628,71 @@ class QuerySessionImpl implements QuerySession {
   }
 
   pages(): readonly QueryPageSummary[] {
-    this.assertOpen();
+    this.assertReadable();
     return this.summaries.map((page) => ({ ...page }));
   }
 
   fetchNext(targetRows = QUERY_PAGE_ROWS): Promise<QueryPage | null> {
     return this.serializeFetch(async () => {
-      this.assertOpen();
+      this.assertDemandOpen();
       if (!Number.isSafeInteger(targetRows) || targetRows <= 0) {
         throw new RangeError('Query page target must be a positive safe integer.');
-      }
-      if (this.pending) {
-        throw new Error('A query result page write is pending retry.');
       }
       if (this.complete) return null;
 
       const batches: DuckdbRecordBatch[] = [];
       let rowCount = 0;
       let eof = false;
+      let failureNeedsCancellation = true;
 
-      while (rowCount < targetRows) {
-        let batch = this.remainder;
-        this.remainder = null;
-        if (!batch) {
-          const next = await this.iterator.next();
-          this.assertOpen();
-          if (next.done) {
-            eof = true;
-            break;
-          }
-          batch = next.value;
-        }
-
-        if (batch.numRows === 0) continue;
-        const needed = targetRows - rowCount;
-        if (batch.numRows > needed) {
-          batches.push(batch.slice(0, needed));
-          this.remainder = batch.slice(needed);
-          rowCount += needed;
-        } else {
-          batches.push(batch);
-          rowCount += batch.numRows;
-        }
-      }
-
-      if (rowCount === 0) {
-        if (eof) this.finish();
-        return null;
-      }
-
-      const table = await convertDuckdbTable(this.readerSchema, batches);
-      this.assertOpen();
       try {
+        while (rowCount < targetRows) {
+          let batch = this.remainder;
+          this.remainder = null;
+          if (!batch) {
+            failureNeedsCancellation = false;
+            const next = await this.iterator.next();
+            failureNeedsCancellation = true;
+            this.assertDemandOpen();
+            if (next.done) {
+              eof = true;
+              break;
+            }
+            batch = next.value;
+          }
+
+          if (batch.numRows === 0) continue;
+          const needed = targetRows - rowCount;
+          if (batch.numRows > needed) {
+            batches.push(batch.slice(0, needed));
+            this.remainder = batch.slice(needed);
+            rowCount += needed;
+          } else {
+            batches.push(batch);
+            rowCount += batch.numRows;
+          }
+        }
+
+        if (rowCount === 0) {
+          if (eof) this.finish();
+          return null;
+        }
+
+        const table = await convertDuckdbTable(this.readerSchema, batches);
+        this.assertDemandOpen();
         const stored = await this.store.put(this.summaries.length, this.loadedRows, table);
-        this.assertOpen();
+        this.assertDemandOpen();
         const page = this.publish(stored);
         if (eof) this.finish();
         return page;
       } catch (error) {
-        this.pending = true;
-        this.pendingEof = eof;
+        if (this.isClosing()) throw error;
+        if (this.store.hasPendingRetry) {
+          this.demandState = 'retry';
+          this.pendingEof = eof;
+          throw error;
+        }
+        await this.terminalize(error, failureNeedsCancellation);
         throw error;
       }
     });
@@ -695,67 +700,108 @@ class QuerySessionImpl implements QuerySession {
 
   retryPending(): Promise<QueryPage> {
     return this.serializeFetch(async () => {
-      this.assertOpen();
-      if (!this.pending) {
+      this.assertReadable();
+      if (this.demandState === 'terminal') throw this.terminalFailure();
+      if (this.demandState !== 'retry') {
         throw new Error('No query result page write is pending retry.');
       }
-      const stored = await this.store.retryPending();
-      this.assertOpen();
-      this.pending = false;
-      const page = this.publish(stored);
-      if (this.pendingEof) this.finish();
-      this.pendingEof = false;
-      return page;
+      try {
+        const stored = await this.store.retryPending();
+        this.assertReadable();
+        this.demandState = 'open';
+        const page = this.publish(stored);
+        if (this.pendingEof) this.finish();
+        this.pendingEof = false;
+        return page;
+      } catch (error) {
+        if (this.isClosing()) throw error;
+        if (!this.store.hasPendingRetry) {
+          await this.terminalize(error, true);
+        }
+        throw error;
+      }
     });
   }
 
   async readPage(index: number): Promise<QueryPage> {
-    this.assertOpen();
+    this.assertReadable();
     return queryPage(await this.store.get(index));
   }
 
   pinPages(indexes: readonly number[]): void {
-    this.assertOpen();
+    this.assertReadable();
     this.store.pin(indexes);
   }
 
   async materialize(maxBytes = QUERY_RESULT_MEMORY_BYTES): Promise<Table | null> {
-    this.assertOpen();
+    this.assertReadable();
     return this.store.materialize(maxBytes);
   }
 
   cancel(): Promise<boolean> {
-    if (this.cancelPromise) return this.cancelPromise;
-    this.assertOpen();
-    this.cancelPromise = this.cancelCursor();
-    return this.cancelPromise;
+    return this.close();
   }
 
   dispose(): Promise<void> {
     if (!this.disposePromise) {
-      this.closed = true;
-      this.disposePromise = (async () => {
-        const errors: unknown[] = [];
-        try {
-          await this.iterator.return?.();
-        } catch (error) {
-          errors.push(error);
-        }
-        await this.fetchTail;
-        try {
-          await this.store.dispose();
-        } catch (error) {
-          errors.push(error);
-        } finally {
-          this.onDisposed();
-        }
-        if (errors.length === 1) throw errors[0];
-        if (errors.length > 1) {
-          throw new AggregateError(errors, 'Failed to dispose the query result session.');
-        }
-      })();
+      this.disposePromise = this.close().then(() => undefined);
     }
     return this.disposePromise;
+  }
+
+  private close(): Promise<boolean> {
+    if (this.closePromise) return this.closePromise;
+    this.demandState = 'closing';
+    this.closePromise = (async () => {
+      const errors: unknown[] = [];
+      let cancelled = false;
+      try {
+        cancelled = await this.signalCancellation();
+      } catch (error) {
+        errors.push(error);
+      }
+      await this.fetchTail;
+      try {
+        await this.returnReader();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await this.store.dispose();
+      } catch (error) {
+        errors.push(error);
+      } finally {
+        this.demandState = 'closed';
+        this.onDisposed();
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, 'Failed to close the query result session.');
+      }
+      return cancelled;
+    })();
+    return this.closePromise;
+  }
+
+  private async terminalize(cause: unknown, cancel: boolean): Promise<void> {
+    if (this.demandState === 'terminal') return;
+    if (this.demandState === 'closing' || this.demandState === 'closed') return;
+    this.demandState = 'terminal';
+    this.terminalCause = cause;
+    if (cancel) await this.signalCancellation().catch(() => false);
+    await this.returnReader().catch(() => undefined);
+  }
+
+  private signalCancellation(): Promise<boolean> {
+    this.cancelSignalPromise ??= Promise.resolve().then(() => this.cancelCursor());
+    return this.cancelSignalPromise;
+  }
+
+  private returnReader(): Promise<void> {
+    this.readerReturnPromise ??= Promise.resolve()
+      .then(() => this.iterator.return?.())
+      .then(() => undefined);
+    return this.readerReturnPromise;
   }
 
   private serializeFetch<T>(operation: () => Promise<T>): Promise<T> {
@@ -781,11 +827,36 @@ class QuerySessionImpl implements QuerySession {
     this.elapsedMs = performance.now() - this.startedAt;
   }
 
-  private assertOpen(): void {
-    if (this.closed) {
+  private assertDemandOpen(): void {
+    this.assertReadable();
+    if (this.demandState === 'terminal') throw this.terminalFailure();
+    if (this.demandState === 'retry') {
+      throw new Error('A query result page write is pending retry.');
+    }
+  }
+
+  private assertReadable(): void {
+    if (this.demandState === 'closing' || this.demandState === 'closed') {
       throw new Error('Query result session is closed.');
     }
   }
+
+  private terminalFailure(): Error {
+    return new Error('Query result session cannot continue after a terminal failure.', {
+      cause: this.terminalCause,
+    });
+  }
+
+  private isClosing(): boolean {
+    return this.demandState === 'closing' || this.demandState === 'closed';
+  }
+}
+
+interface PendingQueryToken {
+  cancelRequested: boolean;
+  sendStarted: boolean;
+  connection: AsyncDuckDBConnection | null;
+  cancelSignalPromise: Promise<boolean> | null;
 }
 
 class BrowserDatabase implements ByteqlDatabase {
@@ -799,6 +870,7 @@ class BrowserDatabase implements ByteqlDatabase {
   private closePromise: Promise<void> | null = null;
   private terminatePromise: Promise<void> | null = null;
   private queryInFlight = false;
+  private pendingQuery: PendingQueryToken | null = null;
   private activeQuery: QuerySessionImpl | null = null;
   private queryGeneration = 0;
   private ingestStarting = false;
@@ -866,7 +938,9 @@ class BrowserDatabase implements ByteqlDatabase {
 
     this.ingestStarting = true;
     try {
-      if (this.queryInFlight && this.connection) {
+      if (this.pendingQuery) {
+        await this.cancelPendingQuery(this.pendingQuery);
+      } else if (this.queryInFlight && this.connection) {
         await this.connection.cancelSent();
       }
       await this.operationTail;
@@ -911,16 +985,33 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   startQuery(sql: string): Promise<QuerySession> {
-    return this.enqueue(async (connection) => {
+    if (this.disposeRequested) {
+      return Promise.reject(new Error('ByteQL database has been disposed.'));
+    }
+    if (this.pendingQuery) {
+      void this.cancelPendingQuery(this.pendingQuery).catch(() => false);
+    }
+    const token: PendingQueryToken = {
+      cancelRequested: false,
+      sendStarted: false,
+      connection: null,
+      cancelSignalPromise: null,
+    };
+    this.pendingQuery = token;
+
+    const result = this.enqueue(async (connection) => {
+      if (token.cancelRequested) throw new Error('Query result session is closed.');
       if (this.activeIngest || this.ingestStarting) {
         throw new Error('An ingest session is already open.');
       }
       await this.closeActiveQuery();
+      if (token.cancelRequested) throw new Error('Query result session is closed.');
 
       const startedAt = performance.now();
-      this.queryInFlight = true;
       let store: QueryPageStore | null = null;
       let cursorStarted = false;
+      let iterator: DuckdbQueryIterator | null = null;
+      let session: QuerySessionImpl | null = null;
       try {
         const persistence = await createOpfsQueryPagePersistence(this.queryGeneration++);
         if (this.disposeRequested) {
@@ -928,27 +1019,42 @@ class BrowserDatabase implements ByteqlDatabase {
           throw new Error('ByteQL database has been disposed.');
         }
         store = new QueryPageStore({ persistence });
+        if (token.cancelRequested) throw new Error('Query result session is closed.');
+        token.connection = connection;
+        token.sendStarted = true;
         const reader = await connection.send(sql);
         cursorStarted = true;
-        let session!: QuerySessionImpl;
+        iterator = reader[Symbol.asyncIterator]();
+        if (token.cancelRequested) throw new Error('Query result session is closed.');
         session = await QuerySessionImpl.create(
-          reader,
+          reader.schema,
+          iterator,
           store,
           startedAt,
-          () => connection.cancelSent(),
+          () => this.cancelPendingQuery(token),
           () => {
             if (this.activeQuery === session) this.activeQuery = null;
           },
         );
+        if (token.cancelRequested) {
+          await session.cancel();
+          throw new Error('Query result session is closed.');
+        }
         this.activeQuery = session;
         return session;
       } catch (error) {
-        if (cursorStarted) await connection.cancelSent().catch(() => false);
-        await store?.dispose().catch(() => undefined);
+        if (session) {
+          await session.cancel().catch(() => false);
+        } else {
+          if (cursorStarted) await this.cancelPendingQuery(token).catch(() => false);
+          await iterator?.return?.().catch(() => undefined);
+          await store?.dispose().catch(() => undefined);
+        }
         throw error;
-      } finally {
-        this.queryInFlight = false;
       }
+    });
+    return result.finally(() => {
+      if (this.pendingQuery === token) this.pendingQuery = null;
     });
   }
 
@@ -974,6 +1080,9 @@ class BrowserDatabase implements ByteqlDatabase {
     if (this.disposeRequested) {
       return false;
     }
+    if (this.pendingQuery) {
+      return this.cancelPendingQuery(this.pendingQuery);
+    }
     if (this.activeQuery) {
       return this.activeQuery.cancel();
     }
@@ -987,11 +1096,11 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   collectFileStatistics(path: string, enable: boolean): Promise<void> {
-    if (this.activeQuery || this.queryInFlight) {
+    if (this.pendingQuery || this.activeQuery || this.queryInFlight) {
       return Promise.reject(new Error('A query result session owns the database connection.'));
     }
     return this.enqueue(() => {
-      if (this.activeQuery || this.queryInFlight) {
+      if (this.pendingQuery || this.activeQuery || this.queryInFlight) {
         throw new Error('A query result session owns the database connection.');
       }
       return this.database.collectFileStatistics(path, enable);
@@ -999,11 +1108,11 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   exportFileStatistics(path: string): Promise<FileStatisticsSummary> {
-    if (this.activeQuery || this.queryInFlight) {
+    if (this.pendingQuery || this.activeQuery || this.queryInFlight) {
       return Promise.reject(new Error('A query result session owns the database connection.'));
     }
     return this.enqueue(async () => {
-      if (this.activeQuery || this.queryInFlight) {
+      if (this.pendingQuery || this.activeQuery || this.queryInFlight) {
         throw new Error('A query result session owns the database connection.');
       }
       const stats = await this.database.exportFileStatistics(path);
@@ -1033,7 +1142,13 @@ class BrowserDatabase implements ByteqlDatabase {
   private async disposeInternal(): Promise<void> {
     const errors: unknown[] = [];
 
-    if (this.activeQuery) {
+    if (this.pendingQuery) {
+      try {
+        await this.cancelPendingQuery(this.pendingQuery);
+      } catch (error) {
+        errors.push(error);
+      }
+    } else if (this.activeQuery) {
       try {
         await this.activeQuery.cancel();
       } catch (error) {
@@ -1095,25 +1210,14 @@ class BrowserDatabase implements ByteqlDatabase {
   private async closeActiveQuery(): Promise<void> {
     const session = this.activeQuery;
     if (!session) return;
+    await session.cancel();
+  }
 
-    let cancellationError: unknown;
-    try {
-      await session.cancel();
-    } catch (error) {
-      cancellationError = error;
-    }
-    try {
-      await session.dispose();
-    } catch (error) {
-      if (cancellationError !== undefined) {
-        throw new AggregateError(
-          [cancellationError, error],
-          'Failed to replace the active query result session.',
-        );
-      }
-      throw error;
-    }
-    if (cancellationError !== undefined) throw cancellationError;
+  private cancelPendingQuery(token: PendingQueryToken): Promise<boolean> {
+    token.cancelRequested = true;
+    if (!token.sendStarted || !token.connection) return Promise.resolve(true);
+    token.cancelSignalPromise ??= token.connection.cancelSent();
+    return token.cancelSignalPromise;
   }
 
   private enqueue<T>(operation: (connection: AsyncDuckDBConnection) => Promise<T>): Promise<T> {
