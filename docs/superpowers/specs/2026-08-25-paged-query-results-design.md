@@ -92,13 +92,20 @@ export interface QueryStatus {
   readonly loadedRows: number;
   readonly complete: boolean;
   readonly elapsedMs: number;
+  readonly storedBytes: number;
 }
+
+export type QueryPageSummary = Omit<QueryPage, 'table'>;
 
 export interface QuerySession {
   readonly schema: Schema;
   status(): QueryStatus;
+  pages(): readonly QueryPageSummary[];
   fetchNext(targetRows?: number): Promise<QueryPage | null>;
+  retryPending(): Promise<QueryPage>;
   readPage(index: number): Promise<QueryPage>;
+  pinPages(indexes: readonly number[]): void;
+  materialize(maxBytes?: number): Promise<Table | null>;
   cancel(): Promise<boolean>;
   dispose(): Promise<void>;
 }
@@ -173,8 +180,11 @@ export interface PagedResultState {
   readonly loadingMore: boolean;
   readonly windowStart: number;
   readonly window: Table;
+  /** Complete result for trusted viewers, or null while incomplete/above the 64 MiB budget. */
+  readonly completeTable: Table | null;
   readonly elapsedMs: number;
   readonly pageError: string | null;
+  readonly pageErrorRetryable: boolean;
 }
 ```
 
@@ -195,6 +205,11 @@ OPFS could not persist remains buffered inside the session, so an explicit retry
 same page rather than advancing or rereading the cursor. A DuckDB/Arrow cursor error is terminal
 for that result and requires rerunning the query. Cancellation does not relabel loaded rows as
 complete. New query/open/cancel/dispose paths close the live result session exactly once.
+
+Because the database has one query cursor, starting replacement SQL closes the old cursor before
+executing the new statement. If initial replacement execution fails, the prior result window stays
+visible. A prior incomplete result is then explicitly stopped (`Run the prior query again to load
+more rows`) rather than pretending its disposed cursor can continue.
 
 The controller exposes provenance by global result row. It resolves the owning page through the
 query session before reading `_src_file`, `_src_start`, and `_src_end`; grid row numbers and
@@ -244,10 +259,11 @@ over the decoded render window and is invalidated when that window changes; whil
 empty-byte-click copy says `No loaded result row covers this byte` rather than claiming no result
 row exists.
 
-Trusted viewers continue to receive a complete `Table`. They are enabled only when the query is
-complete and all pages fit the 64 MiB decoded budget; otherwise the viewer menu explains
-`Finish and narrow the result to use this viewer.` This prevents audio playback from silently
-using a partial result.
+Trusted viewers continue to receive a complete `Table` through `result.completeTable`. At EOF the
+controller calls `QuerySession.materialize(64 MiB)`, which returns `null` without decoding all
+pages when their recorded IPC sizes exceed that budget. Viewers are enabled only when this table
+exists; otherwise the viewer menu explains `Finish and narrow the result to use this viewer.` This
+prevents audio playback from silently using a partial result.
 
 ## Error handling and lifecycle
 
