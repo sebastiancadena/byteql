@@ -12,7 +12,9 @@ const windowRange = (
   maximumRows: number,
 ): { startRow: number; endRow: number } | null => {
   const totalRows = loadedRows(pages);
-  const capacity = Math.max(0, Math.floor(maximumRows));
+  const capacity = Number.isFinite(maximumRows)
+    ? Math.min(RESULT_WINDOW_ROWS, Math.max(0, Math.floor(maximumRows)))
+    : 0;
   if (totalRows === 0 || capacity === 0) return null;
 
   const anchor = Math.min(Math.max(0, Math.floor(anchorRow)), totalRows - 1);
@@ -30,7 +32,8 @@ export function pageIndexesForWindow(
   const range = windowRange(pages, anchorRow, maximumRows);
   if (range === null) return [];
 
-  return pages
+  return [...pages]
+    .sort((left, right) => left.startRow - right.startRow || left.index - right.index)
     .filter((page) => page.startRow < range.endRow && page.startRow + page.rowCount > range.startRow)
     .map((page) => page.index);
 }

@@ -31,6 +31,26 @@ describe('pageIndexesForWindow', () => {
     expect(pageIndexesForWindow(pageSummaries([8_192, 8_192, 8_192]), 99_999)).toEqual([1, 2]);
     expect(pageIndexesForWindow([], 0)).toEqual([]);
   });
+
+  it('caps an oversized caller maximum at 16,384 rows', () => {
+    const pages = pageSummaries([8_192, 8_192, 8_192]);
+
+    expect(pageIndexesForWindow(pages, 8_192, 1_000_000)).toEqual([0, 1]);
+  });
+
+  it('returns intersecting indexes in global page order for unordered summaries', () => {
+    const [first, second, third] = pageSummaries([4, 4, 4]);
+
+    expect(pageIndexesForWindow([third!, first!, second!], 6, 10)).toEqual([0, 1, 2]);
+  });
+
+  it('selects no pages for invalid or nonpositive caller maxima', () => {
+    const pages = pageSummaries([8]);
+
+    expect(pageIndexesForWindow(pages, 0, 0)).toEqual([]);
+    expect(pageIndexesForWindow(pages, 0, -1)).toEqual([]);
+    expect(pageIndexesForWindow(pages, 0, Number.NaN)).toEqual([]);
+  });
 });
 
 describe('assembleResultWindow', () => {
@@ -64,5 +84,26 @@ describe('assembleResultWindow', () => {
     expect(window.startRow).toBe(3);
     expect(window.table.numRows).toBe(0);
     expect(window.table.schema).toBe(source.table.schema);
+  });
+
+  it('preserves a multi-column Arrow schema across unordered page boundaries', () => {
+    const first: QueryPage = {
+      index: 0,
+      startRow: 0,
+      rowCount: 2,
+      table: tableFromArrays({ value: Int32Array.from([0, 1]), label: ['zero', 'one'] }),
+    };
+    const second: QueryPage = {
+      index: 1,
+      startRow: 2,
+      rowCount: 2,
+      table: tableFromArrays({ value: Int32Array.from([2, 3]), label: ['two', 'three'] }),
+    };
+
+    const window = assembleResultWindow([second, first], { startRow: 1, rowCount: 2 });
+
+    expect(window.table.schema.fields.map((field) => field.name)).toEqual(['value', 'label']);
+    expect(window.table.getChild('value')!.toArray()).toEqual(Int32Array.from([1, 2]));
+    expect(window.table.getChild('label')!.toArray()).toEqual(['one', 'two']);
   });
 });

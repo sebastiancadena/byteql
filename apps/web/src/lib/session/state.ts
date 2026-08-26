@@ -1,6 +1,8 @@
 import type { PackQuery, ParseIssue, ParseResult, TableOverview } from '@byteql/core';
 import type { Schema, Table } from 'apache-arrow';
 
+import { RESULT_WINDOW_ROWS } from './result-window.js';
+
 export type SessionPhase =
   'idle' | 'opening' | 'normalizing' | 'parsing' | 'projecting' | 'ready' | 'querying' | 'failed';
 
@@ -120,6 +122,20 @@ export const initialSessionState: SessionState = {
   byteSelection: null,
 };
 
+const isValidPagedWindow = (result: PagedResultState): boolean =>
+  Number.isSafeInteger(result.loadedRows) &&
+  result.loadedRows >= 0 &&
+  Number.isSafeInteger(result.windowStart) &&
+  result.windowStart >= 0 &&
+  result.window.numRows <= RESULT_WINDOW_ROWS &&
+  result.windowStart + result.window.numRows <= result.loadedRows;
+
+const isValidPagedUpdate = (current: PagedResultState, next: PagedResultState): boolean =>
+  next.generation === current.generation &&
+  next.loadedRows >= current.loadedRows &&
+  (!current.complete || next.complete) &&
+  isValidPagedWindow(next);
+
 export function reduceSession(state: SessionState, event: SessionEvent): SessionState {
   switch (event.type) {
     case 'opening':
@@ -185,7 +201,9 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         byteSelection: null,
       };
     case 'queryWindowUpdated':
-      return { ...state, pagedResult: event.result };
+      return state.pagedResult && isValidPagedUpdate(state.pagedResult, event.result)
+        ? { ...state, pagedResult: event.result }
+        : state;
     case 'queryPageFailed':
       return !state.pagedResult
         ? state

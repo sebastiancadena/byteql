@@ -193,6 +193,60 @@ describe('reduceSession', () => {
     expect(next.pagedResult).toMatchObject({ loadedRows: 9_216, windowStart: 1_024 });
   });
 
+  it('ignores paged window updates from a different query generation', () => {
+    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
+
+    for (const generation of [0, 2]) {
+      expect(
+        reduceSession(ready, {
+          type: 'queryWindowUpdated',
+          result: { ...pagedResult, generation },
+        }),
+      ).toBe(ready);
+    }
+  });
+
+  it('ignores paged window updates that decrease the loaded row count', () => {
+    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
+
+    expect(
+      reduceSession(ready, {
+        type: 'queryWindowUpdated',
+        result: { ...pagedResult, loadedRows: 1_023 },
+      }),
+    ).toBe(ready);
+  });
+
+  it('ignores paged window updates that regress a completed result', () => {
+    const completeResult = { ...pagedResult, complete: true };
+    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult: completeResult };
+
+    expect(
+      reduceSession(ready, {
+        type: 'queryWindowUpdated',
+        result: { ...completeResult, complete: false },
+      }),
+    ).toBe(ready);
+  });
+
+  it('ignores paged window updates with invalid global bounds or an oversized window', () => {
+    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
+    const oversizedWindow = tableFromArrays({
+      value: Int32Array.from({ length: 16_385 }, (_, index) => index),
+    });
+    const invalidResults: readonly PagedResultState[] = [
+      { ...pagedResult, windowStart: -1 },
+      { ...pagedResult, windowStart: 1_024 },
+      { ...pagedResult, windowStart: 0.5 },
+      { ...pagedResult, loadedRows: -1 },
+      { ...pagedResult, loadedRows: 16_385, window: oversizedWindow },
+    ];
+
+    for (const invalidResult of invalidResults) {
+      expect(reduceSession(ready, { type: 'queryWindowUpdated', result: invalidResult })).toBe(ready);
+    }
+  });
+
   it('records a retryable page failure without discarding loaded rows', () => {
     const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
 
