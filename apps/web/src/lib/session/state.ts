@@ -1,5 +1,5 @@
 import type { PackQuery, ParseIssue, ParseResult, TableOverview } from '@byteql/core';
-import type { Table } from 'apache-arrow';
+import type { Schema, Table } from 'apache-arrow';
 
 export type SessionPhase =
   'idle' | 'opening' | 'normalizing' | 'parsing' | 'projecting' | 'ready' | 'querying' | 'failed';
@@ -20,6 +20,25 @@ export interface SessionProgress {
   fileCount: number;
 }
 
+/**
+ * The query result shape consumed by the paged controller/grid migration. It coexists with the
+ * legacy `result` table temporarily, until both existing consumers can move atomically.
+ */
+export interface PagedResultState {
+  readonly generation: number;
+  readonly schema: Schema;
+  readonly loadedRows: number;
+  readonly complete: boolean;
+  readonly loadingMore: boolean;
+  readonly windowStart: number;
+  readonly window: Table;
+  /** Complete result for trusted viewers, or null while incomplete/above the 64 MiB budget. */
+  readonly completeTable: Table | null;
+  readonly elapsedMs: number;
+  readonly pageError: string | null;
+  readonly pageErrorRetryable: boolean;
+}
+
 export interface SessionState {
   phase: SessionPhase;
   source: { files: readonly SourceFile[]; totalSize: number } | null;
@@ -36,7 +55,11 @@ export interface SessionState {
   queries: readonly PackQuery[];
   capabilities: ParseResult['capabilities'] | null;
   sql: string;
+  /** @deprecated Legacy whole-result table retained until the controller/grid migration. */
   result: Table | null;
+  /** Additive paged result contract for the upcoming controller/grid migration. */
+  pagedResult?: PagedResultState | null;
+  /** @deprecated Legacy timing retained until the controller/grid migration. */
   queryElapsedMs: number | null;
   queryError: string | null;
   selectedRow: number | null;
@@ -68,6 +91,9 @@ export type SessionEvent =
     }
   | { type: 'queryStarted'; sql: string }
   | { type: 'querySucceeded'; result: Table; elapsedMs: number }
+  | { type: 'querySucceeded'; result: PagedResultState }
+  | { type: 'queryWindowUpdated'; result: PagedResultState }
+  | { type: 'queryPageFailed'; message: string; retryable: boolean }
   | { type: 'queryFailed'; message: string }
   | { type: 'rowSelected'; row: number | null }
   | { type: 'cancelled' }
@@ -86,6 +112,7 @@ export const initialSessionState: SessionState = {
   capabilities: null,
   sql: '',
   result: null,
+  pagedResult: null,
   queryElapsedMs: null,
   queryError: null,
   selectedRow: null,
@@ -138,15 +165,39 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         selectedRow: null,
       };
     case 'querySucceeded':
+      if ('elapsedMs' in event) {
+        return {
+          ...state,
+          phase: 'ready',
+          result: event.result,
+          queryElapsedMs: event.elapsedMs,
+          queryError: null,
+          selectedRow: null,
+          byteSelection: null,
+        };
+      }
       return {
         ...state,
         phase: 'ready',
-        result: event.result,
-        queryElapsedMs: event.elapsedMs,
+        pagedResult: event.result,
         queryError: null,
         selectedRow: null,
         byteSelection: null,
       };
+    case 'queryWindowUpdated':
+      return { ...state, pagedResult: event.result };
+    case 'queryPageFailed':
+      return !state.pagedResult
+        ? state
+        : {
+            ...state,
+            pagedResult: {
+              ...state.pagedResult,
+              loadingMore: false,
+              pageError: event.message,
+              pageErrorRetryable: event.retryable,
+            },
+          };
     case 'queryFailed':
       return {
         ...state,
@@ -156,7 +207,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         selectedRow: null,
       };
     case 'rowSelected':
-      return state.result === null ? state : { ...state, selectedRow: event.row };
+      return state.result === null && !state.pagedResult ? state : { ...state, selectedRow: event.row };
     case 'cancelled':
       return state.phase === 'querying'
         ? { ...state, phase: 'ready', queryElapsedMs: null, queryError: null }
@@ -172,6 +223,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         queries: [],
         capabilities: null,
         result: null,
+        pagedResult: null,
         queryElapsedMs: null,
         queryError: null,
         selectedRow: null,

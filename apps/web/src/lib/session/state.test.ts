@@ -1,8 +1,8 @@
 import type { PackQuery, ParseIssue, TableOverview } from '@byteql/core';
-import type { Table } from 'apache-arrow';
+import { tableFromArrays, type Table } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { initialSessionState, reduceSession } from './state.js';
+import { initialSessionState, reduceSession, type PagedResultState } from './state.js';
 
 const tables: readonly TableOverview[] = [{ name: 'events', rowCount: 1, columns: [] }];
 const format = { id: 'standard_midi_file', title: 'Standard MIDI file' };
@@ -22,6 +22,20 @@ const issue: ParseIssue = {
 };
 
 const result = { marker: 'local Arrow table' } as unknown as Table;
+const pagedTable = tableFromArrays({ value: Int32Array.from([0]) });
+const pagedResult: PagedResultState = {
+  generation: 1,
+  schema: pagedTable.schema,
+  loadedRows: 1_024,
+  complete: false,
+  loadingMore: false,
+  windowStart: 0,
+  window: pagedTable,
+  completeTable: null,
+  elapsedMs: 7,
+  pageError: null,
+  pageErrorRetryable: false,
+};
 
 describe('reduceSession', () => {
   it('advances through the file intake stages without exposing the source object', () => {
@@ -144,10 +158,81 @@ describe('reduceSession', () => {
     });
   });
 
+  it('publishes a paged initial result and clears byte selection', () => {
+    const querying = {
+      ...initialSessionState,
+      phase: 'querying' as const,
+      byteSelection: { file: 'a.pcap', start: 1, end: 2 },
+    };
+
+    expect(reduceSession(querying, { type: 'querySucceeded', result: pagedResult })).toMatchObject({
+      phase: 'ready',
+      pagedResult,
+      queryError: null,
+      selectedRow: null,
+      byteSelection: null,
+    });
+  });
+
+  it('preserves global and byte selections when the paged window rebases', () => {
+    const ready = {
+      ...initialSessionState,
+      phase: 'ready' as const,
+      pagedResult,
+      selectedRow: 9_000,
+      byteSelection: { file: 'a.pcap', start: 1, end: 2 },
+    };
+
+    const next = reduceSession(ready, {
+      type: 'queryWindowUpdated',
+      result: { ...pagedResult, loadedRows: 9_216, windowStart: 1_024, loadingMore: false },
+    });
+
+    expect(next.selectedRow).toBe(9_000);
+    expect(next.byteSelection).toEqual({ file: 'a.pcap', start: 1, end: 2 });
+    expect(next.pagedResult).toMatchObject({ loadedRows: 9_216, windowStart: 1_024 });
+  });
+
+  it('records a retryable page failure without discarding loaded rows', () => {
+    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
+
+    const next = reduceSession(ready, {
+      type: 'queryPageFailed',
+      message: 'Local result storage is full.',
+      retryable: true,
+    });
+
+    expect(next.pagedResult).toMatchObject({
+      loadedRows: 1_024,
+      loadingMore: false,
+      pageError: 'Local result storage is full.',
+      pageErrorRetryable: true,
+    });
+  });
+
+  it('accepts retry-start and EOF updates without changing the selected global row', () => {
+    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult, selectedRow: 1_023 };
+    const retrying = reduceSession(ready, {
+      type: 'queryWindowUpdated',
+      result: { ...pagedResult, loadingMore: true, pageError: null, pageErrorRetryable: false },
+    });
+    const completed = reduceSession(retrying, {
+      type: 'queryWindowUpdated',
+      result: { ...pagedResult, loadedRows: 1_024, complete: true, loadingMore: false },
+    });
+
+    expect(retrying.pagedResult).toMatchObject({ loadingMore: true, pageError: null });
+    expect(completed.pagedResult).toMatchObject({ complete: true, loadingMore: false });
+    expect(completed.selectedRow).toBe(1_023);
+  });
+
   it('returns to ready when a query is cancelled and to idle when intake is cancelled', () => {
     expect(
-      reduceSession({ ...initialSessionState, phase: 'querying', tables }, { type: 'cancelled' }),
-    ).toMatchObject({ phase: 'ready', tables });
+      reduceSession(
+        { ...initialSessionState, phase: 'querying', tables, pagedResult },
+        { type: 'cancelled' },
+      ),
+    ).toMatchObject({ phase: 'ready', tables, pagedResult: { complete: false, loadedRows: 1_024 } });
     expect(
       reduceSession(
         {
@@ -164,6 +249,11 @@ describe('reduceSession', () => {
   it('records row selection only for a current result', () => {
     expect(reduceSession({ ...initialSessionState, result }, { type: 'rowSelected', row: 4 })).toMatchObject({
       selectedRow: 4,
+    });
+    expect(
+      reduceSession({ ...initialSessionState, pagedResult }, { type: 'rowSelected', row: 1_023 }),
+    ).toMatchObject({
+      selectedRow: 1_023,
     });
     expect(reduceSession(initialSessionState, { type: 'rowSelected', row: 4 }).selectedRow).toBeNull();
   });
@@ -199,6 +289,7 @@ describe('reduceSession', () => {
       issues: [issue],
       sql: 'select * from events',
       result,
+      pagedResult,
       queryElapsedMs: 4,
       queryError: 'old error',
       selectedRow: 2,
@@ -217,6 +308,7 @@ describe('reduceSession', () => {
       openStartedAt: expect.any(Number),
     });
     expect(initialSessionState.capabilities).toBeNull();
+    expect(next.pagedResult).toBeNull();
   });
 });
 

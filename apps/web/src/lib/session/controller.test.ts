@@ -219,6 +219,9 @@ const fakeDatabase = (): { database: ByteqlDatabase; sessions: FakeIngestSession
       sessions.push(session);
       return session;
     }),
+    startQuery: vi.fn(async () => {
+      throw new Error('Paged query sessions are not exercised by this legacy controller fixture.');
+    }),
     query: vi.fn().mockResolvedValue({ table: queryTable(1), elapsedMs: 2 }),
     cancelQuery: vi.fn().mockResolvedValue(false),
     listTables: vi.fn().mockResolvedValue([]),
