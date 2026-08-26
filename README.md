@@ -43,37 +43,6 @@ semi-documented formats with hex↔SQL round-tripping.
 
 Full product requirements, roadmap, and risk analysis live in [PRD.md](PRD.md).
 
-## How I built ByteQL with Codex and GPT-5.6
-
-ByteQL started with my product thesis: analysts should be able to query binary evidence with SQL,
-trace every result back to its exact bytes, and do it without uploading the evidence or installing
-an untrusted binary. I made the defining product and engineering choices: the DFIR audience, the
-browser-only privacy boundary, SQL plus byte provenance, Arrow as the data spine, declarative
-format packs, and MIDI as the first end-to-end proof. Codex helped turn that thesis into a working
-product and repeatedly pushed the initial ideas into stronger, testable contracts.
-
-The collaboration was deliberate rather than a single generate-and-accept pass:
-
-| My decisions and review                                                                        | How Codex and GPT-5.6 accelerated the work                                                                                                                                                                                                                                | Evidence in the repository                                                                                                                                                                                                                                                       |
-| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Defined the problem, audience, differentiators, architecture, and acceptance metrics.          | GPT-5.6 Sol challenged the initial PRD through adversarial critique and failure-mode inversion, then helped translate it into bounded designs and executable plans.                                                                                                       | [PRD.md](PRD.md), [`docs/superpowers/specs/`](docs/superpowers/specs/), [`docs/superpowers/plans/`](docs/superpowers/plans/)                                                                                                                                                     |
-| Chose MIDI as the validating slice and retained final judgment over architecture and scope.    | Sol at high reasoning implemented the critical Phase 0 path across Kaitai parsing, provenance-aware projection, Arrow IPC, DuckDB-WASM, the Svelte workbench, and MIDI playback. I used medium reasoning for narrower, non-critical tasks once the contracts were stable. | [Phase 0 design](docs/superpowers/specs/2026-07-17-byteql-phase-0-design.md), [Phase 0 plan](docs/superpowers/plans/2026-07-17-byteql-phase-0.md), [`packages/formats/midi/`](packages/formats/midi/)                                                                            |
-| Made local-only operation a non-negotiable product constraint.                                 | Codex kept that constraint active across later work and turned it into enforcement: bundle audits, browser tests that assert zero off-origin requests, same-origin DuckDB extensions, and release checks that fail closed.                                                | [Privacy model](docs/privacy.md), [`check-bundle.mjs`](apps/web/scripts/check-bundle.mjs), [`privacy.spec.ts`](apps/web/e2e/privacy.spec.ts), [`verify-pages-artifact.test.ts`](apps/web/scripts/verify-pages-artifact.test.ts)                                                  |
-| Set the performance targets and decided which implementation trade-offs were acceptable.       | Codex built the benchmark harnesses, traced browser-only failures such as detached buffers and timer clamping, and recorded discoveries back into the design documents instead of letting the specification drift away from reality.                                      | [Scale design notes](docs/superpowers/specs/2026-07-19-phase1-scale-intake-design.md#implementation-notes-recorded-post-execution), [`scale-metrics.spec.ts`](apps/web/e2e/scale-metrics.spec.ts)                                                                                |
-| Directed the signature hex-to-grid interaction and approved the final Command Deck experience. | I returned to GPT-5.6 Sol for the UI/UX pass, demo use cases, and guarded `pnpm release:pages` path. It refined the rendered product and automated verification-before-publish while preserving accessibility, responsive behavior, and privacy gates.                    | [UI design](docs/superpowers/specs/2026-07-20-command-deck-ui-redesign-design.md), [`hex-provenance.spec.ts`](apps/web/e2e/hex-provenance.spec.ts), [`package.json`](package.json), [deployment design](docs/superpowers/specs/2026-07-20-cloudflare-pages-deployment-design.md) |
-
-The working loop was **brainstorm → approved design → implementation plan → test-first build →
-review → full verification**. Repository guidance in [AGENTS.md](AGENTS.md) kept architecture,
-privacy, and completion criteria in context between tasks. Codex did not choose what ByteQL should
-be; it made the product I chose feasible on a build-week timescale, carried decisions across a
-large codebase, and converted promises into tests. I reviewed the designs, resolved trade-offs,
-and treated every “done” claim as something the build, browser tests, or benchmarks had to prove.
-
-After the base architecture and first use case were operational, I also used other models and
-tools for supporting plugin work. GPT-5.6 Sol remained the primary collaborator for the core
-architecture and Phase 0 implementation, and returned for the final UI/UX, release automation,
-and example workflows.
-
 ## Architecture
 
 The pipeline, end to end:
