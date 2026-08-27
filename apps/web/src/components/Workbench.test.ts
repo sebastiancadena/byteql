@@ -961,6 +961,41 @@ describe('Inspector Workbench', () => {
     await vi.waitFor(() => expect(onloadmore).toHaveBeenCalledOnce());
   });
 
+  it('does not dispatch a queued demand after the result grid is replaced', async () => {
+    const queued = new Map<number, FrameRequestCallback>();
+    let nextHandle = 0;
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+      const handle = ++nextHandle;
+      queued.set(handle, callback);
+      return handle;
+    });
+    vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation((handle) => {
+      queued.delete(handle);
+    });
+
+    const oldLoadMore = vi.fn();
+    const first = render(
+      ResultGrid,
+      gridProps(tableFromArrays({ value: Int32Array.from({ length: 100 }, (_, i) => i) }), {
+        complete: false,
+        loadedRows: 100,
+        onloadmore: oldLoadMore,
+      }),
+    );
+    for (const initialCallback of queued.values()) initialCallback(0);
+    queued.clear();
+    const scroll = first.container.querySelector('.grid-scroll') as HTMLElement;
+    scroll.scrollTop = 92 * 36;
+    await fireEvent.scroll(scroll);
+    expect(queued.size).toBeGreaterThan(0);
+
+    first.unmount();
+    for (const staleCallback of queued.values()) staleCallback(0);
+
+    expect(oldLoadMore).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
   it('requests the prior global row when an evicted window reaches its head', async () => {
     const table = tableFromArrays({ value: Int32Array.from({ length: 100 }, (_, i) => i) });
     const onloadwindow = vi.fn();

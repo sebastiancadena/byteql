@@ -125,9 +125,11 @@
       scrollElement && scrollElement.clientHeight > 0
         ? visibleResultRange(scrollElement.scrollTop, scrollElement.clientHeight, table.numRows)
         : null;
+    const firstVisible = physicalRange?.firstVisible ?? first.index;
+    const lastVisible = physicalRange?.lastVisible ?? last.index;
     const direction = resultDemand({
-      firstVisible: physicalRange?.firstVisible ?? first.index,
-      lastVisible: physicalRange?.lastVisible ?? last.index,
+      firstVisible,
+      lastVisible,
       windowStart,
       windowRows: table.numRows,
       loadedRows,
@@ -137,7 +139,7 @@
       demandGuard = null;
       return;
     }
-    const key = `${direction}:${windowStart + first.index}:${windowStart + last.index}`;
+    const key = `${direction}:${windowStart + firstVisible}:${windowStart + lastVisible}`;
     if (demandGuard === key) return;
     demandGuard = key;
     if (direction === 'forward') onloadmore();
@@ -155,6 +157,13 @@
       inspectDemand();
     });
   }
+
+  $effect(() => {
+    return () => {
+      if (demandFrame !== null) globalThis.cancelAnimationFrame(demandFrame);
+      demandFrame = null;
+    };
+  });
 
   $effect(() => {
     $virtualizer.getVirtualItems();

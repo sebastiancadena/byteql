@@ -47,10 +47,18 @@ test('seamless demand reaches row one million with bounded geometry', async ({ p
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   });
   await expect(page.getByRole('row', { name: 'Row 1000000', exact: true })).toBeVisible();
+  await expect(page.getByRole('row', { name: 'Row 1000000', exact: true }).getByRole('gridcell')).toHaveText(
+    '999999',
+  );
 
   const metrics = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  expect(metrics).toMatchObject({
+    loadedRows: 1_000_000,
+    complete: true,
+    windowStart: 983_616,
+    sendCount: 1,
+  });
   expect(metrics.windowRows).toBeLessThanOrEqual(16_384);
-  expect(metrics.sendCount).toBe(1);
   expect(metrics.decodedBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
   expect(await page.locator('.grid-virtual-space').evaluate((node) => node.scrollHeight)).toBeLessThanOrEqual(
     16_384 * 36,
