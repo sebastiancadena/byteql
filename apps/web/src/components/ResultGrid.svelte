@@ -167,11 +167,11 @@
 
   $effect(() => {
     $virtualizer.getVirtualItems();
-    windowStart;
-    loadedRows;
-    complete;
-    loadingMore;
-    pageError;
+    void windowStart;
+    void loadedRows;
+    void complete;
+    void loadingMore;
+    void pageError;
     scheduleDemandInspection();
   });
 
@@ -227,30 +227,31 @@
   aria-colcount={table.schema.fields.length}
   aria-busy={loadingMore}
 >
-  <div class="grid-header" role="row" style:grid-template-columns={gridColumns}>
-    {#each columns as { field, index } (field.name)}
-      <div
-        role="columnheader"
-        aria-colindex={index + 1}
-        title={field.type.toString()}
-        class:cell-numeric={numeric(field.type.toString())}
-      >
-        <span>{field.name}</span>
-        <small>{field.type.toString()}</small>
-      </div>
-    {/each}
-    {#if hiddenCount > 0}
-      <button
-        class="hidden-chip"
-        type="button"
-        aria-label="Toggle hidden columns"
-        aria-pressed={showHidden}
-        onclick={() => (showHidden = !showHidden)}>{showHidden ? '− hide' : `+${hiddenCount} hidden`}</button
-      >
-    {/if}
-  </div>
-
   <div class="grid-scroll" bind:this={scrollElement} onscroll={inspectAfterScroll}>
+    <div class="grid-header" role="row" style:grid-template-columns={gridColumns}>
+      {#each columns as { field, index } (field.name)}
+        <div
+          role="columnheader"
+          aria-colindex={index + 1}
+          title={field.type.toString()}
+          class:cell-numeric={numeric(field.type.toString())}
+        >
+          <span>{field.name}</span>
+          <small>{field.type.toString()}</small>
+        </div>
+      {/each}
+      {#if hiddenCount > 0}
+        <button
+          class="hidden-chip"
+          type="button"
+          aria-label="Toggle hidden columns"
+          aria-pressed={showHidden}
+          onclick={() => (showHidden = !showHidden)}
+          >{showHidden ? '− hide' : `+${hiddenCount} hidden`}</button
+        >
+      {/if}
+    </div>
+
     <div class="grid-virtual-space" style:height={`${$virtualizer.getTotalSize()}px`}>
       {#each $virtualizer.getVirtualItems() as virtualRow (windowStart + virtualRow.index)}
         {@const globalRow = windowStart + virtualRow.index}

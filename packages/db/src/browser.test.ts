@@ -752,7 +752,6 @@ describe('createBrowserDatabase', () => {
     createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
     const validSchema = duckdbResultTable(0, 0).schema;
     let disposal!: Promise<void>;
-    let database!: Awaited<ReturnType<typeof createBrowserDatabase>>;
     duckdbMocks.connection.send.mockResolvedValueOnce({
       schema: validSchema,
       [Symbol.asyncIterator]() {
@@ -762,7 +761,7 @@ describe('createBrowserDatabase', () => {
         })();
       },
     });
-    database = await createBrowserDatabase();
+    const database = await createBrowserDatabase();
 
     const starting = database.startQuery('select during disposal');
     await expect(starting).rejects.toThrow('Query result session is closed.');

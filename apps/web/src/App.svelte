@@ -12,7 +12,7 @@
   const e2eHarness = __BYTEQL_E2E__ ? createBrowserE2EHarness() : null;
   if (e2eHarness) {
     globalThis.__byteqlE2E = e2eHarness.control;
-    window.__BYTEQL_E2E__ = e2eHarness.control;
+    globalThis.window.__BYTEQL_E2E__ = e2eHarness.control;
   }
 
   let controller = $state<SessionController | null>(null);

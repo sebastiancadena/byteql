@@ -119,13 +119,17 @@ class FakeController {
   listeners = new Set<(state: SessionState) => void>();
   openFile = vi.fn(async () => undefined);
   openFiles = vi.fn(async () => undefined);
-  openSample = vi.fn(async (_id: string) => undefined);
+  openSample = vi.fn(async (id: string) => {
+    void id;
+  });
   runQuery = vi.fn(async (sql: string) => {
     this.publish({ ...this.state, sql });
   });
   cancel = vi.fn(async () => undefined);
   loadMoreResults = vi.fn(async () => undefined);
-  loadResultWindow = vi.fn(async (_globalRow: number) => undefined);
+  loadResultWindow = vi.fn(async (globalRow: number) => {
+    void globalRow;
+  });
   retryResultPage = vi.fn(async () => undefined);
   selectResultRow = vi.fn((row: number | null) => {
     this.publish({ ...this.state, selectedRow: row });

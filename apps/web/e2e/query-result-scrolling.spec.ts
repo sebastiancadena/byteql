@@ -16,6 +16,48 @@ test('physical scrolling reaches the last row of a 300-row result', async ({ pag
   await expect(page.getByRole('row', { name: 'Row 300', exact: true })).toBeVisible();
 });
 
+test('wide results use one two-axis scroller for the header and rows', async ({ page }) => {
+  await openMidiSample(page);
+  const editor = page.getByRole('textbox', { name: 'SQL query' });
+  await expect(editor).toHaveAttribute('contenteditable', 'true');
+  await editor.fill(
+    'select i as alpha, i as bravo, i as charlie, i as delta, i as echo, ' +
+      'i as foxtrot, i as golf, i as hotel, i as india, i as juliet from range(300) t(i)',
+  );
+  await page.getByRole('button', { name: 'Run query' }).click();
+  await expect(page.locator('.results-heading-meta').getByText('300 rows', { exact: true })).toBeVisible();
+
+  const grid = page.getByRole('grid', { name: 'Query results' });
+  const scroll = page.locator('.grid-scroll');
+  const geometry = await page.evaluate(() => {
+    const gridElement = document.querySelector<HTMLElement>('.result-grid')!;
+    const scrollElement = document.querySelector<HTMLElement>('.grid-scroll')!;
+    return {
+      gridClientWidth: gridElement.clientWidth,
+      gridScrollWidth: gridElement.scrollWidth,
+      scrollClientWidth: scrollElement.clientWidth,
+      scrollWidth: scrollElement.scrollWidth,
+      scrollClientHeight: scrollElement.clientHeight,
+      scrollHeight: scrollElement.scrollHeight,
+    };
+  });
+
+  expect(geometry.gridScrollWidth).toBe(geometry.gridClientWidth);
+  expect(geometry.scrollWidth).toBeGreaterThan(geometry.scrollClientWidth);
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.scrollClientHeight);
+
+  const firstHeader = page.getByRole('columnheader', { name: /alpha/u });
+  const headerX = (await firstHeader.boundingBox())!.x;
+  await scroll.evaluate((node) => {
+    node.scrollLeft = 400;
+    node.dispatchEvent(new Event('scroll'));
+  });
+
+  await expect.poll(() => scroll.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
+  expect((await firstHeader.boundingBox())!.x).toBeLessThan(headerX);
+  await expect(grid).toBeVisible();
+});
+
 test('seamless demand reaches row one million with bounded geometry', async ({ page }) => {
   await openMidiSample(page);
   const editor = page.getByRole('textbox', { name: 'SQL query' });

@@ -549,7 +549,6 @@ class IngestSessionImpl implements IngestSession {
   }
 }
 
-type DuckdbQueryReader = Awaited<ReturnType<AsyncDuckDBConnection['send']>>;
 type DuckdbQueryIterator = AsyncIterator<DuckdbRecordBatch>;
 
 const queryPage = (page: StoredQueryPage): QueryPage => ({
