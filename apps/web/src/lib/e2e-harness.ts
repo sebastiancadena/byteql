@@ -62,10 +62,10 @@ export interface BrowserE2EControl {
    * bytes instead — both are meaningful denominators).
    */
   readStats(): Promise<ReadStats>;
-  queryResultMetrics(): QueryResultMetrics;
+  queryResultMetrics(): Promise<QueryResultMetrics>;
   drainQueryResult(): Promise<void>;
   loadResultWindow(globalRow: number): Promise<void>;
-  resultOpfsPaths(): Promise<readonly string[]>;
+  seedResultPageOrphan(): Promise<{ orphanPath: string; unrelatedPath: string }>;
 }
 
 export interface QueryResultMetrics extends QueryResultDiagnostics {
@@ -183,7 +183,6 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
   let liveDatabase: ByteqlDatabase | null = null;
   let queryController: QueryResultController | null = null;
   let readStatsTargets: readonly string[] = [];
-  let resultOpfsPaths: readonly string[] = [];
   const audioStats: AudioStats = { loadCalls: 0, disposeCalls: 0, loadedRows: 0 };
 
   const createWorker = (): WorkerPort => {
@@ -263,7 +262,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
         const spillBytes = sizes.reduce((sum, size) => sum + size, 0);
         return { totalBytesRead, spillBytes };
       },
-      queryResultMetrics() {
+      async queryResultMetrics() {
         const metrics = queryController?.queryResultDiagnostics() ?? {
           loadedRows: 0,
           complete: false,
@@ -272,7 +271,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
           sendCount: 0,
           decodedBytes: 0,
         };
-        return { ...metrics, resultOpfsPaths };
+        return { ...metrics, resultOpfsPaths: await collectOpfsFiles(RESULT_ROOT_NAME) };
       },
       async drainQueryResult() {
         await queryController?.drainQueryResult();
@@ -280,9 +279,25 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       async loadResultWindow(globalRow) {
         await queryController?.loadResultWindow(globalRow);
       },
-      async resultOpfsPaths() {
-        resultOpfsPaths = await collectOpfsFiles(RESULT_ROOT_NAME);
-        return resultOpfsPaths;
+      async seedResultPageOrphan() {
+        const root = await navigator.storage.getDirectory();
+        const results = await root.getDirectoryHandle(RESULT_ROOT_NAME, { create: true });
+        const generation = '777';
+        const orphan = await results.getDirectoryHandle(generation, { create: true });
+        const orphanFile = await orphan.getFileHandle('0.arrow', { create: true });
+        const orphanWriter = await orphanFile.createWritable();
+        await orphanWriter.write(new Uint8Array([66, 89, 84, 69, 81, 76]));
+        await orphanWriter.close();
+
+        const unrelated = await results.getDirectoryHandle('manual-notes', { create: true });
+        const unrelatedFile = await unrelated.getFileHandle('keep.txt', { create: true });
+        const unrelatedWriter = await unrelatedFile.createWritable();
+        await unrelatedWriter.write('keep');
+        await unrelatedWriter.close();
+        return {
+          orphanPath: `${RESULT_ROOT_NAME}/${generation}/0.arrow`,
+          unrelatedPath: `${RESULT_ROOT_NAME}/manual-notes/keep.txt`,
+        };
       },
     },
     createParser: () => new ParseWorkerClient(createWorker),

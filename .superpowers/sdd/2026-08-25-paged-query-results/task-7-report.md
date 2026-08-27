@@ -56,3 +56,24 @@ methods; it does not provide a second query-loading path.
 Chromium e2e was available and used directly. Vite emits its existing chunk-size advisory and
 Node emits the existing `NO_COLOR`/`FORCE_COLOR` advisory while Playwright starts; neither caused
 a test failure. No environment limitation blocked this task.
+
+## Review round 1 remediation
+
+- The send metric is no longer a literal. `PendingQueryToken.sendCount` increments immediately
+  after the real `connection.send(sql)` resolves, and `QuerySession.status()` reads that token.
+  The DB multi-page test now asserts `sendCount === 1` before and after a second page fetch while
+  also asserting DuckDB's `send` mock was called exactly once. The browser test checks the same
+  value after wheel demand, full drain, and backward window hydration.
+- `queryResultMetrics()` is now asynchronous and enumerates `byteql-results/` for every call;
+  there is no cached path priming or ordering dependency. The privacy test uses this same single
+  diagnostic call.
+- Replacement coverage captures the incomplete generation's exact paths, waits for the replacement
+  generation, requires its one expected page, and asserts no previous path survives.
+- Reload coverage seeds `byteql-results/777/0.arrow` and an adjacent non-generated
+  `byteql-results/manual-notes/keep.txt` through an e2e-only OPFS fixture. A reload must remove
+  the exact numeric orphan while preserving the manual entry.
+- RED: before this remediation, the revised focused spec saw empty cached metric paths and lacked
+  `seedResultPageOrphan`; 3 of 4 scrolling tests failed. GREEN:
+  `pnpm --filter @byteql/db test -- --run` passed 100 tests and
+  `pnpm --filter @byteql/web test:e2e -- query-result-scrolling.spec.ts privacy.spec.ts` passed
+  5 Chromium tests in 14.1 s.

@@ -88,8 +88,6 @@ export class SessionController {
   private readonly sampleCache = new Map<string, Uint8Array>();
   private sessionGeneration = 0;
   private queryGeneration = 0;
-  /** Cursor sends for the currently displayed query; a paged demand must never add another. */
-  private querySendCount = 0;
   private activeQuery: QuerySession | null = null;
   private resultDemand: Promise<void> | null = null;
   private retainedBlobs = new Map<string, Blob>();
@@ -189,7 +187,6 @@ export class SessionController {
     }
     const session = this.sessionGeneration;
     const query = ++this.queryGeneration;
-    this.querySendCount = 0;
     this.dispatch({ type: 'queryStarted', sql });
     return this.executeQuery(sql, session, query);
   }
@@ -218,7 +215,7 @@ export class SessionController {
       complete: result?.complete ?? false,
       windowStart: result?.windowStart ?? 0,
       windowRows: result?.window.numRows ?? 0,
-      sendCount: status?.sendCount ?? this.querySendCount,
+      sendCount: status?.sendCount ?? 0,
       decodedBytes: status?.decodedBytes ?? 0,
     };
   }
@@ -565,7 +562,6 @@ export class SessionController {
         return;
       }
       this.activeQuery = active;
-      this.querySendCount += 1;
 
       await active.fetchNext(QUERY_INITIAL_ROWS);
       if (!this.isCurrentQuery(session, query) || this.activeQuery !== active) return;

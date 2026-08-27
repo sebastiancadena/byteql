@@ -590,6 +590,7 @@ class QuerySessionImpl implements QuerySession {
     private readonly startedAt: number,
     private readonly cancelCursor: () => Promise<boolean>,
     private readonly onDisposed: () => void,
+    private readonly sendCount: () => number,
     schema: Schema,
   ) {
     this.schema = schema;
@@ -603,6 +604,7 @@ class QuerySessionImpl implements QuerySession {
     startedAt: number,
     cancelCursor: () => Promise<boolean>,
     onDisposed: () => void,
+    sendCount: () => number,
   ): Promise<QuerySessionImpl> {
     const schemaTable = await convertDuckdbTable(readerSchema, []);
     return new QuerySessionImpl(
@@ -612,6 +614,7 @@ class QuerySessionImpl implements QuerySession {
       startedAt,
       cancelCursor,
       onDisposed,
+      sendCount,
       schemaTable.schema,
     );
   }
@@ -624,7 +627,7 @@ class QuerySessionImpl implements QuerySession {
       elapsedMs: this.elapsedMs,
       storedBytes: this.store.storedBytes,
       decodedBytes: this.store.cachedDecodedBytes,
-      sendCount: 1,
+      sendCount: this.sendCount(),
     };
   }
 
@@ -856,6 +859,7 @@ class QuerySessionImpl implements QuerySession {
 interface PendingQueryToken {
   cancelRequested: boolean;
   sendStarted: boolean;
+  sendCount: number;
   connection: AsyncDuckDBConnection | null;
   cancelSignalPromise: Promise<boolean> | null;
 }
@@ -992,6 +996,7 @@ class BrowserDatabase implements ByteqlDatabase {
     const token: PendingQueryToken = {
       cancelRequested: false,
       sendStarted: false,
+      sendCount: 0,
       connection: null,
       cancelSignalPromise: null,
     };
@@ -1020,6 +1025,7 @@ class BrowserDatabase implements ByteqlDatabase {
         if (token.cancelRequested) throw new Error('Query result session is closed.');
         token.connection = connection;
         token.sendStarted = true;
+        token.sendCount += 1;
         const reader = await connection.send(sql);
         cursorStarted = true;
         iterator = reader[Symbol.asyncIterator]();
@@ -1033,6 +1039,7 @@ class BrowserDatabase implements ByteqlDatabase {
           () => {
             if (this.activeQuery === session) this.activeQuery = null;
           },
+          () => token.sendCount,
         );
         if (token.cancelRequested) {
           await session.cancel();

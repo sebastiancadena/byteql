@@ -28,7 +28,7 @@ export interface ByteqlE2EControl {
   spillFiles(): Promise<readonly string[]>;
   enableReadStats(tables: readonly string[]): Promise<void>;
   readStats(): Promise<ReadStats>;
-  queryResultMetrics(): {
+  queryResultMetrics(): Promise<{
     loadedRows: number;
     complete: boolean;
     windowStart: number;
@@ -36,10 +36,10 @@ export interface ByteqlE2EControl {
     sendCount: number;
     decodedBytes: number;
     resultOpfsPaths: readonly string[];
-  };
+  }>;
   drainQueryResult(): Promise<void>;
   loadResultWindow(globalRow: number): Promise<void>;
-  resultOpfsPaths(): Promise<readonly string[]>;
+  seedResultPageOrphan(): Promise<{ orphanPath: string; unrelatedPath: string }>;
 }
 
 declare global {

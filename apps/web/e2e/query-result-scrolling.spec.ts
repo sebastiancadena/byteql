@@ -48,7 +48,6 @@ test('seamless demand reaches row one million with bounded geometry', async ({ p
   });
   await expect(page.getByRole('row', { name: 'Row 1000000', exact: true })).toBeVisible();
 
-  const paths = await page.evaluate(() => window.__BYTEQL_E2E__!.resultOpfsPaths());
   const metrics = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
   expect(metrics.windowRows).toBeLessThanOrEqual(16_384);
   expect(metrics.sendCount).toBe(1);
@@ -57,9 +56,8 @@ test('seamless demand reaches row one million with bounded geometry', async ({ p
     16_384 * 36,
   );
 
-  expect(paths).toHaveLength(123);
-  expect(metrics.resultOpfsPaths).toEqual(paths);
-  expect(paths.every((path) => /^byteql-results\/\d+\/\d+\.arrow$/u.test(path))).toBe(true);
+  expect(metrics.resultOpfsPaths).toHaveLength(123);
+  expect(metrics.resultOpfsPaths.every((path) => /^byteql-results\/\d+\/\d+\.arrow$/u.test(path))).toBe(true);
 
   await page.evaluate(async () => window.__BYTEQL_E2E__!.loadResultWindow(0));
   await scroll.evaluate(async (node) => {
@@ -73,7 +71,7 @@ test('seamless demand reaches row one million with bounded geometry', async ({ p
   expect((await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).sendCount).toBe(1);
 });
 
-test('replacement cancels incomplete demand and deletes its OPFS result generation', async ({ page }) => {
+test('replacement removes every path from an incomplete result generation', async ({ page }) => {
   await openMidiSample(page);
   const editor = page.getByRole('textbox', { name: 'SQL query' });
   await expect(editor).toHaveAttribute('contenteditable', 'true');
@@ -83,29 +81,32 @@ test('replacement cancels incomplete demand and deletes its OPFS result generati
     page.locator('.results-heading-meta').getByText('1,024 loaded · more available', { exact: true }),
   ).toBeVisible();
 
-  const previousPaths = await page.evaluate(() => window.__BYTEQL_E2E__!.resultOpfsPaths());
+  const previousPaths = (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).resultOpfsPaths;
   expect(previousPaths).toHaveLength(1);
 
   await expect(editor).toHaveAttribute('contenteditable', 'true');
   await editor.fill('select i from range(2) t(i)');
   await page.getByRole('button', { name: 'Run query' }).click();
   await expect(page.locator('.results-heading-meta').getByText('2 rows', { exact: true })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.resultOpfsPaths())).not.toEqual(previousPaths);
-  expect((await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).sendCount).toBe(1);
+  await expect
+    .poll(async () => (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).resultOpfsPaths.length)
+    .toBe(1);
+  const replacement = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  expect(replacement.resultOpfsPaths).toHaveLength(1);
+  expect(replacement.resultOpfsPaths.some((path) => previousPaths.includes(path))).toBe(false);
+  expect(replacement.sendCount).toBe(1);
 });
 
-test('startup sweeps result pages orphaned by a reload', async ({ page }) => {
-  await openMidiSample(page);
-  const editor = page.getByRole('textbox', { name: 'SQL query' });
-  await expect(editor).toHaveAttribute('contenteditable', 'true');
-  await editor.fill('select i from range(20000) t(i)');
-  await page.getByRole('button', { name: 'Run query' }).click();
-  await expect(
-    page.locator('.results-heading-meta').getByText('1,024 loaded · more available', { exact: true }),
-  ).toBeVisible();
-  expect(await page.evaluate(() => window.__BYTEQL_E2E__!.resultOpfsPaths())).toHaveLength(1);
+test('startup sweeps a seeded result-page orphan but preserves unrelated OPFS entries', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-app-ready="true"]').waitFor();
+  const seeded = await page.evaluate(() => window.__BYTEQL_E2E__!.seedResultPageOrphan());
+  const beforeReload = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  expect(beforeReload.resultOpfsPaths).toEqual(expect.arrayContaining([seeded.orphanPath, seeded.unrelatedPath]));
 
   await page.reload();
   await page.locator('[data-app-ready="true"]').waitFor();
-  await expect.poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.resultOpfsPaths())).toEqual([]);
+  await expect.poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).toMatchObject({
+    resultOpfsPaths: [seeded.unrelatedPath],
+  });
 });

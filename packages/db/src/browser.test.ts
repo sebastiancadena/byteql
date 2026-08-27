@@ -362,7 +362,7 @@ describe('createBrowserDatabase', () => {
     expect(revokeObjectUrl).toHaveBeenCalledOnce();
   });
 
-  it('pulls only the requested initial page and preserves the remainder', async () => {
+  it('uses one cursor send while fetching multiple result pages', async () => {
     const reader = batchReader([duckdbResultTable(0, 700), duckdbResultTable(700, 700)]);
     duckdbMocks.connection.send.mockResolvedValueOnce(reader);
     const database = await createBrowserDatabase();
@@ -373,14 +373,14 @@ describe('createBrowserDatabase', () => {
     expect(first).toMatchObject({ index: 0, startRow: 0, rowCount: 1_024 });
     expect(first!.table.numRows).toBe(1_024);
     expect(reader.pulls).toBeLessThanOrEqual(2);
-    expect(session.status()).toMatchObject({ loadedRows: 1_024, complete: false });
+    expect(session.status()).toMatchObject({ loadedRows: 1_024, complete: false, sendCount: 1 });
 
     const second = await session.fetchNext(8_192);
     expect(second).toMatchObject({ index: 1, startRow: 1_024, rowCount: 376 });
     expect(Array.from(second!.table.getChild('value')!.toArray())).toEqual(
       Array.from({ length: 376 }, (_, index) => index + 1_024),
     );
-    expect(session.status()).toMatchObject({ loadedRows: 1_400, complete: true });
+    expect(session.status()).toMatchObject({ loadedRows: 1_400, complete: true, sendCount: 1 });
     expect(duckdbMocks.connection.send).toHaveBeenCalledExactlyOnceWith('select * from events');
   });
 
