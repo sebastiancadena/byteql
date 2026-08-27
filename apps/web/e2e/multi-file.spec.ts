@@ -36,7 +36,7 @@ test('a two-file pcap session catalogs both files, groups per-file counts, and a
   // 2. Per-file packet counts, grouped by `_src_file` — two rows, one per capture.
   await runSql(page, 'select _src_file, count(*) as n from packets group by _src_file order by _src_file;');
   await expect(page.getByRole('columnheader', { name: /^n /u })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'SQL workspace' }).getByText('2 rows')).toBeVisible();
+  await expect(page.locator('.results-heading-meta').getByText('2 rows', { exact: true })).toBeVisible();
   // `_src_file` is provenance (`_`-prefixed) and hidden by default; reveal it to read the names.
   await page.getByRole('button', { name: 'Toggle hidden columns' }).click();
   await expect(page.getByRole('gridcell', { name: nameA, exact: true })).toBeVisible();
@@ -45,7 +45,7 @@ test('a two-file pcap session catalogs both files, groups per-file counts, and a
   // 3. The `_files` catalog: both files ingested ok, in ingest order.
   await runSql(page, 'select file, status from _files order by ingest_order;');
   await expect(page.getByRole('columnheader', { name: 'status' })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'SQL workspace' }).getByText('2 rows')).toBeVisible();
+  await expect(page.locator('.results-heading-meta').getByText('2 rows', { exact: true })).toBeVisible();
   const filesRow1 = page.getByRole('row', { name: 'Row 1', exact: true });
   const filesRow2 = page.getByRole('row', { name: 'Row 2', exact: true });
   await expect(filesRow1.getByRole('gridcell', { name: nameA, exact: true })).toBeVisible();
@@ -63,7 +63,7 @@ test('a two-file pcap session catalogs both files, groups per-file counts, and a
 
   // 5. Clicking a row provenanced to the SECOND file auto-switches the hex pane to it.
   await runSql(page, `select * from packets where _src_file = '${nameB}' limit 1;`);
-  await expect(page.getByRole('region', { name: 'SQL workspace' }).getByText('1 rows')).toBeVisible();
+  await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
   await page.getByRole('row', { name: 'Row 1', exact: true }).click();
   await expect(hexFileSwitcher).toHaveValue(nameB);
 });

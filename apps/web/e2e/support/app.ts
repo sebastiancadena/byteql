@@ -28,11 +28,24 @@ export interface ByteqlE2EControl {
   spillFiles(): Promise<readonly string[]>;
   enableReadStats(tables: readonly string[]): Promise<void>;
   readStats(): Promise<ReadStats>;
+  queryResultMetrics(): {
+    loadedRows: number;
+    complete: boolean;
+    windowStart: number;
+    windowRows: number;
+    sendCount: number;
+    decodedBytes: number;
+    resultOpfsPaths: readonly string[];
+  };
+  drainQueryResult(): Promise<void>;
+  loadResultWindow(globalRow: number): Promise<void>;
+  resultOpfsPaths(): Promise<readonly string[]>;
 }
 
 declare global {
   interface Window {
     __byteqlE2E?: ByteqlE2EControl;
+    __BYTEQL_E2E__?: ByteqlE2EControl;
     __byteqlE2EOverrides?: SessionOverrides;
   }
 }
@@ -56,9 +69,11 @@ export async function waitForAppReady(page: Page): Promise<void> {
   await page.locator('[data-app-ready="true"]').waitFor();
 }
 
-export async function openMidiSample(page: Page): Promise<void> {
-  await page.goto('/');
-  await waitForAppReady(page);
+export async function openMidiSample(page: Page, { navigate = true }: { navigate?: boolean } = {}): Promise<void> {
+  if (navigate) {
+    await page.goto('/');
+    await waitForAppReady(page);
+  }
   await page.getByRole('button', { name: /Try sample/u }).click();
   await page.getByRole('menuitem', { name: 'MIDI song (.mid)' }).click();
   await expect(page.getByRole('button', { name: 'Browse events' })).toBeVisible();

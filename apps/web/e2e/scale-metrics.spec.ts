@@ -75,7 +75,7 @@ test('scaled capture meets proportional throughput and pushdown read-fraction', 
     await page.evaluate((tables) => window.__byteqlE2E!.enableReadStats(tables), ['packets']);
     const queryStartedAt = performance.now();
     await runSql(page, 'select ts, caplen, len from packets where caplen > 900');
-    await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: /^ts /u })).toBeVisible();
     const queryElapsedMs = performance.now() - queryStartedAt;
     const stats = await page.evaluate(() => window.__byteqlE2E!.readStats());
 

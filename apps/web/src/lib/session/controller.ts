@@ -3,6 +3,7 @@ import {
   QUERY_INITIAL_ROWS,
   QUERY_PAGE_ROWS,
   QUERY_RESULT_MEMORY_BYTES,
+  sweepQueryPageOrphans,
   sweepSpillOrphans,
   type ByteqlDatabase,
   type IngestSession,
@@ -48,6 +49,16 @@ export interface SessionControllerOptions {
   tiering?: { tierThresholdBytes?: number; rotationBytes?: number };
 }
 
+/** Read-only, bounded-result diagnostics consumed only by the e2e build harness. */
+export interface QueryResultDiagnostics {
+  readonly loadedRows: number;
+  readonly complete: boolean;
+  readonly windowStart: number;
+  readonly windowRows: number;
+  readonly sendCount: number;
+  readonly decodedBytes: number;
+}
+
 const disposedError = (): Error => new Error('The session controller is disposed.');
 
 const basename = (name: string): string => {
@@ -77,6 +88,8 @@ export class SessionController {
   private readonly sampleCache = new Map<string, Uint8Array>();
   private sessionGeneration = 0;
   private queryGeneration = 0;
+  /** Cursor sends for the currently displayed query; a paged demand must never add another. */
+  private querySendCount = 0;
   private activeQuery: QuerySession | null = null;
   private resultDemand: Promise<void> | null = null;
   private retainedBlobs = new Map<string, Blob>();
@@ -176,6 +189,7 @@ export class SessionController {
     }
     const session = this.sessionGeneration;
     const query = ++this.queryGeneration;
+    this.querySendCount = 0;
     this.dispatch({ type: 'queryStarted', sql });
     return this.executeQuery(sql, session, query);
   }
@@ -194,6 +208,28 @@ export class SessionController {
       return Promise.resolve();
     }
     return this.startResultDemand(() => this.publishWindow(result.generation, globalRow));
+  }
+
+  queryResultDiagnostics(): QueryResultDiagnostics {
+    const result = this.state.result;
+    const status = this.activeQuery?.status();
+    return {
+      loadedRows: result?.loadedRows ?? 0,
+      complete: result?.complete ?? false,
+      windowStart: result?.windowStart ?? 0,
+      windowRows: result?.window.numRows ?? 0,
+      sendCount: status?.sendCount ?? this.querySendCount,
+      decodedBytes: status?.decodedBytes ?? 0,
+    };
+  }
+
+  /** Repeatedly invokes the same demand path the result grid uses until it reaches EOF. */
+  async drainQueryResult(): Promise<void> {
+    while (this.state.result && !this.state.result.complete && !this.state.result.pageError) {
+      const loadedRows = this.state.result.loadedRows;
+      await this.loadMoreResults();
+      if (!this.state.result || this.state.result.loadedRows <= loadedRows) return;
+    }
   }
 
   retryResultPage(): Promise<void> {
@@ -273,9 +309,10 @@ export class SessionController {
   private async initializeOnce(): Promise<void> {
     await Promise.all([
       this.database.initialize(),
-      // Best-effort: reclaim any OPFS spill directories orphaned by a prior crashed session.
-      // No generation is "kept" — a fresh controller never inherits an in-flight ingest.
+      // Best-effort: reclaim OPFS scratch directories orphaned by a prior crashed session.
+      // No generation is "kept" — a fresh controller never inherits an in-flight ingest or query.
       sweepSpillOrphans([]).catch(() => undefined),
+      sweepQueryPageOrphans().catch(() => undefined),
     ]);
     if (this.disposed) throw disposedError();
   }
@@ -528,6 +565,7 @@ export class SessionController {
         return;
       }
       this.activeQuery = active;
+      this.querySendCount += 1;
 
       await active.fetchNext(QUERY_INITIAL_ROWS);
       if (!this.isCurrentQuery(session, query) || this.activeQuery !== active) return;

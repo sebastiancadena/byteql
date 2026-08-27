@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, test, type Page } from '@playwright/test';
 
+import { openMidiSample } from './support/app.js';
+
 const pane = (page: Page) => page.locator('[data-hex-pane]');
 const hexCanvas = (page: Page) => page.getByRole('application', { name: 'Hex viewer' });
 
@@ -22,8 +24,7 @@ async function highlightedHexRange(page: Page): Promise<{ start: number; end: nu
 }
 
 test('midi: grid row lights up bytes and a byte click reveals the row back', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Try sample' }).click();
+  await openMidiSample(page);
   await page.getByRole('button', { name: 'Browse events' }).click();
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
 
@@ -77,10 +78,7 @@ test('pcap: browse, reveal, filter-to-selection, and hidden columns chip', async
   await page.getByRole('button', { name: 'Filter results to selection' }).click();
   await expect(page.getByRole('textbox', { name: 'SQL query' })).toContainText('_src_start <');
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
-  const rowsText = await page
-    .getByRole('region', { name: 'SQL workspace' })
-    .getByText(/\d+ rows/u)
-    .textContent();
+  const rowsText = await page.locator('.results-heading-meta').getByText(/\d+ rows/u).textContent();
   expect(Number.parseInt(rowsText ?? '0', 10)).toBeGreaterThanOrEqual(1);
 });
 

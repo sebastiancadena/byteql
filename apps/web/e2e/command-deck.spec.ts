@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { waitForAppReady } from './support/app.js';
+import { openMidiSample, waitForAppReady } from './support/app.js';
 
 async function expectNoHorizontalOverflow(page: import('@playwright/test').Page): Promise<void> {
   expect(
@@ -32,7 +32,7 @@ test('presents the Command Deck identity from intake through the loaded workbenc
   await expect(page.getByText('No upload. No server.')).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
-  await page.getByRole('button', { name: 'Try sample' }).click();
+  await openMidiSample(page, { navigate: false });
   await expect(page.getByText('Capture map')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Ask the capture' })).toBeVisible();
   await expect(page.getByText('Result set')).toBeVisible();
@@ -60,7 +60,7 @@ test('keeps the mobile Explorer surface opaque over the loaded workbench', async
   await page.goto('/');
   await waitForAppReady(page);
 
-  await page.getByRole('button', { name: 'Try sample' }).click();
+  await openMidiSample(page, { navigate: false });
   await expect(page.getByText('Capture map')).toBeVisible();
 
   await expect(page.getByRole('navigation', { name: 'Data explorer' })).toHaveCSS(

@@ -10,7 +10,10 @@
   import { SessionController } from './lib/session/controller.js';
 
   const e2eHarness = __BYTEQL_E2E__ ? createBrowserE2EHarness() : null;
-  if (e2eHarness) globalThis.__byteqlE2E = e2eHarness.control;
+  if (e2eHarness) {
+    globalThis.__byteqlE2E = e2eHarness.control;
+    window.__BYTEQL_E2E__ = e2eHarness.control;
+  }
 
   let controller = $state<SessionController | null>(null);
   let startupError = $state<string | null>(null);
@@ -50,6 +53,7 @@
             : { database, stopViewer },
         );
         currentController = ownedController;
+        e2eHarness?.attachQueryController(ownedController);
         await ownedController.initialize();
         if (disposed || attempt !== generation || currentController !== ownedController) return;
 

@@ -100,6 +100,11 @@ export class QueryPageStore {
     return this.totalStoredBytes;
   }
 
+  /** Bytes in decoded Arrow pages resident in the bounded LRU cache. */
+  get cachedDecodedBytes(): number {
+    return this.decodedBytes;
+  }
+
   /** Whether the last failed put retained exact IPC bytes that retryPending can republish. */
   get hasPendingRetry(): boolean {
     return this.pending !== null;

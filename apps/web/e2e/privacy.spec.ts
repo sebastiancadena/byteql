@@ -37,6 +37,16 @@ test('emits zero network events or local-data sentinels after application readin
   await page.getByRole('row', { name: 'Row 1', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Provenance' })).toBeVisible();
 
+  await runSql(page, 'select i from range(20000) t(i)');
+  await expect(
+    page.locator('.results-heading-meta').getByText('1,024 loaded · more available', { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(async () => window.__BYTEQL_E2E__!.drainQueryResult());
+  await expect(page.locator('.results-heading-meta').getByText('20,000 rows', { exact: true })).toBeVisible();
+  const resultPaths = await page.evaluate(() => window.__BYTEQL_E2E__!.resultOpfsPaths());
+  expect(resultPaths.length).toBeGreaterThan(1);
+  expect(resultPaths.every((path) => /^byteql-results\/\d+\/\d+\.arrow$/u.test(path))).toBe(true);
+
   await page.getByRole('button', { name: 'Play all notes' }).click();
   await page.getByRole('button', { name: 'Run query' }).click();
   await expect(page.getByRole('columnheader', { name: /seconds/u })).toBeVisible();

@@ -41,7 +41,8 @@ import { SessionController } from './controller.js';
 import type { SampleId } from './samples.js';
 import { initialSessionState } from './state.js';
 
-const { sweepSpillOrphansMock, queryInitialRows, queryPageRows, queryResultMemoryBytes } = vi.hoisted(() => ({
+const { sweepQueryPageOrphansMock, sweepSpillOrphansMock, queryInitialRows, queryPageRows, queryResultMemoryBytes } = vi.hoisted(() => ({
+  sweepQueryPageOrphansMock: vi.fn().mockResolvedValue(undefined),
   sweepSpillOrphansMock: vi.fn().mockResolvedValue(undefined),
   queryInitialRows: 1_024,
   queryPageRows: 8_192,
@@ -51,6 +52,7 @@ vi.mock('@byteql/db', () => ({
   QUERY_INITIAL_ROWS: queryInitialRows,
   QUERY_PAGE_ROWS: queryPageRows,
   QUERY_RESULT_MEMORY_BYTES: queryResultMemoryBytes,
+  sweepQueryPageOrphans: sweepQueryPageOrphansMock,
   sweepSpillOrphans: sweepSpillOrphansMock,
 }));
 
@@ -271,6 +273,8 @@ class FakeQuerySession implements QuerySession {
       complete: this.complete,
       elapsedMs: 2,
       storedBytes: 0,
+      decodedBytes: 0,
+      sendCount: 1,
     };
   }
 

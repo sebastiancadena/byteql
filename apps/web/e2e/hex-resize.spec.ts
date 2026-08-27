@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test';
 
+import { openMidiSample } from './support/app.js';
+
 // Regression: the hex pane's resize grabber overlaps the toolbar below it (via a
 // negative margin). It must stay stacked above that toolbar, otherwise the toolbar
 // swallows the pointerdown and drag-to-resize silently does nothing — the cursor
@@ -10,8 +12,7 @@ import { expect, test } from '@playwright/test';
 test.use({ viewport: { width: 1280, height: 960 } });
 
 test('hex pane resize grabber drags the pane taller', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Try sample' }).click();
+  await openMidiSample(page);
   await page.getByRole('button', { name: 'Browse events' }).click();
   // Let the grid finish loading so the workbench layout stops shifting under the grabber.
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();

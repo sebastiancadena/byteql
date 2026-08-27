@@ -8,7 +8,7 @@ import { performance } from 'node:perf_hooks';
 import { expect, test } from '@playwright/test';
 
 import { createBenchmarkRecord } from '../src/lib/benchmark.js';
-import { fixturePath, waitForAppReady } from './support/app.js';
+import { fixturePath, openMidiSample, waitForAppReady } from './support/app.js';
 
 test('reports fresh-context sample time to first result-grid paint', async ({ browser, page }, testInfo) => {
   await page.goto('/');
@@ -16,7 +16,7 @@ test('reports fresh-context sample time to first result-grid paint', async ({ br
 
   const fixture = await readFile(fixturePath('demo.mid'));
   const startedAt = performance.now();
-  await page.getByRole('button', { name: 'Try sample' }).click();
+  await openMidiSample(page, { navigate: false });
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
   const elapsedMs = performance.now() - startedAt;
 

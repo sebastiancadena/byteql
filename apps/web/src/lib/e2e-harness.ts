@@ -11,6 +11,7 @@ import {
   type ParseClientPort,
   type WorkerPort,
 } from './parse-worker-client.js';
+import type { QueryResultDiagnostics } from './session/controller.js';
 import type { AudioEngine, AudioRow } from './viewers/tone-engine.js';
 
 interface AudioStats {
@@ -61,6 +62,20 @@ export interface BrowserE2EControl {
    * bytes instead — both are meaningful denominators).
    */
   readStats(): Promise<ReadStats>;
+  queryResultMetrics(): QueryResultMetrics;
+  drainQueryResult(): Promise<void>;
+  loadResultWindow(globalRow: number): Promise<void>;
+  resultOpfsPaths(): Promise<readonly string[]>;
+}
+
+export interface QueryResultMetrics extends QueryResultDiagnostics {
+  readonly resultOpfsPaths: readonly string[];
+}
+
+interface QueryResultController {
+  queryResultDiagnostics(): QueryResultDiagnostics;
+  drainQueryResult(): Promise<void>;
+  loadResultWindow(globalRow: number): Promise<void>;
 }
 
 /** `FileSystemDirectoryHandle` with the async-iterable `entries()` current DOM libs omit. */
@@ -69,6 +84,7 @@ type IterableDirectoryHandle = FileSystemDirectoryHandle & {
 };
 
 const SPILL_ROOT_NAME = 'byteql-spill';
+const RESULT_ROOT_NAME = 'byteql-results';
 
 async function walkSpillFiles(dir: FileSystemDirectoryHandle, prefix: string): Promise<string[]> {
   const out: string[] = [];
@@ -84,11 +100,15 @@ async function walkSpillFiles(dir: FileSystemDirectoryHandle, prefix: string): P
 }
 
 async function collectSpillFiles(): Promise<readonly string[]> {
+  return collectOpfsFiles(SPILL_ROOT_NAME);
+}
+
+async function collectOpfsFiles(rootName: string): Promise<readonly string[]> {
   if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) return [];
   try {
     const root = await navigator.storage.getDirectory();
-    const spillRoot = await root.getDirectoryHandle(SPILL_ROOT_NAME, { create: false });
-    return await walkSpillFiles(spillRoot, `${SPILL_ROOT_NAME}/`);
+    const opfsRoot = await root.getDirectoryHandle(rootName, { create: false });
+    return await walkSpillFiles(opfsRoot, `${rootName}/`);
   } catch {
     // No spill data has ever been written, or OPFS is unavailable; treat as empty.
     return [];
@@ -153,13 +173,17 @@ export interface BrowserE2EHarness {
    * database exists, so it starts with no database and this is how it's attached afterward.
    */
   attachDatabase(database: ByteqlDatabase): void;
+  /** Attaches production result demand methods without adding an alternate e2e load path. */
+  attachQueryController(controller: QueryResultController): void;
 }
 
 export function createBrowserE2EHarness(): BrowserE2EHarness {
   let crashNextParse = false;
   let workerCount = 0;
   let liveDatabase: ByteqlDatabase | null = null;
+  let queryController: QueryResultController | null = null;
   let readStatsTargets: readonly string[] = [];
+  let resultOpfsPaths: readonly string[] = [];
   const audioStats: AudioStats = { loadCalls: 0, disposeCalls: 0, loadedRows: 0 };
 
   const createWorker = (): WorkerPort => {
@@ -207,6 +231,10 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       sessionOverrides: globalThis.__byteqlE2EOverrides ?? {},
       spillFiles: () => collectSpillFiles(),
       async enableReadStats(tables) {
+        // Opening a file starts the short overview cursor. The benchmark immediately replaces
+        // that result, so release it first; duckdb-wasm rejects statistics calls while any
+        // cursor owns the sole connection.
+        await liveDatabase?.cancelQuery();
         const files = await collectSpillFiles();
         // Every generation directory but the current one is deleted on finalize (see
         // `IngestSessionImpl.finalize` in packages/db/src/browser.ts), so `spillFiles()` already
@@ -222,6 +250,10 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
         if (!liveDatabase || readStatsTargets.length === 0) {
           return { totalBytesRead: 0, spillBytes: 0 };
         }
+        // The benchmark has already caused the measured reads. Drain through the same demand
+        // path the grid uses, then release its completed cursor before exporting counters.
+        await queryController?.drainQueryResult();
+        await liveDatabase.cancelQuery();
         let totalBytesRead = 0;
         for (const relativePath of readStatsTargets) {
           const stats = await liveDatabase.exportFileStatistics(`opfs://${relativePath}`);
@@ -230,6 +262,27 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
         const sizes = await Promise.all(readStatsTargets.map(spillFileSize));
         const spillBytes = sizes.reduce((sum, size) => sum + size, 0);
         return { totalBytesRead, spillBytes };
+      },
+      queryResultMetrics() {
+        const metrics = queryController?.queryResultDiagnostics() ?? {
+          loadedRows: 0,
+          complete: false,
+          windowStart: 0,
+          windowRows: 0,
+          sendCount: 0,
+          decodedBytes: 0,
+        };
+        return { ...metrics, resultOpfsPaths };
+      },
+      async drainQueryResult() {
+        await queryController?.drainQueryResult();
+      },
+      async loadResultWindow(globalRow) {
+        await queryController?.loadResultWindow(globalRow);
+      },
+      async resultOpfsPaths() {
+        resultOpfsPaths = await collectOpfsFiles(RESULT_ROOT_NAME);
+        return resultOpfsPaths;
       },
     },
     createParser: () => new ParseWorkerClient(createWorker),
@@ -255,6 +308,9 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
     },
     attachDatabase(database: ByteqlDatabase) {
       liveDatabase = database;
+    },
+    attachQueryController(controller: QueryResultController) {
+      queryController = controller;
     },
   };
 }

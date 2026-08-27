@@ -13,7 +13,7 @@ test('keeps recoverable rows and exposes the malformed-track error to SQL', asyn
   await expect(page.getByRole('region', { name: 'Tables' })).toContainText(/errors\s*1 rows/u);
 
   await runSql(page, 'select * from errors');
-  await expect(page.getByRole('region', { name: 'SQL workspace' }).getByText('1 row')).toBeVisible();
+  await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
   await expect(page.getByRole('gridcell', { name: 'UNSUPPORTED_STATUS', exact: true })).toBeVisible();
 
   await runSql(page, 'select from');

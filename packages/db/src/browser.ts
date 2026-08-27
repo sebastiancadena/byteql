@@ -623,6 +623,8 @@ class QuerySessionImpl implements QuerySession {
       complete: this.complete,
       elapsedMs: this.elapsedMs,
       storedBytes: this.store.storedBytes,
+      decodedBytes: this.store.cachedDecodedBytes,
+      sendCount: 1,
     };
   }
 

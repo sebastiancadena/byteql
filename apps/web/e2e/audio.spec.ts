@@ -1,11 +1,9 @@
 import { expect, test } from '@playwright/test';
 
-import { openAudioViewer, openFixture, waitForAppReady } from './support/app.js';
+import { openAudioViewer, openFixture, openMidiSample, waitForAppReady } from './support/app.js';
 
 test('loads and disposes the audio capability through the application boundary', async ({ page }) => {
-  await page.goto('/');
-  await waitForAppReady(page);
-  await page.getByRole('button', { name: 'Try sample' }).click();
+  await openMidiSample(page);
   await page.getByRole('button', { name: 'Play all notes' }).click();
   await page.getByRole('button', { name: 'Run query' }).click();
   await expect(page.getByRole('columnheader', { name: /seconds/u })).toBeVisible();

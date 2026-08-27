@@ -25,6 +25,6 @@ test('ingests a multi-batch events table and counts every row via DuckDB', async
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 
   await runSql(page, 'select count(*) as n from events');
-  await expect(page.getByRole('region', { name: 'SQL workspace' }).getByText('1 rows')).toBeVisible();
+  await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
   await expect(page.getByRole('gridcell', { name: String(eventRowCount), exact: true })).toBeVisible();
 });

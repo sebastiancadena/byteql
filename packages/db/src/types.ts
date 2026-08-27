@@ -18,6 +18,10 @@ export interface QueryStatus {
   readonly complete: boolean;
   readonly elapsedMs: number;
   readonly storedBytes: number;
+  /** Decoded Arrow pages currently retained in the bounded in-memory page cache. */
+  readonly decodedBytes: number;
+  /** A QuerySession owns exactly one DuckDB cursor send for its lifetime. */
+  readonly sendCount: number;
 }
 
 export interface QuerySession {
