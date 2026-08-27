@@ -22,10 +22,7 @@ export interface SessionProgress {
   fileCount: number;
 }
 
-/**
- * The query result shape consumed by the paged controller/grid migration. It coexists with the
- * legacy `result` table temporarily, until both existing consumers can move atomically.
- */
+/** Serializable query-result metadata plus the bounded Arrow window rendered by the grid. */
 export interface PagedResultState {
   readonly generation: number;
   readonly schema: Schema;
@@ -57,12 +54,7 @@ export interface SessionState {
   queries: readonly PackQuery[];
   capabilities: ParseResult['capabilities'] | null;
   sql: string;
-  /** @deprecated Legacy whole-result table retained until the controller/grid migration. */
-  result: Table | null;
-  /** Additive paged result contract for the upcoming controller/grid migration. */
-  pagedResult?: PagedResultState | null;
-  /** @deprecated Legacy timing retained until the controller/grid migration. */
-  queryElapsedMs: number | null;
+  result: PagedResultState | null;
   queryError: string | null;
   selectedRow: number | null;
   fatalError: string | null;
@@ -92,7 +84,6 @@ export type SessionEvent =
       capabilities: ParseResult['capabilities'];
     }
   | { type: 'queryStarted'; sql: string }
-  | { type: 'querySucceeded'; result: Table; elapsedMs: number }
   | { type: 'querySucceeded'; result: PagedResultState }
   | { type: 'queryWindowUpdated'; result: PagedResultState }
   | { type: 'queryPageFailed'; message: string; retryable: boolean }
@@ -114,8 +105,6 @@ export const initialSessionState: SessionState = {
   capabilities: null,
   sql: '',
   result: null,
-  pagedResult: null,
-  queryElapsedMs: null,
   queryError: null,
   selectedRow: null,
   fatalError: null,
@@ -176,42 +165,30 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         ...state,
         phase: 'querying',
         sql: event.sql,
-        queryElapsedMs: null,
         queryError: null,
         selectedRow: null,
       };
     case 'querySucceeded':
-      if ('elapsedMs' in event) {
-        return {
-          ...state,
-          phase: 'ready',
-          result: event.result,
-          queryElapsedMs: event.elapsedMs,
-          queryError: null,
-          selectedRow: null,
-          byteSelection: null,
-        };
-      }
       if (!isValidPagedWindow(event.result)) return state;
       return {
         ...state,
         phase: 'ready',
-        pagedResult: event.result,
+        result: event.result,
         queryError: null,
         selectedRow: null,
         byteSelection: null,
       };
     case 'queryWindowUpdated':
-      return state.pagedResult && isValidPagedUpdate(state.pagedResult, event.result)
-        ? { ...state, pagedResult: event.result }
+      return state.result && isValidPagedUpdate(state.result, event.result)
+        ? { ...state, result: event.result }
         : state;
     case 'queryPageFailed':
-      return !state.pagedResult
+      return !state.result
         ? state
         : {
             ...state,
-            pagedResult: {
-              ...state.pagedResult,
+            result: {
+              ...state.result,
               loadingMore: false,
               pageError: event.message,
               pageErrorRetryable: event.retryable,
@@ -221,15 +198,14 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
       return {
         ...state,
         phase: 'ready',
-        queryElapsedMs: null,
         queryError: event.message,
         selectedRow: null,
       };
     case 'rowSelected':
-      return state.result === null && !state.pagedResult ? state : { ...state, selectedRow: event.row };
+      return state.result === null ? state : { ...state, selectedRow: event.row };
     case 'cancelled':
       return state.phase === 'querying'
-        ? { ...state, phase: 'ready', queryElapsedMs: null, queryError: null }
+        ? { ...state, phase: 'ready', queryError: null }
         : initialSessionState;
     case 'failed':
       return {
@@ -242,8 +218,6 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         queries: [],
         capabilities: null,
         result: null,
-        pagedResult: null,
-        queryElapsedMs: null,
         queryError: null,
         selectedRow: null,
         fatalError: event.message,

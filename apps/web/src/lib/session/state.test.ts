@@ -1,5 +1,5 @@
 import type { PackQuery, ParseIssue, TableOverview } from '@byteql/core';
-import { tableFromArrays, type Table } from 'apache-arrow';
+import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
 import { initialSessionState, reduceSession, type PagedResultState } from './state.js';
@@ -21,7 +21,6 @@ const issue: ParseIssue = {
   sourceEnd: 13,
 };
 
-const result = { marker: 'local Arrow table' } as unknown as Table;
 const pagedTable = tableFromArrays({ value: Int32Array.from([0]) });
 const oversizedPagedTable = tableFromArrays({
   value: Int32Array.from({ length: 16_385 }, (_, index) => index),
@@ -143,21 +142,19 @@ describe('reduceSession', () => {
       selectedRow: null,
     });
 
-    expect(reduceSession(querying, { type: 'querySucceeded', result, elapsedMs: 7 })).toMatchObject({
+    expect(reduceSession(querying, { type: 'querySucceeded', result: pagedResult })).toMatchObject({
       phase: 'ready',
-      result,
-      queryElapsedMs: 7,
+      result: pagedResult,
       queryError: null,
     });
   });
 
   it('retains the prior result after a query failure', () => {
-    const ready = { ...initialSessionState, phase: 'querying' as const, result, tables };
+    const ready = { ...initialSessionState, phase: 'querying' as const, result: pagedResult, tables };
     expect(reduceSession(ready, { type: 'queryFailed', message: 'syntax error' })).toMatchObject({
       phase: 'ready',
-      result,
+      result: pagedResult,
       queryError: 'syntax error',
-      queryElapsedMs: null,
     });
   });
 
@@ -170,7 +167,7 @@ describe('reduceSession', () => {
 
     expect(reduceSession(querying, { type: 'querySucceeded', result: pagedResult })).toMatchObject({
       phase: 'ready',
-      pagedResult,
+      result: pagedResult,
       queryError: null,
       selectedRow: null,
       byteSelection: null,
@@ -187,7 +184,7 @@ describe('reduceSession', () => {
   ] satisfies readonly { case: string; result: PagedResultState }[])(
     'ignores a paged initial success with $case',
     ({ result: invalidResult }) => {
-      const querying = { ...initialSessionState, phase: 'querying' as const, pagedResult };
+      const querying = { ...initialSessionState, phase: 'querying' as const, result: pagedResult };
 
       expect(
         Object.is(reduceSession(querying, { type: 'querySucceeded', result: invalidResult }), querying),
@@ -199,7 +196,7 @@ describe('reduceSession', () => {
     const ready = {
       ...initialSessionState,
       phase: 'ready' as const,
-      pagedResult,
+      result: pagedResult,
       selectedRow: 9_000,
       byteSelection: { file: 'a.pcap', start: 1, end: 2 },
     };
@@ -211,11 +208,11 @@ describe('reduceSession', () => {
 
     expect(next.selectedRow).toBe(9_000);
     expect(next.byteSelection).toEqual({ file: 'a.pcap', start: 1, end: 2 });
-    expect(next.pagedResult).toMatchObject({ loadedRows: 9_216, windowStart: 1_024 });
+    expect(next.result).toMatchObject({ loadedRows: 9_216, windowStart: 1_024 });
   });
 
   it('ignores paged window updates from a different query generation', () => {
-    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
+    const ready = { ...initialSessionState, phase: 'ready' as const, result: pagedResult };
 
     for (const generation of [0, 2]) {
       expect(
@@ -228,7 +225,7 @@ describe('reduceSession', () => {
   });
 
   it('ignores paged window updates that decrease the loaded row count', () => {
-    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
+    const ready = { ...initialSessionState, phase: 'ready' as const, result: pagedResult };
 
     expect(
       reduceSession(ready, {
@@ -240,7 +237,7 @@ describe('reduceSession', () => {
 
   it('ignores paged window updates that regress a completed result', () => {
     const completeResult = { ...pagedResult, complete: true };
-    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult: completeResult };
+    const ready = { ...initialSessionState, phase: 'ready' as const, result: completeResult };
 
     expect(
       reduceSession(ready, {
@@ -251,7 +248,7 @@ describe('reduceSession', () => {
   });
 
   it('ignores paged window updates with invalid global bounds or an oversized window', () => {
-    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
+    const ready = { ...initialSessionState, phase: 'ready' as const, result: pagedResult };
     const invalidResults: readonly PagedResultState[] = [
       { ...pagedResult, windowStart: -1 },
       { ...pagedResult, windowStart: 1_024 },
@@ -266,7 +263,7 @@ describe('reduceSession', () => {
   });
 
   it('records a retryable page failure without discarding loaded rows', () => {
-    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult };
+    const ready = { ...initialSessionState, phase: 'ready' as const, result: pagedResult };
 
     const next = reduceSession(ready, {
       type: 'queryPageFailed',
@@ -274,7 +271,7 @@ describe('reduceSession', () => {
       retryable: true,
     });
 
-    expect(next.pagedResult).toMatchObject({
+    expect(next.result).toMatchObject({
       loadedRows: 1_024,
       loadingMore: false,
       pageError: 'Local result storage is full.',
@@ -283,7 +280,12 @@ describe('reduceSession', () => {
   });
 
   it('accepts retry-start and EOF updates without changing the selected global row', () => {
-    const ready = { ...initialSessionState, phase: 'ready' as const, pagedResult, selectedRow: 1_023 };
+    const ready = {
+      ...initialSessionState,
+      phase: 'ready' as const,
+      result: pagedResult,
+      selectedRow: 1_023,
+    };
     const retrying = reduceSession(ready, {
       type: 'queryWindowUpdated',
       result: { ...pagedResult, loadingMore: true, pageError: null, pageErrorRetryable: false },
@@ -293,18 +295,18 @@ describe('reduceSession', () => {
       result: { ...pagedResult, loadedRows: 1_024, complete: true, loadingMore: false },
     });
 
-    expect(retrying.pagedResult).toMatchObject({ loadingMore: true, pageError: null });
-    expect(completed.pagedResult).toMatchObject({ complete: true, loadingMore: false });
+    expect(retrying.result).toMatchObject({ loadingMore: true, pageError: null });
+    expect(completed.result).toMatchObject({ complete: true, loadingMore: false });
     expect(completed.selectedRow).toBe(1_023);
   });
 
   it('returns to ready when a query is cancelled and to idle when intake is cancelled', () => {
     expect(
       reduceSession(
-        { ...initialSessionState, phase: 'querying', tables, pagedResult },
+        { ...initialSessionState, phase: 'querying', tables, result: pagedResult },
         { type: 'cancelled' },
       ),
-    ).toMatchObject({ phase: 'ready', tables, pagedResult: { complete: false, loadedRows: 1_024 } });
+    ).toMatchObject({ phase: 'ready', tables, result: { complete: false, loadedRows: 1_024 } });
     expect(
       reduceSession(
         {
@@ -319,11 +321,8 @@ describe('reduceSession', () => {
   });
 
   it('records row selection only for a current result', () => {
-    expect(reduceSession({ ...initialSessionState, result }, { type: 'rowSelected', row: 4 })).toMatchObject({
-      selectedRow: 4,
-    });
     expect(
-      reduceSession({ ...initialSessionState, pagedResult }, { type: 'rowSelected', row: 1_023 }),
+      reduceSession({ ...initialSessionState, result: pagedResult }, { type: 'rowSelected', row: 1_023 }),
     ).toMatchObject({
       selectedRow: 1_023,
     });
@@ -360,9 +359,7 @@ describe('reduceSession', () => {
       tables,
       issues: [issue],
       sql: 'select * from events',
-      result,
-      pagedResult,
-      queryElapsedMs: 4,
+      result: pagedResult,
       queryError: 'old error',
       selectedRow: 2,
       fatalError: 'old fatal',
@@ -380,7 +377,7 @@ describe('reduceSession', () => {
       openStartedAt: expect.any(Number),
     });
     expect(initialSessionState.capabilities).toBeNull();
-    expect(next.pagedResult).toBeNull();
+    expect(next.result).toBeNull();
   });
 });
 
@@ -425,7 +422,7 @@ describe('byteRangeSelected', () => {
       source: { files: [{ name: 'a.pcap', size: 10 }], totalSize: 10 },
     });
     state = reduceSession(state, { type: 'byteRangeSelected', range: { file: 'a.pcap', start: 0, end: 1 } });
-    state = reduceSession(state, { type: 'querySucceeded', result, elapsedMs: 1 });
+    state = reduceSession(state, { type: 'querySucceeded', result: pagedResult });
     expect(state.byteSelection).toBeNull();
 
     state = reduceSession(state, { type: 'byteRangeSelected', range: { file: 'a.pcap', start: 0, end: 1 } });

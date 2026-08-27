@@ -52,6 +52,19 @@ describe('buildCoverage', () => {
     expect(coverage.index!.rowsAt(1)).toEqual([1]); // a.pcap's [0,4) row is excluded from this view
   });
 
+  it('adds the render-window start to returned coverage row indexes', () => {
+    const coverage = buildCoverage(
+      provenanceTable([
+        [0, 4],
+        [4, 8],
+      ]),
+      FILE,
+      20_000,
+    );
+
+    expect(coverage.index?.rowsAt(6)).toEqual([20_001]);
+  });
+
   it('finds covering rows smallest-interval first', () => {
     // row 0: packet [0, 100); row 1: tcp [20, 100); row 2: dns [40, 60); row 3: next packet [100, 200)
     const { index, reason } = buildCoverage(
@@ -148,12 +161,13 @@ describe('createCoverageMemo', () => {
   it('reuses the result for the same table and file, and rebuilds for a new table', () => {
     const memo = createCoverageMemo();
     const table = provenanceTable([[0, 10]]);
-    const first = memo(table, FILE);
-    const second = memo(table, FILE);
+    const first = memo(table, FILE, 20_000);
+    const second = memo(table, FILE, 20_000);
     expect(second).toBe(first); // reference-identical across calls with the same (table, file)
     expect(memo(null, FILE)).toEqual({ index: null, reason: 'no-provenance' });
     const other = provenanceTable([[0, 20]]);
-    expect(memo(other, FILE)).not.toBe(first);
+    expect(memo(other, FILE, 20_000)).not.toBe(first);
+    expect(memo(table, FILE, 30_000)).not.toBe(first);
   });
 
   it('rebuilds when the file changes for the same table reference', () => {

@@ -4,12 +4,6 @@ import type { Schema, Table } from 'apache-arrow';
 export const QUERY_INITIAL_ROWS = 1_024;
 export const QUERY_PAGE_ROWS = 8_192;
 
-/** @deprecated Temporary compatibility surface until the web controller adopts QuerySession. */
-export interface QueryResult {
-  table: Table;
-  elapsedMs: number;
-}
-
 export interface QueryPage {
   readonly index: number;
   readonly startRow: number;
@@ -99,8 +93,6 @@ export interface ByteqlDatabase {
   initialize(): Promise<void>;
   beginIngest(options: IngestOptions): Promise<IngestSession>;
   startQuery(sql: string): Promise<QuerySession>;
-  /** @deprecated Temporary compatibility surface until the web controller adopts startQuery. */
-  query(sql: string): Promise<QueryResult>;
   cancelQuery(): Promise<boolean>;
   listTables(): Promise<readonly string[]>;
   /**

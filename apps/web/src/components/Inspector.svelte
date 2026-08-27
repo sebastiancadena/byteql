@@ -8,7 +8,9 @@
 
   interface Props {
     table?: Table | null;
+    viewerTable?: Table | null;
     selectedRow?: number | null;
+    selectedGlobalRow?: number | null;
     collapsed?: boolean;
     mobileOpen?: boolean;
     viewers?: readonly ViewerCapability[];
@@ -21,7 +23,9 @@
 
   let {
     table = null,
+    viewerTable = null,
     selectedRow = null,
+    selectedGlobalRow = null,
     collapsed = false,
     mobileOpen = false,
     viewers = [],
@@ -65,8 +69,8 @@
       <h2>Inspector</h2>
     </div>
     <div class="inspector-actions">
-      {#if selectedRow !== null}
-        <span class="selection-chip">Row {selectedRow + 1}</span>
+      {#if selectedGlobalRow !== null}
+        <span class="selection-chip">Row {selectedGlobalRow + 1}</span>
       {/if}
       {#if viewers.length > 0}
         <ViewerMenu {viewers} onselect={onopenviewer} />
@@ -74,9 +78,9 @@
     </div>
   </div>
 
-  {#if table && activeViewer}
+  {#if viewerTable && activeViewer}
     {@const Viewer = activeViewer.component}
-    <Viewer {table} engineFactory={audioEngineFactory} onclose={oncloseviewer} />
+    <Viewer table={viewerTable} engineFactory={audioEngineFactory} onclose={oncloseviewer} />
   {:else if table && selectedRow !== null}
     <section class="inspector-section" aria-labelledby="values-heading">
       <h3 id="values-heading">Values</h3>

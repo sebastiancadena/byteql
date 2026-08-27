@@ -1,5 +1,14 @@
 import type { ParseIssue, TableOverview } from '@byteql/core';
-import { sweepSpillOrphans, type ByteqlDatabase, type IngestSession } from '@byteql/db';
+import {
+  QUERY_INITIAL_ROWS,
+  QUERY_PAGE_ROWS,
+  QUERY_RESULT_MEMORY_BYTES,
+  sweepSpillOrphans,
+  type ByteqlDatabase,
+  type IngestSession,
+  type QuerySession,
+} from '@byteql/db';
+import { Table } from 'apache-arrow';
 
 import {
   ParseWorkerClient,
@@ -20,10 +29,12 @@ import { SAMPLES, type SampleDefinition, type SampleId } from './samples.js';
 import {
   initialSessionState,
   reduceSession,
+  type PagedResultState,
   type SessionEvent,
   type SessionState,
   type SourceFile,
 } from './state.js';
+import { RESULT_WINDOW_ROWS, assembleResultWindow, pageIndexesForWindow } from './result-window.js';
 import { TIER_THRESHOLD_BYTES, chooseTier } from './tiering.js';
 
 export interface SessionControllerOptions {
@@ -66,6 +77,8 @@ export class SessionController {
   private readonly sampleCache = new Map<string, Uint8Array>();
   private sessionGeneration = 0;
   private queryGeneration = 0;
+  private activeQuery: QuerySession | null = null;
+  private resultDemand: Promise<void> | null = null;
   private retainedBlobs = new Map<string, Blob>();
   private batchFileIndex = 0;
   private batchFileCount = 0;
@@ -163,18 +176,48 @@ export class SessionController {
     }
     const session = this.sessionGeneration;
     const query = ++this.queryGeneration;
-    if (this.state.phase === 'querying') void this.database.cancelQuery().catch(() => false);
     this.dispatch({ type: 'queryStarted', sql });
     return this.executeQuery(sql, session, query);
   }
 
+  loadMoreResults(): Promise<void> {
+    this.assertUsable();
+    const result = this.state.result;
+    if (!result || result.complete || result.pageError) return Promise.resolve();
+    return this.startResultDemand(() => this.fetchMoreResults(result.generation));
+  }
+
+  loadResultWindow(globalRow: number): Promise<void> {
+    this.assertUsable();
+    const result = this.state.result;
+    if (!result || !Number.isSafeInteger(globalRow) || globalRow < 0 || globalRow >= result.loadedRows) {
+      return Promise.resolve();
+    }
+    return this.startResultDemand(() => this.publishWindow(result.generation, globalRow));
+  }
+
+  retryResultPage(): Promise<void> {
+    this.assertUsable();
+    const result = this.state.result;
+    if (!result?.pageErrorRetryable) return Promise.resolve();
+    return this.startResultDemand(() => this.retryPendingResult(result.generation));
+  }
+
   async cancel(): Promise<void> {
     this.assertUsable();
+    const stoppedResult = this.state.result && !this.state.result.complete;
     ++this.sessionGeneration;
     ++this.queryGeneration;
     this.cancelParser();
     this.stopActiveViewer();
-    const cancellation = this.cancelDatabaseQuery();
+    const cancellation = this.closeActiveQuery({ cancel: true });
+    if (stoppedResult) {
+      this.dispatch({
+        type: 'queryPageFailed',
+        message: 'Query result loading was cancelled. Run the query again to load more rows.',
+        retryable: false,
+      });
+    }
     if (
       this.state.phase === 'opening' ||
       this.state.phase === 'normalizing' ||
@@ -219,10 +262,10 @@ export class SessionController {
       // Continue releasing independently-owned resources.
     }
     this.disposal = (async () => {
-      await Promise.allSettled([
-        this.cancelDatabaseQuery(),
-        Promise.resolve().then(() => this.database.dispose()),
-      ]);
+      await this.closeActiveQuery({ cancel: true });
+      await Promise.resolve()
+        .then(() => this.database.dispose())
+        .catch(() => undefined);
     })();
     return this.disposal;
   }
@@ -242,7 +285,7 @@ export class SessionController {
     ++this.queryGeneration;
     this.cancelParser();
     this.stopActiveViewer();
-    const queryCancellation = this.cancelDatabaseQuery();
+    const queryCancellation = this.closeActiveQuery({ cancel: true });
     this.bytesIngested = 0;
     this.lastProgress = null;
 
@@ -271,7 +314,7 @@ export class SessionController {
     generation: number,
     formatId: string,
     planned: readonly PlannedFile[],
-    queryCancellation: Promise<boolean>,
+    queryCancellation: Promise<void>,
   ): Promise<void> {
     await queryCancellation;
     if (!this.isCurrent(generation)) return;
@@ -467,18 +510,208 @@ export class SessionController {
   }
 
   private async executeQuery(sql: string, session: number, query: number): Promise<void> {
+    const priorResult = this.state.result;
     try {
-      const result = await this.database.query(sql);
+      await this.closeActiveQuery({ cancel: true });
       if (!this.isCurrentQuery(session, query)) return;
-      this.dispatch({ type: 'querySucceeded', result: result.table, elapsedMs: result.elapsedMs });
+      if (priorResult && !priorResult.complete && this.state.result === priorResult) {
+        this.dispatch({
+          type: 'queryPageFailed',
+          message: 'Run the prior query again to load more rows.',
+          retryable: false,
+        });
+      }
+
+      const active = await this.database.startQuery(sql);
+      if (!this.isCurrentQuery(session, query)) {
+        await this.closeQuery(active, true);
+        return;
+      }
+      this.activeQuery = active;
+
+      await active.fetchNext(QUERY_INITIAL_ROWS);
+      if (!this.isCurrentQuery(session, query) || this.activeQuery !== active) return;
+      const status = active.status();
+      const result = await this.buildResultState(active, query, Math.max(0, status.loadedRows - 1));
+      if (!result || !this.isCurrentQuery(session, query) || this.activeQuery !== active) return;
+      this.dispatch({ type: 'querySucceeded', result });
     } catch (error) {
       if (!this.isCurrentQuery(session, query)) return;
+      await this.closeActiveQuery({ cancel: true });
       if (isAbortError(error)) {
         this.dispatch({ type: 'cancelled' });
         return;
       }
       this.dispatch({ type: 'queryFailed', message: errorMessage(error, 'The query failed.') });
     }
+  }
+
+  private startResultDemand(operation: () => Promise<void>): Promise<void> {
+    if (this.resultDemand) return this.resultDemand;
+    const demand = operation();
+    const settled = demand.finally(() => {
+      if (this.resultDemand === settled) this.resultDemand = null;
+    });
+    this.resultDemand = settled;
+    return settled;
+  }
+
+  private async fetchMoreResults(generation: number): Promise<void> {
+    const active = this.activeQuery;
+    const current = this.state.result;
+    if (!active || !current || current.generation !== generation) return;
+    const anchor = Math.max(0, current.loadedRows - 1);
+    this.dispatch({
+      type: 'queryWindowUpdated',
+      result: {
+        ...current,
+        loadingMore: true,
+        pageError: null,
+        pageErrorRetryable: false,
+      },
+    });
+
+    try {
+      await active.fetchNext(QUERY_PAGE_ROWS);
+      if (!this.isActiveResult(active, generation)) return;
+      await this.publishWindow(generation, anchor);
+    } catch (error) {
+      if (!this.isActiveResult(active, generation)) return;
+      const retryable = this.isRetryablePageError(error);
+      this.dispatch({
+        type: 'queryPageFailed',
+        message: this.resultPageFailureMessage(error, 'More query rows could not be loaded.'),
+        retryable,
+      });
+      if (!retryable) await this.closeActiveQuery({ cancel: true });
+    }
+  }
+
+  private async retryPendingResult(generation: number): Promise<void> {
+    const active = this.activeQuery;
+    const current = this.state.result;
+    if (!active || !current || current.generation !== generation) return;
+    const anchor = Math.max(0, current.loadedRows - 1);
+    this.dispatch({
+      type: 'queryWindowUpdated',
+      result: {
+        ...current,
+        loadingMore: true,
+        pageError: null,
+        pageErrorRetryable: false,
+      },
+    });
+
+    try {
+      await active.retryPending();
+      if (!this.isActiveResult(active, generation)) return;
+      await this.publishWindow(generation, anchor);
+    } catch (error) {
+      if (!this.isActiveResult(active, generation)) return;
+      const retryable = this.isRetryablePageError(error);
+      this.dispatch({
+        type: 'queryPageFailed',
+        message: this.resultPageFailureMessage(error, 'The query result page could not be stored.'),
+        retryable,
+      });
+      if (!retryable) await this.closeActiveQuery({ cancel: true });
+    }
+  }
+
+  private async publishWindow(generation: number, anchorRow: number): Promise<void> {
+    const active = this.activeQuery;
+    if (!active || !this.isActiveResult(active, generation)) return;
+    try {
+      const result = await this.buildResultState(active, generation, anchorRow);
+      if (!result || !this.isActiveResult(active, generation)) return;
+      this.dispatch({ type: 'queryWindowUpdated', result });
+    } catch (error) {
+      if (!this.isActiveResult(active, generation)) return;
+      this.dispatch({
+        type: 'queryPageFailed',
+        message: this.resultPageFailureMessage(error, 'The requested query rows could not be loaded.'),
+        retryable: false,
+      });
+      await this.closeActiveQuery({ cancel: true });
+    }
+  }
+
+  private async buildResultState(
+    active: QuerySession,
+    generation: number,
+    anchorRow: number,
+  ): Promise<PagedResultState | null> {
+    if (!this.isCurrentQuery(this.sessionGeneration, generation) || this.activeQuery !== active) return null;
+    const status = active.status();
+    const summaries = active.pages();
+    const indexes = pageIndexesForWindow(summaries, anchorRow);
+    active.pinPages(indexes);
+    const pages = [];
+    for (const index of indexes) {
+      pages.push(await active.readPage(index));
+      if (!this.isCurrentQuery(this.sessionGeneration, generation) || this.activeQuery !== active)
+        return null;
+    }
+
+    const rowCount = Math.min(RESULT_WINDOW_ROWS, status.loadedRows);
+    const normalizedAnchor =
+      status.loadedRows === 0 ? 0 : Math.min(Math.max(0, Math.floor(anchorRow)), status.loadedRows - 1);
+    const windowStart = Math.min(
+      Math.max(0, normalizedAnchor - Math.floor(rowCount / 2)),
+      Math.max(0, status.loadedRows - rowCount),
+    );
+    const window =
+      pages.length === 0
+        ? new Table(active.schema)
+        : assembleResultWindow(pages, { startRow: windowStart, rowCount }).table;
+
+    let completeTable = null;
+    if (status.complete) {
+      try {
+        completeTable = await active.materialize(QUERY_RESULT_MEMORY_BYTES);
+      } catch {
+        completeTable = null;
+      }
+      if (!this.isCurrentQuery(this.sessionGeneration, generation) || this.activeQuery !== active)
+        return null;
+    }
+
+    return {
+      generation,
+      schema: active.schema,
+      loadedRows: status.loadedRows,
+      complete: status.complete,
+      loadingMore: false,
+      windowStart,
+      window,
+      completeTable,
+      elapsedMs: status.elapsedMs,
+      pageError: null,
+      pageErrorRetryable: false,
+    };
+  }
+
+  private isActiveResult(active: QuerySession, generation: number): boolean {
+    return (
+      this.activeQuery === active &&
+      this.state.result?.generation === generation &&
+      this.isCurrentQuery(this.sessionGeneration, generation)
+    );
+  }
+
+  private isRetryablePageError(error: unknown): boolean {
+    return errorMessage(error, '').includes('RESULT_SPILL_QUOTA_EXCEEDED');
+  }
+
+  private resultPageFailureMessage(error: unknown, fallback: string): string {
+    const raw = errorMessage(error, fallback);
+    if (raw.includes('RESULT_SPILL_QUOTA_EXCEEDED')) {
+      return 'Local result storage is full. Free local storage, then retry loading rows.';
+    }
+    if (raw.includes('RESULT_SPILL_UNSUPPORTED')) {
+      return 'This browser cannot retain more local result pages. Narrow the SQL and run the query again.';
+    }
+    return `${raw} Run the query again to load more rows.`;
   }
 
   private progress(generation: number, progress: ParseProgress): void {
@@ -529,10 +762,32 @@ export class SessionController {
     }
   }
 
-  private cancelDatabaseQuery(): Promise<boolean> {
-    return Promise.resolve()
-      .then(() => this.database.cancelQuery())
-      .catch(() => false);
+  private async closeActiveQuery({ cancel }: { cancel: boolean }): Promise<void> {
+    const active = this.activeQuery;
+    this.activeQuery = null;
+    try {
+      if (!active) {
+        if (cancel)
+          await Promise.resolve()
+            .then(() => this.database.cancelQuery())
+            .catch(() => false);
+        return;
+      }
+      let workActive = true;
+      try {
+        workActive = !active.status().complete;
+      } catch {
+        // A closing/terminal cursor still needs best-effort cancellation before disposal.
+      }
+      await this.closeQuery(active, cancel && workActive);
+    } finally {
+      this.resultDemand = null;
+    }
+  }
+
+  private async closeQuery(active: QuerySession, cancel: boolean): Promise<void> {
+    if (cancel) await active.cancel().catch(() => false);
+    await active.dispose().catch(() => undefined);
   }
 
   private stopActiveViewer(): void {

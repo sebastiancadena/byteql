@@ -297,7 +297,8 @@ describe('createBrowserDatabase', () => {
     const database = await createBrowserDatabase();
 
     await Promise.all([database.initialize(), database.initialize()]);
-    await database.query('SELECT 42;');
+    const session = await database.startQuery('SELECT 42;');
+    await session.dispose();
 
     expect(duckdbMocks.database.instantiate).toHaveBeenCalledOnce();
     expect(duckdbMocks.database.instantiate).toHaveBeenCalledWith('/assets/duckdb-eh.wasm', null);

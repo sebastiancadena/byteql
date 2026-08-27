@@ -1,14 +1,20 @@
 <script lang="ts">
   /* global Blob, DragEvent, Event, File, HTMLButtonElement, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
 
+  import type { Table } from 'apache-arrow';
   import { onMount, untrack } from 'svelte';
 
   import { createCoverageMemo, provenanceOfRow } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
   import type { SampleId } from '../lib/session/samples.js';
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
+  import { sqlIdentifier } from '../lib/sql-literal.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
-  import { compatibleViewers, type ViewerCapability } from '../lib/viewers/registry.js';
+  import {
+    compatibleTableViewers,
+    compatibleViewers,
+    type ViewerCapability,
+  } from '../lib/viewers/registry.js';
   import AppHeader from './AppHeader.svelte';
   import EmptyState from './EmptyState.svelte';
   import Explorer from './Explorer.svelte';
@@ -25,6 +31,9 @@
     openFiles(files: readonly File[]): Promise<void>;
     openSample(id: SampleId): Promise<void>;
     runQuery(sql: string): Promise<void>;
+    loadMoreResults(): Promise<void>;
+    loadResultWindow(globalRow: number): Promise<void>;
+    retryResultPage(): Promise<void>;
     cancel(): Promise<void>;
     selectResultRow(row: number | null): void;
     selectByteRange(range: { file: string; start: number; end: number } | null): void;
@@ -40,6 +49,7 @@
   let session = $state<SessionState>(initialSessionState);
   let draftSql = $state('');
   let actionError = $state<string | null>(null);
+  let coverageMessage = $state<string | null>(null);
   let explorerCollapsed = $state(false);
   let inspectorCollapsed = $state(false);
   let mobileTab = $state<'results' | 'inspector'>('results');
@@ -93,23 +103,31 @@
   }
 
   const intakeBusy = $derived(['opening', 'normalizing', 'parsing', 'projecting'].includes(session.phase));
-  const viewers = $derived.by((): ViewerCapability[] => {
+  const schemaViewers = $derived.by((): ViewerCapability[] => {
     if (!session.result || !session.capabilities) return [];
     return compatibleViewers(
       session.result.schema.fields.map((field) => ({ name: field.name, type: field.type.toString() })),
       session.capabilities,
     );
   });
+  const viewers = $derived.by((): ViewerCapability[] => {
+    if (!session.capabilities) return [];
+    return compatibleTableViewers(session.result?.completeTable ?? null, session.capabilities);
+  });
   const activeViewer = $derived(viewers.find(({ id }) => id === activeViewerId) ?? null);
   export function closeActiveViewer(): void {
     activeViewerId = null;
   }
 
-  const disabledCapabilityReasons = $derived(
-    Object.values(session.capabilities ?? {})
+  const disabledCapabilityReasons = $derived.by(() => {
+    const reasons = Object.values(session.capabilities ?? {})
       .filter((capability) => !capability.enabled && capability.reason)
-      .map((capability) => capability.reason as string),
-  );
+      .map((capability) => capability.reason as string);
+    if (schemaViewers.length > 0 && !session.result?.completeTable) {
+      reasons.push('Finish and narrow the result to use this viewer.');
+    }
+    return reasons;
+  });
 
   let hexPane = $state<HexPane>();
 
@@ -135,18 +153,20 @@
   });
   const hexFileSize = $derived(sourceFiles.find((file) => file.name === hexFile)?.size ?? 0);
   const sourceBlob = $derived(hexFile ? controller.getSourceBlob(hexFile) : null);
-  const coverageResult = $derived(coverageMemo(session.result, hexFile));
+  const coverageResult = $derived(
+    coverageMemo(session.result?.window ?? null, hexFile, session.result?.windowStart ?? 0),
+  );
   // Memoize on (result, file) so the reset-key object stays reference-stable across publishes
   // that don't touch either — otherwise every unrelated session field change (selectedRow,
   // byteSelection, ...) would look like "a new result" to HexPane and wipe its local selection
   // out from under the user (e.g. right after a goto/selection just set it).
   let hexResetKeyMemo: {
-    result: SessionState['result'];
+    result: Table | null;
     file: string | null;
-    value: { result: SessionState['result']; file: string | null };
+    value: { result: Table | null; file: string | null };
   } | null = null;
   const hexResetKey = $derived.by(() => {
-    const result = session.result;
+    const result = session.result?.window ?? null;
     const file = hexFile;
     if (hexResetKeyMemo && hexResetKeyMemo.result === result && hexResetKeyMemo.file === file) {
       return hexResetKeyMemo.value;
@@ -168,9 +188,17 @@
     row: number;
     value: { file: string; start: number; end: number } | null;
   } | null = null;
+  const selectedLocalRow = $derived(
+    session.result &&
+      session.selectedRow !== null &&
+      session.selectedRow >= session.result.windowStart &&
+      session.selectedRow < session.result.windowStart + session.result.window.numRows
+      ? session.selectedRow - session.result.windowStart
+      : null,
+  );
   const rowHighlight = $derived.by(() => {
-    const result = session.result;
-    const row = session.selectedRow;
+    const result = session.result?.window ?? null;
+    const row = selectedLocalRow;
     if (!result || row === null) return null;
     if (highlightMemo && highlightMemo.result === result && highlightMemo.row === row) {
       return highlightMemo.value;
@@ -207,7 +235,13 @@
 
   function revealAt(offset: number): void {
     const rows = coverageResult.index?.rowsAt(offset) ?? [];
-    if (rows.length === 0) return;
+    if (rows.length === 0) {
+      coverageMessage = session.result?.complete
+        ? 'No result row covers this byte'
+        : 'No loaded result row covers this byte';
+      return;
+    }
+    coverageMessage = null;
     revealCycle = lastRevealOffset === offset ? revealCycle + 1 : 0;
     lastRevealOffset = offset;
     controller.selectResultRow(rows[revealCycle % rows.length] as number);
@@ -222,9 +256,10 @@
     compactQuery.addEventListener('change', syncCompactMode);
 
     const unsubscribe = controller.subscribe((next) => {
+      if (next.result?.window !== session.result?.window) coverageMessage = null;
       if (
         activeViewerId &&
-        (next.result !== session.result ||
+        (next.result?.completeTable !== session.result?.completeTable ||
           next.source !== session.source ||
           next.capabilities !== session.capabilities)
       ) {
@@ -389,7 +424,7 @@
       state={session}
       collapsed={explorerCollapsed}
       onquery={loadQuery}
-      onbrowse={(name) => run(`select * from ${name} limit 10000`)}
+      onbrowse={(name) => run(`select * from ${sqlIdentifier(name)}`)}
     />
 
     {#if compactMode}
@@ -474,6 +509,12 @@
             </div>
           {/if}
 
+          {#if coverageMessage}
+            <div class="format-notice" role="status" aria-label="Coverage notice">
+              {coverageMessage}
+            </div>
+          {/if}
+
           {#each disabledCapabilityReasons as reason (reason)}
             <div class="format-notice" role="status" aria-label="Format capability notice">
               {reason}
@@ -488,21 +529,32 @@
           </div>
           <div class="results-heading-meta">
             {#if session.result}
-              <span class="result-count">{session.result.numRows.toLocaleString()} rows</span>
-            {/if}
-            {#if session.queryElapsedMs !== null}
-              <span class="result-count tabular">{session.queryElapsedMs.toFixed(1)} ms</span>
+              <span class="result-count">
+                {session.result.complete
+                  ? `${session.result.loadedRows.toLocaleString()} rows`
+                  : `${session.result.loadedRows.toLocaleString()} loaded · more available`}
+              </span>
+              <span class="result-count tabular">{session.result.elapsedMs.toFixed(1)} ms</span>
             {/if}
           </div>
         </div>
 
         <div class="results-panel">
           {#if session.result}
-            {#key session.result}
+            {#key session.result.generation}
               <ResultGrid
-                table={session.result}
+                table={session.result.window}
+                windowStart={session.result.windowStart}
+                loadedRows={session.result.loadedRows}
+                complete={session.result.complete}
+                loadingMore={session.result.loadingMore}
+                pageError={session.result.pageError}
+                pageErrorRetryable={session.result.pageErrorRetryable}
                 selectedRow={session.selectedRow}
                 onselect={(row) => controller.selectResultRow(row)}
+                onloadmore={() => perform(() => controller.loadMoreResults())}
+                onloadwindow={(row) => perform(() => controller.loadResultWindow(row))}
+                onretry={() => perform(() => controller.retryResultPage())}
               />
             {/key}
           {:else if intakeBusy}
@@ -566,8 +618,10 @@
       hidden={compactMode && mobileTab !== 'inspector'}
     >
       <Inspector
-        table={session.result}
-        selectedRow={session.selectedRow}
+        table={session.result?.window ?? null}
+        viewerTable={session.result?.completeTable ?? null}
+        selectedRow={selectedLocalRow}
+        selectedGlobalRow={session.selectedRow}
         collapsed={inspectorCollapsed}
         mobileOpen={mobileTab === 'inspector'}
         {viewers}

@@ -17,7 +17,6 @@ export type {
   IngestSession,
   QueryPage,
   QueryPageSummary,
-  QueryResult,
   QuerySession,
   QueryStatus,
   TableSummary,

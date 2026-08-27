@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, within } from '@testing-library/svelte';
+import { tableFromArrays } from 'apache-arrow';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { initialSessionState, type SessionState } from '../lib/session/state.js';
@@ -33,6 +34,33 @@ describe('StatusBar progress readout', () => {
 
     expect(within(container).getByText(/50%/)).toBeTruthy();
     expect(within(container).getByText(/10\.0 MB\/s/)).toBeTruthy();
+  });
+
+  it('labels paged timing as streaming before EOF and total after EOF', () => {
+    const window = tableFromArrays({ value: Int32Array.from([1]) });
+    const result = {
+      generation: 1,
+      schema: window.schema,
+      loadedRows: 1_024,
+      complete: false,
+      loadingMore: false,
+      windowStart: 0,
+      window,
+      completeTable: null,
+      elapsedMs: 12.5,
+      pageError: null,
+      pageErrorRetryable: false,
+    };
+    const streaming = render(StatusBar, { state: stateWith({ phase: 'ready', result }) });
+    expect(within(streaming.container).getByText('1,024 loaded · more available')).toBeTruthy();
+    expect(within(streaming.container).getByText('12.5 ms streaming')).toBeTruthy();
+    streaming.unmount();
+
+    const complete = render(StatusBar, {
+      state: stateWith({ phase: 'ready', result: { ...result, complete: true } }),
+    });
+    expect(within(complete.container).getByText('1,024 rows')).toBeTruthy();
+    expect(within(complete.container).getByText('12.5 ms total')).toBeTruthy();
   });
 
   it('status bar omits the rate before it is meaningful and when total is null', () => {

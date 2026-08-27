@@ -54,7 +54,7 @@ function upperBound(starts: Float64Array, count: number, probe: number): number 
   return low;
 }
 
-export function buildCoverage(table: Table, file: string): CoverageResult {
+export function buildCoverage(table: Table, file: string, rowOffset = 0): CoverageResult {
   const fileColumn = table.getChild('_src_file');
   const startColumn = table.getChild('_src_start');
   const endColumn = table.getChild('_src_end');
@@ -64,7 +64,7 @@ export function buildCoverage(table: Table, file: string): CoverageResult {
   const capacity = table.numRows;
   const rawStarts = new Float64Array(capacity);
   const rawEnds = new Float64Array(capacity);
-  const rawRows = new Uint32Array(capacity);
+  const rawRows = new Float64Array(capacity);
   let count = 0;
   for (let row = 0; row < capacity; row += 1) {
     if (fileColumn.get(row) !== file) continue;
@@ -72,7 +72,7 @@ export function buildCoverage(table: Table, file: string): CoverageResult {
     if (!range || range.end <= range.start) continue;
     rawStarts[count] = range.start;
     rawEnds[count] = range.end;
-    rawRows[count] = row;
+    rawRows[count] = row + rowOffset;
     count += 1;
   }
 
@@ -82,7 +82,7 @@ export function buildCoverage(table: Table, file: string): CoverageResult {
   });
   const starts = new Float64Array(count);
   const ends = new Float64Array(count);
-  const rows = new Uint32Array(count);
+  const rows = new Float64Array(count);
   const maxEndPrefix = new Float64Array(count);
   order.forEach((source, i) => {
     starts[i] = rawStarts[source] as number;
@@ -148,13 +148,19 @@ export function buildCoverage(table: Table, file: string): CoverageResult {
  * repeated session publishes carrying the SAME result and file do not re-index (spec: once
  * per result). Returns a stable `CoverageResult` for an unchanged (table, file) pair.
  */
-export function createCoverageMemo(): (table: Table | null, file: string | null) => CoverageResult {
-  let cache: { table: Table; file: string; value: CoverageResult } | null = null;
-  return (table, file) => {
+export function createCoverageMemo(): (
+  table: Table | null,
+  file: string | null,
+  rowOffset?: number,
+) => CoverageResult {
+  let cache: { table: Table; file: string; rowOffset: number; value: CoverageResult } | null = null;
+  return (table, file, rowOffset = 0) => {
     if (!table || file === null) return { index: null, reason: 'no-provenance' };
-    if (cache && cache.table === table && cache.file === file) return cache.value;
-    const value = buildCoverage(table, file);
-    cache = { table, file, value };
+    if (cache && cache.table === table && cache.file === file && cache.rowOffset === rowOffset) {
+      return cache.value;
+    }
+    const value = buildCoverage(table, file, rowOffset);
+    cache = { table, file, rowOffset, value };
     return value;
   };
 }

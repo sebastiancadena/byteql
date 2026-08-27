@@ -51,3 +51,19 @@ export function compatibleViewers(
 ): ViewerCapability[] {
   return trustedCapabilities.filter((viewer) => viewer.accepts(columns, formatMetadata[viewer.id]));
 }
+
+/**
+ * Returns viewers only when the entire query result was safely materialized.
+ * A null table represents either a still-streaming or over-budget result; neither
+ * may be handed to viewers because doing so would silently present a truncation.
+ */
+export function compatibleTableViewers(
+  completeTable: Table | null,
+  formatMetadata: FormatViewerMetadata,
+): ViewerCapability[] {
+  if (!completeTable) return [];
+  return compatibleViewers(
+    completeTable.schema.fields.map((field) => ({ name: field.name, type: field.type.toString() })),
+    formatMetadata,
+  );
+}

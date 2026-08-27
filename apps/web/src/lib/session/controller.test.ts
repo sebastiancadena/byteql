@@ -7,7 +7,19 @@ import {
   type TableOverview,
   type TableSchema,
 } from '@byteql/core';
-import type { ByteqlDatabase, IngestOptions, IngestSession, TableSummary } from '@byteql/db';
+import {
+  QUERY_INITIAL_ROWS,
+  QUERY_PAGE_ROWS,
+  QUERY_RESULT_MEMORY_BYTES,
+  type ByteqlDatabase,
+  type IngestOptions,
+  type IngestSession,
+  type QueryPage,
+  type QueryPageSummary,
+  type QuerySession,
+  type QueryStatus,
+  type TableSummary,
+} from '@byteql/db';
 import { tableFromArrays, type Table } from 'apache-arrow';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -29,10 +41,18 @@ import { SessionController } from './controller.js';
 import type { SampleId } from './samples.js';
 import { initialSessionState } from './state.js';
 
-const { sweepSpillOrphansMock } = vi.hoisted(() => ({
+const { sweepSpillOrphansMock, queryInitialRows, queryPageRows, queryResultMemoryBytes } = vi.hoisted(() => ({
   sweepSpillOrphansMock: vi.fn().mockResolvedValue(undefined),
+  queryInitialRows: 1_024,
+  queryPageRows: 8_192,
+  queryResultMemoryBytes: 64 * 1024 * 1024,
 }));
-vi.mock('@byteql/db', () => ({ sweepSpillOrphans: sweepSpillOrphansMock }));
+vi.mock('@byteql/db', () => ({
+  QUERY_INITIAL_ROWS: queryInitialRows,
+  QUERY_PAGE_ROWS: queryPageRows,
+  QUERY_RESULT_MEMORY_BYTES: queryResultMemoryBytes,
+  sweepSpillOrphans: sweepSpillOrphansMock,
+}));
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -194,7 +214,112 @@ class FakeIngestSession implements IngestSession {
   });
 }
 
-const queryTable = (value: number): Table => tableFromArrays({ value: [value] });
+const rangeValues = (count: number, start = 0): number[] =>
+  Array.from({ length: count }, (_, offset) => start + offset);
+
+const page = (index: number, startRow: number, values: readonly number[]): QueryPage => ({
+  index,
+  startRow,
+  rowCount: values.length,
+  table: tableFromArrays({ value: Int32Array.from(values) }),
+});
+
+class FakeQuerySession implements QuerySession {
+  readonly schema = tableFromArrays({ value: Int32Array.from([0]) }).schema;
+  readonly fetchCalls: number[] = [];
+  readonly readCalls: number[] = [];
+  pagesValue: QueryPageSummary[] = [];
+  nextPages: QueryPage[] = [page(0, 0, rangeValues(QUERY_INITIAL_ROWS))];
+  complete = false;
+  completeAfterPage = false;
+  disposed = 0;
+  cancelled = 0;
+  retryPage: QueryPage | null = null;
+  fetchError: Error | null = null;
+  retryError: Error | null = null;
+  materializeValue: Table | null | undefined;
+  readonly materializeCalls: Array<number | undefined> = [];
+  readonly fetched = new Map<number, QueryPage>();
+  fetchGate: Promise<void> | null = null;
+
+  async fetchNext(targetRows = QUERY_PAGE_ROWS): Promise<QueryPage | null> {
+    this.fetchCalls.push(targetRows);
+    if (this.fetchGate) await this.fetchGate;
+    if (this.fetchError) {
+      const error = this.fetchError;
+      this.fetchError = null;
+      throw error;
+    }
+    const nextPage = this.nextPages.shift() ?? null;
+    if (nextPage) {
+      this.fetched.set(nextPage.index, nextPage);
+      this.pagesValue.push({
+        index: nextPage.index,
+        startRow: nextPage.startRow,
+        rowCount: nextPage.rowCount,
+      });
+      if (this.completeAfterPage) this.complete = true;
+    } else {
+      this.complete = true;
+    }
+    return nextPage;
+  }
+
+  status(): QueryStatus {
+    return {
+      loadedRows: this.pagesValue.reduce((sum, summary) => sum + summary.rowCount, 0),
+      complete: this.complete,
+      elapsedMs: 2,
+      storedBytes: 0,
+    };
+  }
+
+  pages(): readonly QueryPageSummary[] {
+    return this.pagesValue;
+  }
+
+  pinPages(): void {}
+
+  async retryPending(): Promise<QueryPage> {
+    if (this.retryError) throw this.retryError;
+    if (!this.retryPage) throw new Error('no pending page');
+    const retryPage = this.retryPage;
+    this.retryPage = null;
+    this.fetched.set(retryPage.index, retryPage);
+    this.pagesValue.push({
+      index: retryPage.index,
+      startRow: retryPage.startRow,
+      rowCount: retryPage.rowCount,
+    });
+    return retryPage;
+  }
+
+  async readPage(index: number): Promise<QueryPage> {
+    this.readCalls.push(index);
+    const stored = this.fetched.get(index);
+    if (!stored) throw new Error(`missing page ${index}`);
+    return stored;
+  }
+
+  async materialize(maxBytes?: number): Promise<Table | null> {
+    this.materializeCalls.push(maxBytes);
+    if (this.materializeValue !== undefined) return this.materializeValue;
+    if (!this.complete) return null;
+    const pages = [...this.fetched.values()].sort((left, right) => left.index - right.index);
+    return pages.length === 0
+      ? null
+      : pages[0]!.table.concat(...pages.slice(1).map((stored) => stored.table));
+  }
+
+  async cancel(): Promise<boolean> {
+    this.cancelled += 1;
+    return true;
+  }
+
+  async dispose(): Promise<void> {
+    this.disposed += 1;
+  }
+}
 
 /**
  * The real `BrowserDatabase.beginIngest` throws 'An ingest session is already open.' while a
@@ -202,8 +327,13 @@ const queryTable = (value: number): Table => tableFromArrays({ value: [value] })
  * call's `onSettled`) — this fake enforces the identical invariant, so controller tests exercise
  * the real race instead of a laxer stand-in that always allows a second `beginIngest` through.
  */
-const fakeDatabase = (): { database: ByteqlDatabase; sessions: FakeIngestSession[] } => {
+const fakeDatabase = (): {
+  database: ByteqlDatabase;
+  sessions: FakeIngestSession[];
+  querySessions: FakeQuerySession[];
+} => {
   const sessions: FakeIngestSession[] = [];
+  const querySessions: FakeQuerySession[] = [];
   let active: FakeIngestSession | null = null;
   const database: ByteqlDatabase = {
     initialize: vi.fn().mockResolvedValue(undefined),
@@ -220,9 +350,10 @@ const fakeDatabase = (): { database: ByteqlDatabase; sessions: FakeIngestSession
       return session;
     }),
     startQuery: vi.fn(async () => {
-      throw new Error('Paged query sessions are not exercised by this legacy controller fixture.');
+      const session = new FakeQuerySession();
+      querySessions.push(session);
+      return session;
     }),
-    query: vi.fn().mockResolvedValue({ table: queryTable(1), elapsedMs: 2 }),
     cancelQuery: vi.fn().mockResolvedValue(false),
     listTables: vi.fn().mockResolvedValue([]),
     collectFileStatistics: vi.fn().mockResolvedValue(undefined),
@@ -237,7 +368,7 @@ const fakeDatabase = (): { database: ByteqlDatabase; sessions: FakeIngestSession
     }),
     dispose: vi.fn().mockResolvedValue(undefined),
   };
-  return { database, sessions };
+  return { database, sessions, querySessions };
 };
 
 const MIDI_MAGIC = [0x4d, 0x54, 0x68, 0x64] as const;
@@ -277,14 +408,26 @@ describe('SessionController', () => {
   let parser: FakeParser;
   let database: ByteqlDatabase;
   let sessions: FakeIngestSession[];
+  let querySessions: FakeQuerySession[];
   let stopViewer: ReturnType<typeof vi.fn<() => void>>;
 
   beforeEach(() => {
     sweepSpillOrphansMock.mockClear();
     parser = new FakeParser();
-    ({ database, sessions } = fakeDatabase());
+    ({ database, sessions, querySessions } = fakeDatabase());
     stopViewer = vi.fn<() => void>();
   });
+
+  const readyController = async (): Promise<SessionController> => {
+    const controller = new SessionController({ database, parser, stopViewer });
+    const opening = controller.openFile(midiFile('query.mid', 1));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 30_000 }];
+    parser.calls[0]!.finish(streamedResult('events', 30_000));
+    await resolveFilesAppend(sessions[0]!);
+    await opening;
+    return controller;
+  };
 
   it('fetches the midi sample lazily on open and caches it across opens', async () => {
     const sample = new Uint8Array([0x4d, 0x54, 0x68, 0x64, 1, 2, 3]);
@@ -493,53 +636,241 @@ describe('SessionController', () => {
     expect(sessions[0]!.finalizeCalls).toBe(1);
   });
 
-  it('ignores stale query completion after a replacement session begins', async () => {
-    const query = deferred<{ table: Table; elapsedMs: number }>();
-    vi.mocked(database.query).mockReturnValueOnce(query.promise);
-    const controller = new SessionController({ database, parser, stopViewer });
+  it('publishes the first page without draining the cursor', async () => {
+    const controller = await readyController();
 
-    const firstOpen = controller.openFile(midiFile('first.mid', 1));
-    await vi.waitFor(() => expect(sessions).toHaveLength(1));
-    sessions[0]!.finalizeResult = [{ name: 'first', rowCount: 1 }];
-    parser.calls[0]!.finish(streamedResult('first', 1));
-    await resolveFilesAppend(sessions[0]!);
-    await firstOpen;
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
 
-    const runningQuery = controller.runQuery('select * from first');
-    const replacement = controller.openFile(midiFile('second.mid', 2));
-    await vi.waitFor(() => expect(parser.calls).toHaveLength(2));
-    query.resolve({ table: queryTable(99), elapsedMs: 50 });
-    await runningQuery;
-    expect(controller.getState().result).toBeNull();
-    expect(controller.getState().source?.files[0]?.name).toBe('second.mid');
-
-    await vi.waitFor(() => expect(sessions).toHaveLength(2));
-    sessions[1]!.finalizeResult = [{ name: 'second', rowCount: 1 }];
-    parser.calls[1]!.finish(streamedResult('second', 1));
-    await resolveFilesAppend(sessions[1]!);
-    await replacement;
+    expect(query.fetchCalls).toEqual([QUERY_INITIAL_ROWS]);
+    expect(controller.getState().result).toMatchObject({ loadedRows: 1_024, complete: false });
+    expect(database.startQuery).toHaveBeenCalledExactlyOnceWith('select * from events');
   });
 
-  it('retains a successful result when a later SQL query fails', async () => {
-    const prior = queryTable(7);
-    vi.mocked(database.query)
-      .mockResolvedValueOnce({ table: prior, elapsedMs: 3 })
-      .mockRejectedValueOnce(new Error('syntax error'));
-    const controller = new SessionController({ database, parser, stopViewer });
-    const opening = controller.openFile(midiFile('query.mid', 1));
-    await vi.waitFor(() => expect(sessions).toHaveLength(1));
-    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
-    parser.calls[0]!.finish(streamedResult('events', 3));
-    await resolveFilesAppend(sessions[0]!);
-    await opening;
+  it('coalesces repeated tail demand into one fetch and appends global rows once', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    const gate = deferred<void>();
+    query.fetchGate = gate.promise;
+    query.nextPages.push(page(1, 1_024, rangeValues(QUERY_PAGE_ROWS, 1_024)));
 
+    const first = controller.loadMoreResults();
+    const second = controller.loadMoreResults();
+    expect(first).toBe(second);
+    gate.resolve(undefined);
+    await first;
+
+    expect(query.fetchCalls.filter((rows) => rows === QUERY_PAGE_ROWS)).toHaveLength(1);
+    expect(controller.getState().result).toMatchObject({ loadedRows: 9_216, complete: false });
+  });
+
+  it('loads an evicted prior window from stored pages without starting SQL again', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    query.nextPages.push(
+      page(1, 1_024, rangeValues(8_192, 1_024)),
+      page(2, 9_216, rangeValues(8_192, 9_216)),
+      page(3, 17_408, rangeValues(8_192, 17_408)),
+    );
+    await controller.loadMoreResults();
+    await controller.loadMoreResults();
+    await controller.loadMoreResults();
+
+    await controller.loadResultWindow(500);
+
+    expect(database.startQuery).toHaveBeenCalledOnce();
+    expect(query.readCalls).toContain(0);
+    expect(controller.getState().result!.windowStart).toBe(0);
+  });
+
+  it('disposes a stale cursor and never publishes its late page', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select 1');
+    const firstQuery = querySessions[0]!;
+    const firstGeneration = controller.getState().result!.generation;
+    const gate = deferred<void>();
+    firstQuery.fetchGate = gate.promise;
+    firstQuery.nextPages.push(page(1, 1_024, rangeValues(8_192, 1_024)));
+
+    const staleLoad = controller.loadMoreResults();
+    const replacement = controller.runQuery('select 2');
+    gate.resolve(undefined);
+    await Promise.allSettled([staleLoad, replacement]);
+
+    expect(firstQuery.disposed).toBe(1);
+    expect(controller.getState().sql).toBe('select 2');
+    expect(controller.getState().result).toMatchObject({ loadedRows: 1_024 });
+    expect(controller.getState().result!.generation).not.toBe(firstGeneration);
+  });
+
+  it('retries the same pending storage page without advancing the cursor', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    const storedPage = page(1, 1_024, rangeValues(8_192, 1_024));
+    query.fetchError = new Error('RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.');
+    query.retryPage = storedPage;
+
+    await controller.loadMoreResults();
+    expect(controller.getState().result).toMatchObject({
+      loadedRows: 1_024,
+      pageError: 'Local result storage is full. Free local storage, then retry loading rows.',
+      pageErrorRetryable: true,
+    });
+
+    await controller.retryResultPage();
+    expect(query.fetchCalls).toEqual([QUERY_INITIAL_ROWS, QUERY_PAGE_ROWS]);
+    expect(controller.getState().result).toMatchObject({
+      loadedRows: 9_216,
+      pageError: null,
+      pageErrorRetryable: false,
+    });
+  });
+
+  it('marks cursor failures terminal while retaining already loaded rows', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    query.fetchError = new Error('DuckDB cursor stopped unexpectedly.');
+
+    await controller.loadMoreResults();
+
+    expect(controller.getState().result).toMatchObject({
+      loadedRows: 1_024,
+      loadingMore: false,
+      pageError: 'DuckDB cursor stopped unexpectedly. Run the query again to load more rows.',
+      pageErrorRetryable: false,
+    });
+    expect(query.cancelled).toBe(1);
+    expect(query.disposed).toBe(1);
+  });
+
+  it('stops an unsupported in-memory result with a narrower-SQL diagnostic', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    query.fetchError = new Error('RESULT_SPILL_UNSUPPORTED: page budget exceeded.');
+
+    await controller.loadMoreResults();
+
+    expect(controller.getState().result).toMatchObject({
+      loadedRows: 1_024,
+      loadingMore: false,
+      pageError:
+        'This browser cannot retain more local result pages. Narrow the SQL and run the query again.',
+      pageErrorRetryable: false,
+    });
+    expect(query.cancelled).toBe(1);
+    expect(query.disposed).toBe(1);
+  });
+
+  it('cancels demand without publishing its late page', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    const gate = deferred<void>();
+    query.fetchGate = gate.promise;
+    query.nextPages.push(page(1, 1_024, rangeValues(8_192, 1_024)));
+
+    const demand = controller.loadMoreResults();
+    await controller.cancel();
+    gate.resolve(undefined);
+    await demand;
+
+    expect(query.cancelled).toBe(1);
+    expect(query.disposed).toBe(1);
+    expect(controller.getState().result).toMatchObject({
+      loadedRows: 1_024,
+      complete: false,
+      loadingMore: false,
+      pageError: 'Query result loading was cancelled. Run the query again to load more rows.',
+      pageErrorRetryable: false,
+    });
+  });
+
+  it('retains the previous incomplete window as a stopped static result after initial failure', async () => {
+    const controller = await readyController();
     await controller.runQuery('select 7');
+    const prior = controller.getState().result;
+    vi.mocked(database.startQuery).mockRejectedValueOnce(new Error('syntax error'));
+
     await controller.runQuery('select broken');
+
+    expect(querySessions[0]!.cancelled).toBe(1);
+    expect(querySessions[0]!.disposed).toBe(1);
     expect(controller.getState()).toMatchObject({
       phase: 'ready',
-      result: prior,
+      result: {
+        window: prior!.window,
+        loadedRows: 1_024,
+        complete: false,
+        pageError: 'Run the prior query again to load more rows.',
+        pageErrorRetryable: false,
+      },
       queryError: 'syntax error',
     });
+  });
+
+  it('materializes a complete result for viewers when it fits the bounded budget', async () => {
+    const query = new FakeQuerySession();
+    query.completeAfterPage = true;
+    vi.mocked(database.startQuery).mockImplementationOnce(async () => {
+      querySessions.push(query);
+      return query;
+    });
+    const controller = await readyController();
+
+    await controller.runQuery('select * from events');
+
+    expect(controller.getState().result).toMatchObject({
+      complete: true,
+      completeTable: expect.objectContaining({ numRows: 1_024 }),
+    });
+    expect(query.materializeCalls).toEqual([QUERY_RESULT_MEMORY_BYTES]);
+  });
+
+  it('does not expose a complete table to viewers when materialization exceeds the budget', async () => {
+    const query = new FakeQuerySession();
+    query.completeAfterPage = true;
+    query.materializeValue = null;
+    vi.mocked(database.startQuery).mockImplementationOnce(async () => {
+      querySessions.push(query);
+      return query;
+    });
+    const controller = await readyController();
+
+    await controller.runQuery('select * from wide_events');
+
+    expect(controller.getState().result).toMatchObject({ complete: true, completeTable: null });
+  });
+
+  it('closes the active query before opening a replacement file', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+
+    const opening = controller.openFile(midiFile('replacement.mid', 2));
+    await vi.waitFor(() => expect(query.disposed).toBe(1));
+    expect(query.cancelled).toBe(1);
+
+    await vi.waitFor(() => expect(sessions).toHaveLength(2));
+    sessions[1]!.finalizeResult = [{ name: 'events', rowCount: 1 }];
+    parser.calls[1]!.finish(streamedResult('events', 1));
+    await resolveFilesAppend(sessions[1]!);
+    await opening;
+  });
+
+  it('closes the active query exactly once during idempotent controller disposal', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+
+    await Promise.all([controller.dispose(), controller.dispose()]);
+
+    expect(query.cancelled).toBe(1);
+    expect(query.disposed).toBe(1);
   });
 
   it('propagates cancellation and disposes safely during initialization', async () => {

@@ -29,7 +29,6 @@ import type {
   IngestSession,
   QueryPage,
   QueryPageSummary,
-  QueryResult,
   QuerySession,
   QueryStatus,
   TableSummary,
@@ -869,7 +868,6 @@ class BrowserDatabase implements ByteqlDatabase {
   private disposeRequested = false;
   private closePromise: Promise<void> | null = null;
   private terminatePromise: Promise<void> | null = null;
-  private queryInFlight = false;
   private pendingQuery: PendingQueryToken | null = null;
   private activeQuery: QuerySessionImpl | null = null;
   private queryGeneration = 0;
@@ -940,8 +938,6 @@ class BrowserDatabase implements ByteqlDatabase {
     try {
       if (this.pendingQuery) {
         await this.cancelPendingQuery(this.pendingQuery);
-      } else if (this.queryInFlight && this.connection) {
-        await this.connection.cancelSent();
       }
       await this.operationTail;
       if (this.disposeRequested) {
@@ -1058,24 +1054,6 @@ class BrowserDatabase implements ByteqlDatabase {
     });
   }
 
-  /** @deprecated Temporary compatibility path until the web controller migrates to startQuery. */
-  query(sql: string): Promise<QueryResult> {
-    return this.enqueue(async (connection) => {
-      await this.closeActiveQuery();
-      const startedAt = performance.now();
-      this.queryInFlight = true;
-      try {
-        const reader = await connection.send(sql);
-        const writer = await RecordBatchStreamWriter.writeAll(reader);
-        const ipc = await writer.toUint8Array();
-        const table = tableFromIPC(ipc);
-        return { table, elapsedMs: performance.now() - startedAt };
-      } finally {
-        this.queryInFlight = false;
-      }
-    });
-  }
-
   async cancelQuery(): Promise<boolean> {
     if (this.disposeRequested) {
       return false;
@@ -1086,9 +1064,7 @@ class BrowserDatabase implements ByteqlDatabase {
     if (this.activeQuery) {
       return this.activeQuery.cancel();
     }
-    if (!this.queryInFlight) return false;
-    await this.initialize();
-    return this.getConnection().cancelSent();
+    return false;
   }
 
   async listTables(): Promise<readonly string[]> {
@@ -1096,11 +1072,11 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   collectFileStatistics(path: string, enable: boolean): Promise<void> {
-    if (this.pendingQuery || this.activeQuery || this.queryInFlight) {
+    if (this.pendingQuery || this.activeQuery) {
       return Promise.reject(new Error('A query result session owns the database connection.'));
     }
     return this.enqueue(() => {
-      if (this.pendingQuery || this.activeQuery || this.queryInFlight) {
+      if (this.pendingQuery || this.activeQuery) {
         throw new Error('A query result session owns the database connection.');
       }
       return this.database.collectFileStatistics(path, enable);
@@ -1108,11 +1084,11 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   exportFileStatistics(path: string): Promise<FileStatisticsSummary> {
-    if (this.pendingQuery || this.activeQuery || this.queryInFlight) {
+    if (this.pendingQuery || this.activeQuery) {
       return Promise.reject(new Error('A query result session owns the database connection.'));
     }
     return this.enqueue(async () => {
-      if (this.pendingQuery || this.activeQuery || this.queryInFlight) {
+      if (this.pendingQuery || this.activeQuery) {
         throw new Error('A query result session owns the database connection.');
       }
       const stats = await this.database.exportFileStatistics(path);
@@ -1151,12 +1127,6 @@ class BrowserDatabase implements ByteqlDatabase {
     } else if (this.activeQuery) {
       try {
         await this.activeQuery.cancel();
-      } catch (error) {
-        errors.push(error);
-      }
-    } else if (this.queryInFlight && this.connection) {
-      try {
-        await this.connection.cancelSent();
       } catch (error) {
         errors.push(error);
       }

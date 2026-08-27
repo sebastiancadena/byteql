@@ -1,6 +1,7 @@
+import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { compatibleViewers, type FormatViewerMetadata } from './registry.js';
+import { compatibleTableViewers, compatibleViewers, type FormatViewerMetadata } from './registry.js';
 
 const enabled: FormatViewerMetadata = {
   audio: { enabled: true, reason: null },
@@ -62,5 +63,17 @@ describe('compatibleViewers', () => {
         audio: { enabled: true, reason: null },
       }).map(({ id }) => id),
     ).toEqual(['audio']);
+  });
+
+  it('refuses viewer compatibility without a complete materialized table', () => {
+    expect(compatibleTableViewers(null, enabled)).toEqual([]);
+
+    const table = tableFromArrays({
+      seconds: Float64Array.from([0]),
+      note: Int32Array.from([60]),
+      velocity: Uint8Array.from([100]),
+      kind: ['note_on'],
+    });
+    expect(compatibleTableViewers(table, enabled).map(({ id }) => id)).toEqual(['audio']);
   });
 });

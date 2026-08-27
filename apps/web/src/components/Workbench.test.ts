@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorView } from 'codemirror';
 import { midiQueries } from '@byteql/midi';
 
-import { initialSessionState, type SessionState } from '../lib/session/state.js';
+import { initialSessionState, type PagedResultState, type SessionState } from '../lib/session/state.js';
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
 import ResultGrid from './ResultGrid.svelte';
 import Workbench from './Workbench.svelte';
@@ -53,6 +53,39 @@ const audioResult = tableFromArrays({
   channel: [0, 0],
 });
 
+const pagedResult = (
+  window: PagedResultState['window'],
+  overrides: Partial<PagedResultState> = {},
+): PagedResultState => ({
+  generation: 1,
+  schema: window.schema,
+  loadedRows: window.numRows,
+  complete: true,
+  loadingMore: false,
+  windowStart: 0,
+  window,
+  completeTable: window,
+  elapsedMs: 4.2,
+  pageError: null,
+  pageErrorRetryable: false,
+  ...overrides,
+});
+
+const gridProps = (table: PagedResultState['window'], overrides: Record<string, unknown> = {}) => ({
+  table,
+  windowStart: 0,
+  loadedRows: table.numRows,
+  complete: true,
+  loadingMore: false,
+  pageError: null,
+  pageErrorRetryable: false,
+  onselect: vi.fn(),
+  onloadmore: vi.fn(),
+  onloadwindow: vi.fn(),
+  onretry: vi.fn(),
+  ...overrides,
+});
+
 const readyState = (): SessionState => ({
   phase: 'ready',
   source: { files: [{ name: 'capture.bin', size: 1536 }], totalSize: 1536 },
@@ -74,8 +107,7 @@ const readyState = (): SessionState => ({
   queries,
   capabilities: { audio: { enabled: true, reason: null } },
   sql: 'select * from records limit 100',
-  result,
-  queryElapsedMs: 4.2,
+  result: pagedResult(result),
   queryError: null,
   selectedRow: null,
   fatalError: null,
@@ -92,6 +124,9 @@ class FakeController {
     this.publish({ ...this.state, sql });
   });
   cancel = vi.fn(async () => undefined);
+  loadMoreResults = vi.fn(async () => undefined);
+  loadResultWindow = vi.fn(async (_globalRow: number) => undefined);
+  retryResultPage = vi.fn(async () => undefined);
   selectResultRow = vi.fn((row: number | null) => {
     this.publish({ ...this.state, selectedRow: row });
   });
@@ -176,7 +211,6 @@ describe('Inspector Workbench', () => {
       tables: [],
       sql: '',
       result: null,
-      queryElapsedMs: null,
     });
     render(Workbench, { controller });
 
@@ -227,12 +261,32 @@ describe('Inspector Workbench', () => {
     ).toBeTruthy();
   });
 
+  it('labels incomplete results as loaded with more available and exact results only at EOF', () => {
+    const incomplete = new FakeController({
+      ...readyState(),
+      result: pagedResult(result, { loadedRows: 1_024, complete: false, completeTable: null }),
+    });
+    const incompleteView = render(Workbench, { controller: incomplete });
+    const heading = document.querySelector('.results-heading') as HTMLElement;
+    expect(within(heading).getByText('1,024 loaded · more available', { exact: true })).toBeTruthy();
+    expect(screen.queryByText('1,024 rows', { exact: true })).toBeNull();
+    incompleteView.unmount();
+
+    const completeWindow = tableFromArrays({ value: Int32Array.from({ length: 300 }, (_, i) => i) });
+    const complete = new FakeController({
+      ...readyState(),
+      result: pagedResult(completeWindow),
+    });
+    render(Workbench, { controller: complete });
+    const completeHeading = document.querySelector('.results-heading') as HTMLElement;
+    expect(within(completeHeading).getByText('300 rows', { exact: true })).toBeTruthy();
+  });
+
   it('runs the bounded overview when a source first becomes ready', async () => {
     const controller = new FakeController({
       ...readyState(),
       sql: '',
       result: null,
-      queryElapsedMs: null,
     });
     render(Workbench, { controller });
 
@@ -350,7 +404,7 @@ describe('Inspector Workbench', () => {
   });
 
   it('offers the trusted audio viewer only for compatible enabled results', async () => {
-    const enabled = new FakeController({ ...readyState(), result: audioResult });
+    const enabled = new FakeController({ ...readyState(), result: pagedResult(audioResult) });
     const enabledView = render(Workbench, { controller: enabled });
     expect(screen.queryByRole('status', { name: 'Format capability notice' })).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: 'Open in…' }));
@@ -366,7 +420,7 @@ describe('Inspector Workbench', () => {
     const reason = 'SMPTE time division is not supported by the Phase 0 player.';
     const smpte = new FakeController({
       ...readyState(),
-      result: audioResult,
+      result: pagedResult(audioResult),
       capabilities: {
         audio: { enabled: false, reason },
       },
@@ -376,11 +430,28 @@ describe('Inspector Workbench', () => {
     expect(textOf(screen.getByRole('status', { name: 'Format capability notice' }))).toBe(reason);
   });
 
+  it('refuses viewers for incomplete and oversized results instead of truncating', () => {
+    const incomplete = new FakeController({
+      ...readyState(),
+      result: pagedResult(audioResult, { complete: false, completeTable: null }),
+    });
+    const incompleteView = render(Workbench, { controller: incomplete });
+    expect(screen.queryByRole('button', { name: 'Open in…' })).toBeNull();
+    incompleteView.unmount();
+
+    const oversized = new FakeController({
+      ...readyState(),
+      result: pagedResult(audioResult, { complete: true, completeTable: null }),
+    });
+    render(Workbench, { controller: oversized });
+    expect(screen.queryByRole('button', { name: 'Open in…' })).toBeNull();
+  });
+
   it('shows the notice for any disabled pack capability, not only audio', () => {
     const reason = 'Hex preview is unavailable for this source.';
     const controller = new FakeController({
       ...readyState(),
-      result: audioResult,
+      result: pagedResult(audioResult),
       capabilities: {
         audio: { enabled: true, reason: null },
         hex: { enabled: false, reason },
@@ -402,7 +473,7 @@ describe('Inspector Workbench', () => {
   it('disposes the contextual viewer on close, result replacement, and session replacement', async () => {
     const engines = [fakeAudioEngine(), fakeAudioEngine(), fakeAudioEngine()];
     const engineFactory = vi.fn(() => engines.shift()!);
-    const controller = new FakeController({ ...readyState(), result: audioResult });
+    const controller = new FakeController({ ...readyState(), result: pagedResult(audioResult) });
     render(Workbench, { controller, audioEngineFactory: engineFactory });
 
     async function openAudio(): Promise<AudioEngine> {
@@ -417,10 +488,13 @@ describe('Inspector Workbench', () => {
     expect(closed.dispose).toHaveBeenCalledOnce();
 
     const replaced = await openAudio();
-    controller.publish({ ...controller.state, result: tableFromArrays({ value: [1] }) });
+    controller.publish({
+      ...controller.state,
+      result: pagedResult(tableFromArrays({ value: [1] }), { generation: 2 }),
+    });
     await vi.waitFor(() => expect(replaced.dispose).toHaveBeenCalledOnce());
 
-    controller.publish({ ...controller.state, result: audioResult });
+    controller.publish({ ...controller.state, result: pagedResult(audioResult, { generation: 3 }) });
     await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Open in…' })).toBeTruthy());
     const sessionReplaced = await openAudio();
     controller.publish({
@@ -433,7 +507,7 @@ describe('Inspector Workbench', () => {
 
   it('closes and disposes the active viewer through the exported closeActiveViewer method', async () => {
     const engine = fakeAudioEngine();
-    const controller = new FakeController({ ...readyState(), result: audioResult });
+    const controller = new FakeController({ ...readyState(), result: pagedResult(audioResult) });
     const view = render(Workbench, { controller, audioEngineFactory: () => engine });
 
     await fireEvent.click(screen.getByRole('button', { name: 'Open in…' }));
@@ -548,12 +622,14 @@ describe('Inspector Workbench', () => {
   it('passes the selected row provenance to the hex pane as highlight', async () => {
     const controller = new FakeController({
       ...readyState(),
-      result: tableFromArrays({
-        record_id: [1n, 2n],
-        _src_file: ['capture.bin', 'capture.bin'],
-        _src_start: [12n, 800n],
-        _src_end: [20n, 840n],
-      }),
+      result: pagedResult(
+        tableFromArrays({
+          record_id: [1n, 2n],
+          _src_file: ['capture.bin', 'capture.bin'],
+          _src_start: [12n, 800n],
+          _src_end: [20n, 840n],
+        }),
+      ),
     });
     render(Workbench, { controller });
 
@@ -569,14 +645,59 @@ describe('Inspector Workbench', () => {
     });
   });
 
-  it('browses a table from the explorer with select * limit 10000', async () => {
+  it('browses a quoted table name without a hidden row limit', async () => {
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
 
     const navigation = screen.getByRole('navigation', { name: 'Data explorer' });
     await fireEvent.click(within(navigation).getByRole('button', { name: 'Browse records' }));
 
-    expect(controller.runQuery).toHaveBeenCalledWith('select * from records limit 10000');
+    expect(controller.runQuery).toHaveBeenCalledWith('select * from "records"');
+  });
+
+  it('maps global selection to the local inspector row while preserving the global label', () => {
+    const controller = new FakeController({
+      ...readyState(),
+      result: pagedResult(result, { loadedRows: 40_000, windowStart: 20_000 }),
+      selectedRow: 20_001,
+    });
+    render(Workbench, { controller });
+
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' });
+    expect(within(inspector).getByText('Row 20002')).toBeTruthy();
+    expect(within(inspector).getByText('available')).toBeTruthy();
+  });
+
+  it('adds the window start when selecting a coverage row from the hex pane', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController({
+      ...readyState(),
+      result: pagedResult(result, { loadedRows: 40_000, windowStart: 20_000 }),
+    });
+    render(Workbench, { controller });
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+
+    await user.type(within(pane).getByLabelText('Go to offset'), '30{Enter}');
+    within(pane).getByRole('application', { name: 'Hex viewer' }).focus();
+    await user.keyboard('{Enter}');
+
+    expect(controller.selectResultRow).toHaveBeenCalledWith(20_001);
+  });
+
+  it('describes an uncovered byte against only the loaded window while incomplete', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController({
+      ...readyState(),
+      result: pagedResult(result, { loadedRows: 1_024, complete: false, completeTable: null }),
+    });
+    render(Workbench, { controller });
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+
+    await user.type(within(pane).getByLabelText('Go to offset'), '50{Enter}');
+    within(pane).getByRole('application', { name: 'Hex viewer' }).focus();
+    await user.keyboard('{Enter}');
+
+    expect(screen.getByText('No loaded result row covers this byte')).toBeTruthy();
   });
 
   it('opens a dropped file through the window-level drop overlay', async () => {
@@ -615,12 +736,14 @@ describe('Inspector Workbench', () => {
         ],
         totalSize: 16,
       },
-      result: tableFromArrays({
-        record_id: [1n, 2n],
-        _src_file: ['b.pcap', 'a.pcap'],
-        _src_start: [4n, 4n],
-        _src_end: [6n, 6n],
-      }),
+      result: pagedResult(
+        tableFromArrays({
+          record_id: [1n, 2n],
+          _src_file: ['b.pcap', 'a.pcap'],
+          _src_start: [4n, 4n],
+          _src_end: [6n, 6n],
+        }),
+      ),
     });
     render(Workbench, { controller });
 
@@ -665,12 +788,14 @@ describe('Inspector Workbench', () => {
         ],
         totalSize: 16,
       },
-      result: tableFromArrays({
-        record_id: [1n, 2n],
-        _src_file: ['a.pcap', 'b.pcap'],
-        _src_start: [4n, 4n],
-        _src_end: [6n, 6n],
-      }),
+      result: pagedResult(
+        tableFromArrays({
+          record_id: [1n, 2n],
+          _src_file: ['a.pcap', 'b.pcap'],
+          _src_start: [4n, 4n],
+          _src_end: [6n, 6n],
+        }),
+      ),
     });
     render(Workbench, { controller });
 
@@ -756,7 +881,7 @@ describe('Inspector Workbench', () => {
       _src_start: [12n, 28n],
       _src_end: [20n, 41n],
     });
-    render(ResultGrid, { table, onselect: vi.fn() });
+    render(ResultGrid, gridProps(table));
 
     expect(screen.getByRole('columnheader', { name: /note/ })).toBeTruthy();
     expect(screen.queryByRole('columnheader', { name: /_src_start/ })).toBeNull();
@@ -773,5 +898,84 @@ describe('Inspector Workbench', () => {
     expect(screen.getByRole('columnheader', { name: /_src_start/ })).toBeTruthy();
     expect(chip.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('grid').getAttribute('aria-colcount')).toBe('3');
+  });
+
+  it('renders and selects rows by global index after a window rebase', async () => {
+    const onselect = vi.fn();
+    render(ResultGrid, gridProps(result, { windowStart: 20_000, loadedRows: 40_000, onselect }));
+
+    await fireEvent.click(screen.getByRole('row', { name: 'Row 20001' }));
+
+    expect(onselect).toHaveBeenCalledWith(20_000);
+  });
+
+  it('compensates the real scroll position in both rebase directions', async () => {
+    const table = tableFromArrays({ value: Int32Array.from({ length: 100 }, (_, i) => i) });
+    const props = gridProps(table, { loadedRows: 110 });
+    const view = render(ResultGrid, props);
+    const scroll = view.container.querySelector('.grid-scroll') as HTMLElement;
+    scroll.scrollTop = 720;
+
+    await view.rerender({ ...props, windowStart: 10 });
+    expect(scroll.scrollTop).toBe(360);
+
+    await view.rerender({ ...props, windowStart: 0 });
+    expect(scroll.scrollTop).toBe(720);
+  });
+
+  it('requests forward demand once when scrolling into the loaded tail', async () => {
+    const table = tableFromArrays({ value: Int32Array.from({ length: 100 }, (_, i) => i) });
+    const onloadmore = vi.fn();
+    const { container } = render(
+      ResultGrid,
+      gridProps(table, { complete: false, loadedRows: 100, onloadmore }),
+    );
+    const scroll = container.querySelector('.grid-scroll') as HTMLElement;
+    scroll.scrollTop = 92 * 36;
+
+    await fireEvent.scroll(scroll);
+    await fireEvent.scroll(scroll);
+
+    await vi.waitFor(() => expect(onloadmore).toHaveBeenCalledOnce());
+  });
+
+  it('requests the prior global row when an evicted window reaches its head', async () => {
+    const table = tableFromArrays({ value: Int32Array.from({ length: 100 }, (_, i) => i) });
+    const onloadwindow = vi.fn();
+    render(
+      ResultGrid,
+      gridProps(table, { windowStart: 20_000, loadedRows: 40_000, complete: false, onloadwindow }),
+    );
+
+    await vi.waitFor(() => expect(onloadwindow).toHaveBeenCalledExactlyOnceWith(19_999));
+  });
+
+  it('offers page retry only for a retryable loading failure', async () => {
+    const onretry = vi.fn();
+    const retryable = render(
+      ResultGrid,
+      gridProps(result, {
+        complete: false,
+        loadedRows: 1_024,
+        pageError: 'Local result storage is full.',
+        pageErrorRetryable: true,
+        onretry,
+      }),
+    );
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry loading rows' }));
+    expect(onretry).toHaveBeenCalledOnce();
+    retryable.unmount();
+
+    render(
+      ResultGrid,
+      gridProps(result, {
+        complete: false,
+        loadedRows: 1_024,
+        pageError: 'The cursor stopped.',
+        pageErrorRetryable: false,
+      }),
+    );
+    expect(screen.queryByRole('button', { name: 'Retry loading rows' })).toBeNull();
+    expect(screen.getByText('The cursor stopped.')).toBeTruthy();
   });
 });

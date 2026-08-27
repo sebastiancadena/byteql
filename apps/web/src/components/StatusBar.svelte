@@ -78,10 +78,12 @@
       <span>{progressRate}</span>
     {/if}
     {#if state.result}
-      <span>{state.result.numRows.toLocaleString()} rows</span>
-    {/if}
-    {#if state.queryElapsedMs !== null}
-      <span>{state.queryElapsedMs.toFixed(1)} ms</span>
+      <span>
+        {state.result.complete
+          ? `${state.result.loadedRows.toLocaleString()} rows`
+          : `${state.result.loadedRows.toLocaleString()} loaded · more available`}
+      </span>
+      <span>{state.result.elapsedMs.toFixed(1)} ms {state.result.complete ? 'total' : 'streaming'}</span>
     {/if}
     {#if state.byteSelection}
       <span class="tabular">{formatByteRange(state.byteSelection)}</span>
