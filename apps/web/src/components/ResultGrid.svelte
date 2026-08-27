@@ -5,7 +5,12 @@
   import type { Table } from 'apache-arrow';
   import { untrack } from 'svelte';
 
-  import { RESULT_ROW_HEIGHT, resultDemand, scrollCompensation } from '../lib/session/result-scroll.js';
+  import {
+    RESULT_ROW_HEIGHT,
+    resultDemand,
+    scrollCompensation,
+    visibleResultRange,
+  } from '../lib/session/result-scroll.js';
 
   interface Props {
     table: Table;
@@ -44,6 +49,7 @@
   let demandGuard: string | null = null;
   let demandSuppressed = false;
   let rebaseFrame: number | null = null;
+  let demandFrame: number | null = null;
   let previousWindowStart = 0;
   let hasPreviousWindowStart = false;
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
@@ -89,6 +95,10 @@
       return;
     }
     if (element && nextStart !== previousWindowStart) {
+      if (demandFrame !== null) {
+        globalThis.cancelAnimationFrame(demandFrame);
+        demandFrame = null;
+      }
       demandSuppressed = true;
       if (rebaseFrame !== null) globalThis.cancelAnimationFrame(rebaseFrame);
       const adjustment = scrollCompensation(previousWindowStart, nextStart, RESULT_ROW_HEIGHT);
@@ -96,7 +106,6 @@
       rebaseFrame = globalThis.requestAnimationFrame(() => {
         rebaseFrame = null;
         demandSuppressed = false;
-        inspectDemand();
       });
     }
     previousWindowStart = nextStart;
@@ -112,9 +121,13 @@
     const first = items[0];
     const last = items.at(-1);
     if (!first || !last || loadingMore || pageError || demandSuppressed) return;
+    const physicalRange =
+      scrollElement && scrollElement.clientHeight > 0
+        ? visibleResultRange(scrollElement.scrollTop, scrollElement.clientHeight, table.numRows)
+        : null;
     const direction = resultDemand({
-      firstVisible: first.index,
-      lastVisible: last.index,
+      firstVisible: physicalRange?.firstVisible ?? first.index,
+      lastVisible: physicalRange?.lastVisible ?? last.index,
       windowStart,
       windowRows: table.numRows,
       loadedRows,
@@ -132,8 +145,15 @@
   }
 
   function inspectAfterScroll(): void {
-    inspectDemand();
-    globalThis.queueMicrotask(inspectDemand);
+    scheduleDemandInspection();
+  }
+
+  function scheduleDemandInspection(): void {
+    if (demandFrame !== null) return;
+    demandFrame = globalThis.requestAnimationFrame(() => {
+      demandFrame = null;
+      inspectDemand();
+    });
   }
 
   $effect(() => {
@@ -143,7 +163,7 @@
     complete;
     loadingMore;
     pageError;
-    inspectDemand();
+    scheduleDemandInspection();
   });
 
   $effect(() => {

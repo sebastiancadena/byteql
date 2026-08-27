@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { openMidiSample } from './support/app.js';
+import { openMidiSample, runSql } from './support/app.js';
 
 test('opens the bundled sample, queries five events, and inspects provenance', async ({ page }) => {
   await openMidiSample(page);
@@ -9,8 +9,7 @@ test('opens the bundled sample, queries five events, and inspects provenance', a
   // catalog table, which every batch session gets even at N=1.
   await expect(explorerTables.getByText('5', { exact: true })).toBeVisible();
 
-  await page.getByRole('textbox', { name: 'SQL query' }).fill('select * from events limit 5');
-  await page.getByRole('button', { name: 'Run query' }).click();
+  await runSql(page, 'select * from events limit 5');
   await expect(page.locator('.results-heading-meta').getByText('5 rows', { exact: true })).toBeVisible();
 
   await expect(page.getByRole('columnheader', { name: 'note Uint8' })).toBeVisible();

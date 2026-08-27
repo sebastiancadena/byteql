@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { resultDemand, scrollCompensation } from './result-scroll.js';
+import { resultDemand, scrollCompensation, visibleResultRange } from './result-scroll.js';
+
+describe('visibleResultRange', () => {
+  it('uses physical scroll geometry when the virtualizer range is stale', () => {
+    expect(visibleResultRange(589_747, 77, 16_384)).toEqual({ firstVisible: 16_381, lastVisible: 16_383 });
+  });
+
+  it('clamps an empty or zero-height viewport to the available rows', () => {
+    expect(visibleResultRange(10, 0, 4)).toEqual({ firstVisible: 0, lastVisible: 3 });
+  });
+});
 
 describe('resultDemand', () => {
   it('requests forward demand within eight rows of the window tail', () => {
