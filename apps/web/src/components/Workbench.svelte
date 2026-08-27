@@ -530,9 +530,11 @@
           <div class="results-heading-meta">
             {#if session.result}
               <span class="result-count">
-                {session.result.complete
-                  ? `${session.result.loadedRows.toLocaleString()} rows`
-                  : `${session.result.loadedRows.toLocaleString()} loaded · more available`}
+                {session.result.pageError
+                  ? `${session.result.loadedRows.toLocaleString()} loaded · ${session.result.pageError}`
+                  : session.result.complete
+                    ? `${session.result.loadedRows.toLocaleString()} rows`
+                    : `${session.result.loadedRows.toLocaleString()} loaded · more available`}
               </span>
               <span class="result-count tabular">{session.result.elapsedMs.toFixed(1)} ms</span>
             {/if}

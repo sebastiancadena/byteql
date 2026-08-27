@@ -41,7 +41,13 @@ import { SessionController } from './controller.js';
 import type { SampleId } from './samples.js';
 import { initialSessionState } from './state.js';
 
-const { sweepQueryPageOrphansMock, sweepSpillOrphansMock, queryInitialRows, queryPageRows, queryResultMemoryBytes } = vi.hoisted(() => ({
+const {
+  sweepQueryPageOrphansMock,
+  sweepSpillOrphansMock,
+  queryInitialRows,
+  queryPageRows,
+  queryResultMemoryBytes,
+} = vi.hoisted(() => ({
   sweepQueryPageOrphansMock: vi.fn().mockResolvedValue(undefined),
   sweepSpillOrphansMock: vi.fn().mockResolvedValue(undefined),
   queryInitialRows: 1_024,
@@ -250,6 +256,7 @@ class FakeQuerySession implements QuerySession {
     if (this.fetchError) {
       const error = this.fetchError;
       this.fetchError = null;
+      if (!error.message.includes('RESULT_SPILL_QUOTA_EXCEEDED')) this.cancelled += 1;
       throw error;
     }
     const nextPage = this.nextPages.shift() ?? null;
@@ -748,7 +755,7 @@ describe('SessionController', () => {
       pageErrorRetryable: false,
     });
     expect(query.cancelled).toBe(1);
-    expect(query.disposed).toBe(1);
+    expect(query.disposed).toBe(0);
   });
 
   it('stops an unsupported in-memory result with a narrower-SQL diagnostic', async () => {
@@ -767,7 +774,32 @@ describe('SessionController', () => {
       pageErrorRetryable: false,
     });
     expect(query.cancelled).toBe(1);
-    expect(query.disposed).toBe(1);
+    expect(query.disposed).toBe(0);
+  });
+
+  it('retains terminal pages so an earlier window can be restored', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    query.nextPages.push(
+      page(1, 1_024, rangeValues(8_192, 1_024)),
+      page(2, 9_216, rangeValues(8_192, 9_216)),
+    );
+    await controller.loadMoreResults();
+    await controller.loadMoreResults();
+    expect(controller.getState().result).toMatchObject({ loadedRows: 17_408 });
+
+    query.fetchError = new Error('DuckDB cursor stopped unexpectedly.');
+    await controller.loadMoreResults();
+
+    expect(query.disposed).toBe(0);
+    await controller.loadResultWindow(500);
+    expect(query.readCalls).toContain(0);
+    expect(controller.getState().result).toMatchObject({
+      windowStart: 0,
+      pageError: 'DuckDB cursor stopped unexpectedly. Run the query again to load more rows.',
+      pageErrorRetryable: false,
+    });
   });
 
   it('cancels demand without publishing its late page', async () => {

@@ -52,6 +52,11 @@ const opfsAvailable = (): boolean => typeof navigator !== 'undefined' && !!navig
 const isNotFoundError = (error: unknown): boolean =>
   (error instanceof Error ? error.name : (error as { name?: unknown } | null)?.name) === 'NotFoundError';
 
+const isOpfsUnavailableError = (error: unknown): boolean => {
+  const name = error instanceof Error ? error.name : (error as { name?: unknown } | null)?.name;
+  return name === 'NotSupportedError' || name === 'SecurityError';
+};
+
 const assertGeneratedNumber = (value: number, label: string): void => {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`${label} must be a non-negative safe integer.`);
@@ -348,8 +353,9 @@ export const createOpfsQueryPagePersistence = async (
     const generationName = String(generation);
     const generationRoot = await resultRoot.getDirectoryHandle(generationName, { create: true });
     return new OpfsQueryPagePersistence(resultRoot, generationName, generationRoot);
-  } catch {
-    return null;
+  } catch (error) {
+    if (isOpfsUnavailableError(error)) return null;
+    throw error;
   }
 };
 

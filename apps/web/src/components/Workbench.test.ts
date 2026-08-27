@@ -282,6 +282,28 @@ describe('Inspector Workbench', () => {
     expect(within(completeHeading).getByText('300 rows', { exact: true })).toBeTruthy();
   });
 
+  it('labels terminal page failures as loaded rows without claiming more are available', () => {
+    const controller = new FakeController({
+      ...readyState(),
+      result: pagedResult(result, {
+        loadedRows: 1_024,
+        complete: false,
+        completeTable: null,
+        pageError: 'The cursor stopped. Run the query again to load more rows.',
+        pageErrorRetryable: false,
+      }),
+    });
+    render(Workbench, { controller });
+
+    const heading = document.querySelector('.results-heading') as HTMLElement;
+    expect(
+      within(heading).getByText('1,024 loaded · The cursor stopped. Run the query again to load more rows.', {
+        exact: true,
+      }),
+    ).toBeTruthy();
+    expect(within(heading).queryByText(/more available/u)).toBeNull();
+  });
+
   it('runs the bounded overview when a source first becomes ready', async () => {
     const controller = new FakeController({
       ...readyState(),

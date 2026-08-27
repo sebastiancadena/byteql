@@ -406,4 +406,13 @@ describe('OPFS query page persistence', () => {
     await expect(createOpfsQueryPagePersistence(1)).resolves.toBeNull();
     await expect(sweepQueryPageOrphans()).resolves.toBeUndefined();
   });
+
+  it('surfaces OPFS setup quota failures instead of falling back to memory', async () => {
+    const quotaError = new DOMException('quota exceeded', 'QuotaExceededError');
+    vi.stubGlobal('navigator', {
+      storage: { getDirectory: vi.fn().mockRejectedValue(quotaError) },
+    });
+
+    await expect(createOpfsQueryPagePersistence(2)).rejects.toBe(quotaError);
+  });
 });

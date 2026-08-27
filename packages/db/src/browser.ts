@@ -677,6 +677,27 @@ class QuerySessionImpl implements QuerySession {
           }
         }
 
+        // A page that exactly fills its target has not necessarily reached EOF: the cursor only
+        // tells us that when its next batch is requested. Probe once now so the UI can publish an
+        // exact count immediately. Keep the first non-empty batch as the next-page remainder, so
+        // this lookahead never consumes or duplicates a row. Empty batches are skipped just as
+        // they are in the main accumulation loop.
+        if (rowCount === targetRows && this.remainder === null && !eof) {
+          while (true) {
+            failureNeedsCancellation = false;
+            const next = await this.iterator.next();
+            failureNeedsCancellation = true;
+            this.assertDemandOpen();
+            if (next.done) {
+              eof = true;
+              break;
+            }
+            if (next.value.numRows === 0) continue;
+            this.remainder = next.value;
+            break;
+          }
+        }
+
         if (rowCount === 0) {
           if (eof) this.finish();
           return null;

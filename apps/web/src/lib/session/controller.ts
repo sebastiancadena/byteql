@@ -617,7 +617,6 @@ export class SessionController {
         message: this.resultPageFailureMessage(error, 'More query rows could not be loaded.'),
         retryable,
       });
-      if (!retryable) await this.closeActiveQuery({ cancel: true });
     }
   }
 
@@ -648,7 +647,6 @@ export class SessionController {
         message: this.resultPageFailureMessage(error, 'The query result page could not be stored.'),
         retryable,
       });
-      if (!retryable) await this.closeActiveQuery({ cancel: true });
     }
   }
 
@@ -678,6 +676,7 @@ export class SessionController {
     if (!this.isCurrentQuery(this.sessionGeneration, generation) || this.activeQuery !== active) return null;
     const status = active.status();
     const summaries = active.pages();
+    const existing = this.state.result?.generation === generation ? this.state.result : null;
     const indexes = pageIndexesForWindow(summaries, anchorRow);
     active.pinPages(indexes);
     const pages = [];
@@ -720,8 +719,8 @@ export class SessionController {
       window,
       completeTable,
       elapsedMs: status.elapsedMs,
-      pageError: null,
-      pageErrorRetryable: false,
+      pageError: existing?.pageError ?? null,
+      pageErrorRetryable: existing?.pageErrorRetryable ?? false,
     };
   }
 

@@ -384,6 +384,34 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.connection.send).toHaveBeenCalledExactlyOnceWith('select * from events');
   });
 
+  it('detects EOF immediately when 1,024 rows exactly fill the initial page', async () => {
+    const reader = batchReader([duckdbResultTable(0, 1_024)]);
+    duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+    const database = await createBrowserDatabase();
+
+    const initial = await database.startQuery('select 1');
+    await expect(initial.fetchNext(1_024)).resolves.toMatchObject({ rowCount: 1_024 });
+    const status = initial.status();
+    await initial.dispose();
+    expect(status).toMatchObject({ loadedRows: 1_024, complete: true });
+    expect(reader.pulls).toBe(2);
+  });
+
+  it('detects EOF immediately when 9,216 rows exactly fill initial and later pages', async () => {
+    const reader = batchReader([duckdbResultTable(0, 9_216)]);
+    duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+    const database = await createBrowserDatabase();
+
+    const later = await database.startQuery('select 2');
+    await expect(later.fetchNext(1_024)).resolves.toMatchObject({ rowCount: 1_024 });
+    expect(later.status()).toMatchObject({ loadedRows: 1_024, complete: false });
+    await expect(later.fetchNext(8_192)).resolves.toMatchObject({ rowCount: 8_192 });
+    const status = later.status();
+    await later.dispose();
+    expect(status).toMatchObject({ loadedRows: 9_216, complete: true });
+    expect(reader.pulls).toBe(2);
+  });
+
   it('serializes concurrent fetchNext calls without duplicating rows', async () => {
     const reader = batchReader([duckdbResultTable(0, 2), duckdbResultTable(2, 2)]);
     duckdbMocks.connection.send.mockResolvedValueOnce(reader);
@@ -433,12 +461,12 @@ describe('createBrowserDatabase', () => {
     expect(page).toMatchObject({ index: 0, startRow: 0, rowCount: 2 });
     expect(Array.from(page.table.getChild('value')!.toArray())).toEqual([10, 11]);
     expect(session.pages()).toEqual([{ index: 0, startRow: 0, rowCount: 2 }]);
-    expect(session.status()).toMatchObject({ loadedRows: 2, complete: false, elapsedMs: 6.25 });
+    expect(session.status()).toMatchObject({ loadedRows: 2, complete: true, elapsedMs: 6.25 });
     expect(persistence.writes).toEqual([0, 0]);
   });
 
   it('terminalizes an iterator failure without losing already-published pages or reporting EOF', async () => {
-    const table = duckdbResultTable(40, 2);
+    const table = duckdbResultTable(40, 3);
     const iterator = {
       pulls: 0,
       returnCalls: 0,
