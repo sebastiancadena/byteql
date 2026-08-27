@@ -38,7 +38,9 @@ test('seamless demand reaches row one million with bounded geometry', async ({ p
 
   await page.evaluate(async () => window.__BYTEQL_E2E__!.drainQueryResult());
 
-  await expect(page.locator('.results-heading-meta').getByText('1,000,000 rows', { exact: true })).toBeVisible();
+  await expect(
+    page.locator('.results-heading-meta').getByText('1,000,000 rows', { exact: true }),
+  ).toBeVisible();
   await page.evaluate(async () => window.__BYTEQL_E2E__!.loadResultWindow(999_999));
   await scroll.evaluate(async (node) => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -89,7 +91,8 @@ test('replacement removes every path from an incomplete result generation', asyn
     page.locator('.results-heading-meta').getByText('1,024 loaded · more available', { exact: true }),
   ).toBeVisible();
 
-  const previousPaths = (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).resultOpfsPaths;
+  const previousPaths = (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics()))
+    .resultOpfsPaths;
   expect(previousPaths).toHaveLength(1);
 
   await expect(editor).toHaveAttribute('contenteditable', 'true');
@@ -97,7 +100,10 @@ test('replacement removes every path from an incomplete result generation', asyn
   await page.getByRole('button', { name: 'Run query' }).click();
   await expect(page.locator('.results-heading-meta').getByText('2 rows', { exact: true })).toBeVisible();
   await expect
-    .poll(async () => (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).resultOpfsPaths.length)
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).resultOpfsPaths.length,
+    )
     .toBe(1);
   const replacement = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
   expect(replacement.resultOpfsPaths).toHaveLength(1);
@@ -110,11 +116,15 @@ test('startup sweeps a seeded result-page orphan but preserves unrelated OPFS en
   await page.locator('[data-app-ready="true"]').waitFor();
   const seeded = await page.evaluate(() => window.__BYTEQL_E2E__!.seedResultPageOrphan());
   const beforeReload = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
-  expect(beforeReload.resultOpfsPaths).toEqual(expect.arrayContaining([seeded.orphanPath, seeded.unrelatedPath]));
+  expect(beforeReload.resultOpfsPaths).toEqual(
+    expect.arrayContaining([seeded.orphanPath, seeded.unrelatedPath]),
+  );
 
   await page.reload();
   await page.locator('[data-app-ready="true"]').waitFor();
-  await expect.poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).toMatchObject({
-    resultOpfsPaths: [seeded.unrelatedPath],
-  });
+  await expect
+    .poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics()))
+    .toMatchObject({
+      resultOpfsPaths: [seeded.unrelatedPath],
+    });
 });

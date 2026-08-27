@@ -69,7 +69,10 @@ export async function waitForAppReady(page: Page): Promise<void> {
   await page.locator('[data-app-ready="true"]').waitFor();
 }
 
-export async function openMidiSample(page: Page, { navigate = true }: { navigate?: boolean } = {}): Promise<void> {
+export async function openMidiSample(
+  page: Page,
+  { navigate = true }: { navigate?: boolean } = {},
+): Promise<void> {
   if (navigate) {
     await page.goto('/');
     await waitForAppReady(page);

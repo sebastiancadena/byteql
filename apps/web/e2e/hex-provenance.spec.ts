@@ -78,7 +78,10 @@ test('pcap: browse, reveal, filter-to-selection, and hidden columns chip', async
   await page.getByRole('button', { name: 'Filter results to selection' }).click();
   await expect(page.getByRole('textbox', { name: 'SQL query' })).toContainText('_src_start <');
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
-  const rowsText = await page.locator('.results-heading-meta').getByText(/\d+ rows/u).textContent();
+  const rowsText = await page
+    .locator('.results-heading-meta')
+    .getByText(/\d+ rows/u)
+    .textContent();
   expect(Number.parseInt(rowsText ?? '0', 10)).toBeGreaterThanOrEqual(1);
 });
 
