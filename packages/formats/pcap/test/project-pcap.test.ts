@@ -264,6 +264,38 @@ describe('tcp stream reassembly', () => {
     expect(findTable(result, 'streams').get(0)!.segment_count).toBe(2);
   });
 
+  it('reassembles a flow whose first payload-bearing segment is SYN+data', async () => {
+    // Standard forensic (Wireshark) semantics: the SYN consumes one sequence number, so the
+    // payload of a SYN+data segment at seq 1000 occupies wire sequences [1001, 1009) and the
+    // next non-SYN segment starts at 1009. Without the +1 the stream carries a permanent
+    // 1-byte hole and flushes 'gap', dropping every message after the first.
+    const payload = dnsOverTcp({ txId: 0x0102, name: 'tfo.example', type: 1 });
+    const synData = ethFrame({
+      etherType: 0x0800,
+      payload: ipv4({
+        protocol: 6,
+        src: '10.0.0.1',
+        dst: '10.0.0.2',
+        payload: tcp({
+          srcPort: 40000,
+          dstPort: 53,
+          flags: 0x12 /* PSH|SYN */,
+          seq: 1000,
+          payload: payload.subarray(0, 8),
+        }),
+      }),
+    });
+    const result = await parseAndProjectPcap(
+      capture([synData, tcpPacket(1009, payload.subarray(8))]),
+      new AbortController().signal,
+    );
+    expect(result.issues).toHaveLength(0);
+    expect(findTable(result, 'dns').numRows).toBe(1);
+    expect(findTable(result, 'dns').get(0)!.query_name).toBe('tfo.example');
+    expect(findTable(result, 'streams').get(0)!.status).toBe('ok');
+    expect(findTable(result, 'stream_segments').numRows).toBe(2);
+  });
+
   it('marks a gapped stream and emits no message', async () => {
     const payload = dnsOverTcp({ txId: 2, name: 'gap.example', type: 1 });
     const result = await parseAndProjectPcap(

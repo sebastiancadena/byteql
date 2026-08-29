@@ -131,6 +131,10 @@ export const tcpSegment: RecordParser = (bytes) => {
       dst_port: parsed.dstPort,
       seq_num: parsed.seqNum,
       ack_num: parsed.ackNum,
+      // Raw SYN flag: stream `offset` expressions need it to apply standard-forensic
+      // sequence-number semantics (a SYN consumes one sequence number, so a SYN+data
+      // payload starts at seq+1).
+      syn: f.syn,
       flags: tcpFlags(flagsByte),
       window_size: parsed.windowSize,
       body: bodyRange(parsed),

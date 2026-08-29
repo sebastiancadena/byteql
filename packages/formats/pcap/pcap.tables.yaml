@@ -131,7 +131,10 @@ dissect:
 streams:
   - name: tls_stream
     key: tcp_flow_key
-    offset: _.seq_num
+    # Standard-forensic sequence semantics (Wireshark): the SYN consumes one sequence number,
+    # so a SYN+data payload starts at seq+1. Without the +1 a SYN+data first segment leaves a
+    # permanent 1-byte hole and the stream flushes 'gap', dropping every later message.
+    offset: '_.seq_num + (_.syn ? 1 : 0)'
     framer: tls_record
     table: streams
     segments_table: stream_segments
@@ -140,7 +143,8 @@ streams:
       - { when: _.offset == 0, parser: tls_client_hello, table: tls }
   - name: dns_tcp_stream
     key: tcp_flow_key
-    offset: _.seq_num
+    # SYN adjustment as in tls_stream above.
+    offset: '_.seq_num + (_.syn ? 1 : 0)'
     framer: dns_tcp
     table: streams
     segments_table: stream_segments
