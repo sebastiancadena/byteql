@@ -503,10 +503,18 @@ const evaluateArithmetic = (operator: string, left: unknown, right: unknown): un
       return numberLeft - numberRight;
     case '*':
       return numberLeft * numberRight;
-    case '/':
-      return numberLeft / numberRight;
-    case '%':
-      return numberLeft % numberRight;
+    case '/': {
+      const quotient = numberLeft / numberRight;
+      // A non-finite quotient (Infinity/NaN) is not a representable row value in any numeric
+      // column: if it survived to a declared 64-bit column's seal, the throw would land outside
+      // per-record recovery and a poison record would take down the whole session.
+      return Number.isFinite(quotient) ? quotient : null;
+    }
+    case '%': {
+      const remainder = numberLeft % numberRight;
+      // 0 % 0 is NaN; same row-time-null rule as division above.
+      return Number.isFinite(remainder) ? remainder : null;
+    }
     case '|':
       return numberLeft | numberRight;
     case '^':

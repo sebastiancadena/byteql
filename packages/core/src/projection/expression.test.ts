@@ -360,6 +360,17 @@ describe('projection expressions', () => {
     expect(evaluate('_.left << 2', { _: { left: 3n } })).toBe(12n);
   });
 
+  it('returns null for non-finite number division and modulo results', () => {
+    // A non-finite number (Infinity/NaN) is not a representable row value in any numeric
+    // column: if it survived evaluation, a 64-bit column's seal would throw outside
+    // per-record recovery and a poison record would take down the whole session.
+    expect(evaluate('1 / 0')).toBeNull();
+    expect(evaluate('0 / 0')).toBeNull();
+    expect(evaluate('_.a / _.b', { _: { a: 5, b: 0 } })).toBeNull();
+    expect(evaluate('0 % 0')).toBeNull();
+    expect(evaluate('_.a % _.b', { _: { a: 5, b: 0 } })).toBeNull();
+  });
+
   it('compares bigint fields against numeric literals consistently with ordering operators', () => {
     expect(evaluate('_.big == 5', { _: { big: 5n } })).toBe(true);
     expect(evaluate('_.big == 5', { _: { big: 6n } })).toBe(false);
