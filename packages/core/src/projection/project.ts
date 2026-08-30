@@ -726,6 +726,20 @@ export const compileProjection = (
         `segments_table ${JSON.stringify(stream.segmentsTable)} is shared by streams with different feed tables`,
       );
     }
+    // Rule 7 (key half): the feed table's key becomes a segments-table column next to the
+    // fixed segment_id/stream_id/offset columns (streamSegmentsOutputTypes). A feed key
+    // named like any of them would collapse into that column in the schema object literal —
+    // the segments table would lose a fixed column and its join key would carry the wrong
+    // values, with no error at load or runtime.
+    if (streamSegmentsFixedColumns.has(stream.feedKeyColumn!)) {
+      throw new ProjectionCompileError(
+        'PROJECTION_STREAM_INVALID',
+        `streams.${streamIndex}.segments_table`,
+        `feed table ${JSON.stringify(stream.feedTable)}'s key ${JSON.stringify(
+          stream.feedKeyColumn,
+        )} collides with a fixed column of segments table ${JSON.stringify(stream.segmentsTable)}`,
+      );
+    }
   }
 
   // Rule 9: availability fixpoint. `avail(entry)` is the set of tables whose row key is
@@ -1032,6 +1046,11 @@ export const tableOutputTypes = (table: CompiledProjectionTable): Record<string,
   types._src_end = 'uint64';
   return types;
 };
+
+// Fixed segments-table columns, which the feed table's key column is placed next to — see
+// streamSegmentsOutputTypes. A feed key with any of these names would collide in that object
+// literal, so the compile rejects them (rule 7, key half).
+const streamSegmentsFixedColumns = new Set(['segment_id', 'stream_id', 'offset']);
 
 // Segment rows recorded for a stream's assembler buffer: one row per contiguous byte range
 // folded into the reassembled stream, keyed onto the feed table's own row (feedKeyColumn).

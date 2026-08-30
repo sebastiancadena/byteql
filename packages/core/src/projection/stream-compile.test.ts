@@ -256,6 +256,16 @@ streams:`,
     expectCode(yaml, 'PROJECTION_STREAM_INVALID');
   });
 
+  it('rule 7: rejects a feed table whose key collides with a segments-table fixed column', () => {
+    // streamSegmentsOutputTypes places the feed key next to the fixed segment_id/stream_id/
+    // offset columns; a feed key with any of those names would collapse into one of them in
+    // the schema object literal and silently corrupt the segments table's join.
+    for (const key of ['segment_id', 'stream_id', 'offset']) {
+      const yaml = validYaml.replace('key: chunk_id', `key: ${key}`);
+      expectCode(yaml, 'PROJECTION_STREAM_INVALID');
+    }
+  });
+
   it('rule 8: rejects an unregistered message parser', () => {
     const yaml = validYaml.replace('parser: msg_parser, table: msgs', 'parser: no_such_parser, table: msgs');
     expectCode(yaml, 'PROJECTION_PARSER_UNKNOWN');
