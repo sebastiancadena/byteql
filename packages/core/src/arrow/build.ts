@@ -53,29 +53,54 @@ const arrowType = (type: ArrowTypeName): DataType => {
   }
 };
 
-// int64 range: [-2^63, 2^63).
+// int64 range: [-2^63, 2^63). uint64 range: [0, 2^64).
 const MIN_INT64 = -(2n ** 63n);
 const MAX_INT64_EXCLUSIVE = 2n ** 63n;
+const MIN_UINT64 = 0n;
+const MAX_UINT64_EXCLUSIVE = 2n ** 64n;
 
-// Validates a number/bigint value against int64 range and returns it as an exact bigint,
+// Validates a number/bigint value against a 64-bit range and returns it as an exact bigint,
 // throwing the shared ARROW_UNSAFE_INT64 message for whichever representation was given.
-const requireInt64 = (value: number | bigint, table: string, column: string): bigint => {
+// (The stable error code covers the whole "cannot be represented in a declared 64-bit integer
+// column" family, uint64 included.)
+const requireFixed64 = (
+  value: number | bigint,
+  min: bigint,
+  maxExclusive: bigint,
+  table: string,
+  column: string,
+): bigint => {
+  let exact: bigint;
   if (typeof value === 'number') {
     if (!Number.isSafeInteger(value)) {
       throw new Error(
         `ARROW_UNSAFE_INT64: ${table}.${column} received the number ${value}, which cannot be represented exactly in a 64-bit integer column`,
       );
     }
-    return BigInt(value);
+    exact = BigInt(value);
+  } else {
+    exact = value;
   }
-  if (value < MIN_INT64 || value >= MAX_INT64_EXCLUSIVE) {
+  if (exact < min || exact >= maxExclusive) {
     throw new Error(
-      `ARROW_UNSAFE_INT64: ${table}.${column} received the bigint ${value}, which does not fit in a 64-bit integer column`,
+      `ARROW_UNSAFE_INT64: ${table}.${column} received the bigint ${exact}, which does not fit in a 64-bit integer column`,
     );
   }
-  return value;
+  return exact;
 };
 
+const requireInt64 = (value: number | bigint, table: string, column: string): bigint =>
+  requireFixed64(value, MIN_INT64, MAX_INT64_EXCLUSIVE, table, column);
+
+// uint64 covers [0, 2^64) — half of that range sits past the int64 bound, and arrow stores
+// uint64 as 32-bit word pairs, so the full range is representable. The int64 bound must not
+// be applied here: host byte offsets and 64-bit timestamps past 2^63 are valid uint64 values.
+const requireUint64 = (value: number | bigint, table: string, column: string): bigint =>
+  requireFixed64(value, MIN_UINT64, MAX_UINT64_EXCLUSIVE, table, column);
+
+// Range-checks every value of a declared 64-bit column (numbers AND bigints — arrow would
+// silently two's-complement-wrap an out-of-range bigint otherwise) and converts it to the
+// exact bigint arrow consumes.
 const valuesForType = (
   values: readonly unknown[],
   type: ArrowTypeName,
@@ -83,7 +108,18 @@ const valuesForType = (
   column: string,
 ): readonly unknown[] => {
   if (type !== 'int64' && type !== 'uint64') return values;
-  return values.map((value) => (typeof value === 'number' ? requireInt64(value, table, column) : value));
+  const check = type === 'int64' ? requireInt64 : requireUint64;
+  return values.map((value) => {
+    if (value === null || value === undefined) return value;
+    if (typeof value !== 'number' && typeof value !== 'bigint') {
+      throw new Error(
+        `ARROW_UNSAFE_INT64: ${table}.${column} received ${JSON.stringify(
+          value,
+        )}, expected a number, bigint, or null for a 64-bit integer column`,
+      );
+    }
+    return check(value, table, column);
+  });
 };
 
 // Convert a projected timestamp_us value into exact int64 microseconds, with no float

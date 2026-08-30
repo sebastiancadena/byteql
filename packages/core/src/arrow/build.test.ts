@@ -80,6 +80,35 @@ describe('Arrow table construction', () => {
     expect(() => projectedTableToArrow(fractional)).toThrowError(/ARROW_UNSAFE_INT64/);
   });
 
+  it('accepts bigint values across the full uint64 range for uint64 columns', () => {
+    // uint64 covers [0, 2^64) and arrow stores it as 32-bit word pairs, so the int64 bound
+    // must not be applied to uint64 columns: a host byte offset or 64-bit timestamp past
+    // 2^63 is a valid uint64 value.
+    const topHalf: ProjectedTable = {
+      name: 'top_half',
+      rowCount: 1,
+      columns: { value: [2n ** 63n] },
+      types: { value: 'uint64' },
+    };
+    expect(Array.from(projectedTableToArrow(topHalf).getChild('value') ?? [])).toEqual([2n ** 63n]);
+
+    const outOfRange: ProjectedTable = {
+      name: 'out_of_range',
+      rowCount: 1,
+      columns: { value: [2n ** 64n] },
+      types: { value: 'uint64' },
+    };
+    expect(() => projectedTableToArrow(outOfRange)).toThrowError(/ARROW_UNSAFE_INT64/);
+
+    const negative: ProjectedTable = {
+      name: 'negative',
+      rowCount: 1,
+      columns: { value: [-1n] },
+      types: { value: 'uint64' },
+    };
+    expect(() => projectedTableToArrow(negative)).toThrowError(/ARROW_UNSAFE_INT64/);
+  });
+
   it('rejects a column whose length does not match rowCount', () => {
     const table = logicalTable();
     table.columns.utf8_value = ['only one'];
