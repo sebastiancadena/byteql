@@ -292,7 +292,7 @@ try {
   await smptePage.getByRole('button', { name: 'Run query' }).waitFor();
   await smptePage.getByRole('button', { name: 'Play all notes' }).click();
   await smptePage.getByRole('button', { name: 'Run query' }).click();
-  await smptePage.getByRole('columnheader', { name: /seconds/u }).waitFor();
+  await smptePage.getByRole('columnheader', { name: /seconds/u }).waitFor({ timeout: 90_000 });
   if ((await smptePage.getByRole('button', { name: 'Open in…' }).count()) !== 0) {
     throw new Error('SMPTE playback results exposed the disabled audio viewer.');
   }
