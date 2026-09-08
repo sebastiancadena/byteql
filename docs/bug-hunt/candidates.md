@@ -67,7 +67,7 @@ Z1-6.** Remaining candidates deferred/documented below.
 - **Z1-1 — P2, DEFERRED — `==`/`!=` against `null` returns `null`, never a boolean.**
   The null-propagation guard in `evaluateBinary` runs before the equality cases, so
   `_.x == null` / `_.x != null` always evaluate to null: `where: '_.x != null'`
-  silently empties the table. The PRD documents null *field access*, not Kaitai-style
+  silently empties the table. The PRD documents null _field access_, not Kaitai-style
   nil comparison, so this is a DSL-semantics gap rather than a contract violation; a
   fix (null-aware equality) is a documented-semantics decision, not a minimal fix.
   Workaround: guard with a builtin (e.g. `len()` on byte fields).
@@ -86,7 +86,7 @@ Z1-6.** Remaining candidates deferred/documented below.
   error semantics is a design decision). Natural next-pack work alongside Z1-3.
 - **Z1-7 — P2, DEFERRED — multi-origin parser routes null parent keys that rule 7's
   static check claims are guaranteed.** Rule 7's availability fixpoint accumulates
-  ancestors over *all* routes into a parser, so a child table whose
+  ancestors over _all_ routes into a parser, so a child table whose
   `parent_key.table` is reachable only via one of two routes compiles, then rows fed
   through the other route get a null parent key. No shipped spec has a parser with
   two table-originated routes; fixing requires per-route availability tracking.

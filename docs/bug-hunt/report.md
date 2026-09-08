@@ -52,7 +52,7 @@ rule 7 gains a key half that rejects the collision at load with
 the SYN consuming one sequence number). Not among the documented limitations.
 
 **Bug:** Both stream `offset` expressions in `pcap.tables.yaml` used the raw `_.seq_num`.
-When the *first payload-bearing* segment of a flow carries the SYN flag (TCP Fast Open /
+When the _first payload-bearing_ segment of a flow carries the SYN flag (TCP Fast Open /
 SYN+data), its payload actually occupies wire sequences `[seq+1, …)`. Storing it at
 `[seq, …)` leaves a permanent 1-byte hole; the stream flushes `status: 'gap'` with a
 `STREAM_GAP` issue and **every message after the first on that flow is dropped** (the hole
@@ -89,7 +89,7 @@ residency budget with LRU stream eviction) is a design change, not a minimal fix
 
 - **Z1-1** — `==`/`!=` against the `null` literal always evaluates to null (the
   null-propagation guard precedes the equality cases), so `where: '_.x != null'`
-  silently empties a table. The PRD documents null *field access*, not Kaitai-style
+  silently empties a table. The PRD documents null _field access_, not Kaitai-style
   nil comparison; making equality null-aware is a documented-semantics decision.
 - **Z1-3** — a dissect child parser's `resolve()` output is not range-validated; a
   negative byte offset would now throw `ARROW_UNSAFE_INT64` at seal (the Z1-2 fix made
@@ -99,7 +99,7 @@ residency budget with LRU stream eviction) is a design change, not a minimal fix
   (verified: 300 in an int8 column stores 44). All shipped packs are range-safe by
   construction; per-type range validation in `valuesForType` (null vs. error
   semantics) is the natural next-pack item alongside Z1-3.
-- **Z1-7** — rule 7's availability fixpoint accumulates ancestors over *all* routes
+- **Z1-7** — rule 7's availability fixpoint accumulates ancestors over _all_ routes
   into a parser, so a child table whose `parent_key.table` is reachable via only one
   of two routes compiles, then rows fed through the other route carry a null parent
   key. No shipped spec has a two-route parser; fixing needs per-route tracking.
@@ -156,7 +156,7 @@ negative → throw → `DISSECT_PARSE_FAILED` errors row, never a crash).
 **Zone 5 — TCP assembler.** `StreamAssembler`: duplicate/overlap detection (backward
 scan over the sorted, non-overlapping invariant), rebase-only-while-unconsumed,
 partial-overlap → `error` (takes precedence over rebase, which is correct — a
-below-base overlapping segment is still a partial overlap), cap on *extent* not span,
+below-base overlapping segment is still a partial overlap), cap on _extent_ not span,
 frontier/`contiguousEnd` recompute including reset on rebase, dedup excluded from
 `byte_count`/`segment_count`. Engine wiring: `below_base`/`overlap` → terminal `error` +
 one `STREAM_ERROR`; `truncated` → terminal + `STREAM_TRUNCATED` (with the fallback-span
