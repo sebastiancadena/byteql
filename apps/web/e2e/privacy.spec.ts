@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
-import { expect, test, type Request } from '@playwright/test';
+import { expect, test, type Page, type Request } from '@playwright/test';
 
 import { fixturePath, openAudioViewer, runSql, waitForAppReady } from './support/app.js';
 
@@ -16,7 +16,25 @@ const recordRequest = (request: Request): RecordedRequest => ({
   body: request.postData(),
 });
 
+async function fallbackExport(page: Page, format: 'csv' | 'parquet'): Promise<void> {
+  const dialog = page.getByRole('dialog', { name: 'Download results' });
+  if (!(await dialog.isVisible())) {
+    await page.getByRole('button', { name: 'Download results', exact: true }).click();
+  }
+  await page.getByLabel('Format').selectOption(format);
+  await expect(page.getByRole('button', { name: 'Download', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Download', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
+  const pending = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save file', exact: true }).click();
+  expect(await (await pending).failure()).toBeNull();
+  await page.getByRole('button', { name: 'Dismiss' }).click();
+}
+
 test('emits zero network events or local-data sentinels after application readiness', async ({ page }) => {
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, 'showSaveFilePicker');
+  });
   await page.goto('/');
   await waitForAppReady(page);
 
@@ -47,6 +65,35 @@ test('emits zero network events or local-data sentinels after application readin
     .resultOpfsPaths;
   expect(resultPaths.length).toBeGreaterThan(1);
   expect(resultPaths.every((path) => /^byteql-results\/\d+\/\d+\.arrow$/u.test(path))).toBe(true);
+
+  await fallbackExport(page, 'csv');
+  await fallbackExport(page, 'parquet');
+
+  await page.evaluate(() => {
+    const scope = globalThis as typeof globalThis & {
+      showSaveFilePicker?: () => Promise<FileSystemFileHandle>;
+    };
+    scope.showSaveFilePicker = async () =>
+      ({
+        kind: 'file',
+        name: 'privacy-failure.csv',
+        async createWritable() {
+          return {
+            async write() {
+              throw new DOMException('Privacy test quota exhausted.', 'QuotaExceededError');
+            },
+            async close() {},
+            async abort() {},
+          } as FileSystemWritableFileStream;
+        },
+      }) as FileSystemFileHandle;
+  });
+  await page.getByLabel('Format').selectOption('csv');
+  await page.getByRole('button', { name: 'Download', exact: true }).click();
+  await expect(page.getByRole('alert').first()).toContainText('quota');
+  await page.getByRole('button', { name: 'Dismiss' }).click();
+  await page.evaluate(() => Reflect.deleteProperty(window, 'showSaveFilePicker'));
+  await fallbackExport(page, 'csv');
 
   await page.getByRole('button', { name: 'Play all notes' }).click();
   await page.getByRole('button', { name: 'Run query' }).click();

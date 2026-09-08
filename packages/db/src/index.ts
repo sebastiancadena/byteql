@@ -1,5 +1,20 @@
 export { createBrowserDatabase, type BrowserDatabaseOptions } from './browser.js';
+export { createExportFiles, type ExportFiles } from './export-files.js';
+export { writeParquet, type ParquetWriterDependencies } from './export-parquet.js';
+export {
+  isSupportedParquetType,
+  type ParquetArtifact,
+  type ParquetExportOptions,
+  unsupportedParquetTypeMessage,
+} from './export-types.js';
 export { probeSpillCapability, type SpillProbeReport } from './spill-probe.js';
+export {
+  probeResultsExport,
+  readExportArtifact,
+  type ExportArtifactInput,
+  type ExportArtifactReadback,
+  type ExportProbeReport,
+} from './export-probe.js';
 export { sweepSpillOrphans } from './spill-files.js';
 export {
   createOpfsQueryPagePersistence,

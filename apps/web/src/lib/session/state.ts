@@ -2,6 +2,7 @@ import type { PackQuery, ParseIssue, ParseResult, TableOverview } from '@byteql/
 import type { Schema, Table } from 'apache-arrow';
 
 import { RESULT_WINDOW_ROWS } from './result-window.js';
+import type { ExportState } from '../export/operation.js';
 
 export type SessionPhase =
   'idle' | 'opening' | 'normalizing' | 'parsing' | 'projecting' | 'ready' | 'querying' | 'failed';
@@ -60,6 +61,7 @@ export interface SessionState {
   fatalError: string | null;
   /** Active hex-pane byte selection: display-name-qualified absolute offsets, end exclusive. */
   byteSelection: { file: string; start: number; end: number } | null;
+  download: ExportState | null;
 }
 
 export type SessionEvent =
@@ -91,7 +93,8 @@ export type SessionEvent =
   | { type: 'rowSelected'; row: number | null }
   | { type: 'cancelled' }
   | { type: 'failed'; message: string }
-  | { type: 'byteRangeSelected'; range: { file: string; start: number; end: number } | null };
+  | { type: 'byteRangeSelected'; range: { file: string; start: number; end: number } | null }
+  | { type: 'downloadUpdated'; generation: number; download: ExportState | null };
 
 export const initialSessionState: SessionState = {
   phase: 'idle',
@@ -109,6 +112,7 @@ export const initialSessionState: SessionState = {
   selectedRow: null,
   fatalError: null,
   byteSelection: null,
+  download: null,
 };
 
 const isValidPagedWindow = (result: PagedResultState): boolean =>
@@ -225,5 +229,9 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
       };
     case 'byteRangeSelected':
       return state.source === null ? state : { ...state, byteSelection: event.range };
+    case 'downloadUpdated':
+      if (event.download && event.download.generation !== event.generation) return state;
+      if (state.download && state.download.generation !== event.generation) return state;
+      return { ...state, download: event.download };
   }
 }

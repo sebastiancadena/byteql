@@ -1,9 +1,16 @@
 import {
   probeSpillCapability,
+  probeResultsExport,
+  readExportArtifact,
+  type ExportProbeReport,
+  type ExportArtifactInput,
+  type ExportArtifactReadback,
   type ByteqlDatabase,
   type FileStatisticsSummary,
+  type QuerySession,
   type SpillProbeReport,
 } from '@byteql/db';
+import type { Table } from 'apache-arrow';
 
 import {
   createInlineParseWorker,
@@ -29,11 +36,18 @@ export interface ReadStats {
   spillBytes: number;
 }
 
+export interface SerializableResult {
+  columns: string[];
+  types: string[];
+  rows: Array<Array<string | number | boolean | null>>;
+}
+
 export interface BrowserE2EControl {
   armParserCrash(): void;
   workerCount(): number;
   audioStats(): AudioStats;
   spillProbe: () => Promise<SpillProbeReport>;
+  probeResultsExport: (variant: 'mvp' | 'eh', rows: number) => Promise<ExportProbeReport>;
   /**
    * Plain data spread into `SessionControllerOptions` by App.svelte when it constructs the
    * `SessionController` — e2e-build only. Empty by default so e2e specs exercise the same
@@ -63,6 +77,9 @@ export interface BrowserE2EControl {
    */
   readStats(): Promise<ReadStats>;
   queryResultMetrics(): Promise<QueryResultMetrics>;
+  storedResult(): Promise<SerializableResult>;
+  exportFiles(): Promise<readonly string[]>;
+  readExportArtifact(input: ExportArtifactInput): Promise<ExportArtifactReadback>;
   drainQueryResult(): Promise<void>;
   loadResultWindow(globalRow: number): Promise<void>;
   seedResultPageOrphan(): Promise<{ orphanPath: string; unrelatedPath: string }>;
@@ -85,6 +102,26 @@ type IterableDirectoryHandle = FileSystemDirectoryHandle & {
 
 const SPILL_ROOT_NAME = 'byteql-spill';
 const RESULT_ROOT_NAME = 'byteql-results';
+const EXPORT_ROOT_NAME = 'byteql-exports';
+
+const normalizeValue = (value: unknown): string | number | boolean | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (value instanceof Uint8Array) {
+    return `0x${Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+  }
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+};
+
+const serializeTable = (table: Table): SerializableResult => ({
+  columns: table.schema.fields.map((field) => field.name),
+  types: table.schema.fields.map((field) => field.type.toString()),
+  rows: Array.from({ length: table.numRows }, (_, row) =>
+    table.schema.fields.map((_field, column) => normalizeValue(table.getChildAt(column)?.get(row))),
+  ),
+});
 
 async function walkSpillFiles(dir: FileSystemDirectoryHandle, prefix: string): Promise<string[]> {
   const out: string[] = [];
@@ -222,6 +259,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       workerCount: () => workerCount,
       audioStats: () => ({ ...audioStats }),
       spillProbe: () => probeSpillCapability(),
+      probeResultsExport,
       // App.svelte spreads this into `SessionControllerOptions` at controller construction
       // time, on app boot — well before any `page.evaluate()` a spec runs after `page.goto()`
       // could reach it. A spec that needs non-default tiering thresholds must instead set
@@ -273,6 +311,21 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
         };
         return { ...metrics, resultOpfsPaths: await collectOpfsFiles(RESULT_ROOT_NAME) };
       },
+      async storedResult() {
+        const result = (queryController as unknown as { activeQuery?: QuerySession } | null)?.activeQuery;
+        if (!result) throw new Error('No stored query result is attached.');
+        const serialized: SerializableResult = {
+          columns: result.schema.fields.map((field) => field.name),
+          types: result.schema.fields.map((field) => field.type.toString()),
+          rows: [],
+        };
+        for (const summary of result.pages()) {
+          serialized.rows.push(...serializeTable((await result.readPage(summary.index)).table).rows);
+        }
+        return serialized;
+      },
+      exportFiles: () => collectOpfsFiles(EXPORT_ROOT_NAME),
+      readExportArtifact,
       async drainQueryResult() {
         await queryController?.drainQueryResult();
       },

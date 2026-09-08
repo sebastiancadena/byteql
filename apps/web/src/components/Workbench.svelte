@@ -4,6 +4,7 @@
   import type { Table } from 'apache-arrow';
   import { onMount, untrack } from 'svelte';
 
+  import type { ExportOptions } from '../lib/export/options.js';
   import { createCoverageMemo, provenanceOfRow } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
   import type { SampleId } from '../lib/session/samples.js';
@@ -21,6 +22,7 @@
   import HexPane from './HexPane.svelte';
   import Inspector from './Inspector.svelte';
   import ResultGrid from './ResultGrid.svelte';
+  import ResultsDownload from './ResultsDownload.svelte';
   import ShortcutsOverlay from './ShortcutsOverlay.svelte';
   import SqlEditor from './SqlEditor.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -34,6 +36,10 @@
     loadMoreResults(): Promise<void>;
     loadResultWindow(globalRow: number): Promise<void>;
     retryResultPage(): Promise<void>;
+    downloadResults(options: ExportOptions): Promise<void>;
+    cancelResultsDownload(): Promise<void>;
+    saveResultsDownload(): void;
+    dismissResultsDownload(): Promise<void>;
     cancel(): Promise<void>;
     selectResultRow(row: number | null): void;
     selectByteRange(range: { file: string; start: number; end: number } | null): void;
@@ -538,6 +544,7 @@
               </span>
               <span class="result-count tabular">{session.result.elapsedMs.toFixed(1)} ms</span>
             {/if}
+            <ResultsDownload {controller} {session} />
           </div>
         </div>
 

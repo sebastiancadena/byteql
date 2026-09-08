@@ -41,6 +41,8 @@ import {
   type StoredQueryPage,
 } from './query-pages.js';
 import { deleteSpillChunks, deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
+import { defaultParquetWriterDependencies, writeParquet } from './export-parquet.js';
+import type { ParquetArtifact, ParquetExportOptions } from './export-types.js';
 
 // DuckDB-WASM loads parquet dynamically. ByteQL mirrors both signed platform variants under this
 // same-origin repository; letting LOAD use DuckDB's default would leak a request to
@@ -52,7 +54,7 @@ const LOCAL_EXTENSION_REPOSITORY_PATH = '/duckdb-extensions';
 // (DuckDB rejects changing allowed_directories once external access is off), then lock.
 // Task 1 spike rung 1 — allowed_directories works with external access disabled.
 const HARDENING_STATEMENTS = [
-  "SET allowed_directories = ['opfs://byteql-spill/'];",
+  "SET allowed_directories = ['opfs://byteql-spill/', 'opfs://byteql-exports/'];",
   'SET enable_external_access = false;',
   'SET autoinstall_known_extensions = false;',
   'SET autoload_known_extensions = false;',
@@ -567,7 +569,7 @@ const convertDuckdbTable = async (
 };
 
 class QuerySessionImpl implements QuerySession {
-  readonly schema: Schema;
+  private resultSchema: Schema;
   private readonly summaries: QueryPageSummary[] = [];
   private fetchTail: Promise<void> = Promise.resolve();
   private remainder: DuckdbRecordBatch | null = null;
@@ -583,7 +585,7 @@ class QuerySessionImpl implements QuerySession {
   private disposePromise: Promise<void> | null = null;
 
   private constructor(
-    private readonly readerSchema: DuckdbSchema,
+    private readonly readSchema: () => DuckdbSchema,
     private readonly iterator: DuckdbQueryIterator,
     private readonly store: QueryPageStore,
     private readonly startedAt: number,
@@ -592,12 +594,16 @@ class QuerySessionImpl implements QuerySession {
     private readonly sendCount: () => number,
     schema: Schema,
   ) {
-    this.schema = schema;
+    this.resultSchema = schema;
     this.elapsedMs = performance.now() - startedAt;
   }
 
+  get schema(): Schema {
+    return this.resultSchema;
+  }
+
   static async create(
-    readerSchema: DuckdbSchema,
+    readSchema: () => DuckdbSchema,
     iterator: DuckdbQueryIterator,
     store: QueryPageStore,
     startedAt: number,
@@ -605,9 +611,9 @@ class QuerySessionImpl implements QuerySession {
     onDisposed: () => void,
     sendCount: () => number,
   ): Promise<QuerySessionImpl> {
-    const schemaTable = await convertDuckdbTable(readerSchema, []);
+    const schemaTable = await convertDuckdbTable(readSchema(), []);
     return new QuerySessionImpl(
-      readerSchema,
+      readSchema,
       iterator,
       store,
       startedAt,
@@ -664,7 +670,13 @@ class QuerySessionImpl implements QuerySession {
             batch = next.value;
           }
 
-          if (batch.numRows === 0) continue;
+          if (batch.numRows === 0) {
+            // Arrow represents a schema-only stream with an internal zero-row placeholder
+            // batch. Its schema is authoritative even when the reader's public schema remains
+            // the empty pre-open value.
+            this.resultSchema = (await convertDuckdbTable(batch.schema, [])).schema;
+            continue;
+          }
           const needed = targetRows - rowCount;
           if (batch.numRows > needed) {
             batches.push(batch.slice(0, needed));
@@ -698,11 +710,18 @@ class QuerySessionImpl implements QuerySession {
         }
 
         if (rowCount === 0) {
-          if (eof) this.finish();
+          if (eof) {
+            const eofSchema = (await convertDuckdbTable(this.readSchema(), [])).schema;
+            if (eofSchema.fields.length > 0 || this.resultSchema.fields.length === 0) {
+              this.resultSchema = eofSchema;
+            }
+            this.finish();
+          }
           return null;
         }
 
-        const table = await convertDuckdbTable(this.readerSchema, batches);
+        const table = await convertDuckdbTable(this.readSchema(), batches);
+        this.resultSchema = table.schema;
         this.assertDemandOpen();
         const stored = await this.store.put(this.summaries.length, this.loadedRows, table);
         this.assertDemandOpen();
@@ -884,6 +903,11 @@ interface PendingQueryToken {
   cancelSignalPromise: Promise<boolean> | null;
 }
 
+interface ActiveExportToken {
+  readonly controller: AbortController;
+  promise: Promise<ParquetArtifact>;
+}
+
 class BrowserDatabase implements ByteqlDatabase {
   private connection: AsyncDuckDBConnection | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -896,6 +920,7 @@ class BrowserDatabase implements ByteqlDatabase {
   private terminatePromise: Promise<void> | null = null;
   private pendingQuery: PendingQueryToken | null = null;
   private activeQuery: QuerySessionImpl | null = null;
+  private activeExport: ActiveExportToken | null = null;
   private queryGeneration = 0;
   private ingestStarting = false;
   private activeIngest: IngestSessionImpl | null = null;
@@ -962,6 +987,7 @@ class BrowserDatabase implements ByteqlDatabase {
 
     this.ingestStarting = true;
     try {
+      await this.abortActiveExport();
       if (this.pendingQuery) {
         await this.cancelPendingQuery(this.pendingQuery);
       }
@@ -1013,6 +1039,7 @@ class BrowserDatabase implements ByteqlDatabase {
     if (this.pendingQuery) {
       void this.cancelPendingQuery(this.pendingQuery).catch(() => false);
     }
+    const exportCleanup = this.abortActiveExport();
     const token: PendingQueryToken = {
       cancelRequested: false,
       sendStarted: false,
@@ -1023,6 +1050,7 @@ class BrowserDatabase implements ByteqlDatabase {
     this.pendingQuery = token;
 
     const result = this.enqueue(async (connection) => {
+      await exportCleanup;
       if (token.cancelRequested) throw new Error('Query result session is closed.');
       if (this.activeIngest || this.ingestStarting) {
         throw new Error('An ingest session is already open.');
@@ -1051,7 +1079,7 @@ class BrowserDatabase implements ByteqlDatabase {
         iterator = reader[Symbol.asyncIterator]();
         if (token.cancelRequested) throw new Error('Query result session is closed.');
         session = await QuerySessionImpl.create(
-          reader.schema,
+          () => reader.schema,
           iterator,
           store,
           startedAt,
@@ -1087,6 +1115,7 @@ class BrowserDatabase implements ByteqlDatabase {
     if (this.disposeRequested) {
       return false;
     }
+    await this.abortActiveExport();
     if (this.pendingQuery) {
       return this.cancelPendingQuery(this.pendingQuery);
     }
@@ -1094,6 +1123,42 @@ class BrowserDatabase implements ByteqlDatabase {
       return this.activeQuery.cancel();
     }
     return false;
+  }
+
+  exportParquet(result: QuerySession, options: ParquetExportOptions): Promise<ParquetArtifact> {
+    if (this.disposeRequested) {
+      return Promise.reject(new Error('ByteQL database has been disposed.'));
+    }
+    try {
+      this.assertExportableResult(result);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (this.activeExport) {
+      return Promise.reject(new Error('A result export is already active.'));
+    }
+
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort(options.signal.reason);
+    if (options.signal.aborted) forwardAbort();
+    else options.signal.addEventListener('abort', forwardAbort, { once: true });
+
+    const operation = this.enqueue(async () => {
+      controller.signal.throwIfAborted();
+      this.assertExportableResult(result);
+      return writeParquet(defaultParquetWriterDependencies(this.database), result, {
+        ...options,
+        signal: controller.signal,
+      });
+    });
+    const token: ActiveExportToken = { controller, promise: operation };
+    const promise = operation.finally(() => {
+      options.signal.removeEventListener('abort', forwardAbort);
+      if (this.activeExport === token) this.activeExport = null;
+    });
+    token.promise = promise;
+    this.activeExport = token;
+    return promise;
   }
 
   async listTables(): Promise<readonly string[]> {
@@ -1146,6 +1211,12 @@ class BrowserDatabase implements ByteqlDatabase {
 
   private async disposeInternal(): Promise<void> {
     const errors: unknown[] = [];
+
+    try {
+      await this.abortActiveExport();
+    } catch (error) {
+      errors.push(error);
+    }
 
     if (this.pendingQuery) {
       try {
@@ -1207,6 +1278,7 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   private async closeActiveQuery(): Promise<void> {
+    await this.abortActiveExport();
     const session = this.activeQuery;
     if (!session) return;
     await session.cancel();
@@ -1217,6 +1289,24 @@ class BrowserDatabase implements ByteqlDatabase {
     if (!token.sendStarted || !token.connection) return Promise.resolve(true);
     token.cancelSignalPromise ??= token.connection.cancelSent();
     return token.cancelSignalPromise;
+  }
+
+  private async abortActiveExport(): Promise<void> {
+    const token = this.activeExport;
+    if (!token) return;
+    if (!token.controller.signal.aborted) {
+      token.controller.abort(new DOMException('Result export was cancelled.', 'AbortError'));
+    }
+    await token.promise.catch(() => undefined);
+  }
+
+  private assertExportableResult(result: QuerySession): asserts result is QuerySessionImpl {
+    if (this.activeQuery !== result || this.pendingQuery) {
+      throw new Error('Cannot export a query result that is not current or has been superseded.');
+    }
+    if (!result.status().complete) {
+      throw new Error('Parquet export requires a complete query result session.');
+    }
   }
 
   private enqueue<T>(operation: (connection: AsyncDuckDBConnection) => Promise<T>): Promise<T> {

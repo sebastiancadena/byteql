@@ -32,6 +32,9 @@ import {
   type StreamedParseResult,
   type WorkerPort,
 } from '../parse-worker-client.js';
+import type { CsvClientPort } from '../export/csv-client.js';
+import type { ExportDestination } from '../export/destination.js';
+import type { ExportDestinationFactory } from '../export/operation.js';
 import {
   BATCH_CREDIT_WINDOW,
   installParseWorker,
@@ -60,6 +63,9 @@ vi.mock('@byteql/db', () => ({
   QUERY_RESULT_MEMORY_BYTES: queryResultMemoryBytes,
   sweepQueryPageOrphans: sweepQueryPageOrphansMock,
   sweepSpillOrphans: sweepSpillOrphansMock,
+  isSupportedParquetType: () => true,
+  unsupportedParquetTypeMessage: (column: string, type: unknown) =>
+    `Column "${column}" has unsupported Parquet type ${String(type)}.`,
 }));
 
 interface Deferred<T> {
@@ -83,6 +89,10 @@ const deferred = <T>(): Deferred<T> => {
 // hops. Generous so credit-window tests spanning several pull iterations settle within one flush.
 const flush = async (): Promise<void> => {
   for (let tick = 0; tick < 32; tick += 1) await Promise.resolve();
+};
+
+const nextTask = async (): Promise<void> => {
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
 };
 
 const streamedResult = (name: string, rowCount = 1): StreamedParseResult => ({
@@ -245,6 +255,7 @@ class FakeQuerySession implements QuerySession {
   retryPage: QueryPage | null = null;
   fetchError: Error | null = null;
   retryError: Error | null = null;
+  readError: Error | null = null;
   materializeValue: Table | null | undefined;
   readonly materializeCalls: Array<number | undefined> = [];
   readonly fetched = new Map<number, QueryPage>();
@@ -307,6 +318,11 @@ class FakeQuerySession implements QuerySession {
 
   async readPage(index: number): Promise<QueryPage> {
     this.readCalls.push(index);
+    if (this.readError) {
+      const error = this.readError;
+      this.readError = null;
+      throw error;
+    }
     const stored = this.fetched.get(index);
     if (!stored) throw new Error(`missing page ${index}`);
     return stored;
@@ -329,6 +345,58 @@ class FakeQuerySession implements QuerySession {
 
   async dispose(): Promise<void> {
     this.disposed += 1;
+  }
+}
+
+class FakeCsvClient implements CsvClientPort {
+  initialize = vi.fn().mockResolvedValue(undefined);
+  dispose = vi.fn().mockResolvedValue(undefined);
+  encode = vi.fn(
+    async (
+      ipc: Uint8Array,
+      _columns: readonly number[],
+      _header: boolean,
+      write: (chunk: Uint8Array) => Promise<void>,
+      signal: AbortSignal,
+    ) => {
+      if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
+      await write(ipc);
+      if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
+    },
+  );
+}
+
+class FakeDestination implements ExportDestination {
+  readonly chunks: Uint8Array[] = [];
+  commits = 0;
+  aborts = 0;
+  disposals = 0;
+  saves = 0;
+  commitResult: 'saved' | 'ready-to-save' = 'saved';
+  abortGate: Promise<void> | null = null;
+  commitGate: Promise<void> | null = null;
+
+  async write(bytes: Uint8Array): Promise<void> {
+    this.chunks.push(bytes.slice());
+  }
+
+  async commit(): Promise<'saved' | 'ready-to-save'> {
+    this.commits += 1;
+    if (this.commitGate) await this.commitGate;
+    return this.commitResult;
+  }
+
+  save(): void {
+    this.saves += 1;
+  }
+
+  async abort(): Promise<void> {
+    this.aborts += 1;
+    if (this.abortGate) await this.abortGate;
+  }
+
+  async dispose(): Promise<void> {
+    this.disposals += 1;
   }
 }
 
@@ -365,6 +433,7 @@ const fakeDatabase = (): {
       querySessions.push(session);
       return session;
     }),
+    exportParquet: vi.fn(),
     cancelQuery: vi.fn().mockResolvedValue(false),
     listTables: vi.fn().mockResolvedValue([]),
     collectFileStatistics: vi.fn().mockResolvedValue(undefined),
@@ -421,16 +490,36 @@ describe('SessionController', () => {
   let sessions: FakeIngestSession[];
   let querySessions: FakeQuerySession[];
   let stopViewer: ReturnType<typeof vi.fn<() => void>>;
+  let csvClient: FakeCsvClient;
+  let destinations: FakeDestination[];
+  let prepareDestination: ReturnType<
+    typeof vi.fn<(filename: string, format: 'csv' | 'parquet') => Promise<ExportDestination>>
+  >;
 
   beforeEach(() => {
     sweepSpillOrphansMock.mockClear();
     parser = new FakeParser();
     ({ database, sessions, querySessions } = fakeDatabase());
     stopViewer = vi.fn<() => void>();
+    csvClient = new FakeCsvClient();
+    destinations = [];
+    prepareDestination = vi.fn(async () => {
+      const destination = new FakeDestination();
+      destinations.push(destination);
+      return destination;
+    });
   });
 
-  const readyController = async (): Promise<SessionController> => {
-    const controller = new SessionController({ database, parser, stopViewer });
+  const readyController = async (
+    destinationFactory: ExportDestinationFactory = prepareDestination,
+  ): Promise<SessionController> => {
+    const controller = new SessionController({
+      database,
+      parser,
+      csvClient,
+      prepareDestination: destinationFactory,
+      stopViewer,
+    });
     const opening = controller.openFile(midiFile('query.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 30_000 }];
@@ -440,12 +529,458 @@ describe('SessionController', () => {
     return controller;
   };
 
+  it('initializes and disposes the CSV client with the controller lifecycle', async () => {
+    const ready = deferred<void>();
+    csvClient.initialize.mockReturnValueOnce(ready.promise);
+    const controller = new SessionController({
+      database,
+      parser,
+      csvClient,
+      prepareDestination,
+      stopViewer,
+    });
+
+    let initialized = false;
+    const initialization = controller.initialize().then(() => {
+      initialized = true;
+    });
+    await flush();
+    expect(initialized).toBe(false);
+
+    ready.resolve(undefined);
+    await initialization;
+    expect(csvClient.initialize).toHaveBeenCalledOnce();
+
+    await controller.dispose();
+    expect(csvClient.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('releases the CSV client exactly once when initialization fails and disposal follows', async () => {
+    csvClient.initialize.mockRejectedValueOnce(new Error('CSV startup failed'));
+    const controller = new SessionController({
+      database,
+      parser,
+      csvClient,
+      prepareDestination,
+      stopViewer,
+    });
+
+    await expect(controller.initialize()).rejects.toThrow('CSV startup failed');
+    await controller.dispose();
+
+    expect(csvClient.dispose).toHaveBeenCalledOnce();
+    expect(database.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('exports the captured result pages as CSV once and preserves the visible window and selection', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    query.nextPages.push(page(1, 1_024, [1_024, 1_025]));
+    controller.selectResultRow(500);
+    const before = controller.getState().result!;
+
+    await controller.downloadResults({ format: 'csv', includeProvenance: true });
+
+    expect(prepareDestination).toHaveBeenCalledWith('query-results.csv', 'csv');
+    expect(query.fetchCalls).toEqual([QUERY_INITIAL_ROWS, QUERY_PAGE_ROWS, QUERY_PAGE_ROWS]);
+    expect(csvClient.encode.mock.calls.map((call) => call[2])).toEqual([true, false]);
+    expect(query.materializeCalls).toEqual([]);
+    expect(controller.getState().result).toMatchObject({
+      complete: true,
+      loadedRows: 1_026,
+      windowStart: before.windowStart,
+      window: before.window,
+    });
+    expect(controller.getState().selectedRow).toBe(500);
+    expect(controller.getState().download).toMatchObject({
+      phase: 'saved',
+      rows: 1_026,
+      totalRows: 1_026,
+    });
+    expect(destinations[0]!.commits).toBe(1);
+  });
+
+  it('cancels an export waiting for existing result demand without cancelling the query or committing', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    const gate = deferred<void>();
+    query.fetchGate = gate.promise;
+    query.nextPages.push(page(1, 1_024, [1_024]));
+
+    const demand = controller.loadMoreResults();
+    const download = controller.downloadResults({ format: 'csv', includeProvenance: true });
+    const cancellation = controller.cancelResultsDownload();
+    expect(controller.getState().download?.phase).toBe('cancelling');
+
+    gate.resolve(undefined);
+    await Promise.all([demand, download, cancellation]);
+
+    expect(query.cancelled).toBe(0);
+    expect(query.disposed).toBe(0);
+    expect(await query.readPage(0)).toMatchObject({ rowCount: QUERY_INITIAL_ROWS });
+    expect(destinations[0]!.commits).toBe(0);
+    expect(controller.getState().download?.phase).toBe('cancelled');
+  });
+
+  it('settles joined demand before export cleanup and closes a query only after sink abort', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    const fetchGate = deferred<void>();
+    const abortGate = deferred<void>();
+    const order: string[] = [];
+    query.fetchGate = fetchGate.promise;
+    query.nextPages.push(page(1, 1_024, [1_024]));
+    query.readError = new Error('stored result page could not be read');
+    vi.spyOn(query, 'dispose').mockImplementation(async () => {
+      query.disposed += 1;
+      order.push('query cleanup');
+    });
+    prepareDestination.mockImplementationOnce(async () => {
+      const destination = new FakeDestination();
+      destination.abortGate = abortGate.promise;
+      vi.spyOn(destination, 'abort').mockImplementation(async () => {
+        destination.aborts += 1;
+        await abortGate.promise;
+        order.push('sink abort');
+      });
+      destinations.push(destination);
+      return destination;
+    });
+
+    const demand = controller.loadMoreResults().then(() => {
+      order.push('demand');
+    });
+    const download = controller.downloadResults({ format: 'csv', includeProvenance: true }).then(() => {
+      order.push('download');
+    });
+    fetchGate.resolve(undefined);
+
+    await vi.waitFor(() => expect(destinations[0]?.aborts).toBe(1));
+    await expect(demand).resolves.toBeUndefined();
+    expect(controller.getState().result).toMatchObject({
+      pageError: 'stored result page could not be read Run the query again to load more rows.',
+      pageErrorRetryable: false,
+    });
+    expect(order).toEqual(['demand']);
+    expect(query.disposed).toBe(0);
+
+    abortGate.resolve(undefined);
+    await expect(download).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(query.disposed).toBe(1));
+
+    expect(order).toEqual(['demand', 'sink abort', 'download', 'query cleanup']);
+  });
+
+  it('suspends new tail demand synchronously when download starts', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    const fetchGate = deferred<void>();
+    query.fetchGate = fetchGate.promise;
+    query.nextPages.push(page(1, 1_024, [1_024]));
+
+    const download = controller.downloadResults({ format: 'csv', includeProvenance: true });
+    const gridDemand = controller.loadMoreResults();
+
+    expect(controller.getState().result?.loadingMore).toBe(false);
+    await gridDemand;
+    fetchGate.resolve(undefined);
+    await download;
+    expect(query.fetchCalls).toEqual([QUERY_INITIAL_ROWS, QUERY_PAGE_ROWS, QUERY_PAGE_ROWS]);
+  });
+
+  it('waits for export sink abort before disposing a query on replacement', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    const abortGate = deferred<void>();
+    prepareDestination.mockImplementationOnce(async () => {
+      const destination = new FakeDestination();
+      destination.abortGate = abortGate.promise;
+      destinations.push(destination);
+      return destination;
+    });
+    const fetchGate = deferred<void>();
+    query.fetchGate = fetchGate.promise;
+
+    const download = controller.downloadResults({ format: 'csv', includeProvenance: true });
+    await vi.waitFor(() => expect(destinations).toHaveLength(1));
+    const replacement = controller.runQuery('select 2');
+    fetchGate.resolve(undefined);
+    await flush();
+    expect(destinations[0]!.aborts).toBe(1);
+    expect(query.disposed).toBe(0);
+
+    abortGate.resolve(undefined);
+    await Promise.all([download, replacement]);
+    expect(query.disposed).toBe(1);
+  });
+
+  it('invokes the destination factory synchronously and aborts a picker result acquired after replacement', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    const picker = deferred<ExportDestination>();
+    prepareDestination.mockReturnValueOnce(picker.promise);
+
+    const download = controller.downloadResults({ format: 'csv', includeProvenance: true });
+    expect(prepareDestination).toHaveBeenCalledOnce();
+
+    const replacement = controller.runQuery('select 2');
+    await flush();
+    expect(query.disposed).toBe(0);
+
+    const lateDestination = new FakeDestination();
+    picker.resolve(lateDestination);
+    await Promise.all([download, replacement]);
+
+    expect(lateDestination.aborts).toBe(1);
+    expect(lateDestination.disposals).toBe(1);
+    expect(lateDestination.commits).toBe(0);
+    expect(query.disposed).toBe(1);
+  });
+
+  it('encodes a zero-row CSV once with the captured schema and header enabled', async () => {
+    const query = new FakeQuerySession();
+    query.nextPages = [];
+    vi.mocked(database.startQuery).mockImplementationOnce(async () => {
+      querySessions.push(query);
+      return query;
+    });
+    const controller = await readyController();
+    await controller.runQuery('select value from events where false');
+
+    await controller.downloadResults({ format: 'csv', includeProvenance: true });
+
+    expect(csvClient.encode).toHaveBeenCalledOnce();
+    expect(csvClient.encode.mock.calls[0]![2]).toBe(true);
+    expect(ipcToTable(csvClient.encode.mock.calls[0]![0]).schema.fields.map((field) => field.name)).toEqual([
+      'value',
+    ]);
+    expect(controller.getState().download).toMatchObject({ phase: 'saved', rows: 0, totalRows: 0 });
+  });
+
+  it('exports a complete result through Parquet and disposes the owned artifact after streaming', async () => {
+    const query = new FakeQuerySession();
+    query.completeAfterPage = true;
+    vi.mocked(database.startQuery).mockImplementationOnce(async () => {
+      querySessions.push(query);
+      return query;
+    });
+    const disposeArtifact = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(database.exportParquet).mockResolvedValueOnce({
+      file: new File([Uint8Array.of(1, 2, 3)], 'result.parquet'),
+      dispose: disposeArtifact,
+    });
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+
+    await controller.downloadResults({ format: 'parquet', includeProvenance: true });
+
+    expect(database.exportParquet).toHaveBeenCalledWith(
+      query,
+      expect.objectContaining({ columns: [0], signal: expect.any(AbortSignal) }),
+    );
+    expect(destinations[0]!.chunks).toEqual([Uint8Array.of(1, 2, 3)]);
+    expect(disposeArtifact).toHaveBeenCalledOnce();
+    expect(controller.getState().download).toMatchObject({ phase: 'saved', bytes: 3 });
+  });
+
+  it('retains a fallback destination for synchronous Save until dismissal', async () => {
+    prepareDestination.mockImplementationOnce(async () => {
+      const destination = new FakeDestination();
+      destination.commitResult = 'ready-to-save';
+      destinations.push(destination);
+      return destination;
+    });
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    query.nextPages = [];
+
+    await controller.downloadResults({ format: 'csv', includeProvenance: true });
+    expect(controller.getState().download?.phase).toBe('ready-to-save');
+    expect(destinations[0]!.disposals).toBe(0);
+
+    controller.saveResultsDownload();
+    expect(destinations[0]!.saves).toBe(1);
+    expect(controller.getState().download?.phase).toBe('saved');
+
+    await controller.dismissResultsDownload();
+    expect(destinations[0]!.disposals).toBe(1);
+    expect(controller.getState().download).toBeNull();
+  });
+
+  it('invokes a second picker immediately and disposes the retained fallback before re-exporting', async () => {
+    prepareDestination.mockImplementationOnce(async () => {
+      const destination = new FakeDestination();
+      destination.commitResult = 'ready-to-save';
+      destinations.push(destination);
+      return destination;
+    });
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    querySessions[0]!.nextPages = [];
+    await controller.downloadResults({ format: 'csv', includeProvenance: true });
+
+    const second = controller.downloadResults({ format: 'csv', includeProvenance: true });
+    expect(prepareDestination).toHaveBeenCalledTimes(2);
+    await second;
+
+    expect(destinations[0]!.disposals).toBe(1);
+    expect(destinations[1]!.commits).toBe(1);
+    expect(controller.getState().download?.phase).toBe('saved');
+  });
+
+  it('routes result-store quota failure to the existing retry path and leaves the query readable', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    query.fetchError = new Error('RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.');
+    query.retryPage = page(1, 1_024, [1_024]);
+
+    await controller.downloadResults({ format: 'csv', includeProvenance: true });
+
+    expect(controller.getState().result).toMatchObject({
+      loadedRows: 1_024,
+      pageErrorRetryable: true,
+    });
+    expect(controller.getState().download).toMatchObject({
+      phase: 'failed',
+      message: 'Local result storage is full. Free local storage, then retry loading rows.',
+    });
+    expect(query.cancelled).toBe(0);
+    expect(query.disposed).toBe(0);
+
+    await controller.retryResultPage();
+    expect(controller.getState().result).toMatchObject({ loadedRows: 1_025, pageError: null });
+  });
+
+  it('treats picker dismissal as cancellation without an unhandled rejection', async () => {
+    prepareDestination.mockRejectedValueOnce(new DOMException('dismissed', 'AbortError'));
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+
+    await expect(
+      controller.downloadResults({ format: 'csv', includeProvenance: true }),
+    ).resolves.toBeUndefined();
+    expect(controller.getState().download).toMatchObject({ phase: 'cancelled' });
+  });
+
+  it('observes a rejected second picker while prior export cleanup is still held', async () => {
+    let pickerCalls = 0;
+    let secondPicker: Promise<ExportDestination> | null = null;
+    const fetchGate = deferred<void>();
+    const abortGate = deferred<void>();
+    const controller = await readyController(() => {
+      pickerCalls += 1;
+      if (secondPicker) return secondPicker;
+      const destination = new FakeDestination();
+      destination.abortGate = abortGate.promise;
+      destinations.push(destination);
+      return Promise.resolve(destination);
+    });
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    query.fetchGate = fetchGate.promise;
+
+    const first = controller.downloadResults({ format: 'csv', includeProvenance: true });
+    await vi.waitFor(() => expect(destinations).toHaveLength(1));
+    await vi.waitFor(() => expect(controller.getState().download?.phase).toBe('loading'));
+
+    const dismissed = new DOMException('dismissed', 'AbortError');
+    secondPicker = Promise.reject(dismissed);
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    const existing = process.listeners('unhandledRejection');
+    existing.forEach((listener) => process.off('unhandledRejection', listener));
+    process.on('unhandledRejection', onRejection);
+    try {
+      const second = controller.downloadResults({ format: 'csv', includeProvenance: true });
+      expect(pickerCalls).toBe(2);
+      await nextTask();
+      const rejectionsBeforeCleanup = [...rejections];
+
+      abortGate.resolve(undefined);
+      fetchGate.resolve(undefined);
+      await Promise.all([first, second]);
+      await nextTask();
+      expect(rejectionsBeforeCleanup).toEqual([]);
+      expect(controller.getState().download).toMatchObject({ phase: 'cancelled' });
+    } finally {
+      process.off('unhandledRejection', onRejection);
+      existing.forEach((listener) => process.on('unhandledRejection', listener as (reason: unknown) => void));
+    }
+  });
+
+  it('cancels encoding without cancelling the query and aborts the destination once', async () => {
+    const encodeStarted = deferred<void>();
+    csvClient.encode.mockImplementationOnce(
+      (_ipc, _columns, _header, _write, signal) =>
+        new Promise<void>((_resolve, reject) => {
+          encodeStarted.resolve(undefined);
+          signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), {
+            once: true,
+          });
+        }),
+    );
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const query = querySessions[0]!;
+    query.nextPages = [];
+
+    const download = controller.downloadResults({ format: 'csv', includeProvenance: true });
+    await encodeStarted.promise;
+    await Promise.all([download, controller.cancelResultsDownload()]);
+
+    expect(query.cancelled).toBe(0);
+    expect(query.disposed).toBe(0);
+    expect(destinations[0]!.aborts).toBe(1);
+    expect(destinations[0]!.commits).toBe(0);
+    expect(controller.getState().download?.phase).toBe('cancelled');
+  });
+
+  it('waits for an already-started destination commit before disposing a completed query', async () => {
+    const query = new FakeQuerySession();
+    query.completeAfterPage = true;
+    vi.mocked(database.startQuery).mockImplementationOnce(async () => {
+      querySessions.push(query);
+      return query;
+    });
+    const commitGate = deferred<void>();
+    prepareDestination.mockImplementationOnce(async () => {
+      const destination = new FakeDestination();
+      destination.commitGate = commitGate.promise;
+      destinations.push(destination);
+      return destination;
+    });
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+
+    const download = controller.downloadResults({ format: 'csv', includeProvenance: true });
+    await vi.waitFor(() => expect(destinations[0]?.commits).toBe(1));
+    const replacement = controller.runQuery('select 2');
+    await flush();
+    expect(query.disposed).toBe(0);
+
+    commitGate.resolve(undefined);
+    await Promise.all([download, replacement]);
+    expect(destinations[0]!.aborts).toBe(1);
+    expect(query.disposed).toBe(1);
+  });
+
   it('fetches the midi sample lazily on open and caches it across opens', async () => {
     const sample = new Uint8Array([0x4d, 0x54, 0x68, 0x64, 1, 2, 3]);
     const fetchSample = vi.fn().mockResolvedValue(new Response(sample));
     const controller = new SessionController({
       database,
       parser,
+      csvClient,
       fetch: fetchSample,
       sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
       stopViewer,
@@ -487,6 +1022,7 @@ describe('SessionController', () => {
     const controller = new SessionController({
       database,
       parser,
+      csvClient,
       fetch: fetchSample,
       sampleUrlOverrides: {
         pcap: ['/assets/SkypeIRC.cap', '/assets/v6.pcap', '/assets/dns-stream.pcap'],
@@ -513,7 +1049,7 @@ describe('SessionController', () => {
   });
 
   it('rejects openSample with an unknown sample id', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     await controller.initialize();
 
     await expect(controller.openSample('bogus' as SampleId)).rejects.toThrow(/unknown sample/i);
@@ -524,6 +1060,7 @@ describe('SessionController', () => {
     const controller = new SessionController({
       database,
       parser,
+      csvClient,
       fetch: fetchSample,
       sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
       stopViewer,
@@ -534,7 +1071,7 @@ describe('SessionController', () => {
   });
 
   it('publishes UI-safe source metadata and progress without exposing the file', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const observed = vi.fn();
     const unsubscribe = controller.subscribe(observed);
     const file = midiFile('private.mid', 1, 2);
@@ -565,7 +1102,7 @@ describe('SessionController', () => {
     // C1 regression: a table the pack declares but this file never populated (e.g. no `tcp`
     // packets) must still be listed for the Explorer/UNION-ALL-overview to work — it is backfilled
     // as a rowCount-0 entry from `result.schemas`, not silently dropped.
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const opening = controller.openFile(midiFile('capture.pcap', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;
@@ -595,7 +1132,7 @@ describe('SessionController', () => {
   });
 
   it('cancels parse, query, and viewer immediately and ignores stale ingest results', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const first = controller.openFile(midiFile('old.mid', 1));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
@@ -627,7 +1164,7 @@ describe('SessionController', () => {
   });
 
   it('does not finalize the ingest until the complete parse result arrives', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const opening = controller.openFile(midiFile('wait.mid', 1));
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
@@ -913,6 +1450,7 @@ describe('SessionController', () => {
     const controller = new SessionController({
       database,
       parser,
+      csvClient,
       stopViewer,
     });
     const listener = vi.fn();
@@ -935,6 +1473,7 @@ describe('SessionController', () => {
     const controller = new SessionController({
       database,
       parser,
+      csvClient,
       fetch: vi.fn().mockReturnValue(response.promise),
       sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
       stopViewer,
@@ -966,7 +1505,7 @@ describe('SessionController', () => {
     stopViewer.mockImplementation(() => {
       throw new Error('viewer failed');
     });
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
 
     await expect(controller.dispose()).resolves.toBeUndefined();
     expect(parser.dispose).toHaveBeenCalledOnce();
@@ -975,7 +1514,7 @@ describe('SessionController', () => {
   });
 
   it('releases all state-held local data during idempotent disposal', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const opening = controller.openFile(midiFile('private.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 3 }];
@@ -1009,7 +1548,7 @@ describe('SessionController', () => {
   });
 
   it('isolates a failing subscriber from later subscribers and state transitions', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     let notifications = 0;
     controller.subscribe(() => {
       notifications += 1;
@@ -1030,7 +1569,7 @@ describe('SessionController', () => {
   });
 
   it('removes a subscriber that throws during its initial notification', () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const listener = vi.fn(() => {
       throw new Error('listener failed');
     });
@@ -1041,7 +1580,7 @@ describe('SessionController', () => {
   });
 
   it('opens a file through ingest: begin → per-batch append+ack → finalize → ready', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const file = midiFile('song.mid', 1, 2, 3);
 
     const opening = controller.openFile(file);
@@ -1100,7 +1639,7 @@ describe('SessionController', () => {
     // message arrives, and the worker sends `finish` without waiting for the last batch's ack —
     // so `finish` can race ahead of an in-flight `appendBatch`. Finalizing before that append
     // settles would silently drop rows.
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const opening = controller.openFile(midiFile('race.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;
@@ -1136,6 +1675,7 @@ describe('SessionController', () => {
     const controller = new SessionController({
       database,
       parser,
+      csvClient,
       stopViewer,
       tiering: { tierThresholdBytes },
     });
@@ -1156,7 +1696,7 @@ describe('SessionController', () => {
   });
 
   it('supersession mid-ingest aborts the new generation and leaves state on the new open', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
 
     const first = controller.openFile(midiFile('old.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
@@ -1186,7 +1726,7 @@ describe('SessionController', () => {
     // Regression: a generation superseded while `Promise.all(pendingAppends)` is still in flight
     // must never reach `finalize()` — committing a superseded generation's staging tables would
     // clobber catalog state the new generation assumes.
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const first = controller.openFile(midiFile('first.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const firstSession = sessions[0]!;
@@ -1246,7 +1786,7 @@ describe('SessionController', () => {
     // committed its staging tables by the time it resolves — aborting it would be wrong (nothing
     // left to roll back) but dispatching `ready` for it would clobber the new generation's state
     // with the stale file's tables.
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const first = controller.openFile(midiFile('first.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const firstSession = sessions[0]!;
@@ -1300,7 +1840,7 @@ describe('SessionController', () => {
     // `beginIngest`, which would throw 'An ingest session is already open.' if C's session is still
     // open. The guard `if (!this.isCurrent(generation)) return;` after `await
     // this.ingestSettlement` prevents B from claiming the ingest slot.
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
 
     // Open A, hold its finalize to keep its ingest session open.
     const openA = controller.openFile(midiFile('first.mid', 1));
@@ -1349,7 +1889,12 @@ describe('SessionController', () => {
   it('parse failure and quota failure abort the ingest session', async () => {
     const parseFailure = new FakeParser();
     const { database: databaseA, sessions: sessionsA } = fakeDatabase();
-    const controllerA = new SessionController({ database: databaseA, parser: parseFailure, stopViewer });
+    const controllerA = new SessionController({
+      database: databaseA,
+      parser: parseFailure,
+      csvClient,
+      stopViewer,
+    });
     const openingA = controllerA.openFile(midiFile('broken.mid', 1));
     await vi.waitFor(() => expect(sessionsA).toHaveLength(1));
     parseFailure.calls[0]!.reject(new Error('Unexpected end of track data.'));
@@ -1362,7 +1907,12 @@ describe('SessionController', () => {
 
     const quotaParser = new FakeParser();
     const { database: databaseB, sessions: sessionsB } = fakeDatabase();
-    const controllerB = new SessionController({ database: databaseB, parser: quotaParser, stopViewer });
+    const controllerB = new SessionController({
+      database: databaseB,
+      parser: quotaParser,
+      csvClient,
+      stopViewer,
+    });
     const openingB = controllerB.openFile(midiFile('huge.mid', 1));
     await vi.waitFor(() => expect(sessionsB).toHaveLength(1));
     const sessionB = sessionsB[0]!;
@@ -1384,7 +1934,7 @@ describe('SessionController', () => {
   });
 
   it('cancel aborts ingest and dispatches cancelled', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const opening = controller.openFile(midiFile('song.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;
@@ -1402,6 +1952,7 @@ describe('SessionController', () => {
     const controller = new SessionController({
       database,
       parser,
+      csvClient,
       fetch: fetchSample,
       sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
       stopViewer,
@@ -1427,6 +1978,7 @@ describe('SessionController', () => {
     const controller = new SessionController({
       database,
       parser,
+      csvClient,
       stopViewer,
     });
 
@@ -1436,7 +1988,7 @@ describe('SessionController', () => {
   });
 
   it('progress dispatches bytes and openStartedAt enables rate computation', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const opening = controller.openFile(midiFile('song.mid', 1));
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;
@@ -1469,7 +2021,7 @@ describe('SessionController', () => {
   });
 
   it('retains the source blob for the session and exposes byte selection', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     expect(controller.getSourceBlob('x.mid')).toBeNull();
 
     const file = midiFile('x.mid', 1, 2, 3);
@@ -1494,6 +2046,7 @@ describe('SessionController', () => {
     const controller = new SessionController({
       database,
       parser,
+      csvClient,
       fetch: fetchSample,
       sampleUrlOverrides: { midi: ['/assets/fur_Elise_opening.mid'] },
       stopViewer,
@@ -1513,7 +2066,7 @@ describe('SessionController', () => {
   });
 
   it('batch happy path: two files parse sequentially into one ingest with a _files batch', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const fileA = new File([midiBlob()], 'a.mid');
     const fileB = new File([midiBlob()], 'b.mid');
 
@@ -1549,7 +2102,7 @@ describe('SessionController', () => {
   });
 
   it('mid-parse failure discards the file and continues with the rest', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const fileA = new File([midiBlob()], 'a.mid');
     const fileB = new File([midiBlob()], 'b.mid');
 
@@ -1589,7 +2142,7 @@ describe('SessionController', () => {
   });
 
   it('all files failing rejects the open with abort, not finalize', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const fileA = new File([midiBlob()], 'a.mid');
     const fileB = new File([midiBlob()], 'b.mid');
 
@@ -1610,7 +2163,7 @@ describe('SessionController', () => {
   });
 
   it('a second openFiles supersedes an in-flight batch', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const first = controller.openFiles([new File([midiBlob()], 'a.mid'), new File([midiBlob()], 'b.mid')]);
     await vi.waitFor(() => expect(parser.calls).toHaveLength(1));
     expect(parser.calls[0]!.name).toBe('a.mid');
@@ -1639,7 +2192,7 @@ describe('SessionController', () => {
   });
 
   it('cancel() mid-batch abandons the whole batch', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const opening = controller.openFiles([new File([midiBlob()], 'a.mid'), new File([midiBlob()], 'b.mid')]);
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;
@@ -1662,7 +2215,7 @@ describe('SessionController', () => {
   });
 
   it('unrecognized-only batches fail without touching the database', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     await controller.openFiles([new File([new Uint8Array([0, 0, 0, 0])], 'junk.bin')]);
 
     expect(controller.getState().phase).toBe('failed');
@@ -1670,7 +2223,7 @@ describe('SessionController', () => {
   });
 
   it('progress events carry the batch position', async () => {
-    const controller = new SessionController({ database, parser, stopViewer });
+    const controller = new SessionController({ database, parser, csvClient, stopViewer });
     const opening = controller.openFiles([new File([midiBlob()], 'a.mid'), new File([midiBlob()], 'b.mid')]);
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     const session = sessions[0]!;

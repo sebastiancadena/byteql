@@ -2,6 +2,7 @@ import type { TableSchema } from '@byteql/core';
 import { Table } from 'apache-arrow';
 import {
   Int32 as DuckdbInt32,
+  RecordBatch as DuckdbRecordBatch,
   RecordBatchStreamWriter as DuckdbRecordBatchStreamWriter,
   Table as DuckdbTable,
   Utf8 as DuckdbUtf8,
@@ -37,6 +38,10 @@ const duckdbMocks = vi.hoisted(() => {
   };
 });
 
+const exportMocks = vi.hoisted(() => ({
+  writeParquet: vi.fn(),
+}));
+
 vi.mock('@duckdb/duckdb-wasm', () => ({
   AsyncDuckDB: class {
     constructor(...args: unknown[]) {
@@ -50,6 +55,11 @@ vi.mock('@duckdb/duckdb-wasm', () => ({
       return duckdbMocks.VoidLogger();
     }
   },
+}));
+
+vi.mock('./export-parquet.js', () => ({
+  defaultParquetWriterDependencies: (database: unknown) => ({ database }),
+  writeParquet: exportMocks.writeParquet,
 }));
 
 // Real spillPath/isQuotaError logic is exercised as-is; only deleteSpillGeneration and
@@ -83,7 +93,7 @@ const createQueryPagePersistenceMock = vi.mocked(createOpfsQueryPagePersistence)
 // configuration is locked below — see the same-origin repository comment in browser.ts.
 const HARDENING_STATEMENTS = [
   "LOAD 'http://localhost/duckdb-extensions/v1.5.4/wasm_eh/parquet.duckdb_extension.wasm';",
-  "SET allowed_directories = ['opfs://byteql-spill/'];",
+  "SET allowed_directories = ['opfs://byteql-spill/', 'opfs://byteql-exports/'];",
   'SET enable_external_access = false;',
   'SET autoinstall_known_extensions = false;',
   'SET autoload_known_extensions = false;',
@@ -260,6 +270,11 @@ describe('createBrowserDatabase', () => {
     deleteSpillChunksMock.mockResolvedValue(undefined);
     createQueryPagePersistenceMock.mockClear();
     createQueryPagePersistenceMock.mockResolvedValue(null);
+    exportMocks.writeParquet.mockReset();
+    exportMocks.writeParquet.mockResolvedValue({
+      file: new File(['parquet'], 'result.parquet'),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
   });
 
   it('selects only Vite-local MVP and EH bundles and accepts an injected logger', async () => {
@@ -429,18 +444,219 @@ describe('createBrowserDatabase', () => {
   });
 
   it('preserves the result schema and completes without publishing an empty page', async () => {
-    const reader = batchReader([duckdbResultTable(0, 0)]);
+    const table = duckdbResultTable(0, 0);
+    const emptyBatch = new DuckdbRecordBatch(table.schema, undefined);
+    let returned = false;
+    const reader = {
+      schema: new DuckdbTable({}).schema,
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            if (returned) return { done: true as const, value: undefined };
+            returned = true;
+            return { done: false as const, value: emptyBatch };
+          },
+        };
+      },
+    };
     duckdbMocks.connection.send.mockResolvedValueOnce(reader);
     const database = await createBrowserDatabase();
 
     const session = await database.startQuery('select value from events where false');
 
+    expect(session.schema.fields).toEqual([]);
+    await expect(session.fetchNext()).resolves.toBeNull();
     expect(session.schema.fields.map(({ name, type }) => [name, type.toString()])).toEqual([
       ['value', 'Int32'],
     ]);
-    await expect(session.fetchNext()).resolves.toBeNull();
     expect(session.pages()).toEqual([]);
     expect(session.status()).toMatchObject({ loadedRows: 0, complete: true, storedBytes: 0 });
+  });
+
+  it('publishes a schema that DuckDB reveals lazily with the first result batch', async () => {
+    const table = duckdbResultTable(0, 2);
+    let readerSchema = new DuckdbTable({}).schema;
+    const batches = [...table.batches];
+    const reader = {
+      get schema() {
+        return readerSchema;
+      },
+      [Symbol.asyncIterator]() {
+        let index = 0;
+        return {
+          async next() {
+            // The real streaming reader replaces its initially empty schema when the stream
+            // header is consumed. QuerySession must read that replacement rather than retain
+            // the earlier empty schema object.
+            readerSchema = table.schema;
+            return index < batches.length
+              ? { done: false as const, value: batches[index++]! }
+              : { done: true as const, value: undefined };
+          },
+        };
+      },
+    };
+    duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select value from events');
+
+    expect(session.schema.fields).toEqual([]);
+    await expect(session.fetchNext(2)).resolves.toMatchObject({ rowCount: 2 });
+    expect(session.schema.fields.map(({ name, type }) => [name, type.toString()])).toEqual([
+      ['value', 'Int32'],
+    ]);
+  });
+
+  it('exports only the current complete stored result without starting another SQL query', async () => {
+    duckdbMocks.connection.send.mockResolvedValueOnce(batchReader([duckdbResultTable(0, 2)]));
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select volatile_value from events');
+    await session.fetchNext(2);
+    const options = {
+      columns: [0],
+      signal: new AbortController().signal,
+      onProgress: vi.fn(),
+    };
+
+    await database.exportParquet(session, options);
+
+    expect(duckdbMocks.connection.send).toHaveBeenCalledExactlyOnceWith('select volatile_value from events');
+    expect(exportMocks.writeParquet).toHaveBeenCalledOnce();
+    expect(exportMocks.writeParquet.mock.calls[0]?.[1]).toBe(session);
+    expect(exportMocks.writeParquet.mock.calls[0]?.[2]).toMatchObject({ columns: [0] });
+  });
+
+  it('rejects incomplete and superseded query sessions before acquiring export resources', async () => {
+    duckdbMocks.connection.send
+      .mockResolvedValueOnce(batchReader([duckdbResultTable(0, 2)]))
+      .mockResolvedValueOnce(batchReader([duckdbResultTable(10, 1)]));
+    const database = await createBrowserDatabase();
+    const incomplete = await database.startQuery('select incomplete');
+    const options = {
+      columns: [0],
+      signal: new AbortController().signal,
+      onProgress: vi.fn(),
+    };
+
+    await expect(database.exportParquet(incomplete, options)).rejects.toThrow(/complete/i);
+    await incomplete.fetchNext(2);
+    await database.startQuery('select replacement');
+    await expect(database.exportParquet(incomplete, options)).rejects.toThrow(/current|superseded/i);
+
+    expect(exportMocks.writeParquet).not.toHaveBeenCalled();
+  });
+
+  it('revalidates result ownership inside the operation queue', async () => {
+    duckdbMocks.connection.send.mockResolvedValueOnce(batchReader([duckdbResultTable(0, 1)]));
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select current');
+    await session.fetchNext(1);
+
+    const exporting = database.exportParquet(session, {
+      columns: [0],
+      signal: new AbortController().signal,
+      onProgress: vi.fn(),
+    });
+    const replacement = database.startQuery('select replacement');
+
+    await expect(exporting).rejects.toThrow(/cancelled/i);
+    await replacement;
+    expect(exportMocks.writeParquet).not.toHaveBeenCalled();
+  });
+
+  it('aborts and joins an active export before replacement disposes its source pages', async () => {
+    const persistence = new FakeQueryPagePersistence();
+    createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
+    duckdbMocks.connection.send
+      .mockResolvedValueOnce(batchReader([duckdbResultTable(0, 1)]))
+      .mockResolvedValueOnce(batchReader([duckdbResultTable(10, 1)]));
+    const exportStarted = deferred<void>();
+    const exportCleaned = deferred<void>();
+    exportMocks.writeParquet.mockImplementationOnce(async (_dependencies, result, options) => {
+      expect((await result.readPage(0)).table.numRows).toBe(1);
+      exportStarted.resolve();
+      await new Promise<void>((resolve) => {
+        options.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      expect(persistence.disposeCalls).toBe(0);
+      exportCleaned.resolve();
+      throw options.signal.reason;
+    });
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select current');
+    await session.fetchNext(1);
+    const exporting = database.exportParquet(session, {
+      columns: [0],
+      signal: new AbortController().signal,
+      onProgress: vi.fn(),
+    });
+    await exportStarted.promise;
+
+    const replacement = database.startQuery('select replacement');
+    await exportCleaned.promise;
+    await expect(exporting).rejects.toMatchObject({ name: 'AbortError' });
+    await replacement;
+
+    expect(persistence.disposeCalls).toBe(1);
+  });
+
+  it('aborts and joins an active export before direct query cancellation disposes source pages', async () => {
+    const persistence = new FakeQueryPagePersistence();
+    createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
+    duckdbMocks.connection.send.mockResolvedValueOnce(batchReader([duckdbResultTable(0, 1)]));
+    const exportStarted = deferred<void>();
+    exportMocks.writeParquet.mockImplementationOnce(async (_dependencies, result, options) => {
+      expect((await result.readPage(0)).table.numRows).toBe(1);
+      exportStarted.resolve();
+      await new Promise<void>((resolve) => {
+        options.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      expect(persistence.disposeCalls).toBe(0);
+      throw options.signal.reason;
+    });
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select current');
+    await session.fetchNext(1);
+    const exporting = database.exportParquet(session, {
+      columns: [0],
+      signal: new AbortController().signal,
+      onProgress: vi.fn(),
+    });
+    await exportStarted.promise;
+
+    await expect(database.cancelQuery()).resolves.toBe(true);
+    await expect(exporting).rejects.toMatchObject({ name: 'AbortError' });
+    expect(persistence.disposeCalls).toBe(1);
+  });
+
+  it('aborts and joins an active export before database disposal removes source pages', async () => {
+    const persistence = new FakeQueryPagePersistence();
+    createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
+    duckdbMocks.connection.send.mockResolvedValueOnce(batchReader([duckdbResultTable(0, 1)]));
+    const exportStarted = deferred<void>();
+    exportMocks.writeParquet.mockImplementationOnce(async (_dependencies, result, options) => {
+      expect((await result.readPage(0)).table.numRows).toBe(1);
+      exportStarted.resolve();
+      await new Promise<void>((resolve) => {
+        options.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      expect(persistence.disposeCalls).toBe(0);
+      throw options.signal.reason;
+    });
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select current');
+    await session.fetchNext(1);
+    const exporting = database.exportParquet(session, {
+      columns: [0],
+      signal: new AbortController().signal,
+      onProgress: vi.fn(),
+    });
+    await exportStarted.promise;
+
+    const disposal = database.dispose();
+    await expect(exporting).rejects.toMatchObject({ name: 'AbortError' });
+    await disposal;
+    expect(persistence.disposeCalls).toBe(1);
   });
 
   it('publishes elapsed time and page summaries only after page storage succeeds', async () => {

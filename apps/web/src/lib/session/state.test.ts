@@ -3,6 +3,7 @@ import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
 import { initialSessionState, reduceSession, type PagedResultState } from './state.js';
+import type { ExportState } from '../export/operation.js';
 
 const tables: readonly TableOverview[] = [{ name: 'events', rowCount: 1, columns: [] }];
 const format = { id: 'standard_midi_file', title: 'Standard MIDI file' };
@@ -40,6 +41,39 @@ const pagedResult: PagedResultState = {
 };
 
 describe('reduceSession', () => {
+  it('accepts only download updates for the active export generation', () => {
+    const picking: ExportState = {
+      generation: 7,
+      phase: 'picking',
+      rows: 0,
+      totalRows: null,
+      bytes: 0,
+      message: null,
+    };
+    const started = reduceSession(initialSessionState, {
+      type: 'downloadUpdated',
+      generation: 7,
+      download: picking,
+    });
+
+    const stale = reduceSession(started, {
+      type: 'downloadUpdated',
+      generation: 6,
+      download: { ...picking, generation: 6, phase: 'failed', message: 'stale failure' },
+    });
+    const completed = reduceSession(stale, {
+      type: 'downloadUpdated',
+      generation: 7,
+      download: { ...picking, phase: 'saved', totalRows: 0 },
+    });
+
+    expect(stale).toBe(started);
+    expect(completed.download).toMatchObject({ generation: 7, phase: 'saved' });
+    expect(
+      reduceSession(completed, { type: 'downloadUpdated', generation: 7, download: null }).download,
+    ).toBeNull();
+  });
+
   it('advances through the file intake stages without exposing the source object', () => {
     let state = reduceSession(initialSessionState, {
       type: 'opening',

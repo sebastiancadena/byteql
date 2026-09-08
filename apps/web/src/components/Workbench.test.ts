@@ -7,6 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorView } from 'codemirror';
 import { midiQueries } from '@byteql/midi';
 
+vi.mock('@byteql/db', () => ({
+  isSupportedParquetType: () => true,
+  unsupportedParquetTypeMessage: (column: string, type: unknown) =>
+    `Column "${column}" has unsupported Parquet type ${String(type)}; cast it explicitly in SQL.`,
+}));
+
 import { initialSessionState, type PagedResultState, type SessionState } from '../lib/session/state.js';
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
 import ResultGrid from './ResultGrid.svelte';
@@ -112,6 +118,7 @@ const readyState = (): SessionState => ({
   selectedRow: null,
   fatalError: null,
   byteSelection: null,
+  download: null,
 });
 
 class FakeController {
@@ -131,6 +138,10 @@ class FakeController {
     void globalRow;
   });
   retryResultPage = vi.fn(async () => undefined);
+  downloadResults = vi.fn(async () => undefined);
+  cancelResultsDownload = vi.fn(async () => undefined);
+  saveResultsDownload = vi.fn();
+  dismissResultsDownload = vi.fn(async () => undefined);
   selectResultRow = vi.fn((row: number | null) => {
     this.publish({ ...this.state, selectedRow: row });
   });
@@ -263,6 +274,17 @@ describe('Inspector Workbench', () => {
     expect(
       within(screen.getByRole('complementary', { name: 'Inspector' })).getByText('Selected evidence'),
     ).toBeTruthy();
+  });
+
+  it('places Download results beside the result count rather than inside the result grid', () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    const headingMeta = document.querySelector('.results-heading-meta') as HTMLElement;
+    const download = within(headingMeta).getByRole('button', { name: 'Download results' });
+
+    expect(within(headingMeta).getByText('2 rows')).toBeTruthy();
+    expect(document.querySelector('.result-grid')?.contains(download)).toBe(false);
   });
 
   it('labels incomplete results as loaded with more available and exact results only at EOF', () => {

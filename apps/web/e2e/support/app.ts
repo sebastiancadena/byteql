@@ -37,6 +37,7 @@ export interface ByteqlE2EControl {
     decodedBytes: number;
     resultOpfsPaths: readonly string[];
   }>;
+  exportFiles(): Promise<readonly string[]>;
   drainQueryResult(): Promise<void>;
   loadResultWindow(globalRow: number): Promise<void>;
   seedResultPageOrphan(): Promise<{ orphanPath: string; unrelatedPath: string }>;

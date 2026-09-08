@@ -1,6 +1,8 @@
 import type { TableSchema } from '@byteql/core';
 import type { Schema, Table } from 'apache-arrow';
 
+import type { ParquetArtifact, ParquetExportOptions } from './export-types.js';
+
 export const QUERY_INITIAL_ROWS = 1_024;
 export const QUERY_PAGE_ROWS = 8_192;
 
@@ -97,6 +99,7 @@ export interface ByteqlDatabase {
   initialize(): Promise<void>;
   beginIngest(options: IngestOptions): Promise<IngestSession>;
   startQuery(sql: string): Promise<QuerySession>;
+  exportParquet(result: QuerySession, options: ParquetExportOptions): Promise<ParquetArtifact>;
   cancelQuery(): Promise<boolean>;
   listTables(): Promise<readonly string[]>;
   /**

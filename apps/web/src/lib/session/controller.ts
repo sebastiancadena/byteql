@@ -1,4 +1,4 @@
-import type { ParseIssue, TableOverview } from '@byteql/core';
+import { tableToIpc, type ParseIssue, type TableOverview } from '@byteql/core';
 import {
   QUERY_INITIAL_ROWS,
   QUERY_PAGE_ROWS,
@@ -18,6 +18,17 @@ import {
   type StreamedParseResult,
 } from '../parse-worker-client.js';
 import { REGISTERED_PACKS } from '../packs.js';
+import { CsvWorkerClient, type CsvClientPort } from '../export/csv-client.js';
+import {
+  prepareDestination as createExportDestination,
+  type ExportDestination,
+} from '../export/destination.js';
+import {
+  type ExportDestinationFactory,
+  type ExportOperation,
+  type ExportState,
+} from '../export/operation.js';
+import { exportFilename, selectExportColumns, type ExportOptions } from '../export/options.js';
 import {
   buildFilesTableIpc,
   mergeTableOverviews,
@@ -41,6 +52,8 @@ import { TIER_THRESHOLD_BYTES, chooseTier } from './tiering.js';
 export interface SessionControllerOptions {
   database: ByteqlDatabase;
   parser?: ParseClientPort;
+  csvClient?: CsvClientPort;
+  prepareDestination?: ExportDestinationFactory;
   fetch?: typeof fetch;
   stopViewer?: () => void;
   /** Test override of per-sample asset URLs; production uses the samples.ts registry. */
@@ -74,15 +87,21 @@ const isAbortError = (error: unknown): boolean =>
 
 const bytesToMb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
 
+type ExportDestinationOutcome =
+  { status: 'fulfilled'; destination: ExportDestination } | { status: 'rejected'; error: unknown };
+
 export class SessionController {
   private state: SessionState = initialSessionState;
   private readonly subscribers = new Set<(state: SessionState) => void>();
   private readonly database: ByteqlDatabase;
   private readonly parser: ParseClientPort;
+  private readonly csvClient: CsvClientPort;
+  private readonly prepareDestination: ExportDestinationFactory;
   private readonly fetchSample: typeof fetch;
   private readonly stopViewer: () => void;
   private readonly tiering: { tierThresholdBytes?: number; rotationBytes?: number } | undefined;
   private initialization: Promise<void> | null = null;
+  private csvDisposal: Promise<void> | null = null;
   private readonly initializationAbort = new AbortController();
   private readonly sampleUrlOverrides: Partial<Record<SampleId, readonly string[]>> | undefined;
   private readonly sampleCache = new Map<string, Uint8Array>();
@@ -90,6 +109,11 @@ export class SessionController {
   private queryGeneration = 0;
   private activeQuery: QuerySession | null = null;
   private resultDemand: Promise<void> | null = null;
+  private resultFetchSuspendedBy: number | null = null;
+  private exportGeneration = 0;
+  private activeExport: ExportOperation | null = null;
+  private retainedExport: { generation: number; destination: ExportDestination } | null = null;
+  private exportCleanup: Promise<void> = Promise.resolve();
   private retainedBlobs = new Map<string, Blob>();
   private batchFileIndex = 0;
   private batchFileCount = 0;
@@ -109,6 +133,8 @@ export class SessionController {
   constructor(options: SessionControllerOptions) {
     this.database = options.database;
     this.parser = options.parser ?? new ParseWorkerClient();
+    this.csvClient = options.csvClient ?? new CsvWorkerClient();
+    this.prepareDestination = options.prepareDestination ?? createExportDestination;
     this.fetchSample = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.sampleUrlOverrides = options.sampleUrlOverrides;
     this.stopViewer = options.stopViewer ?? (() => undefined);
@@ -187,14 +213,16 @@ export class SessionController {
     }
     const session = this.sessionGeneration;
     const query = ++this.queryGeneration;
+    const exportCleanup = this.supersedeExport();
     this.dispatch({ type: 'queryStarted', sql });
-    return this.executeQuery(sql, session, query);
+    return this.executeQuery(sql, session, query, exportCleanup);
   }
 
   loadMoreResults(): Promise<void> {
     this.assertUsable();
     const result = this.state.result;
-    if (!result || result.complete || result.pageError) return Promise.resolve();
+    if (!result || result.complete || result.pageError || this.resultFetchSuspendedBy !== null)
+      return Promise.resolve();
     return this.startResultDemand(() => this.fetchMoreResults(result.generation));
   }
 
@@ -236,14 +264,133 @@ export class SessionController {
     return this.startResultDemand(() => this.retryPendingResult(result.generation));
   }
 
+  downloadResults(options: ExportOptions): Promise<void> {
+    this.assertUsable();
+    const resultState = this.state.result;
+    const result = this.activeQuery;
+    let columns: number[];
+    try {
+      if (!resultState || !result || resultState.generation !== this.queryGeneration) {
+        throw new Error('Run a query before downloading results.');
+      }
+      if (resultState.pageError) {
+        throw new Error('Retry or rerun the query before downloading results.');
+      }
+      columns = selectExportColumns(resultState.schema, options);
+    } catch (error) {
+      return this.publishDownloadValidationFailure(error);
+    }
+
+    const previousDownload = this.state.download?.generation;
+    const generation = ++this.exportGeneration;
+    const priorCleanup = this.detachExportResources();
+    if (previousDownload !== undefined) {
+      this.dispatch({ type: 'downloadUpdated', generation: previousDownload, download: null });
+    }
+    const filename = exportFilename(this.state.source?.files.map((file) => file.name) ?? [], options.format);
+    const abortController = new AbortController();
+    const operation: ExportOperation = {
+      generation,
+      resultGeneration: resultState.generation,
+      result,
+      abortController,
+      destination: null,
+      destinationAbort: null,
+      settlement: Promise.resolve(),
+    };
+    this.activeExport = operation;
+    this.resultFetchSuspendedBy = generation;
+    this.updateDownload(operation, {
+      phase: 'picking',
+      rows: resultState.loadedRows,
+      totalRows: resultState.complete ? resultState.loadedRows : null,
+      bytes: 0,
+      message: null,
+    });
+
+    let destination: Promise<ExportDestination>;
+    try {
+      // Keep the picker invocation in the caller's user-activation turn.
+      destination = this.prepareDestination(filename, options.format);
+    } catch (error) {
+      destination = Promise.reject(error);
+    }
+    const destinationOutcome = destination.then<ExportDestinationOutcome, ExportDestinationOutcome>(
+      (acquired) => ({ status: 'fulfilled', destination: acquired }),
+      (error: unknown) => ({ status: 'rejected', error }),
+    );
+    operation.settlement = this.performDownload(
+      operation,
+      destinationOutcome,
+      priorCleanup,
+      options,
+      columns,
+    );
+    return operation.settlement;
+  }
+
+  cancelResultsDownload(): Promise<void> {
+    this.assertUsable();
+    const operation = this.activeExport;
+    if (!operation) return Promise.resolve();
+    operation.abortController.abort();
+    this.updateDownload(operation, {
+      phase: 'cancelling',
+      message: 'Cancelling download…',
+    });
+    const aborting = this.abortExportDestination(operation);
+    return Promise.allSettled([aborting, operation.settlement]).then(() => undefined);
+  }
+
+  saveResultsDownload(): void {
+    this.assertUsable();
+    const retained = this.retainedExport;
+    if (!retained || this.state.download?.generation !== retained.generation) return;
+    try {
+      // This must stay synchronous so the fallback anchor click retains user activation.
+      retained.destination.save();
+      this.dispatch({
+        type: 'downloadUpdated',
+        generation: retained.generation,
+        download: {
+          ...this.state.download,
+          phase: 'saved',
+          message: 'Download handed to the browser.',
+        },
+      });
+    } catch (error) {
+      this.dispatch({
+        type: 'downloadUpdated',
+        generation: retained.generation,
+        download: {
+          ...this.state.download,
+          phase: 'failed',
+          message: errorMessage(error, 'The prepared file could not be saved.'),
+        },
+      });
+    }
+  }
+
+  dismissResultsDownload(): Promise<void> {
+    this.assertUsable();
+    const generation = this.state.download?.generation;
+    ++this.exportGeneration;
+    const cleanup = this.detachExportResources();
+    if (generation !== undefined) {
+      this.dispatch({ type: 'downloadUpdated', generation, download: null });
+    }
+    return cleanup;
+  }
+
   async cancel(): Promise<void> {
     this.assertUsable();
     const stoppedResult = this.state.result && !this.state.result.complete;
     ++this.sessionGeneration;
     ++this.queryGeneration;
+    const exportCleanup = this.supersedeExport();
     this.cancelParser();
     this.stopActiveViewer();
-    const cancellation = this.closeActiveQuery({ cancel: true });
+    const cancellation = exportCleanup.then(() => this.closeActiveQuery({ cancel: true }));
     if (stoppedResult) {
       this.dispatch({
         type: 'queryPageFailed',
@@ -282,6 +429,7 @@ export class SessionController {
     this.disposed = true;
     ++this.sessionGeneration;
     ++this.queryGeneration;
+    const exportCleanup = this.supersedeExport();
     this.initializationAbort.abort();
     this.subscribers.clear();
     this.state = { ...initialSessionState, tables: [], issues: [] };
@@ -295,7 +443,9 @@ export class SessionController {
       // Continue releasing independently-owned resources.
     }
     this.disposal = (async () => {
+      await exportCleanup;
       await this.closeActiveQuery({ cancel: true });
+      await this.disposeCsvClient();
       await Promise.resolve()
         .then(() => this.database.dispose())
         .catch(() => undefined);
@@ -304,22 +454,29 @@ export class SessionController {
   }
 
   private async initializeOnce(): Promise<void> {
-    await Promise.all([
-      this.database.initialize(),
-      // Best-effort: reclaim OPFS scratch directories orphaned by a prior crashed session.
-      // No generation is "kept" — a fresh controller never inherits an in-flight ingest or query.
-      sweepSpillOrphans([]).catch(() => undefined),
-      sweepQueryPageOrphans().catch(() => undefined),
-    ]);
-    if (this.disposed) throw disposedError();
+    try {
+      await Promise.all([
+        this.database.initialize(),
+        this.csvClient.initialize(),
+        // Best-effort: reclaim OPFS scratch directories orphaned by a prior crashed session.
+        // No generation is "kept" — a fresh controller never inherits an in-flight ingest or query.
+        sweepSpillOrphans([]).catch(() => undefined),
+        sweepQueryPageOrphans().catch(() => undefined),
+      ]);
+      if (this.disposed) throw disposedError();
+    } catch (error) {
+      await this.disposeCsvClient();
+      throw error;
+    }
   }
 
   private async openBatch(entries: readonly BatchEntry[]): Promise<void> {
     const generation = ++this.sessionGeneration;
     ++this.queryGeneration;
+    const exportCleanup = this.supersedeExport();
     this.cancelParser();
     this.stopActiveViewer();
-    const queryCancellation = this.closeActiveQuery({ cancel: true });
+    const queryCancellation = exportCleanup.then(() => this.closeActiveQuery({ cancel: true }));
     this.bytesIngested = 0;
     this.lastProgress = null;
 
@@ -543,9 +700,345 @@ export class SessionController {
     return raw;
   }
 
-  private async executeQuery(sql: string, session: number, query: number): Promise<void> {
+  private async performDownload(
+    operation: ExportOperation,
+    destinationOutcome: Promise<ExportDestinationOutcome>,
+    priorCleanup: Promise<void>,
+    options: ExportOptions,
+    columns: readonly number[],
+  ): Promise<void> {
+    let destination: ExportDestination | null = null;
+    let keepDestination = false;
+    try {
+      await priorCleanup;
+      const acquired = await destinationOutcome;
+      if (acquired.status === 'rejected') throw acquired.error;
+      destination = acquired.destination;
+      operation.destination = destination;
+      this.assertCurrentExport(operation);
+
+      this.resultFetchSuspendedBy = operation.generation;
+      this.updateDownload(operation, {
+        phase: 'loading',
+        message: 'Loading remaining rows…',
+      });
+      const pendingDemand = this.resultDemand;
+      if (pendingDemand) await pendingDemand.catch(() => undefined);
+      this.assertCurrentExport(operation);
+      if (this.state.result?.pageError) {
+        throw new Error('Retry or rerun the query before downloading results.');
+      }
+
+      while (!operation.result.status().complete) {
+        this.throwIfExportAborted(operation);
+        try {
+          await operation.result.fetchNext(QUERY_PAGE_ROWS);
+        } catch (error) {
+          throw new Error(this.publishExportPageFailure(operation, error), { cause: error });
+        }
+        this.assertCurrentExport(operation);
+        this.refreshExportedResult(operation);
+        const status = operation.result.status();
+        this.updateDownload(operation, {
+          phase: 'loading',
+          rows: status.loadedRows,
+          totalRows: status.complete ? status.loadedRows : null,
+          message: status.complete ? 'All rows loaded.' : 'Loading remaining rows…',
+        });
+      }
+
+      this.refreshExportedResult(operation);
+      const totalRows = operation.result.status().loadedRows;
+      this.updateDownload(operation, {
+        phase: 'encoding',
+        rows: 0,
+        totalRows,
+        message: options.format === 'csv' ? 'Preparing CSV file…' : 'Preparing Parquet file…',
+      });
+
+      let bytes = 0;
+      if (options.format === 'csv') {
+        const pages = operation.result.pages();
+        if (pages.length === 0) {
+          await this.csvClient.encode(
+            tableToIpc(new Table(operation.result.schema)),
+            columns,
+            true,
+            async (chunk) => {
+              await destination!.write(chunk);
+              bytes += chunk.byteLength;
+              this.updateDownload(operation, { phase: 'encoding', bytes });
+            },
+            operation.abortController.signal,
+          );
+        } else {
+          let rows = 0;
+          for (const [index, summary] of pages.entries()) {
+            this.throwIfExportAborted(operation);
+            const storedPage = await operation.result.readPage(summary.index);
+            this.assertCurrentExport(operation);
+            await this.csvClient.encode(
+              tableToIpc(storedPage.table),
+              columns,
+              index === 0,
+              async (chunk) => {
+                await destination!.write(chunk);
+                bytes += chunk.byteLength;
+                this.updateDownload(operation, { phase: 'encoding', bytes });
+              },
+              operation.abortController.signal,
+            );
+            rows += summary.rowCount;
+            this.updateDownload(operation, { phase: 'encoding', rows, bytes });
+          }
+        }
+      } else {
+        const artifact = await this.database.exportParquet(operation.result, {
+          columns,
+          signal: operation.abortController.signal,
+          onProgress: (rows) => {
+            this.updateDownload(operation, { phase: 'encoding', rows });
+          },
+        });
+        try {
+          this.assertCurrentExport(operation);
+          bytes = await this.copyFileToDestination(operation, artifact.file, destination, totalRows);
+        } finally {
+          await artifact.dispose();
+        }
+      }
+
+      this.updateDownload(operation, {
+        phase: 'saving',
+        rows: totalRows,
+        totalRows,
+        bytes,
+        message: 'Saving file…',
+      });
+      // The identity check and invocation intentionally share one synchronous turn. Once close
+      // starts, supersession aborts the sink and joins this promise before disposing the query.
+      this.assertCurrentExport(operation);
+      const committing = destination.commit();
+      const outcome = await committing;
+      this.assertCurrentExport(operation);
+      if (outcome === 'ready-to-save') {
+        keepDestination = true;
+        this.retainedExport = { generation: operation.generation, destination };
+        this.updateDownload(operation, {
+          phase: 'ready-to-save',
+          message: 'File ready. Choose Save file to download it.',
+        });
+      } else {
+        await destination.dispose();
+        destination = null;
+        this.updateDownload(operation, {
+          phase: 'saved',
+          message: 'File saved.',
+        });
+      }
+    } catch (error) {
+      if (destination) {
+        await this.abortExportDestination(operation);
+        await destination.dispose().catch(() => undefined);
+      } else {
+        void destinationOutcome.then(async (outcome) => {
+          if (outcome.status === 'rejected') return;
+          await outcome.destination.abort().catch(() => undefined);
+          await outcome.destination.dispose().catch(() => undefined);
+        });
+      }
+      if (this.activeExport === operation && operation.generation === this.exportGeneration) {
+        const cancelled = operation.abortController.signal.aborted || isAbortError(error);
+        this.updateDownload(operation, {
+          phase: cancelled ? 'cancelled' : 'failed',
+          message: cancelled
+            ? 'Download cancelled.'
+            : errorMessage(error, 'The result could not be downloaded.'),
+        });
+      }
+    } finally {
+      if (this.resultFetchSuspendedBy === operation.generation) this.resultFetchSuspendedBy = null;
+      if (this.activeExport === operation) this.activeExport = null;
+      if (!keepDestination && this.retainedExport?.generation === operation.generation) {
+        this.retainedExport = null;
+      }
+    }
+  }
+
+  private async copyFileToDestination(
+    operation: ExportOperation,
+    file: File,
+    destination: ExportDestination,
+    totalRows: number,
+  ): Promise<number> {
+    const reader = file.stream().getReader();
+    const cancelReader = (): void => {
+      void reader.cancel().catch(() => undefined);
+    };
+    operation.abortController.signal.addEventListener('abort', cancelReader, { once: true });
+    let bytes = 0;
+    try {
+      while (true) {
+        this.throwIfExportAborted(operation);
+        const next = await reader.read();
+        if (next.done) return bytes;
+        this.assertCurrentExport(operation);
+        await destination.write(next.value);
+        bytes += next.value.byteLength;
+        this.updateDownload(operation, {
+          phase: 'saving',
+          rows: totalRows,
+          totalRows,
+          bytes,
+          message: 'Saving file…',
+        });
+      }
+    } finally {
+      operation.abortController.signal.removeEventListener('abort', cancelReader);
+      reader.releaseLock();
+    }
+  }
+
+  private publishDownloadValidationFailure(error: unknown): Promise<void> {
+    const previousDownload = this.state.download?.generation;
+    const generation = ++this.exportGeneration;
+    const cleanup = this.detachExportResources();
+    if (previousDownload !== undefined) {
+      this.dispatch({ type: 'downloadUpdated', generation: previousDownload, download: null });
+    }
+    this.dispatch({
+      type: 'downloadUpdated',
+      generation,
+      download: {
+        generation,
+        phase: 'failed',
+        rows: this.state.result?.loadedRows ?? 0,
+        totalRows: this.state.result?.complete ? this.state.result.loadedRows : null,
+        bytes: 0,
+        message: errorMessage(error, 'The result cannot be downloaded.'),
+      },
+    });
+    return cleanup;
+  }
+
+  private updateDownload(operation: ExportOperation, update: Partial<Omit<ExportState, 'generation'>>): void {
+    if (operation.generation !== this.exportGeneration) return;
+    const current = this.state.download;
+    if (current && current.generation !== operation.generation) return;
+    const base: ExportState = current ?? {
+      generation: operation.generation,
+      phase: 'picking',
+      rows: 0,
+      totalRows: null,
+      bytes: 0,
+      message: null,
+    };
+    this.dispatch({
+      type: 'downloadUpdated',
+      generation: operation.generation,
+      download: { ...base, ...update },
+    });
+  }
+
+  private refreshExportedResult(operation: ExportOperation): void {
+    const current = this.state.result;
+    if (!current || current.generation !== operation.resultGeneration) return;
+    const status = operation.result.status();
+    this.dispatch({
+      type: 'queryWindowUpdated',
+      result: {
+        ...current,
+        loadedRows: status.loadedRows,
+        complete: status.complete,
+        loadingMore: false,
+        elapsedMs: status.elapsedMs,
+      },
+    });
+  }
+
+  private publishExportPageFailure(operation: ExportOperation, error: unknown): string {
+    const message = this.resultPageFailureMessage(error, 'More query rows could not be loaded.');
+    if (!this.isCurrentExport(operation)) return message;
+    this.dispatch({
+      type: 'queryPageFailed',
+      message,
+      retryable: this.isRetryablePageError(error),
+    });
+    return message;
+  }
+
+  private throwIfExportAborted(operation: ExportOperation): void {
+    if (operation.abortController.signal.aborted) {
+      throw new DOMException('The download was cancelled.', 'AbortError');
+    }
+  }
+
+  private assertCurrentExport(operation: ExportOperation): void {
+    this.throwIfExportAborted(operation);
+    if (!this.isCurrentExport(operation)) {
+      throw new DOMException('The download was replaced.', 'AbortError');
+    }
+  }
+
+  private isCurrentExport(operation: ExportOperation): boolean {
+    return (
+      !this.disposed &&
+      this.exportGeneration === operation.generation &&
+      this.activeExport === operation &&
+      this.activeQuery === operation.result &&
+      this.queryGeneration === operation.resultGeneration &&
+      this.state.result?.generation === operation.resultGeneration
+    );
+  }
+
+  private supersedeExport(): Promise<void> {
+    const generation = this.state.download?.generation;
+    ++this.exportGeneration;
+    const cleanup = this.detachExportResources();
+    if (generation !== undefined) {
+      this.dispatch({ type: 'downloadUpdated', generation, download: null });
+    }
+    return cleanup;
+  }
+
+  private detachExportResources(): Promise<void> {
+    const priorCleanup = this.exportCleanup;
+    const active = this.activeExport;
+    const retained = this.retainedExport;
+    this.activeExport = null;
+    this.retainedExport = null;
+    active?.abortController.abort();
+    const aborting = active ? this.abortExportDestination(active) : Promise.resolve();
+    const disposingRetained = retained?.destination.dispose().catch(() => undefined) ?? Promise.resolve();
+    this.exportCleanup = Promise.allSettled([
+      priorCleanup,
+      aborting,
+      active?.settlement ?? Promise.resolve(),
+      disposingRetained,
+    ]).then(() => undefined);
+    return this.exportCleanup;
+  }
+
+  private abortExportDestination(operation: ExportOperation): Promise<void> {
+    if (!operation.destination) return Promise.resolve();
+    operation.destinationAbort ??= operation.destination.abort().catch(() => undefined);
+    return operation.destinationAbort;
+  }
+
+  private disposeCsvClient(): Promise<void> {
+    this.csvDisposal ??= this.csvClient.dispose().catch(() => undefined);
+    return this.csvDisposal;
+  }
+
+  private async executeQuery(
+    sql: string,
+    session: number,
+    query: number,
+    exportCleanup: Promise<void>,
+  ): Promise<void> {
     const priorResult = this.state.result;
     try {
+      await exportCleanup;
       await this.closeActiveQuery({ cancel: true });
       if (!this.isCurrentQuery(session, query)) return;
       if (priorResult && !priorResult.complete && this.state.result === priorResult) {
@@ -664,7 +1157,13 @@ export class SessionController {
         message: this.resultPageFailureMessage(error, 'The requested query rows could not be loaded.'),
         retryable: false,
       });
-      await this.closeActiveQuery({ cancel: true });
+      const exportCleanup = this.supersedeExport();
+      void exportCleanup
+        .then(() => {
+          if (!this.isActiveResult(active, generation)) return;
+          return this.closeActiveQuery({ cancel: true });
+        })
+        .catch(() => undefined);
     }
   }
 
