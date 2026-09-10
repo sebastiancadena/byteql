@@ -334,7 +334,7 @@
   }
 
   .results-download-error {
-    color: var(--color-danger-text, var(--color-text));
+    color: var(--color-danger);
   }
 
   .visually-hidden {

@@ -273,15 +273,15 @@
 
     const style = getComputedStyle(canvas);
     const colors: HexColors = {
-      background: readColor(style, '--color-surface-inset') || '#0b1016',
-      gutter: readColor(style, '--color-text-subtle') || '#8fa2b1',
-      text: readColor(style, '--color-text') || '#edf3f7',
-      ascii: readColor(style, '--color-text-muted') || '#aebdca',
+      background: readColor(style, '--color-surface-inset') || '#eeede5',
+      gutter: readColor(style, '--color-text-subtle') || '#596152',
+      text: readColor(style, '--color-text') || '#222820',
+      ascii: readColor(style, '--color-text-muted') || '#50594d',
       shadeA: readColor(style, '--color-shade-a'),
       shadeB: readColor(style, '--color-shade-b'),
-      selection: readColor(style, '--color-hex-selection') || '#1e558a',
+      selection: readColor(style, '--color-hex-selection') || '#cbdfea',
       highlight: readColor(style, '--color-hex-highlight'),
-      caret: readColor(style, '--color-focus') || '#ffca68',
+      caret: readColor(style, '--color-focus') || '#215b86',
       placeholder: readColor(style, '--color-hex-placeholder'),
     };
     const fontFamily = readColor(style, '--font-mono') || 'monospace';
@@ -308,7 +308,7 @@
     if (flashRow !== null) {
       const bandY = (flashRow - scrollRow) * metrics.rowHeight;
       if (bandY >= -metrics.rowHeight && bandY < cssHeight) {
-        context.fillStyle = readColor(style, '--color-accent-wash') || 'rgb(54 194 255 / 8%)';
+        context.fillStyle = readColor(style, '--color-hex-highlight') || '#f1d99f';
         context.fillRect(0, bandY, cssWidth, metrics.rowHeight);
       }
     }

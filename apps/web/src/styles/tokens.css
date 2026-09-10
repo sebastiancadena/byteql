@@ -1,0 +1,160 @@
+/* Trace Workspace design tokens.
+   Light values live on `:root`; dark overrides only restate what actually changes.
+   Editor tokens are semantic aliases so a palette change never desynchronizes CodeMirror. */
+
+:root {
+  /* Surfaces */
+  --color-canvas: #f1f0e9;
+  --color-surface: #faf9f4;
+  --color-surface-inset: #eeede5;
+  --color-surface-raised: #ffffff;
+  --color-surface-hover: #e5e7df;
+
+  /* Rules and boundaries */
+  --color-border: #c7cdc0;
+  --color-border-strong: #77816f;
+
+  /* Text */
+  --color-text: #222820;
+  --color-text-muted: #50594d;
+  --color-text-subtle: #596152;
+
+  /* Primary action */
+  --color-accent: #28392e;
+  --color-accent-strong: #19261e;
+  --color-accent-ink: #faf9f4;
+
+  /* Selection, focus and the trace relationship */
+  --color-selection: #dce8ec;
+  --color-focus: #215b86;
+  --color-evidence: #80520a;
+  --color-hex-highlight: #f1d99f;
+  --color-hex-selection: #cbdfea;
+  --color-shade-a: #e6e9df;
+  --color-shade-b: #dce5df;
+  --color-hex-placeholder: #c7cdc0;
+
+  /* State */
+  --color-danger: #a82f2d;
+  --color-danger-surface: #fbe8e4;
+  --color-warning: #795b10;
+  --color-warning-surface: #eee5c7;
+  --color-success: #346039;
+
+  /* SQL syntax */
+  --color-syntax-keyword: #345a83;
+  --color-syntax-string: #795017;
+  --color-syntax-number: #655184;
+  --color-syntax-comment: #596152;
+  --color-syntax-operator: #50594d;
+
+  /* Editor aliases — resolved from the semantic palette above, never hard-coded. */
+  --color-editor-text: var(--color-text);
+  --color-editor-background: var(--color-surface-inset);
+  --color-editor-caret: var(--color-focus);
+  --color-editor-selection: var(--color-selection);
+  --color-editor-active-line: var(--color-selection);
+  --color-editor-gutter-text: var(--color-text-subtle);
+  --color-editor-gutter-background: var(--color-surface-inset);
+  --color-editor-border: var(--color-border);
+  --color-syntax-name: var(--color-text);
+  --color-syntax-invalid: var(--color-danger);
+
+  --color-transparent: transparent;
+
+  /* Typography. Local WOFF2 faces are added by the font loader; the default stacks
+     stay system-only so a failed font load still renders a complete interface. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'SF Mono', Consolas, 'Liberation Mono', monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-base: 14px;
+  --text-lg: 18px;
+  --text-intake: 32px;
+  --text-intake-narrow: 26px;
+  --leading-xs: 18px;
+  --leading-sm: 20px;
+  --leading-md: 20px;
+  --leading-sql: 22px;
+  --leading-lg: 24px;
+  --leading-intake: 36px;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Geometry */
+  --header-height: 48px;
+  --status-height: 28px;
+  --toolbar-height: 36px;
+  --trace-strip-height: 40px;
+  --control-height: 32px;
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-control: 3px;
+  --radius-overlay: 6px;
+
+  /* Elevation — overlays only; workspace panes are flat. */
+  --shadow-overlay: 0 8px 24px rgb(0 0 0 / 18%);
+  --shadow-pane: var(--shadow-overlay);
+
+  /* Layer order */
+  --layer-sticky: 10;
+  --layer-drawer: 30;
+  --layer-popover: 40;
+  --layer-dialog: 50;
+  --layer-drop: 60;
+
+  /* Motion */
+  --duration-quick: 100ms;
+  --duration-drawer: 140ms;
+}
+
+:root[data-theme='dark'] {
+  --color-canvas: #181b18;
+  --color-surface: #20251f;
+  --color-surface-inset: #151915;
+  --color-surface-raised: #2b322a;
+  --color-surface-hover: #333b31;
+
+  --color-border: #465041;
+  --color-border-strong: #8f9b85;
+
+  --color-text: #eeeee4;
+  --color-text-muted: #bdc4b7;
+  --color-text-subtle: #b0baa9;
+
+  --color-accent: #e4e9da;
+  --color-accent-strong: #f4f6ef;
+  --color-accent-ink: #20251f;
+
+  --color-selection: #2a4149;
+  --color-focus: #9ccbe4;
+  --color-evidence: #e4b967;
+  --color-hex-highlight: #554326;
+  --color-hex-selection: #274853;
+  --color-shade-a: #232e25;
+  --color-shade-b: #293831;
+  --color-hex-placeholder: #465041;
+
+  --color-danger: #ffa89a;
+  --color-danger-surface: #462b27;
+  --color-warning: #e9cf8d;
+  --color-warning-surface: #3d3726;
+  --color-success: #afcda3;
+
+  --color-syntax-keyword: #a5c5e9;
+  --color-syntax-string: #e6c48b;
+  --color-syntax-number: #c8b7e7;
+  --color-syntax-comment: #b0baa9;
+  --color-syntax-operator: #bdc4b7;
+
+  --shadow-overlay: 0 8px 24px rgb(0 0 0 / 40%);
+}
