@@ -150,7 +150,7 @@ describe('StatusBar progress readout', () => {
   it('shows the byte selection readout', () => {
     const state = { ...initialSessionState, byteSelection: { file: 'capture.pcap', start: 0x40, end: 0x78 } };
     const { getByText } = render(StatusBar, { props: { state } });
-    expect(getByText('0x40–0x77 · 56 bytes')).toBeTruthy();
+    expect(getByText('0x00000040–0x00000077 · 56 bytes')).toBeTruthy();
   });
 
   it('shows the batch position marker only when a batch has more than one file', () => {

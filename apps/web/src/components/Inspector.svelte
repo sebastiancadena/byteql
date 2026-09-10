@@ -2,6 +2,7 @@
   import type { Table } from 'apache-arrow';
 
   import { provenanceOfRow } from '../lib/hex/coverage.js';
+  import { formatByteRange } from '../lib/ui/trace.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import type { ViewerCapability } from '../lib/viewers/registry.js';
   import ViewerMenu from './ViewerMenu.svelte';
@@ -13,6 +14,8 @@
     selectedGlobalRow?: number | null;
     collapsed?: boolean;
     mobileOpen?: boolean;
+    /** Known sources, so a reveal link is validated exactly as the trace strip validates it. */
+    sourceFiles?: readonly { name: string; size: number }[];
     viewers?: readonly ViewerCapability[];
     activeViewer?: ViewerCapability | null;
     audioEngineFactory?: (() => AudioEngine) | undefined;
@@ -28,6 +31,7 @@
     selectedGlobalRow = null,
     collapsed = false,
     mobileOpen = false,
+    sourceFiles = [],
     viewers = [],
     activeViewer = null,
     audioEngineFactory,
@@ -41,6 +45,21 @@
   const provenanceRange = $derived(
     table && selectedRow !== null ? provenanceOfRow(table, selectedRow) : null,
   );
+
+  /**
+   * The same validation the trace strip applies: a range is only shown as a reveal action when a
+   * known source file actually contains it. An unusable range gets the plain unavailable message
+   * rather than a clickable link to bytes that are not there.
+   */
+  const provenanceLabel = $derived.by(() => {
+    if (!provenanceRange) return null;
+    const file = sourceFiles.find((candidate) => candidate.name === provenanceRange.file);
+    const label = formatByteRange(provenanceRange.start, provenanceRange.end);
+    if (!label) return null;
+    // With no source list supplied, the range's own validity is all we can check.
+    if (sourceFiles.length > 0 && (!file || provenanceRange.end > file.size)) return null;
+    return label;
+  });
 
   function valueAt(columnIndex: number): unknown {
     if (!table || selectedRow === null) return null;
@@ -100,7 +119,7 @@
     <section class="inspector-section provenance" aria-labelledby="provenance-heading">
       <p class="eyebrow">Original source</p>
       <h3 id="provenance-heading">Provenance</h3>
-      {#if provenanceRange}
+      {#if provenanceRange && provenanceLabel}
         <dl>
           <div>
             <dt>Source range</dt>
@@ -108,12 +127,14 @@
               <button
                 class="provenance-link"
                 type="button"
-                onclick={() => onrevealrange(provenanceRange as { start: number; end: number })}
-                >0x{provenanceRange.start.toString(16)} – 0x{provenanceRange.end.toString(16)}</button
+                title="Inclusive byte offsets in the source file"
+                onclick={() => onrevealrange(provenanceRange)}>{provenanceLabel}</button
               >
             </dd>
           </div>
         </dl>
+      {:else if provenanceRange}
+        <p class="muted-copy">Source bytes are unavailable for this row.</p>
       {:else}
         <dl>
           {#each table.schema.fields as field, columnIndex (field.name)}

@@ -665,6 +665,62 @@
   font-style: italic;
 }
 
+/* Trace strip — the signature line: row → file → range. It may wrap past its 40 px
+   minimum at narrow widths rather than truncating the relationship it states. */
+
+.trace-bar {
+  display: flex;
+  min-height: var(--trace-strip-height);
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border-top: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+}
+
+.trace-readout {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.trace-row {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.trace-arrow,
+.trace-file {
+  color: var(--color-text-muted);
+}
+
+.trace-file {
+  max-width: 24ch;
+}
+
+.trace-range {
+  color: var(--color-evidence);
+}
+
+.trace-message {
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+}
+
+.trace-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 /* Byte dock */
 
 .hex-pane {

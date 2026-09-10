@@ -409,10 +409,28 @@ describe('Inspector Workbench', () => {
 
     expect(controller.selectResultRow).toHaveBeenCalledWith(1);
     const inspector = screen.getByRole('complementary', { name: 'Inspector' });
-    expect(within(inspector).getByRole('button', { name: '0x1c – 0x29' })).toBeTruthy();
+    // [28, 41) shows its last included byte, 0x28 — not the exclusive end.
+    expect(within(inspector).getByRole('button', { name: '0x0000001c–0x00000028 · 13 bytes' })).toBeTruthy();
     expect(within(inspector).getByText('optional')).toBeTruthy();
     expect(within(inspector).getByText('available')).toBeTruthy();
     expect(textOf(editor)).toContain('select * from records limit 100');
+  });
+
+  it('refuses to link a source range whose file is no longer in the session', async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      // The result still carries capture.bin provenance, but that file is gone.
+      source: { files: [{ name: 'other.bin', size: 1536 }], totalSize: 1536 },
+    });
+    render(Workbench, { controller });
+
+    const firstRow = screen.getByRole('row', { name: /row 1/i });
+    firstRow.focus();
+    await fireEvent.keyDown(firstRow, { key: 'ArrowDown' });
+
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' });
+    expect(within(inspector).queryByRole('button', { name: /0x/u })).toBeNull();
+    expect(within(inspector).getByText('Source bytes are unavailable for this row.')).toBeTruthy();
   });
 
   it('loads an example query into a focused editor without running it', async () => {

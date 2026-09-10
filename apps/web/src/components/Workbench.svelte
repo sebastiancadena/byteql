@@ -670,6 +670,7 @@
         selectedGlobalRow={session.selectedRow}
         collapsed={inspectorCollapsed}
         mobileOpen={mobileTab === 'inspector'}
+        {sourceFiles}
         {viewers}
         {activeViewer}
         {audioEngineFactory}

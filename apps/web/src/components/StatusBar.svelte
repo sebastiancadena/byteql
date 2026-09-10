@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SessionState } from '../lib/session/state.js';
+  import { formatByteRange } from '../lib/ui/trace.js';
 
   interface Props {
     state: SessionState;
@@ -54,8 +55,11 @@
     return skippedCount > 0 ? `${base} · ${skippedCount} skipped` : base;
   });
 
-  const formatByteRange = ({ start, end }: { start: number; end: number }): string =>
-    `0x${start.toString(16)}–0x${(end - 1).toString(16)} · ${end - start} bytes`;
+  // One shared range formatter, so the footer, the values list and the trace strip can never
+  // disagree about which bytes a selection covers.
+  const selectionLabel = $derived(
+    state.byteSelection ? formatByteRange(state.byteSelection.start, state.byteSelection.end) : null,
+  );
 </script>
 
 <footer class="status-bar">
@@ -85,8 +89,8 @@
       </span>
       <span>{state.result.elapsedMs.toFixed(1)} ms {state.result.complete ? 'total' : 'streaming'}</span>
     {/if}
-    {#if state.byteSelection}
-      <span class="tabular">{formatByteRange(state.byteSelection)}</span>
+    {#if selectionLabel}
+      <span class="tabular" title="Inclusive byte offsets in the source file">{selectionLabel}</span>
     {/if}
     <span>Local processing</span>
   </div>
