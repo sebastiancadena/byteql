@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global Blob, DragEvent, Event, File, HTMLButtonElement, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, window */
+  /* global Blob, DragEvent, Event, File, HTMLButtonElement, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, document, window */
 
   import type { Table } from 'apache-arrow';
   import { onMount, untrack } from 'svelte';
@@ -10,6 +10,7 @@
   import type { SampleId } from '../lib/session/samples.js';
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
   import { sqlIdentifier } from '../lib/sql-literal.js';
+  import { applyTheme, readTheme, type Theme } from '../lib/ui/theme.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import {
     compatibleTableViewers,
@@ -68,8 +69,31 @@
   let dropActive = $state(false);
   let filePickerInput = $state<HTMLInputElement>();
   let shortcutsOpen = $state(false);
+  let emptyState = $state<ReturnType<typeof EmptyState> | null>(null);
 
+  const idle = $derived(session.phase === 'idle' || session.phase === 'failed');
+
+  let appearance = $state<Theme>(readTheme(browserStorage()));
+
+  function browserStorage(): Storage | null {
+    try {
+      return globalThis.localStorage;
+    } catch {
+      return null;
+    }
+  }
+
+  function changeAppearance(next: Theme): void {
+    appearance = next;
+    applyTheme(next, document.documentElement, browserStorage());
+  }
+
+  /** Idle delegates to the intake's gesture-safe path; a loaded session uses its own input. */
   function openPicker(): void {
+    if (idle) {
+      emptyState?.openFile();
+      return;
+    }
     filePickerInput?.click();
   }
 
@@ -394,9 +418,13 @@
     formatTitle={session.format?.title ?? null}
     {explorerCollapsed}
     {inspectorCollapsed}
-    ontoggleexplorer={() => (explorerCollapsed = !explorerCollapsed)}
-    ontoggleinspector={() => (inspectorCollapsed = !inspectorCollapsed)}
-    onopen={session.phase !== 'idle' && session.phase !== 'failed' ? openPicker : undefined}
+    {intakeBusy}
+    {appearance}
+    onappearancechange={changeAppearance}
+    onshortcuts={() => (shortcutsOpen = true)}
+    ontoggleexplorer={idle ? undefined : () => (explorerCollapsed = !explorerCollapsed)}
+    ontoggleinspector={idle ? undefined : () => (inspectorCollapsed = !inspectorCollapsed)}
+    onopen={idle ? undefined : openPicker}
   />
 
   {#if dropActive}
@@ -405,7 +433,7 @@
     </div>
   {/if}
 
-  {#if session.phase !== 'idle' && session.phase !== 'failed'}
+  {#if !idle}
     <input
       bind:this={filePickerInput}
       class="visually-hidden"
@@ -416,9 +444,10 @@
     />
   {/if}
 
-  {#if session.phase === 'idle' || session.phase === 'failed'}
+  {#if idle}
     <main class="empty-main">
       <EmptyState
+        bind:this={emptyState}
         busy={intakeBusy}
         error={actionError ?? session.fatalError}
         onopen={(files) => perform(() => controller.openFiles(files))}
@@ -500,6 +529,7 @@
 
         <SqlEditor
           sql={draftSql}
+          {appearance}
           disabled={session.phase === 'querying'}
           onrun={run}
           onchange={(sql) => (draftSql = sql)}
@@ -594,6 +624,7 @@
         {#if session.source !== null}
           <HexPane
             bind:this={hexPane}
+            {appearance}
             blob={sourceBlob}
             fileSize={hexFileSize}
             coverage={coverageResult.index}

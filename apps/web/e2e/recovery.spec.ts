@@ -26,7 +26,7 @@ test('recreates a crashed parser worker and accepts an explicit file retry', asy
   expect(initialWorkerCount).toBe(1);
 
   await page.evaluate(() => window.__byteqlE2E?.armParserCrash());
-  await page.getByLabel('Open file').setInputFiles(fixturePath('malformed-then-valid.mid'));
+  await page.getByLabel('Open file input').setInputFiles(fixturePath('malformed-then-valid.mid'));
   await expect(page.getByRole('alert')).toContainText('worker stopped unexpectedly');
   await expect.poll(() => page.evaluate(() => window.__byteqlE2E?.workerCount() ?? -1)).toBe(2);
 

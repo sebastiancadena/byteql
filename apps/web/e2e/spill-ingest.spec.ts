@@ -74,7 +74,7 @@ test('a large capture streams through the opfs spill tier and stays queryable', 
   // "what should _src_start equal" question is to derive it empirically here, once, rather than
   // hard-code a guess about header/offset arithmetic.
   const small = generateCapture(SMALL_CAPTURE_BYTES, CAPTURE_SEED);
-  await page.getByLabel('Open file').setInputFiles(asFile('scale-small.pcap', small.bytes));
+  await page.getByLabel('Open file input').setInputFiles(asFile('scale-small.pcap', small.bytes));
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 
   await runSql(page, 'select _src_start, _src_end from packets order by packet_id limit 1');
@@ -91,7 +91,7 @@ test('a large capture streams through the opfs spill tier and stays queryable', 
   await page.goto('/');
   await waitForAppReady(page);
   const large = generateCapture(LARGE_CAPTURE_BYTES, CAPTURE_SEED);
-  await page.getByLabel('Open file').setInputFiles(asFile('scale.pcap', large.bytes));
+  await page.getByLabel('Open file input').setInputFiles(asFile('scale.pcap', large.bytes));
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible({ timeout: 120_000 });
 
   // The auto-run "overview" query is still on screen (a multi-row table listing every table's row
@@ -125,7 +125,7 @@ test('the memory tier still serves small files with identical values', async ({ 
   await waitForAppReady(page);
 
   const { bytes, packetCount, dnsCount } = generateCapture(SMALL_CAPTURE_BYTES, CAPTURE_SEED);
-  await page.getByLabel('Open file').setInputFiles(asFile('scale-small.pcap', bytes));
+  await page.getByLabel('Open file input').setInputFiles(asFile('scale-small.pcap', bytes));
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 
   await runSql(page, 'select count(*) as n from packets');

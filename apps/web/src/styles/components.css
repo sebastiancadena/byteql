@@ -57,59 +57,138 @@
   pointer-events: none;
 }
 
-/* Intake */
+/* Intake — a work surface, not a landing page: left-aligned, one file action. */
 
 .empty-main {
   display: grid;
   overflow: auto;
-  place-items: center;
+  align-content: start;
+  justify-items: center;
+  padding: var(--space-6);
   background: var(--color-canvas);
 }
 
-.empty-state {
+.intake {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(17rem, 0.75fr);
-  width: min(68rem, calc(100% - var(--space-6)));
-  padding: var(--space-6);
-  gap: var(--space-4) var(--space-6);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
+  width: 100%;
+  max-width: 1120px;
+  gap: var(--space-5);
   text-align: left;
 }
 
-.empty-state.dragging {
-  border-color: var(--color-evidence);
+.intake-lede {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+
+  /* The supplied square artwork, uncropped, at the spec's desktop size. */
+  --brand-lockup-size: 80px;
 }
 
-.empty-hero-copy h1 {
-  margin: var(--space-4) 0 0;
+/* Never let flex shrink the mark below its declared size — that would crop the artwork. */
+.intake-lede [data-brand-lockup] {
+  flex: 0 0 auto;
+}
+
+.intake-lede h1 {
+  margin: 0;
   font-size: var(--text-intake);
   font-weight: 600;
   line-height: var(--leading-intake);
 }
 
-.empty-hero-copy h1 span {
-  display: block;
-}
-
-.empty-copy {
+.intake-copy {
   max-width: 64ch;
-  margin: var(--space-4) 0;
+  margin: var(--space-2) 0 0;
   color: var(--color-text-muted);
   font-size: var(--text-md);
   line-height: var(--leading-md);
 }
 
-.format-badges {
+.intake-columns {
+  display: grid;
+  grid-template-columns: 5fr 3fr;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.intake-open,
+.intake-samples {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+}
+
+.intake.dragging .intake-open {
+  border-color: var(--color-evidence);
+}
+
+.intake-samples h2 {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--leading-md);
+}
+
+.intake-facts {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.intake-facts div {
   display: flex;
-  justify-content: flex-start;
   gap: var(--space-2);
+}
+
+.intake-facts dt,
+.intake-facts dd {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.intake-facts dt {
+  color: var(--color-text-muted);
+}
+
+.intake-facts dd {
+  font-family: var(--font-mono);
+}
+
+.intake-privacy,
+.drop-hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+}
+
+/* Descriptive rows explain the choices; the Try sample menu stays the only click target. */
+.sample-list {
+  display: grid;
+  gap: var(--space-3);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.format-badges li,
+.sample-list li {
+  display: grid;
+  gap: 2px;
+}
+
+.sample-list strong {
+  font-weight: 600;
+}
+
+.sample-list span {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
 .format-badge,
 .selection-chip,
 .result-count {
@@ -122,8 +201,7 @@
   font-size: var(--text-xs);
 }
 
-.format-badge,
-.selection-chip {
+.format-badge {
   margin-top: var(--space-2);
 }
 
@@ -133,72 +211,23 @@
   font-family: var(--font-mono);
 }
 
-.empty-intake {
-  align-self: center;
-  padding: var(--space-4);
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-surface-raised);
-}
+@media (max-width: 959px) {
+  .empty-main {
+    padding: var(--space-4);
+  }
 
-.empty-intake-label {
-  margin: 0 0 var(--space-3);
-  color: var(--color-text);
-  font-size: var(--text-md);
-  font-weight: 600;
-}
+  .intake-lede {
+    --brand-lockup-size: 64px;
+  }
 
-.empty-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: var(--space-2);
-}
+  .intake-lede h1 {
+    font-size: var(--text-intake-narrow);
+    line-height: var(--leading-lg);
+  }
 
-.empty-actions input[type='file'] {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.empty-actions label:focus-within {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 2px;
-}
-
-.drop-hint {
-  margin: var(--space-3) 0 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
-}
-
-.empty-proof-grid {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
-}
-
-.empty-proof-grid > div {
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-}
-
-.empty-proof-grid strong,
-.empty-proof-grid span {
-  display: block;
-}
-
-.empty-proof-grid strong {
-  margin-bottom: var(--space-1);
-  color: var(--color-text);
-}
-
-.empty-proof-grid span {
-  color: var(--color-text-muted);
-  font-size: var(--text-md);
+  .intake-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* Diagnostics */

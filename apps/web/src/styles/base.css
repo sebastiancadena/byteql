@@ -59,6 +59,13 @@ button {
   display: none !important;
 }
 
+/* An appearance change repaints; it never animates. */
+:root[data-theme-switching] *,
+:root[data-theme-switching] *::before,
+:root[data-theme-switching] *::after {
+  transition: none !important;
+}
+
 /* Code and data must render byte-for-byte: no ligature ever merges two characters. */
 code,
 kbd,

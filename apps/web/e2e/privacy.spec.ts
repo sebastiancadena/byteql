@@ -43,7 +43,7 @@ test('emits zero network events or local-data sentinels after application readin
 
   const privateFileName = 'private-local-fixture-7b684d.mid';
   const sqlSentinel = 'BYTEQL_PRIVATE_SQL_4d20f8';
-  await page.getByLabel('Open file').setInputFiles({
+  await page.getByLabel('Open file input').setInputFiles({
     name: privateFileName,
     mimeType: 'audio/midi',
     buffer: await readFile(fixturePath('demo.mid')),

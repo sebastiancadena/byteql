@@ -16,6 +16,8 @@ export interface SampleDefinition {
   id: SampleId;
   /** Menu-item text in the sample picker. */
   label: string;
+  /** One sentence explaining what the sample contains, shown beside the picker on the intake screen. */
+  description: string;
   files: readonly SampleFile[];
 }
 
@@ -28,6 +30,7 @@ export const SAMPLES: readonly SampleDefinition[] = [
   {
     id: 'pcap',
     label: 'Network capture (pcap)',
+    description: 'Three captures projected into packet, IP, TCP, UDP, DNS and TLS tables.',
     files: [
       { name: 'SkypeIRC.cap', url: skypeIrcUrl },
       { name: 'v6.pcap', url: v6Url },
@@ -37,6 +40,7 @@ export const SAMPLES: readonly SampleDefinition[] = [
   {
     id: 'midi',
     label: 'MIDI song (.mid)',
+    description: 'One short piece projected into header, event and tempo tables.',
     files: [{ name: 'fur_Elise_opening.mid', url: furEliseUrl }],
   },
 ];

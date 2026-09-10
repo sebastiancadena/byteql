@@ -1,5 +1,6 @@
 <script lang="ts">
   import { SAMPLES, type SampleId } from '../lib/session/samples.js';
+  import Icon from './ui/Icon.svelte';
 
   interface Props {
     busy?: boolean;
@@ -23,7 +24,8 @@
     aria-expanded={open}
     onclick={() => (open = !open)}
   >
-    Try sample <span aria-hidden="true">▾</span>
+    Try sample
+    <span class="sample-menu-chevron"><Icon name="chevron" /></span>
   </button>
   {#if open}
     <div class="sample-options" role="menu" aria-label="Sample files">
@@ -36,30 +38,40 @@
 
 <style>
   .sample-menu {
-    position: relative;
     display: inline-block;
+    position: relative;
+  }
+
+  .sample-menu-chevron {
+    display: inline-flex;
+    margin-left: var(--space-1);
+    /* Points down at rest; the shared glyph is drawn pointing right. */
+    transform: rotate(90deg);
   }
 
   .sample-options {
+    z-index: var(--layer-popover);
     position: absolute;
-    z-index: 10;
-    top: calc(100% + 0.3rem);
+    top: calc(100% + var(--space-1));
     left: 0;
     min-width: 13rem;
-    padding: 0.3rem;
-    border: 1px solid var(--color-border);
-    border-radius: 0.45rem;
+    padding: var(--space-1);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-overlay);
     background: var(--color-surface-raised);
-    box-shadow: 0 0.7rem 1.5rem rgb(0 0 0 / 18%);
+    box-shadow: var(--shadow-overlay);
   }
 
   .sample-options button {
     width: 100%;
-    padding: 0.55rem 0.65rem;
+    min-height: var(--control-height);
+    padding: var(--space-2);
     border: 0;
-    border-radius: 0.3rem;
-    text-align: left;
+    border-radius: var(--radius-control);
+    color: var(--color-text);
     background: transparent;
+    font-size: var(--text-md);
+    text-align: left;
     cursor: pointer;
   }
 

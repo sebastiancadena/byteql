@@ -229,8 +229,8 @@ describe('Inspector Workbench', () => {
     });
     render(Workbench, { controller });
 
-    expect(screen.getByText(/files never leave this browser/i)).toBeTruthy();
-    const input = screen.getByLabelText('Open file');
+    expect(screen.getByText(/nothing is uploaded/i)).toBeTruthy();
+    const input = screen.getByLabelText('Open file input');
     expect(input.getAttribute('type')).toBe('file');
     expect((screen.getByRole('button', { name: 'Try sample' }) as HTMLButtonElement).disabled).toBe(false);
 
@@ -239,15 +239,54 @@ describe('Inspector Workbench', () => {
     expect(controller.openSample).toHaveBeenCalledWith('pcap');
   });
 
-  it('hides the header Open button when no session can receive the picker click', () => {
+  it('keeps the file action in the intake while idle and in the header once loaded', () => {
     const idleController = new FakeController({ ...initialSessionState, phase: 'idle' });
     render(Workbench, { controller: idleController });
-    expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+    // Idle has exactly one Open file action, and it belongs to the intake surface.
+    expect(screen.getAllByRole('button', { name: 'Open file' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /sources/iu })).toBeNull();
+    expect(screen.queryByRole('button', { name: /values/iu })).toBeNull();
     cleanup();
 
     const readyController = new FakeController(readyState());
     render(Workbench, { controller: readyController });
-    expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open file' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Hide sources' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Hide values' })).toBeTruthy();
+  });
+
+  it('reaches the idle intake with Mod+O instead of a picker that is not mounted yet', async () => {
+    const controller = new FakeController({ ...initialSessionState, phase: 'idle' });
+    render(Workbench, { controller });
+    const input = screen.getByLabelText<HTMLInputElement>('Open file input');
+    const click = vi.spyOn(input, 'click');
+
+    // jsdom has no File System Access API, so the intake path falls through to its own input.
+    await fireEvent.keyDown(window, { key: 'o', ctrlKey: true });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it('opens the loaded session picker with Mod+O', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    const picker = screen.getByLabelText<HTMLInputElement>('Open file picker');
+    const click = vi.spyOn(picker, 'click');
+
+    await fireEvent.keyDown(window, { key: 'o', ctrlKey: true });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it('switches appearance from the header and keeps the choice on the root element', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    expect(document.documentElement.dataset.theme).not.toBe('dark');
+    await fireEvent.click(screen.getByRole('button', { name: 'Use dark appearance' }));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(localStorage.getItem('byteql.ui.theme.v1')).toBe('dark');
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Use light appearance' }));
+    expect(document.documentElement.dataset.theme).toBe('light');
   });
 
   it('shows source context, pack metadata, query tools, results, and inspection landmarks', () => {

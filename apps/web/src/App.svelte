@@ -113,12 +113,11 @@
     <div class="startup-card">
       <BrandLockup />
       <h1 class="visually-hidden">ByteQL</h1>
-      <p class="startup-kicker">Browser-native binary intelligence</p>
       {#if startupError}
         <p class="inline-diagnostic" role="alert">{startupError}</p>
         <button class="button button-primary" type="button" onclick={retryStartup}> Retry startup </button>
       {:else}
-        <p>Starting the local inspector…</p>
+        <p>Starting the local query engine…</p>
       {/if}
     </div>
   </main>

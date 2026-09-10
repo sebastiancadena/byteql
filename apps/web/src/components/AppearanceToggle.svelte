@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Theme } from '../lib/ui/theme.js';
+  import Icon from './ui/Icon.svelte';
 
   interface Props {
     theme: Theme;
@@ -18,5 +19,5 @@
   aria-label={next === 'dark' ? 'Use dark appearance' : 'Use light appearance'}
   onclick={() => onchange(next)}
 >
-  <span aria-hidden="true">{next === 'dark' ? '☾' : '☀'}</span>
+  <Icon name={next === 'dark' ? 'moon' : 'sun'} />
 </button>

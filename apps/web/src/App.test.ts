@@ -98,10 +98,10 @@ describe('App lifecycle', () => {
     expect(prepareUiFonts).toHaveBeenCalledOnce();
     // The engine is up, but the interface is not ready while a face is still loading.
     expect(view.container.querySelector('[data-app-ready="true"]')).toBeNull();
-    expect(screen.getByText('Browser-native binary intelligence')).toBeTruthy();
+    expect(screen.getByText('Starting the local query engine…')).toBeTruthy();
 
     resolveFonts('loaded');
-    expect(await screen.findByText(/files never leave this browser/i)).toBeTruthy();
+    expect(await screen.findByText(/nothing is uploaded/i)).toBeTruthy();
     expect(view.container.querySelector('[data-app-ready="true"]')).not.toBeNull();
   });
 
@@ -109,7 +109,7 @@ describe('App lifecycle', () => {
     prepareUiFonts.mockResolvedValueOnce('fallback');
     const view = render(App);
 
-    expect(await screen.findByText(/files never leave this browser/i)).toBeTruthy();
+    expect(await screen.findByText(/nothing is uploaded/i)).toBeTruthy();
     expect(view.container.querySelector('[data-app-ready="true"]')).not.toBeNull();
   });
 
@@ -135,13 +135,13 @@ describe('App lifecycle', () => {
     await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
     expect(createBrowserDatabase).toHaveBeenCalledOnce();
     expect(SessionController).toHaveBeenCalledWith({ database, stopViewer: expect.any(Function) });
-    expect(screen.getByText('Browser-native binary intelligence')).toBeTruthy();
+    expect(screen.getByText('Starting the local query engine…')).toBeTruthy();
     expect(view.container.querySelector('[data-brand-lockup] img')).toBeTruthy();
-    expect(screen.queryByText(/files never leave this browser/i)).toBeNull();
+    expect(screen.queryByText(/nothing is uploaded/i)).toBeNull();
     expect(view.container.querySelector('[data-app-ready="true"]')).toBeNull();
 
     resolveInitialization();
-    expect(await screen.findByText(/files never leave this browser/i)).toBeTruthy();
+    expect(await screen.findByText(/nothing is uploaded/i)).toBeTruthy();
     expect(view.container.querySelector('[data-app-ready="true"]')).not.toBeNull();
 
     view.unmount();
@@ -163,7 +163,7 @@ describe('App lifecycle', () => {
     expect(() => stopViewer!()).not.toThrow();
 
     resolveInitialization();
-    expect(await screen.findByText(/files never leave this browser/i)).toBeTruthy();
+    expect(await screen.findByText(/nothing is uploaded/i)).toBeTruthy();
     expect(() => stopViewer!()).not.toThrow();
   });
 
@@ -189,10 +189,10 @@ describe('App lifecycle', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('WASM startup failed');
     expect(dispose).toHaveBeenCalledOnce();
     expect(view.container.querySelector('[data-app-ready="true"]')).toBeNull();
-    expect(screen.queryByText(/files never leave this browser/i)).toBeNull();
+    expect(screen.queryByText(/nothing is uploaded/i)).toBeNull();
 
     await fireEvent.click(screen.getByRole('button', { name: /retry startup/i }));
-    expect(await screen.findByText(/files never leave this browser/i)).toBeTruthy();
+    expect(await screen.findByText(/nothing is uploaded/i)).toBeTruthy();
     expect(initialize).toHaveBeenCalledTimes(2);
     expect(view.container.querySelector('[data-app-ready="true"]')).not.toBeNull();
   });

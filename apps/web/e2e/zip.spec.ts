@@ -23,7 +23,7 @@ test('a two-zip session catalogs both archives and exposes local_files', async (
   const nameA = 'first.zip';
   const nameB = 'second.zip';
 
-  await page.getByLabel('Open file').setInputFiles([asFile(nameA, zipA), asFile(nameB, zipB)]);
+  await page.getByLabel('Open file input').setInputFiles([asFile(nameA, zipA), asFile(nameB, zipB)]);
 
   // 1. Session opens ready; the Explorer lists the `_files` catalog.
   const tablesRegion = page.getByRole('region', { name: 'Tables' });

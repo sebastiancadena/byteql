@@ -84,7 +84,9 @@ export async function openMidiSample(
 }
 
 export async function openFixture(page: Page, name: string): Promise<void> {
-  await page.getByLabel('Open file').setInputFiles(fixturePath(name));
+  // The intake keeps one visible "Open file" button; this is its attached input, kept for
+  // drag-and-drop, automation and the picker fallback.
+  await page.getByLabel('Open file input').setInputFiles(fixturePath(name));
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 }
 

@@ -56,7 +56,7 @@ test('midi: grid row lights up bytes and a byte click reveals the row back', asy
 test('pcap: browse, reveal, filter-to-selection, and hidden columns chip', async ({ page }) => {
   await page.goto('/');
   await page
-    .getByLabel('Open file')
+    .getByLabel('Open file input')
     .setInputFiles(fileURLToPath(new URL('./fixtures/sample.pcap', import.meta.url)));
   await page.getByRole('button', { name: 'Browse packets' }).click();
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();

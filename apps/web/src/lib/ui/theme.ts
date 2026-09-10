@@ -15,6 +15,9 @@ export function readTheme(storage: ThemeReader | null): Theme {
 }
 
 export function applyTheme(theme: Theme, root: HTMLElement, storage: ThemeWriter | null): void {
+  // Switching appearance is not animated: without this the hover/focus transitions on every
+  // control would cross-fade the whole palette. Cleared on the next frame, once styles settled.
+  root.dataset.themeSwitching = '';
   root.dataset.theme = theme;
   root.style.colorScheme = theme;
   try {
@@ -22,4 +25,9 @@ export function applyTheme(theme: Theme, root: HTMLElement, storage: ThemeWriter
   } catch {
     // Preference is optional.
   }
+  const settle = (): void => {
+    delete root.dataset.themeSwitching;
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(settle);
+  else settle();
 }

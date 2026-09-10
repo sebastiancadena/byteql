@@ -55,4 +55,16 @@ describe('appearance preference', () => {
     applyTheme('dark', root, null);
     expect(root.dataset.theme).toBe('dark');
   });
+
+  it('suppresses transitions across the swap and releases them on the next frame', async () => {
+    const root = document.createElement('html');
+    applyTheme('dark', root, null);
+    // Set in the same tick as the palette change, so nothing cross-fades.
+    expect(root.dataset.themeSwitching).toBe('');
+
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(root.dataset.themeSwitching).toBeUndefined();
+    expect(root.dataset.theme).toBe('dark');
+  });
 });
