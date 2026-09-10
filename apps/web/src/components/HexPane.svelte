@@ -40,6 +40,13 @@
     /** Changes when a new result arrives; the pane clears its local selection to follow it. */
     resetKey?: unknown;
     compact?: boolean;
+    /**
+     * `embedded` hands height, collapse and the resize separator to the parent dock: the pane
+     * fills its container and touches neither the geometry preferences nor a resize observer.
+     */
+    layout?: 'standalone' | 'embedded';
+    /** Embedded visibility, owned by the parent. Ignored while standalone. */
+    visible?: boolean;
     /** Observed only to schedule a repaint; the canvas reads its colors from CSS tokens. */
     appearance?: Theme;
     files?: readonly { name: string; size: number }[];
@@ -59,6 +66,8 @@
     filterAvailable,
     resetKey,
     compact = false,
+    layout = 'standalone',
+    visible = true,
     appearance = 'light',
     files = [],
     currentFile = null,
@@ -82,8 +91,31 @@
     hexFont = context ? measureHexFont(context, family) : { fontSpec: `12px ${family}`, charWidth: 7.2 };
   }
 
-  const storedCollapsed = localStorage.getItem(COLLAPSED_KEY);
-  const storedHeight = Number(localStorage.getItem(HEIGHT_KEY));
+  // Fixed for the life of the instance: the geometry preferences below are read once at
+  // construction, so a mid-life switch between modes is not a supported transition.
+  const embedded = untrack(() => layout === 'embedded');
+
+  /** Embedded, the parent dock owns these preferences; the pane must not read or write them. */
+  function readGeometryPreference(key: string): string | null {
+    if (embedded) return null;
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  function writeGeometryPreference(key: string, value: string): void {
+    if (embedded) return;
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // Geometry preferences are optional.
+    }
+  }
+
+  const storedCollapsed = readGeometryPreference(COLLAPSED_KEY);
+  const storedHeight = Number(readGeometryPreference(HEIGHT_KEY));
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let viewportEl = $state<HTMLDivElement | null>(null);
@@ -97,6 +129,8 @@
   let flashRow = $state<number | null>(null);
   let collapsed = $state(untrack(() => storedCollapsed === 'true' || (storedCollapsed === null && compact)));
   let paneHeight = $state(storedHeight > 0 ? storedHeight : 260);
+  /** Embedded, visibility comes from the parent; standalone, from the pane's own toggle. */
+  const hidden = $derived(embedded ? !visible : collapsed);
   let viewportHeight = $state(200);
   let cachePulse = $state(0);
 
@@ -109,7 +143,7 @@
     gutterDigits: offsetDigits(fileSize),
     padding: 12,
   });
-  const layout = $derived(columnLayout(metrics));
+  const columns = $derived(columnLayout(metrics));
   const total = $derived(totalRows(fileSize));
   const view = $derived(rowsInView(viewportHeight, metrics.rowHeight));
   const caret = $derived(selection?.focus ?? null);
@@ -205,7 +239,7 @@
     void flashRow;
     void metrics;
     void viewportHeight;
-    void collapsed;
+    void hidden;
     void cachePulse;
     // An appearance change only repaints: reveal/reset APIs would move scroll, caret or selection.
     void appearance;
@@ -278,10 +312,10 @@
   }
 
   function paint(): void {
-    if (!canvas || collapsed) return;
+    if (!canvas || hidden) return;
     const context = canvas.getContext('2d');
     if (!context) return;
-    const cssWidth = layout.width;
+    const cssWidth = columns.width;
     const cssHeight = viewportHeight;
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.max(1, Math.round(cssWidth * dpr));
@@ -313,7 +347,7 @@
       firstRow: scrollRow,
       fileSize,
       metrics,
-      layout,
+      layout: columns,
       colors,
       fontSpec: hexFont.fontSpec,
       byteAt: (offset) => activeCache?.byteAt(offset) ?? null,
@@ -326,8 +360,12 @@
     if (flashRow !== null) {
       const bandY = (flashRow - scrollRow) * metrics.rowHeight;
       if (bandY >= -metrics.rowHeight && bandY < cssHeight) {
+        // Translucent: the flash marks the revealed row without hiding the bytes on it.
+        context.save();
+        context.globalAlpha = 0.4;
         context.fillStyle = readColor(style, '--color-hex-highlight') || '#f1d99f';
         context.fillRect(0, bandY, cssWidth, metrics.rowHeight);
+        context.restore();
       }
     }
   }
@@ -401,6 +439,11 @@
 
   export function revealRange(target: { start: number; end: number }): void {
     revealTo(target.start, false);
+  }
+
+  /** Explicit source inspection: revealRange only scrolls, it does not move focus. */
+  export function focusViewport(): void {
+    viewportEl?.focus();
   }
 
   // --- Keyboard on the canvas host ----------------------------------------
@@ -497,7 +540,7 @@
       event.clientX - rect.left,
       event.clientY - rect.top,
       metrics,
-      layout,
+      columns,
       scrollRow,
       fileSize,
     );
@@ -574,7 +617,7 @@
   // --- Collapse + resize --------------------------------------------------
   function toggleCollapsed(): void {
     collapsed = !collapsed;
-    localStorage.setItem(COLLAPSED_KEY, String(collapsed));
+    writeGeometryPreference(COLLAPSED_KEY, String(collapsed));
     if (!collapsed) schedulePaint();
   }
 
@@ -613,18 +656,18 @@
     if (!resizing) return;
     resizing = false;
     (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
-    localStorage.setItem(HEIGHT_KEY, String(Math.round(paneHeight)));
+    writeGeometryPreference(HEIGHT_KEY, String(Math.round(paneHeight)));
   }
   function onResizeKeydown(event: KeyboardEvent): void {
     const { min, max } = resizeBounds();
     if (event.key === 'ArrowUp') {
       event.preventDefault();
       paneHeight = Math.max(min, Math.min(max, paneHeight + metrics.rowHeight));
-      localStorage.setItem(HEIGHT_KEY, String(Math.round(paneHeight)));
+      writeGeometryPreference(HEIGHT_KEY, String(Math.round(paneHeight)));
     } else if (event.key === 'ArrowDown') {
       event.preventDefault();
       paneHeight = Math.max(min, Math.min(max, paneHeight - metrics.rowHeight));
-      localStorage.setItem(HEIGHT_KEY, String(Math.round(paneHeight)));
+      writeGeometryPreference(HEIGHT_KEY, String(Math.round(paneHeight)));
     }
   }
 
@@ -632,7 +675,8 @@
   // oversized stored height on first layout — the observer fires once on observe).
   $effect(() => {
     const parent = rootEl?.parentElement;
-    if (!parent || collapsed) return;
+    // Embedded, the dock clamps its own height; observing here would fight it.
+    if (embedded || !parent || collapsed) return;
     if (typeof window.ResizeObserver !== 'function') return;
     const observer = new window.ResizeObserver(() => {
       const { min, max } = resizeBounds();
@@ -677,18 +721,20 @@
 <section
   bind:this={rootEl}
   class="hex-pane"
-  class:collapsed
+  class:collapsed={hidden}
   class:compact
+  class:embedded
   data-hex-pane
+  data-hex-layout={layout}
   data-hex-caret={caret ?? ''}
   data-hex-selection={range ? `${range.start}-${range.end}` : ''}
   data-hex-highlight={highlight ? `${highlight.start}-${highlight.end}` : ''}
   data-hex-first-row={scrollRow}
   data-hex-provenance={coverageReason}
-  data-hex-collapsed={collapsed}
-  style:height={collapsed ? 'auto' : `${paneHeight}px`}
+  data-hex-collapsed={hidden}
+  style:height={embedded ? undefined : collapsed ? 'auto' : `${paneHeight}px`}
 >
-  {#if !collapsed}
+  {#if !embedded && !collapsed}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
@@ -757,21 +803,23 @@
       </button>
     {/if}
 
-    <button
-      type="button"
-      class="hex-collapse"
-      onclick={toggleCollapsed}
-      aria-label={collapsed ? 'Expand hex view' : 'Collapse hex view'}
-    >
-      {collapsed ? '▸' : '▾'}
-    </button>
+    {#if !embedded}
+      <button
+        type="button"
+        class="hex-collapse"
+        onclick={toggleCollapsed}
+        aria-label={collapsed ? 'Expand hex view' : 'Collapse hex view'}
+      >
+        {collapsed ? '▸' : '▾'}
+      </button>
+    {/if}
   </div>
 
   {#if hintText}
     <p class="hex-hint" data-hex-hint>{hintText}</p>
   {/if}
 
-  {#if !collapsed}
+  {#if !hidden}
     {#if readError}
       <div class="hex-error" role="alert">
         <span>Could not read part of this file — it may have changed on disk.</span>

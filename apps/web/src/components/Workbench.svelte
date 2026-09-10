@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global Blob, DragEvent, Event, File, HTMLButtonElement, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, document, window */
+  /* global Blob, DragEvent, Event, File, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, document, localStorage, window */
 
   import type { Table } from 'apache-arrow';
   import { onMount, tick, untrack } from 'svelte';
@@ -11,6 +11,7 @@
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
   import { sqlIdentifier } from '../lib/sql-literal.js';
   import { applyTheme, readTheme, type Theme } from '../lib/ui/theme.js';
+  import { buildTraceSummary } from '../lib/ui/trace.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import {
     compatibleTableViewers,
@@ -27,6 +28,7 @@
   import ShortcutsOverlay from './ShortcutsOverlay.svelte';
   import SqlEditor from './SqlEditor.svelte';
   import StatusBar from './StatusBar.svelte';
+  import TraceDock from './TraceDock.svelte';
 
   interface ControllerPort {
     subscribe(listener: (state: SessionState) => void): () => void;
@@ -57,12 +59,14 @@
   let draftSql = $state('');
   let actionError = $state<string | null>(null);
   let coverageMessage = $state<string | null>(null);
-  let explorerCollapsed = $state(false);
+  // Narrow viewports render the catalog as a drawer over the workspace, so it starts closed:
+  // never cover the work surface with a drawer nobody asked for.
+  let explorerCollapsed = $state(untrack(() => window.matchMedia('(max-width: 959px)').matches));
   let inspectorCollapsed = $state(false);
-  let mobileTab = $state<'results' | 'inspector'>('results');
-  let compactMode = $state(false);
-  let resultsTabElement = $state<HTMLButtonElement>();
-  let inspectorTabElement = $state<HTMLButtonElement>();
+  /** Below 1280 px the dock tabs Values and Bytes instead of showing them side by side. */
+  let compactDock = $state(false);
+  let dockTab = $state<'values' | 'bytes'>('bytes');
+  let resultsElement = $state<HTMLElement | null>(null);
   let overviewSource: string | null = null;
   let activeViewerId = $state<string | null>(null);
   let dragCounter = 0;
@@ -162,6 +166,41 @@
   let hexPane = $state<HexPane>();
   let sqlEditor = $state<ReturnType<typeof SqlEditor> | null>(null);
 
+  /**
+   * Dock collapse is read once, from the preference the standalone hex pane already used.
+   * A narrow viewport only chooses the default when the user has expressed no preference —
+   * crossing a breakpoint later must never overwrite what they chose.
+   */
+  let dockCollapsed = $state(
+    untrack(() => {
+      const stored = readDockCollapsedPreference();
+      if (stored !== null) return stored === 'true';
+      return window.matchMedia('(max-width: 699px)').matches;
+    }),
+  );
+
+  function readDockCollapsedPreference(): string | null {
+    try {
+      return localStorage.getItem('byteql.hexpane.collapsed');
+    } catch {
+      return null;
+    }
+  }
+
+  function setDockCollapsed(collapsed: boolean): void {
+    dockCollapsed = collapsed;
+    try {
+      localStorage.setItem('byteql.hexpane.collapsed', String(collapsed));
+    } catch {
+      // Geometry preferences are optional.
+    }
+  }
+
+  const valuesVisible = $derived(
+    !dockCollapsed && (compactDock ? dockTab === 'values' : !inspectorCollapsed),
+  );
+  const bytesVisible = $derived(!dockCollapsed && (!compactDock || dockTab === 'bytes'));
+
   // Memoize on result identity: session is reassigned on every publish (caret moves, progress
   // events), but buildCoverage must run once per result, not once per publish.
   const coverageMemo = createCoverageMemo();
@@ -239,6 +278,18 @@
     return value;
   });
 
+  // One honest statement about the current selection, reusing the memoized row provenance so
+  // it stays reference-stable across unrelated publishes.
+  const traceSummary = $derived(
+    buildTraceSummary({
+      hasResult: session.result !== null,
+      selectedGlobalRow: session.selectedRow,
+      selectedLocalRow,
+      provenance: rowHighlight,
+      files: sourceFiles,
+    }),
+  );
+
   // Auto-switch: follow the selected row's provenance file, but only to a file still present
   // in the session.
   // rowHighlight is only reference-stable (see its memo above) across publishes that don't
@@ -279,12 +330,13 @@
   }
 
   onMount(() => {
-    const compactQuery = window.matchMedia('(max-width: 1099px)');
-    const syncCompactMode = (event: MediaQueryListEvent | MediaQueryList): void => {
-      compactMode = event.matches;
+    // Below 1280 px the dock tabs its two panels rather than showing them side by side.
+    const dockQuery = window.matchMedia('(max-width: 1279px)');
+    const syncCompactDock = (event: MediaQueryListEvent | MediaQueryList): void => {
+      compactDock = event.matches;
     };
-    syncCompactMode(compactQuery);
-    compactQuery.addEventListener('change', syncCompactMode);
+    syncCompactDock(dockQuery);
+    dockQuery.addEventListener('change', syncCompactDock);
 
     const unsubscribe = controller.subscribe((next) => {
       if (next.result?.window !== session.result?.window) coverageMessage = null;
@@ -320,7 +372,7 @@
     });
 
     return () => {
-      compactQuery.removeEventListener('change', syncCompactMode);
+      dockQuery.removeEventListener('change', syncCompactDock);
       unsubscribe();
     };
   });
@@ -348,20 +400,52 @@
     perform(() => controller.runQuery(sql));
   }
 
-  function selectTab(tab: 'results' | 'inspector', moveFocus = false): void {
-    mobileTab = tab;
-    if (moveFocus) (tab === 'results' ? resultsTabElement : inspectorTabElement)?.focus();
+  /**
+   * Wide: Values toggle beside Bytes. Compact: open the dock on Values, or switch to Bytes
+   * when Values are already what is showing.
+   */
+  function showValues(): void {
+    if (!compactDock) {
+      inspectorCollapsed = !inspectorCollapsed;
+      if (!inspectorCollapsed) setDockCollapsed(false);
+      return;
+    }
+    if (!dockCollapsed && dockTab === 'values') {
+      dockTab = 'bytes';
+      return;
+    }
+    setDockCollapsed(false);
+    dockTab = 'values';
   }
 
-  function navigateTabs(event: KeyboardEvent): void {
-    let next: 'results' | 'inspector' | null = null;
-    if (event.key === 'Home') next = 'results';
-    if (event.key === 'End') next = 'inspector';
-    if (event.key === 'ArrowRight') next = mobileTab === 'results' ? 'inspector' : 'results';
-    if (event.key === 'ArrowLeft') next = mobileTab === 'results' ? 'inspector' : 'results';
-    if (!next) return;
-    event.preventDefault();
-    selectTab(next, true);
+  /** Opening a viewer shows Values; it never runs SQL and never changes the selection. */
+  function openViewer(viewer: ViewerCapability): void {
+    activeViewerId = viewer.id;
+    setDockCollapsed(false);
+    if (compactDock) dockTab = 'values';
+    else inspectorCollapsed = false;
+  }
+
+  /** A reveal from the values list shows Bytes and scrolls to the range. */
+  function revealInspectorRange(range: { start: number; end: number }): void {
+    setDockCollapsed(false);
+    if (compactDock) dockTab = 'bytes';
+    void tick().then(() => hexPane?.revealRange(range));
+  }
+
+  /**
+   * Explicit source inspection: only a validated trace can be inspected. `revealRange` scrolls
+   * but does not move focus, so the viewport is focused afterwards.
+   */
+  function inspectSource(): void {
+    if (traceSummary.kind !== 'linked') return;
+    const { range } = traceSummary;
+    setDockCollapsed(false);
+    if (compactDock) dockTab = 'bytes';
+    void tick().then(() => {
+      hexPane?.revealRange(range);
+      hexPane?.focusViewport();
+    });
   }
 
   function inEditableTarget(event: KeyboardEvent): boolean {
@@ -386,15 +470,63 @@
       explorerCollapsed = !explorerCollapsed;
     } else if (key === 'i') {
       event.preventDefault();
-      inspectorCollapsed = !inspectorCollapsed;
+      showValues();
     } else if (key === 'g') {
       event.preventDefault();
-      hexPane?.focusGoto();
+      setDockCollapsed(false);
+      if (compactDock) dockTab = 'bytes';
+      void tick().then(() => hexPane?.focusGoto());
     }
   }
 </script>
 
 <svelte:window onkeydown={globalKeys} />
+
+<!-- The dock composes these two panels. Both stay mounted across appearance, collapse and
+     responsive changes, so navigation never resets caret, scroll or playback. -->
+{#snippet values()}
+  <Inspector
+    table={session.result?.window ?? null}
+    viewerTable={session.result?.completeTable ?? null}
+    selectedRow={selectedLocalRow}
+    selectedGlobalRow={session.selectedRow}
+    collapsed={!valuesVisible}
+    mobileOpen={valuesVisible}
+    {sourceFiles}
+    {viewers}
+    {activeViewer}
+    {audioEngineFactory}
+    onopenviewer={openViewer}
+    oncloseviewer={() => (activeViewerId = null)}
+    onrevealrange={revealInspectorRange}
+  />
+{/snippet}
+
+{#snippet bytes()}
+  <HexPane
+    bind:this={hexPane}
+    layout="embedded"
+    visible={bytesVisible}
+    {appearance}
+    blob={sourceBlob}
+    fileSize={hexFileSize}
+    coverage={coverageResult.index}
+    coverageReason={coverageResult.reason}
+    highlight={rowHighlight && rowHighlight.file === hexFile
+      ? { start: rowHighlight.start, end: rowHighlight.end }
+      : null}
+    filterAvailable={coverageResult.reason === 'ok'}
+    resetKey={hexResetKey}
+    compact={compactDock}
+    files={sourceFiles}
+    currentFile={hexFile}
+    onreveal={revealAt}
+    onselectionchange={(range) =>
+      controller.selectByteRange(range && hexFile ? { file: hexFile, ...range } : null)}
+    onfilter={(range) => hexFile && run(wrapFilterSql(draftSql || session.sql, { file: hexFile, ...range }))}
+    onfilechange={switchHexFile}
+  />
+{/snippet}
 
 {#if shortcutsOpen}
   <ShortcutsOverlay onclose={() => (shortcutsOpen = false)} />
@@ -402,8 +534,6 @@
 
 <div
   class:explorer-collapsed={explorerCollapsed}
-  class:inspector-collapsed={inspectorCollapsed}
-  class:show-mobile-inspector={mobileTab === 'inspector'}
   class="app-shell"
   role="presentation"
   ondragenter={onDragEnter}
@@ -426,7 +556,7 @@
     onappearancechange={changeAppearance}
     onshortcuts={() => (shortcutsOpen = true)}
     ontoggleexplorer={idle ? undefined : () => (explorerCollapsed = !explorerCollapsed)}
-    ontoggleinspector={idle ? undefined : () => (inspectorCollapsed = !inspectorCollapsed)}
+    ontoggleinspector={idle ? undefined : showValues}
     onopen={idle ? undefined : openPicker}
   />
 
@@ -467,49 +597,15 @@
       onselectsource={switchHexFile}
     />
 
-    {#if compactMode}
-      <div class="mobile-tabs" role="tablist" aria-label="Workbench views">
-        <button
-          bind:this={resultsTabElement}
-          id="workbench-tab-results"
-          type="button"
-          role="tab"
-          aria-controls="workbench-panel-results"
-          aria-selected={mobileTab === 'results'}
-          tabindex={mobileTab === 'results' ? 0 : -1}
-          onclick={() => selectTab('results')}
-          onkeydown={navigateTabs}>Results</button
-        >
-        <button
-          bind:this={inspectorTabElement}
-          id="workbench-tab-inspector"
-          type="button"
-          role="tab"
-          aria-controls="workbench-panel-inspector"
-          aria-selected={mobileTab === 'inspector'}
-          tabindex={mobileTab === 'inspector' ? 0 : -1}
-          onclick={() => selectTab('inspector')}
-          onkeydown={navigateTabs}>Inspector</button
-        >
-      </div>
-    {/if}
-
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div
-      id="workbench-panel-results"
       class="workbench-main"
-      role={compactMode ? 'tabpanel' : 'main'}
-      aria-labelledby={compactMode ? 'workbench-tab-results' : undefined}
-      aria-label={compactMode ? undefined : 'Results'}
-      tabindex={compactMode ? (mobileTab === 'results' ? 0 : -1) : undefined}
-      hidden={compactMode && mobileTab !== 'results'}
+      role="main"
+      aria-label="Results"
+      data-trace-linked={traceSummary.kind === 'linked'}
     >
       <section class="sql-workspace" aria-label="SQL workspace">
         <div class="editor-heading">
-          <div>
-            <p class="eyebrow">Query console</p>
-            <h1>Ask the capture</h1>
-          </div>
+          <h1>Query</h1>
           <div class="query-actions">
             <span class="shortcut" aria-hidden="true">⌘ Enter</span>
             {#if session.phase === 'querying'}
@@ -565,10 +661,7 @@
         </div>
 
         <div class="results-heading">
-          <div>
-            <p class="eyebrow">Result set</p>
-            <h2>Results</h2>
-          </div>
+          <h2>Results</h2>
           <div class="results-heading-meta">
             {#if session.result}
               <span class="result-count">
@@ -584,7 +677,7 @@
           </div>
         </div>
 
-        <div class="results-panel">
+        <div class="results-panel" bind:this={resultsElement}>
           {#if session.result}
             {#key session.result.generation}
               <ResultGrid
@@ -627,57 +720,20 @@
           {/if}
         </div>
 
-        {#if session.source !== null}
-          <HexPane
-            bind:this={hexPane}
-            {appearance}
-            blob={sourceBlob}
-            fileSize={hexFileSize}
-            coverage={coverageResult.index}
-            coverageReason={coverageResult.reason}
-            highlight={rowHighlight && rowHighlight.file === hexFile
-              ? { start: rowHighlight.start, end: rowHighlight.end }
-              : null}
-            filterAvailable={coverageResult.reason === 'ok'}
-            resetKey={hexResetKey}
-            compact={compactMode}
-            files={sourceFiles}
-            currentFile={hexFile}
-            onreveal={revealAt}
-            onselectionchange={(range) =>
-              controller.selectByteRange(range && hexFile ? { file: hexFile, ...range } : null)}
-            onfilter={(range) =>
-              hexFile && run(wrapFilterSql(draftSql || session.sql, { file: hexFile, ...range }))}
-            onfilechange={switchHexFile}
-          />
-        {/if}
+        <TraceDock
+          summary={traceSummary}
+          collapsed={dockCollapsed}
+          oncollapsedchange={setDockCollapsed}
+          compact={compactDock}
+          showValues={!inspectorCollapsed}
+          tab={dockTab}
+          ontabchange={(tab) => (dockTab = tab)}
+          onreveal={inspectSource}
+          {resultsElement}
+          {values}
+          {bytes}
+        />
       </section>
-    </div>
-
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <div
-      id="workbench-panel-inspector"
-      class="inspector-panel"
-      role={compactMode ? 'tabpanel' : undefined}
-      aria-labelledby={compactMode ? 'workbench-tab-inspector' : undefined}
-      tabindex={compactMode ? (mobileTab === 'inspector' ? 0 : -1) : undefined}
-      hidden={compactMode && mobileTab !== 'inspector'}
-    >
-      <Inspector
-        table={session.result?.window ?? null}
-        viewerTable={session.result?.completeTable ?? null}
-        selectedRow={selectedLocalRow}
-        selectedGlobalRow={session.selectedRow}
-        collapsed={inspectorCollapsed}
-        mobileOpen={mobileTab === 'inspector'}
-        {sourceFiles}
-        {viewers}
-        {activeViewer}
-        {audioEngineFactory}
-        onopenviewer={(viewer) => (activeViewerId = viewer.id)}
-        oncloseviewer={() => (activeViewerId = null)}
-        onrevealrange={(range) => hexPane?.revealRange(range)}
-      />
     </div>
   {/if}
 

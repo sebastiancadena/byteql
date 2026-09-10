@@ -1,28 +1,22 @@
 /* Shell geometry, source catalog, query editor, results grid and the byte dock.
    Task 1 keeps the existing three-column shell; the two-column workspace lands with the dock. */
 
+/* Two outer columns: the source catalog, and one workspace that owns everything else.
+   Results receive the full workspace width, including the area the inspector used to take. */
 .app-shell {
   display: grid;
   grid-template:
-    'header header header' var(--header-height)
-    'explorer workbench inspector' minmax(0, 1fr)
-    'status status status' var(--status-height)
-    / minmax(12rem, 18rem) minmax(28rem, 1fr) minmax(16rem, 22rem);
+    'header header' var(--header-height)
+    'explorer workbench' minmax(0, 1fr)
+    'status status' var(--status-height)
+    / 224px minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
   background: var(--color-canvas);
 }
 
 .app-shell.explorer-collapsed {
-  grid-template-columns: 0 minmax(28rem, 1fr) minmax(16rem, 22rem);
-}
-
-.app-shell.inspector-collapsed {
-  grid-template-columns: minmax(12rem, 18rem) minmax(28rem, 1fr) 0;
-}
-
-.app-shell.explorer-collapsed.inspector-collapsed {
-  grid-template-columns: 0 minmax(28rem, 1fr) 0;
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
 /* Header */
@@ -137,21 +131,13 @@
   border-right: 1px solid var(--color-border);
 }
 
+/* Values live inside the dock now; the dock owns their visibility through `hidden`. */
 .inspector {
+  width: 100%;
   height: 100%;
-  border-left: 1px solid var(--color-border);
 }
 
-.inspector-panel {
-  grid-area: inspector;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  outline: none;
-}
-
-.explorer.collapsed,
-.inspector.collapsed {
+.explorer.collapsed {
   visibility: hidden;
   opacity: 0;
 }
@@ -207,6 +193,12 @@
   list-style: none;
 }
 
+/* Grid items default to min-width: auto, which would size each row to its longest
+   filename and give the catalog a horizontal scrollbar of its own. */
+.source-list li {
+  min-width: 0;
+}
+
 /* 32 px navigation rows; the full filename is available through the row's title. */
 .source-row {
   display: flex;
@@ -236,6 +228,12 @@
   display: flex;
   flex: 0 0 auto;
   color: var(--color-text-subtle);
+}
+
+/* The name column yields first, so the "Viewing bytes" marker is never clipped. */
+.source-row > .min-width-zero {
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .source-name,
@@ -423,22 +421,131 @@
   grid-column: 1 / -1;
 }
 
+/* Vertical overflow only, and only when the minimum tool chrome cannot fit; this must never
+   become a second horizontal scroller competing with `.grid-scroll`. */
 .workbench-main {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .sql-workspace {
   display: grid;
 
-  /* Positional rows — the template relies on a fixed child order: editor heading,
-     SQL editor, query notices (always rendered, empty → 0), results heading,
-     results panel (the flexible row), hex pane (sized by its own drag height).
-     Growing the hex pane therefore shrinks the results panel above it. */
-  grid-template-rows: auto minmax(8rem, 24%) auto auto minmax(8rem, 1fr) auto;
+  /* Positional rows — the template relies on a fixed child order: query toolbar, SQL editor,
+     query notices (always rendered, empty → 0), results toolbar, results panel (the flexible
+     row), inspection dock (sized by its own drag height). Growing the dock therefore shrinks
+     the results panel above it. */
+  grid-template-rows: 36px 116px auto 36px minmax(128px, 1fr) auto;
   height: 100%;
   min-width: 0;
   min-height: 0;
   outline: none;
+}
+
+/* Short screens give the editor less room before anything else has to yield. */
+@media (max-height: 759px) {
+  .sql-workspace {
+    grid-template-rows: 36px 80px auto 36px minmax(128px, 1fr) auto;
+  }
+}
+
+.results-panel,
+.result-grid,
+.trace-dock,
+.trace-values,
+.trace-bytes {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Inspection dock */
+
+.trace-dock {
+  display: grid;
+  position: relative;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-surface-inset);
+}
+
+.trace-dock.compact {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.trace-dock[data-dock-collapsed='true'] {
+  grid-template-rows: auto;
+}
+
+/* Scoped so it wins over the standalone `.hex-resize` rule regardless of source order:
+   the separator is taken out of flow, leaving the dock's grid rows to strip and body. */
+.trace-dock .dock-resize {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 6px;
+  margin-bottom: 0;
+}
+
+.trace-dock-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.trace-dock-tabs button {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-muted);
+  background: transparent;
+  font-size: var(--text-md);
+  cursor: pointer;
+  transition: background var(--duration-quick) ease;
+}
+
+.trace-dock-tabs button:hover {
+  background: var(--color-surface-hover);
+}
+
+.trace-dock-tabs button[aria-selected='true'] {
+  border-bottom-color: var(--color-evidence);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* Values beside Bytes; when Values are hidden, Bytes span the whole dock. */
+.trace-dock-body {
+  display: grid;
+  grid-template-columns: 256px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.trace-dock.compact .trace-dock-body,
+.trace-dock.values-hidden .trace-dock-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.trace-values {
+  overflow: auto;
+  border-right: 1px solid var(--color-border);
+}
+
+.trace-dock.compact .trace-values {
+  border-right: 0;
+}
+
+.trace-bytes {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
 }
 
 .editor-heading,
@@ -538,6 +645,7 @@
   background: var(--color-surface);
 }
 
+/* `.grid-scroll` is the only result-grid scroller, on both axes. */
 .result-grid {
   width: 100%;
   height: 100%;
@@ -921,108 +1029,22 @@
   background: var(--color-text-subtle);
 }
 
-/* Responsive geometry */
+/* Responsive geometry — 1280 px tabs the dock, 960 px moves the catalog into a drawer,
+   700 px collapses the dock by default unless the user has a stored preference. */
 
-.mobile-tabs {
-  display: none;
-}
-
-@media (max-width: 1099px) {
-  .app-shell,
-  .app-shell.inspector-collapsed,
-  .app-shell.explorer-collapsed,
-  .app-shell.explorer-collapsed.inspector-collapsed {
-    grid-template:
-      'header header' var(--header-height)
-      'explorer workbench' minmax(0, 1fr)
-      'status status' var(--status-height)
-      / minmax(12rem, 15rem) minmax(0, 1fr);
+@media (max-width: 1279px) {
+  .app-shell {
+    grid-template-columns: 208px minmax(0, 1fr);
   }
 
   .app-shell.explorer-collapsed {
     grid-template-columns: 0 minmax(0, 1fr);
   }
-
-  .app-header {
-    grid-template-columns: 1fr auto;
-  }
-
-  .header-context {
-    display: none;
-  }
-
-  .workbench-main {
-    position: relative;
-    padding-top: 2.9rem;
-  }
-
-  .mobile-tabs {
-    z-index: 6;
-    grid-area: workbench;
-    display: flex;
-    align-self: start;
-    padding: var(--space-1) var(--space-3);
-    border-bottom: 1px solid var(--color-border);
-    background: var(--color-surface);
-  }
-
-  .mobile-tabs button {
-    min-height: var(--control-height);
-    padding: var(--space-1) var(--space-3);
-    border: 0;
-    border-bottom: 2px solid transparent;
-    color: var(--color-text-muted);
-    background: transparent;
-    font-size: var(--text-md);
-    cursor: pointer;
-    transition: background var(--duration-quick) ease;
-  }
-
-  .mobile-tabs button:hover {
-    background: var(--color-surface-hover);
-  }
-
-  .mobile-tabs button[aria-selected='true'] {
-    border-bottom-color: var(--color-evidence);
-    color: var(--color-text);
-  }
-
-  .inspector-panel {
-    z-index: 5;
-    grid-area: workbench;
-    display: none;
-    margin-top: 2.9rem;
-  }
-
-  .inspector-panel .inspector {
-    border-left: 0;
-  }
-
-  .show-mobile-inspector .inspector-panel {
-    display: block;
-  }
-
-  .show-mobile-inspector .inspector.mobile-open {
-    visibility: visible;
-    opacity: 1;
-  }
-
-  .show-mobile-inspector .sql-workspace {
-    visibility: hidden;
-  }
 }
 
-@media (max-width: 700px) {
-  .product-kicker,
-  .shortcut,
-  .status-metrics span:last-child {
-    display: none;
-  }
-
+@media (max-width: 959px) {
   .app-shell,
-  .app-shell.inspector-collapsed,
-  .app-shell.explorer-collapsed,
-  .app-shell.explorer-collapsed.inspector-collapsed {
+  .app-shell.explorer-collapsed {
     grid-template:
       'header' var(--header-height)
       'workbench' minmax(0, 1fr)
@@ -1030,11 +1052,16 @@
       / minmax(0, 1fr);
   }
 
+  .header-context {
+    display: none;
+  }
+
+  /* An opaque drawer over the workspace, closed by default. */
   .explorer,
   .app-shell .explorer:not(.collapsed) {
     z-index: var(--layer-drawer);
     grid-area: workbench;
-    width: min(18rem, 88vw);
+    width: min(280px, 88vw);
     visibility: visible;
     opacity: 1;
     background: var(--color-surface);
@@ -1045,9 +1072,22 @@
     visibility: hidden;
     opacity: 0;
   }
+}
+
+@media (max-width: 699px) {
+  .product-kicker,
+  .shortcut,
+  .status-metrics span:last-child {
+    display: none;
+  }
+
+  .sql-workspace {
+    grid-template-rows: 36px 80px auto 36px minmax(128px, 1fr) auto;
+  }
 
   .editor-heading,
   .results-heading {
+    flex-wrap: wrap;
     padding-inline: var(--space-2);
   }
 }

@@ -305,13 +305,21 @@ describe('Inspector Workbench', () => {
 
     const workspace = screen.getByRole('main', { name: 'Results' });
     expect(workspace).toBeTruthy();
-    expect(within(workspace).getByRole('heading', { name: 'Ask the capture' })).toBeTruthy();
-    expect(within(workspace).getByText('Result set')).toBeTruthy();
+    // One heading per tool: the duplicated eyebrow/title pairs are gone.
+    expect(within(workspace).getByRole('heading', { name: 'Query' })).toBeTruthy();
+    expect(within(workspace).getByRole('heading', { name: 'Results' })).toBeTruthy();
+    expect(within(workspace).queryByText('Ask the capture')).toBeNull();
+    expect(within(workspace).queryByText('Result set')).toBeNull();
     expect(screen.getByRole('textbox', { name: 'SQL query' })).toBeTruthy();
     expect(within(workspace).getByText('2 rows')).toBeTruthy();
     expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
+
+    // Values and the trace strip now live inside the workspace's inspection dock.
+    expect(within(workspace).getByRole('region', { name: 'Source trace' })).toBeTruthy();
     expect(
-      within(screen.getByRole('complementary', { name: 'Inspector' })).getByText('Selected evidence'),
+      within(within(workspace).getByRole('complementary', { name: 'Inspector' })).getByText(
+        'Selected evidence',
+      ),
     ).toBeTruthy();
   });
 
@@ -498,24 +506,38 @@ describe('Inspector Workbench', () => {
     expect(destroy).toHaveBeenCalledOnce();
   });
 
-  it('keeps the hex pane anchored after the flexible results panel as diagnostics come and go', async () => {
+  it('keeps the inspection dock anchored after the flexible results panel as diagnostics come and go', async () => {
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
 
     const workspace = document.querySelector('.sql-workspace') as HTMLElement;
-    const hexPane = workspace.querySelector('[data-hex-pane]') as HTMLElement;
-    // The workspace grid sizes rows positionally, and the pane's resize math reads its
-    // previous sibling as the flexible results row it grows into — so conditional
-    // diagnostics must never shift how children map to grid rows.
-    expect(workspace.lastElementChild).toBe(hexPane);
-    expect(hexPane.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+    const dock = workspace.querySelector('[data-trace-dock]') as HTMLElement;
+    // The workspace grid sizes rows positionally, so conditional diagnostics must never shift
+    // how children map to grid rows. The dock's resize budget comes from an explicit reference
+    // to the results panel, not from sibling order.
+    expect(workspace.lastElementChild).toBe(dock);
+    expect(dock.previousElementSibling?.classList.contains('results-panel')).toBe(true);
     const childCount = workspace.children.length;
 
     controller.publish({ ...controller.state, queryError: 'Unexpected token near FROM' });
     await vi.waitFor(() => expect(within(workspace).getByRole('alert')).toBeTruthy());
     expect(workspace.children.length).toBe(childCount);
-    expect(workspace.lastElementChild).toBe(hexPane);
-    expect(hexPane.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+    expect(workspace.lastElementChild).toBe(dock);
+    expect(dock.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+  });
+
+  it('keeps the whole workbench visible instead of tabbing Results against Values', () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    // The old whole-workbench Results/Inspector tabs are gone; the dock tabs its own panels.
+    expect(screen.queryByRole('tablist', { name: 'Workbench views' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Results' })).toBeNull();
+    expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
+    expect(document.querySelector('[data-trace-dock]')).toBeTruthy();
+    // Wide layout shows Values beside Bytes, both without tabs.
+    expect(screen.queryByRole('tablist', { name: 'Inspection views' })).toBeNull();
+    expect(document.querySelector('[data-hex-pane]')?.getAttribute('data-hex-layout')).toBe('embedded');
   });
 
   it('retains successful results and places a failed-query diagnostic beside the editor', () => {
@@ -683,55 +705,31 @@ describe('Inspector Workbench', () => {
     expect(removeMediaListener).toHaveBeenCalledWith('change', listener);
   });
 
-  it('exposes only the active compact panel and tabs into that panel', async () => {
+  it('tabs Values against Bytes inside the dock on a compact layout', async () => {
     compactMode = true;
-    const user = userEvent.setup();
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
 
-    const resultsTab = screen.getByRole('tab', { name: 'Results' });
-    const inspectorTab = screen.getByRole('tab', { name: 'Inspector' });
-    const resultsPanel = screen.getByRole('tabpanel', { name: 'Results' });
-    const inspectorPanel = document.getElementById('workbench-panel-inspector')!;
+    const valuesTab = screen.getByRole('tab', { name: 'Values' });
+    const bytesTab = screen.getByRole('tab', { name: 'Bytes' });
+    const valuesPanel = document.getElementById(valuesTab.getAttribute('aria-controls')!)!;
+    const bytesPanel = document.getElementById(bytesTab.getAttribute('aria-controls')!)!;
 
-    expect(resultsTab.getAttribute('aria-controls')).toBe(resultsPanel.id);
-    expect(inspectorTab.getAttribute('aria-controls')).toBe(inspectorPanel.id);
-    expect(inspectorPanel.getAttribute('role')).toBe('tabpanel');
-    expect(inspectorPanel.getAttribute('aria-labelledby')).toBe(inspectorTab.id);
-    expect(screen.queryByRole('tabpanel', { name: 'Inspector' })).toBeNull();
-    expect(resultsTab.getAttribute('aria-selected')).toBe('true');
-    expect(resultsTab.getAttribute('tabindex')).toBe('0');
-    expect(inspectorTab.getAttribute('tabindex')).toBe('-1');
-    expect((resultsPanel as HTMLElement).hidden).toBe(false);
-    expect(resultsPanel.getAttribute('tabindex')).toBe('0');
-    expect((inspectorPanel as HTMLElement).hidden).toBe(true);
-    expect(inspectorPanel.getAttribute('tabindex')).toBe('-1');
+    // Results stay on screen: only the dock's two panels take turns.
+    expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
+    expect(bytesTab.getAttribute('aria-selected')).toBe('true');
+    expect(bytesPanel.hidden).toBe(false);
+    expect(valuesPanel.hidden).toBe(true);
 
-    resultsTab.focus();
-    await user.tab();
-    expect(document.activeElement).toBe(resultsPanel);
+    await fireEvent.keyDown(bytesTab, { key: 'ArrowLeft' });
+    expect(valuesTab.getAttribute('aria-selected')).toBe('true');
+    expect(valuesPanel.hidden).toBe(false);
+    expect(bytesPanel.hidden).toBe(true);
+    expect(document.activeElement).toBe(valuesTab);
 
-    resultsTab.focus();
-    await fireEvent.keyDown(resultsTab, { key: 'ArrowRight' });
-    expect(inspectorTab.getAttribute('aria-selected')).toBe('true');
-    expect(inspectorTab.getAttribute('tabindex')).toBe('0');
-    expect(document.activeElement).toBe(inspectorTab);
-    expect((resultsPanel as HTMLElement).hidden).toBe(true);
-    expect(resultsPanel.getAttribute('tabindex')).toBe('-1');
-    expect((inspectorPanel as HTMLElement).hidden).toBe(false);
-    expect(inspectorPanel.getAttribute('tabindex')).toBe('0');
-    await user.tab();
-    expect(document.activeElement).toBe(inspectorPanel);
-
-    inspectorTab.focus();
-    await fireEvent.keyDown(inspectorTab, { key: 'Home' });
-    expect(resultsTab.getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(resultsTab);
-
-    await fireEvent.keyDown(resultsTab, { key: 'End' });
-    expect(inspectorTab.getAttribute('aria-selected')).toBe('true');
-    await fireEvent.keyDown(inspectorTab, { key: 'ArrowLeft' });
-    expect(document.activeElement).toBe(resultsTab);
+    // Both components stay mounted so switching tabs never resets their state.
+    expect(valuesPanel.querySelector('.inspector')).toBeTruthy();
+    expect(bytesPanel.querySelector('[data-hex-pane]')).toBeTruthy();
   });
 
   it('reveals the covering result row when the hex pane reports a byte click', async () => {
@@ -982,9 +980,28 @@ describe('Inspector Workbench', () => {
     await user.keyboard('{Control>}b{/Control}');
     expect(appShell.classList.contains('explorer-collapsed')).toBe(true);
 
-    expect(appShell.classList.contains('inspector-collapsed')).toBe(false);
+    // Wide layout: Mod+I shows and hides Values beside Bytes.
+    const dockBody = document.querySelector('.trace-dock-body')!;
+    const valuesPanel = dockBody.querySelector('.trace-values') as HTMLElement;
+    expect(valuesPanel.hidden).toBe(false);
     await user.keyboard('{Control>}i{/Control}');
-    expect(appShell.classList.contains('inspector-collapsed')).toBe(true);
+    expect(valuesPanel.hidden).toBe(true);
+    await user.keyboard('{Control>}i{/Control}');
+    expect(valuesPanel.hidden).toBe(false);
+  });
+
+  it('opens the dock on Bytes and focuses goto with Mod+G', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    // Collapse the dock first, so the shortcut has to reopen it.
+    await user.click(screen.getByRole('button', { name: 'Hide inspection' }));
+    expect(document.querySelector('[data-trace-dock]')?.getAttribute('data-dock-collapsed')).toBe('true');
+
+    await user.keyboard('{Control>}g{/Control}');
+    expect(document.querySelector('[data-trace-dock]')?.getAttribute('data-dock-collapsed')).toBe('false');
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Go to offset')));
   });
 
   it('marks the workbench file picker input multi-select and forwards every picked file', async () => {
