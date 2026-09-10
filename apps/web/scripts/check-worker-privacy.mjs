@@ -141,9 +141,11 @@ try {
     throw new Error(`The production app made requests after readiness:\n${postAppReadyRequests.join('\n')}`);
   }
 
-  await appPage.getByLabel('Open file').focus();
-  const openFileFocus = await appPage.getByText('Open file', { exact: true }).evaluate((label) => {
-    const style = getComputedStyle(label);
+  // The intake has one visible file action; its focus ring must be plainly visible.
+  const openFile = appPage.getByRole('button', { name: 'Open file', exact: true });
+  await openFile.focus();
+  const openFileFocus = await openFile.evaluate((button) => {
+    const style = getComputedStyle(button);
     return { outlineStyle: style.outlineStyle, outlineWidth: Number.parseFloat(style.outlineWidth) };
   });
   if (openFileFocus.outlineStyle === 'none' || openFileFocus.outlineWidth < 2) {
@@ -155,36 +157,41 @@ try {
   await appPage.getByRole('textbox', { name: 'SQL query' }).waitFor();
   await appPage.waitForFunction(() => document.querySelectorAll('.sql-editor .cm-content span').length >= 3);
 
-  const resultsTab = appPage.getByRole('tab', { name: 'Results' });
-  const inspectorTab = appPage.getByRole('tab', { name: 'Inspector' });
-  await resultsTab.waitFor();
+  // Below 1280 px the inspection dock tabs Values against Bytes; Results always stay on screen.
+  const valuesTab = appPage.getByRole('tab', { name: 'Values' });
+  const bytesTab = appPage.getByRole('tab', { name: 'Bytes' });
+  await bytesTab.waitFor();
+  // Results are never tabbed away: they must be on screen beside the dock's own tabs.
+  await appPage.getByRole('grid', { name: 'Query results' }).waitFor();
   const compactInitial = await appPage.evaluate(() => ({
     tablists: document.querySelectorAll('[role="tablist"]').length,
+    grids: document.querySelectorAll('[role="grid"][aria-label="Query results"]').length,
     panels: Array.from(document.querySelectorAll('[role="tabpanel"]'), (panel) => ({
       id: panel.id,
       hidden: panel.hidden,
-      tabIndex: panel.tabIndex,
     })),
   }));
   if (
     compactInitial.tablists !== 1 ||
+    compactInitial.grids !== 1 ||
     compactInitial.panels.length !== 2 ||
-    compactInitial.panels.filter((panel) => !panel.hidden && panel.tabIndex === 0).length !== 1 ||
-    compactInitial.panels.filter((panel) => panel.hidden && panel.tabIndex === -1).length !== 1
+    compactInitial.panels.filter((panel) => !panel.hidden).length !== 1
   ) {
     throw new Error(`980px compact semantics are incomplete: ${JSON.stringify(compactInitial)}`);
   }
 
-  await resultsTab.focus();
-  await appPage.keyboard.press('Tab');
-  if ((await appPage.evaluate(() => document.activeElement?.id)) !== 'workbench-panel-results') {
-    throw new Error('Tab from the Results tab did not enter the active Results panel.');
+  // Roving tab focus: arrowing selects the other tab and takes focus with it.
+  await bytesTab.focus();
+  await appPage.keyboard.press('ArrowLeft');
+  if ((await appPage.evaluate(() => document.activeElement?.id)) !== 'dock-tab-values') {
+    throw new Error('ArrowLeft did not move focus onto the Values tab.');
   }
-  await resultsTab.focus();
-  await appPage.keyboard.press('ArrowRight');
-  await appPage.keyboard.press('Tab');
-  if ((await appPage.evaluate(() => document.activeElement?.id)) !== 'workbench-panel-inspector') {
-    throw new Error('Tab from the Inspector tab did not skip the inactive Results panel.');
+  const afterArrow = await appPage.evaluate(() => ({
+    values: document.getElementById('dock-panel-values')?.hidden,
+    bytes: document.getElementById('dock-panel-bytes')?.hidden,
+  }));
+  if (afterArrow.values !== false || afterArrow.bytes !== true) {
+    throw new Error(`Selecting Values did not expose only its panel: ${JSON.stringify(afterArrow)}`);
   }
 
   await appPage.setViewportSize({ width: 1440, height: 900 });
@@ -194,22 +201,24 @@ try {
     tabpanels: document.querySelectorAll('[role="tabpanel"]').length,
     mains: document.querySelectorAll('[role="main"][aria-label="Results"]').length,
     inspectors: document.querySelectorAll('aside[aria-label="Inspector"]').length,
+    traceStrips: document.querySelectorAll('[role="region"][aria-label="Source trace"]').length,
   }));
   if (
     desktopSemantics.tablists !== 0 ||
     desktopSemantics.tabpanels !== 0 ||
     desktopSemantics.mains !== 1 ||
-    desktopSemantics.inspectors !== 1
+    desktopSemantics.inspectors !== 1 ||
+    desktopSemantics.traceStrips !== 1
   ) {
     throw new Error(`1440px desktop semantics are incomplete: ${JSON.stringify(desktopSemantics)}`);
   }
 
   await appPage.setViewportSize({ width: 980, height: 800 });
-  await appPage.getByRole('tablist', { name: 'Workbench views' }).waitFor();
-  await inspectorTab.focus();
-  await appPage.keyboard.press('Home');
-  if ((await appPage.getByRole('tabpanel').getAttribute('id')) !== 'workbench-panel-results') {
-    throw new Error('Compact mode did not restore Results as the sole exposed panel.');
+  await appPage.getByRole('tablist', { name: 'Inspection views' }).waitFor();
+  await valuesTab.focus();
+  await appPage.keyboard.press('End');
+  if ((await appPage.getByRole('tabpanel').getAttribute('id')) !== 'dock-panel-bytes') {
+    throw new Error('Compact mode did not restore Bytes as the sole exposed panel.');
   }
 
   await appPage.setViewportSize({ width: 1440, height: 900 });
