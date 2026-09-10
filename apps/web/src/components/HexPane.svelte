@@ -6,6 +6,7 @@
 
   import { ByteCache, COPY_LIMIT_BYTES } from '../lib/hex/byte-cache.js';
   import type { CoverageIndex, CoverageReason } from '../lib/hex/coverage.js';
+  import { measureHexFont } from '../lib/hex/font.js';
   import { parseOffsetInput } from '../lib/hex/goto.js';
   import {
     BYTES_PER_ROW,
@@ -21,6 +22,7 @@
     type HexMetrics,
   } from '../lib/hex/layout.js';
   import { drawHexFrame, type CanvasTextContext, type HexColors } from '../lib/hex/render.js';
+  import type { Theme } from '../lib/ui/theme.js';
   import {
     reduceSelection,
     selectionRange,
@@ -38,6 +40,8 @@
     /** Changes when a new result arrives; the pane clears its local selection to follow it. */
     resetKey?: unknown;
     compact?: boolean;
+    /** Observed only to schedule a repaint; the canvas reads its colors from CSS tokens. */
+    appearance?: Theme;
     files?: readonly { name: string; size: number }[];
     currentFile?: string | null;
     onreveal: (offset: number) => void;
@@ -55,6 +59,7 @@
     filterAvailable,
     resetKey,
     compact = false,
+    appearance = 'light',
     files = [],
     currentFile = null,
     onreveal,
@@ -67,16 +72,15 @@
   const HEIGHT_KEY = 'byteql.hexpane.height';
   const HEX = Array.from({ length: 256 }, (_, b) => b.toString(16).padStart(2, '0'));
 
-  /** Detached canvas measured once so metrics are stable across instances. */
-  function measureCharWidth(): number {
-    const probe = window.document.createElement('canvas');
-    const context = probe.getContext('2d');
-    if (!context) return 7.2;
-    context.font = "12px 'JetBrains Mono', monospace";
-    const width = context.measureText('0').width;
-    return width > 0 ? width : 7.2;
+  /** Measured from the mounted element's own `--font-mono`, so hit testing matches what is painted. */
+  const FALLBACK_FONT = { fontSpec: '12px monospace', charWidth: 7.2 };
+  let hexFont = $state(FALLBACK_FONT);
+
+  function measureFont(element: HTMLElement): void {
+    const family = getComputedStyle(element).getPropertyValue('--font-mono').trim() || 'monospace';
+    const context = window.document.createElement('canvas').getContext('2d');
+    hexFont = context ? measureHexFont(context, family) : { fontSpec: `12px ${family}`, charWidth: 7.2 };
   }
-  const CHAR_WIDTH = measureCharWidth();
 
   const storedCollapsed = localStorage.getItem(COLLAPSED_KEY);
   const storedHeight = Number(localStorage.getItem(HEIGHT_KEY));
@@ -100,7 +104,7 @@
     typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const metrics = $derived<HexMetrics>({
-    charWidth: CHAR_WIDTH,
+    charWidth: hexFont.charWidth,
     rowHeight: 18,
     gutterDigits: offsetDigits(fileSize),
     padding: 12,
@@ -203,7 +207,15 @@
     void viewportHeight;
     void collapsed;
     void cachePulse;
+    // An appearance change only repaints: reveal/reset APIs would move scroll, caret or selection.
+    void appearance;
     schedulePaint();
+  });
+
+  // Measure once the element has computed styles, so `--font-mono` reflects the loaded faces.
+  $effect(() => {
+    const element = rootEl;
+    if (element) untrack(() => measureFont(element));
   });
 
   // A new result (resetKey reference change) already cleared byteSelection in state; the pane
@@ -254,8 +266,15 @@
     });
   }
 
+  /** Canvas needs a resolved color: a `var(...)` token string paints nothing. */
   function readColor(style: CSSStyleDeclaration, name: string): string {
-    return style.getPropertyValue(name).trim();
+    let value = style.getPropertyValue(name).trim();
+    for (let hops = 0; hops < 4; hops += 1) {
+      const alias = /^var\(\s*(--[\w-]+)\s*\)$/u.exec(value);
+      if (!alias?.[1]) break;
+      value = style.getPropertyValue(alias[1]).trim();
+    }
+    return value.startsWith('var(') ? '' : value;
   }
 
   function paint(): void {
@@ -284,7 +303,6 @@
       caret: readColor(style, '--color-focus') || '#215b86',
       placeholder: readColor(style, '--color-hex-placeholder'),
     };
-    const fontFamily = readColor(style, '--font-mono') || 'monospace';
     const viewStart = scrollRow * BYTES_PER_ROW;
     const viewEnd = (scrollRow + view + 1) * BYTES_PER_ROW;
     const activeCache = cache;
@@ -297,7 +315,7 @@
       metrics,
       layout,
       colors,
-      fontSpec: `12px ${fontFamily}`,
+      fontSpec: hexFont.fontSpec,
       byteAt: (offset) => activeCache?.byteAt(offset) ?? null,
       shading: coverage?.spansIn(viewStart, viewEnd) ?? [],
       selection: range,

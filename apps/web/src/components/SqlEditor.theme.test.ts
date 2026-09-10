@@ -110,6 +110,14 @@ describe('SQL editor color contract', () => {
     }
   });
 
+  it('switches appearance through its own compartment rather than a fixed dark flag', () => {
+    expect(editorSource).toContain('appearanceCompartment.reconfigure(themes[appearance])');
+    expect(editorSource).toContain('light: EditorView.theme(themeRules, { dark: false })');
+    expect(editorSource).toContain('dark: EditorView.theme(themeRules, { dark: true })');
+    // One rule set shared by both appearances: colors stay in CSS, never duplicated per theme.
+    expect(editorSource.match(/EditorView\.theme\(/gu)).toHaveLength(2);
+  });
+
   it('defines the Trace Workspace palette in both appearances without Command Deck colors', () => {
     expect(tokensCss).toContain(":root[data-theme='dark']");
     expect(tokensCss).not.toContain('#36c2ff');

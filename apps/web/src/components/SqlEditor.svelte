@@ -9,40 +9,48 @@
   import { basicSetup, EditorView } from 'codemirror';
   import { onMount } from 'svelte';
 
+  import type { Theme } from '../lib/ui/theme.js';
+
   interface Props {
     sql: string;
     disabled?: boolean;
+    appearance?: Theme;
     onrun: (sql: string) => void;
     onchange?: (sql: string) => void;
   }
 
-  let { sql, disabled = false, onrun, onchange = () => undefined }: Props = $props();
+  let { sql, disabled = false, appearance = 'light', onrun, onchange = () => undefined }: Props = $props();
   let host: HTMLDivElement;
   let view = $state<EditorView | null>(null);
   const editable = new Compartment();
+  const appearanceCompartment = new Compartment();
 
-  const darkTheme = EditorView.theme(
-    {
-      '&': {
-        color: 'var(--color-editor-text)',
-        backgroundColor: 'var(--color-editor-background)',
-      },
-      '.cm-content': { caretColor: 'var(--color-editor-caret)' },
-      '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--color-editor-caret)' },
-      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
-        backgroundColor: 'var(--color-editor-selection)',
-      },
-      '.cm-gutters': {
-        color: 'var(--color-editor-gutter-text)',
-        backgroundColor: 'var(--color-editor-gutter-background)',
-        borderRightColor: 'var(--color-editor-border)',
-      },
-      '.cm-activeLine, .cm-activeLineGutter': {
-        backgroundColor: 'var(--color-editor-active-line)',
-      },
+  /** Colors always come from CSS tokens; only CodeMirror's own light/dark flag switches here. */
+  const themeRules = {
+    '&': {
+      color: 'var(--color-editor-text)',
+      backgroundColor: 'var(--color-editor-background)',
     },
-    { dark: true },
-  );
+    '.cm-content': { caretColor: 'var(--color-editor-caret)' },
+    '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--color-editor-caret)' },
+    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
+      backgroundColor: 'var(--color-editor-selection)',
+    },
+    '.cm-gutters': {
+      color: 'var(--color-editor-gutter-text)',
+      backgroundColor: 'var(--color-editor-gutter-background)',
+      borderRightColor: 'var(--color-editor-border)',
+    },
+    '.cm-activeLine, .cm-activeLineGutter': {
+      backgroundColor: 'var(--color-editor-active-line)',
+    },
+  };
+
+  // Built once each: reconfiguring swaps between them without re-registering style modules.
+  const themes: Record<Theme, ReturnType<typeof EditorView.theme>> = {
+    light: EditorView.theme(themeRules, { dark: false }),
+    dark: EditorView.theme(themeRules, { dark: true }),
+  };
 
   const sqlHighlightStyle = HighlightStyle.define([
     {
@@ -83,7 +91,7 @@
         ]),
         basicSetup,
         sqlLanguage(),
-        darkTheme,
+        appearanceCompartment.of(themes[appearance]),
         syntaxHighlighting(sqlHighlightStyle),
         editable.of(EditorView.editable.of(!disabled)),
         EditorView.contentAttributes.of({ 'aria-label': 'SQL query' }),
@@ -113,6 +121,13 @@
     const editor = view;
     if (!editor) return;
     editor.dispatch({ effects: editable.reconfigure(EditorView.editable.of(!disabled)) });
+  });
+
+  // A reconfigure is an ordinary transaction: the document, undo history and selection survive it.
+  $effect(() => {
+    const editor = view;
+    if (!editor) return;
+    editor.dispatch({ effects: appearanceCompartment.reconfigure(themes[appearance]) });
   });
 </script>
 

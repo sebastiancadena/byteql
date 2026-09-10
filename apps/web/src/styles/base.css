@@ -6,6 +6,11 @@
   font-family: var(--font-sans);
   font-size: var(--text-md);
   line-height: var(--leading-md);
+
+  /* Offsets, counts and byte values must stay in vertical register everywhere they appear. */
+  font-variant-numeric: tabular-nums;
+
+  /* Never synthesize a weight the bundled faces do not provide. */
   font-synthesis: none;
 }
 
@@ -54,23 +59,21 @@ button {
   display: none !important;
 }
 
-/* Data and code never use proportional figures or ligatures. */
-.tabular,
-.hex-goto-input,
-.hex-file-switcher,
-.grid-header > div,
-.grid-row > div,
-.status-metrics,
-.row-count,
-.result-count {
-  font-variant-numeric: tabular-nums;
-}
-
+/* Code and data must render byte-for-byte: no ligature ever merges two characters. */
 code,
 kbd,
+.cm-editor,
 .hex-goto-input,
+.hex-file-switcher,
+.hex-readout,
 .grid-header > div,
-.grid-row > div {
+.grid-row > div,
+.source-chip,
+.status-bar,
+.schema-list,
+.value-list,
+.provenance,
+.table-name {
   font-variant-ligatures: none;
 }
 

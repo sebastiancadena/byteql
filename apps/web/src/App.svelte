@@ -8,6 +8,7 @@
   import Workbench from './components/Workbench.svelte';
   import { createBrowserE2EHarness } from './lib/e2e-harness.js';
   import { SessionController } from './lib/session/controller.js';
+  import { prepareUiFonts } from './lib/ui/fonts.js';
 
   const e2eHarness = __BYTEQL_E2E__ ? createBrowserE2EHarness() : null;
   if (e2eHarness) {
@@ -33,6 +34,9 @@
       startupError = null;
       starting = true;
       controller = null;
+      // Fonts load beside the engine, never after it. The loader memoizes, so a retry reuses the
+      // settled result rather than re-requesting the faces.
+      const fontsReady = prepareUiFonts();
       try {
         database = await createBrowserDatabase();
         if (disposed || attempt !== generation) {
@@ -55,6 +59,8 @@
         currentController = ownedController;
         e2eHarness?.attachQueryController(ownedController);
         await ownedController.initialize();
+        // Readiness means the whole interface is ready: no font request may outlive this marker.
+        await fontsReady;
         if (disposed || attempt !== generation || currentController !== ownedController) return;
 
         controller = ownedController;

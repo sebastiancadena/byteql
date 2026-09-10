@@ -117,6 +117,14 @@
   --duration-drawer: 140ms;
 }
 
+/* The font loader stamps `data-fonts` once the bundled faces are registered. Until then — and for
+   the whole session if any face fails — the system stacks above stay in effect. There is
+   deliberately no `@font-face` rule here: a second declaration could issue a late font request. */
+:root[data-fonts='loaded'] {
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', Consolas, monospace;
+}
+
 :root[data-theme='dark'] {
   --color-canvas: #181b18;
   --color-surface: #20251f;

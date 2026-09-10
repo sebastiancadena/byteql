@@ -5,7 +5,17 @@ import { userEvent } from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CoverageIndex } from '../lib/hex/coverage.js';
+import { asciiByteX, columnLayout, offsetDigits, type HexMetrics } from '../lib/hex/layout.js';
 import HexPane from './HexPane.svelte';
+
+/** jsdom exposes no 2D context, so the pane uses its documented 7.2 px fallback advance width. */
+const paneMetrics: HexMetrics = {
+  charWidth: 7.2,
+  rowHeight: 18,
+  gutterDigits: offsetDigits(64),
+  padding: 12,
+};
+const paneLayout = columnLayout(paneMetrics);
 
 /** A coverage stub whose rangeAt always returns one fixed record. */
 function fixedCoverage(record: { start: number; end: number }): CoverageIndex {
@@ -121,7 +131,7 @@ describe('HexPane', () => {
 
   it('double-click records the full covering interval via rangeAt, not a clipped byte', async () => {
     // jsdom canvas rects are zero-origin, so client coords pass straight through byteAtPoint.
-    // x=455 lands in the ascii column (index 0) of row 0 → offset 0; the stub records [2, 9).
+    // Derive the ascii column from the layout helpers rather than assuming a font's advance width.
     const onreveal = vi.fn();
     const onselectionchange = vi.fn();
     const { container } = renderPane({
@@ -131,7 +141,8 @@ describe('HexPane', () => {
       onselectionchange,
     });
     const canvas = container.querySelector('canvas') as HTMLCanvasElement;
-    await fireEvent.dblClick(canvas, { clientX: 455, clientY: 5 });
+    // Ascii column, byte index 0 of row 0 → offset 0; the coverage stub records [2, 9).
+    await fireEvent.dblClick(canvas, { clientX: asciiByteX(paneMetrics, paneLayout, 0) + 1, clientY: 5 });
     const root = container.querySelector('[data-hex-pane]');
     expect(root?.getAttribute('data-hex-selection')).toBe('2-9');
     expect(onselectionchange).toHaveBeenLastCalledWith({ start: 2, end: 9 });
