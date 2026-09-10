@@ -284,6 +284,11 @@
         </div>
       {/each}
     </div>
+    {#if table.numRows === 0 && complete && !pageError}
+      <!-- The schema headers above stay: an empty result still describes its shape. -->
+      <p class="grid-empty">No rows returned. Adjust the query and run again.</p>
+    {/if}
+
     <div bind:this={tailSentinel} class="result-sentinel" role="status">
       {#if pageError}
         <span>{pageError}</span>

@@ -229,8 +229,8 @@ describe('Inspector Workbench', () => {
     });
     render(Workbench, { controller });
 
-    expect(screen.getByText(/files never leave this browser/i)).toBeTruthy();
-    const input = screen.getByLabelText('Open file');
+    expect(screen.getByText(/nothing is uploaded/i)).toBeTruthy();
+    const input = screen.getByLabelText('Open file input');
     expect(input.getAttribute('type')).toBe('file');
     expect((screen.getByRole('button', { name: 'Try sample' }) as HTMLButtonElement).disabled).toBe(false);
 
@@ -239,15 +239,54 @@ describe('Inspector Workbench', () => {
     expect(controller.openSample).toHaveBeenCalledWith('pcap');
   });
 
-  it('hides the header Open button when no session can receive the picker click', () => {
+  it('keeps the file action in the intake while idle and in the header once loaded', () => {
     const idleController = new FakeController({ ...initialSessionState, phase: 'idle' });
     render(Workbench, { controller: idleController });
-    expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+    // Idle has exactly one Open file action, and it belongs to the intake surface.
+    expect(screen.getAllByRole('button', { name: 'Open file' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /sources/iu })).toBeNull();
+    expect(screen.queryByRole('button', { name: /values/iu })).toBeNull();
     cleanup();
 
     const readyController = new FakeController(readyState());
     render(Workbench, { controller: readyController });
-    expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open file' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Hide sources' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Hide values' })).toBeTruthy();
+  });
+
+  it('reaches the idle intake with Mod+O instead of a picker that is not mounted yet', async () => {
+    const controller = new FakeController({ ...initialSessionState, phase: 'idle' });
+    render(Workbench, { controller });
+    const input = screen.getByLabelText<HTMLInputElement>('Open file input');
+    const click = vi.spyOn(input, 'click');
+
+    // jsdom has no File System Access API, so the intake path falls through to its own input.
+    await fireEvent.keyDown(window, { key: 'o', ctrlKey: true });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it('opens the loaded session picker with Mod+O', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    const picker = screen.getByLabelText<HTMLInputElement>('Open file picker');
+    const click = vi.spyOn(picker, 'click');
+
+    await fireEvent.keyDown(window, { key: 'o', ctrlKey: true });
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it('switches appearance from the header and keeps the choice on the root element', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    expect(document.documentElement.dataset.theme).not.toBe('dark');
+    await fireEvent.click(screen.getByRole('button', { name: 'Use dark appearance' }));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(localStorage.getItem('byteql.ui.theme.v1')).toBe('dark');
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Use light appearance' }));
+    expect(document.documentElement.dataset.theme).toBe('light');
   });
 
   it('shows source context, pack metadata, query tools, results, and inspection landmarks', () => {
@@ -255,7 +294,7 @@ describe('Inspector Workbench', () => {
     render(Workbench, { controller });
 
     const navigation = screen.getByRole('navigation', { name: 'Data explorer' });
-    expect(within(navigation).getByText('Capture map')).toBeTruthy();
+    expect(within(navigation).getByRole('heading', { name: 'Sources' })).toBeTruthy();
     expect(within(navigation).getByText('capture.bin')).toBeTruthy();
     expect(within(navigation).getByText('Example records')).toBeTruthy();
     expect(within(navigation).getByText('records')).toBeTruthy();
@@ -266,14 +305,22 @@ describe('Inspector Workbench', () => {
 
     const workspace = screen.getByRole('main', { name: 'Results' });
     expect(workspace).toBeTruthy();
-    expect(within(workspace).getByRole('heading', { name: 'Ask the capture' })).toBeTruthy();
-    expect(within(workspace).getByText('Result set')).toBeTruthy();
+    // One heading per tool: the duplicated eyebrow/title pairs are gone.
+    expect(within(workspace).getByRole('heading', { name: 'Query' })).toBeTruthy();
+    expect(within(workspace).getByRole('heading', { name: 'Results' })).toBeTruthy();
+    expect(within(workspace).queryByText('Ask the capture')).toBeNull();
+    expect(within(workspace).queryByText('Result set')).toBeNull();
     expect(screen.getByRole('textbox', { name: 'SQL query' })).toBeTruthy();
     expect(within(workspace).getByText('2 rows')).toBeTruthy();
     expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
-    expect(
-      within(screen.getByRole('complementary', { name: 'Inspector' })).getByText('Selected evidence'),
-    ).toBeTruthy();
+
+    // Values and the trace strip now live inside the workspace's inspection dock, under one
+    // heading each — the old eyebrow/title pairs are gone.
+    expect(within(workspace).getByRole('region', { name: 'Source trace' })).toBeTruthy();
+    const values = within(workspace).getByRole('complementary', { name: 'Inspector' });
+    expect(within(values).getByRole('heading', { name: 'Values' })).toBeTruthy();
+    expect(within(values).queryByText('Selected evidence')).toBeNull();
+    expect(within(values).queryByText('Original source')).toBeNull();
   });
 
   it('places Download results beside the result count rather than inside the result grid', () => {
@@ -370,10 +417,113 @@ describe('Inspector Workbench', () => {
 
     expect(controller.selectResultRow).toHaveBeenCalledWith(1);
     const inspector = screen.getByRole('complementary', { name: 'Inspector' });
-    expect(within(inspector).getByRole('button', { name: '0x1c – 0x29' })).toBeTruthy();
+    // [28, 41) shows its last included byte, 0x28 — not the exclusive end.
+    expect(within(inspector).getByRole('button', { name: '0x0000001c–0x00000028 · 13 bytes' })).toBeTruthy();
     expect(within(inspector).getByText('optional')).toBeTruthy();
     expect(within(inspector).getByText('available')).toBeTruthy();
     expect(textOf(editor)).toContain('select * from records limit 100');
+  });
+
+  it('refuses to link a source range whose file is no longer in the session', async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      // The result still carries capture.bin provenance, but that file is gone.
+      source: { files: [{ name: 'other.bin', size: 1536 }], totalSize: 1536 },
+    });
+    render(Workbench, { controller });
+
+    const firstRow = screen.getByRole('row', { name: /row 1/i });
+    firstRow.focus();
+    await fireEvent.keyDown(firstRow, { key: 'ArrowDown' });
+
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' });
+    expect(within(inspector).queryByRole('button', { name: /0x/u })).toBeNull();
+    expect(within(inspector).getByText('Source bytes are unavailable for this row.')).toBeTruthy();
+  });
+
+  it('keeps the schema headers and explains a zero-row result', () => {
+    const empty = tableFromArrays({ record_id: [1n], label: ['alpha'] }).slice(0, 0);
+    const controller = new FakeController({ ...readyState(), result: pagedResult(empty) });
+    render(Workbench, { controller });
+
+    // Not the intake screen: an empty result still describes its shape.
+    expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: /record_id/u })).toBeTruthy();
+    expect(screen.getByText('No rows returned. Adjust the query and run again.')).toBeTruthy();
+    expect(screen.queryByText(/nothing is uploaded/iu)).toBeNull();
+  });
+
+  it('marks the selected row as evidence only when its trace is validated', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    const workspace = screen.getByRole('main', { name: 'Results' });
+
+    expect(workspace.getAttribute('data-trace-linked')).toBe('false');
+    await fireEvent.click(screen.getByRole('row', { name: /^Row 1$/u }));
+    expect(workspace.getAttribute('data-trace-linked')).toBe('true');
+
+    // An aggregate has no provenance, so the bracket must not claim one.
+    const aggregate = tableFromArrays({ n: [262n] });
+    controller.publish({ ...controller.state, result: pagedResult(aggregate), selectedRow: 0 });
+    await vi.waitFor(() => expect(workspace.getAttribute('data-trace-linked')).toBe('false'));
+    expect(screen.getByText('This row has no source byte range.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Inspect source' })).toBeNull();
+  });
+
+  it('does not borrow a range for a row outside the decoded window', () => {
+    const controller = new FakeController({
+      ...readyState(),
+      // The selection points past the loaded window, so no local row backs it.
+      result: pagedResult(result, { windowStart: 0, loadedRows: 20_000, complete: false }),
+      selectedRow: 16_500,
+    });
+    render(Workbench, { controller });
+
+    expect(screen.getByText('Selected row is outside the loaded window.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Inspect source' })).toBeNull();
+    expect(screen.getByRole('main', { name: 'Results' }).getAttribute('data-trace-linked')).toBe('false');
+  });
+
+  it('loads an example query into a focused editor without running it', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Recent records' }));
+
+    const editor = screen.getByRole('textbox', { name: 'SQL query' });
+    expect(textOf(editor)).toContain('order by record_id desc');
+    // Loading fills and focuses the editor; running stays an explicit action.
+    expect(controller.runQuery).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(editor.contains(document.activeElement)).toBe(true));
+  });
+
+  it('switches which source the byte viewer shows without rerunning or rewriting SQL', async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      source: {
+        files: [
+          { name: 'capture.bin', size: 1536 },
+          { name: 'second.bin', size: 640 },
+        ],
+        totalSize: 2176,
+      },
+    });
+    render(Workbench, { controller });
+
+    const navigation = screen.getByRole('navigation', { name: 'Data explorer' });
+    const first = within(navigation).getByRole('button', { name: /capture\.bin/u });
+    expect(first.getAttribute('aria-current')).toBe('true');
+
+    await fireEvent.click(within(navigation).getByRole('button', { name: /second\.bin/u }));
+
+    expect(
+      within(navigation)
+        .getByRole('button', { name: /second\.bin/u })
+        .getAttribute('aria-current'),
+    ).toBe('true');
+    expect(controller.runQuery).not.toHaveBeenCalled();
+    // Switching source drops the byte selection that belonged to the previous file.
+    expect(controller.selectByteRange).toHaveBeenCalledWith(null);
   });
 
   it('loads a pack query, executes with the keyboard, cancels work, and tears down its editor', async () => {
@@ -399,24 +549,38 @@ describe('Inspector Workbench', () => {
     expect(destroy).toHaveBeenCalledOnce();
   });
 
-  it('keeps the hex pane anchored after the flexible results panel as diagnostics come and go', async () => {
+  it('keeps the inspection dock anchored after the flexible results panel as diagnostics come and go', async () => {
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
 
     const workspace = document.querySelector('.sql-workspace') as HTMLElement;
-    const hexPane = workspace.querySelector('[data-hex-pane]') as HTMLElement;
-    // The workspace grid sizes rows positionally, and the pane's resize math reads its
-    // previous sibling as the flexible results row it grows into — so conditional
-    // diagnostics must never shift how children map to grid rows.
-    expect(workspace.lastElementChild).toBe(hexPane);
-    expect(hexPane.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+    const dock = workspace.querySelector('[data-trace-dock]') as HTMLElement;
+    // The workspace grid sizes rows positionally, so conditional diagnostics must never shift
+    // how children map to grid rows. The dock's resize budget comes from an explicit reference
+    // to the results panel, not from sibling order.
+    expect(workspace.lastElementChild).toBe(dock);
+    expect(dock.previousElementSibling?.classList.contains('results-panel')).toBe(true);
     const childCount = workspace.children.length;
 
     controller.publish({ ...controller.state, queryError: 'Unexpected token near FROM' });
     await vi.waitFor(() => expect(within(workspace).getByRole('alert')).toBeTruthy());
     expect(workspace.children.length).toBe(childCount);
-    expect(workspace.lastElementChild).toBe(hexPane);
-    expect(hexPane.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+    expect(workspace.lastElementChild).toBe(dock);
+    expect(dock.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+  });
+
+  it('keeps the whole workbench visible instead of tabbing Results against Values', () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    // The old whole-workbench Results/Inspector tabs are gone; the dock tabs its own panels.
+    expect(screen.queryByRole('tablist', { name: 'Workbench views' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Results' })).toBeNull();
+    expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
+    expect(document.querySelector('[data-trace-dock]')).toBeTruthy();
+    // Wide layout shows Values beside Bytes, both without tabs.
+    expect(screen.queryByRole('tablist', { name: 'Inspection views' })).toBeNull();
+    expect(document.querySelector('[data-hex-pane]')?.getAttribute('data-hex-layout')).toBe('embedded');
   });
 
   it('retains successful results and places a failed-query diagnostic beside the editor', () => {
@@ -433,12 +597,14 @@ describe('Inspector Workbench', () => {
     const controller = new FakeController({ ...readyState(), queries: midiQueries });
     render(Workbench, { controller });
 
-    const savedQueries = screen.getByRole('region', { name: 'Saved queries' });
+    // "Example queries": these come from the format pack, not from a save/history feature.
+    const exampleQueries = screen.getByRole('region', { name: 'Example queries' });
+    expect(screen.queryByRole('region', { name: 'Saved queries' })).toBeNull();
     expect(
-      within(savedQueries)
+      within(exampleQueries)
         .getAllByRole('button')
         .map((button) => button.textContent?.trim()),
-    ).toEqual(midiQueries.map((query) => `↗ ${query.title}`));
+    ).toEqual(midiQueries.map((query) => query.title));
   });
 
   it('selects the pack play_all query through the saved-query path', async () => {
@@ -582,55 +748,31 @@ describe('Inspector Workbench', () => {
     expect(removeMediaListener).toHaveBeenCalledWith('change', listener);
   });
 
-  it('exposes only the active compact panel and tabs into that panel', async () => {
+  it('tabs Values against Bytes inside the dock on a compact layout', async () => {
     compactMode = true;
-    const user = userEvent.setup();
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
 
-    const resultsTab = screen.getByRole('tab', { name: 'Results' });
-    const inspectorTab = screen.getByRole('tab', { name: 'Inspector' });
-    const resultsPanel = screen.getByRole('tabpanel', { name: 'Results' });
-    const inspectorPanel = document.getElementById('workbench-panel-inspector')!;
+    const valuesTab = screen.getByRole('tab', { name: 'Values' });
+    const bytesTab = screen.getByRole('tab', { name: 'Bytes' });
+    const valuesPanel = document.getElementById(valuesTab.getAttribute('aria-controls')!)!;
+    const bytesPanel = document.getElementById(bytesTab.getAttribute('aria-controls')!)!;
 
-    expect(resultsTab.getAttribute('aria-controls')).toBe(resultsPanel.id);
-    expect(inspectorTab.getAttribute('aria-controls')).toBe(inspectorPanel.id);
-    expect(inspectorPanel.getAttribute('role')).toBe('tabpanel');
-    expect(inspectorPanel.getAttribute('aria-labelledby')).toBe(inspectorTab.id);
-    expect(screen.queryByRole('tabpanel', { name: 'Inspector' })).toBeNull();
-    expect(resultsTab.getAttribute('aria-selected')).toBe('true');
-    expect(resultsTab.getAttribute('tabindex')).toBe('0');
-    expect(inspectorTab.getAttribute('tabindex')).toBe('-1');
-    expect((resultsPanel as HTMLElement).hidden).toBe(false);
-    expect(resultsPanel.getAttribute('tabindex')).toBe('0');
-    expect((inspectorPanel as HTMLElement).hidden).toBe(true);
-    expect(inspectorPanel.getAttribute('tabindex')).toBe('-1');
+    // Results stay on screen: only the dock's two panels take turns.
+    expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
+    expect(bytesTab.getAttribute('aria-selected')).toBe('true');
+    expect(bytesPanel.hidden).toBe(false);
+    expect(valuesPanel.hidden).toBe(true);
 
-    resultsTab.focus();
-    await user.tab();
-    expect(document.activeElement).toBe(resultsPanel);
+    await fireEvent.keyDown(bytesTab, { key: 'ArrowLeft' });
+    expect(valuesTab.getAttribute('aria-selected')).toBe('true');
+    expect(valuesPanel.hidden).toBe(false);
+    expect(bytesPanel.hidden).toBe(true);
+    expect(document.activeElement).toBe(valuesTab);
 
-    resultsTab.focus();
-    await fireEvent.keyDown(resultsTab, { key: 'ArrowRight' });
-    expect(inspectorTab.getAttribute('aria-selected')).toBe('true');
-    expect(inspectorTab.getAttribute('tabindex')).toBe('0');
-    expect(document.activeElement).toBe(inspectorTab);
-    expect((resultsPanel as HTMLElement).hidden).toBe(true);
-    expect(resultsPanel.getAttribute('tabindex')).toBe('-1');
-    expect((inspectorPanel as HTMLElement).hidden).toBe(false);
-    expect(inspectorPanel.getAttribute('tabindex')).toBe('0');
-    await user.tab();
-    expect(document.activeElement).toBe(inspectorPanel);
-
-    inspectorTab.focus();
-    await fireEvent.keyDown(inspectorTab, { key: 'Home' });
-    expect(resultsTab.getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(resultsTab);
-
-    await fireEvent.keyDown(resultsTab, { key: 'End' });
-    expect(inspectorTab.getAttribute('aria-selected')).toBe('true');
-    await fireEvent.keyDown(inspectorTab, { key: 'ArrowLeft' });
-    expect(document.activeElement).toBe(resultsTab);
+    // Both components stay mounted so switching tabs never resets their state.
+    expect(valuesPanel.querySelector('.inspector')).toBeTruthy();
+    expect(bytesPanel.querySelector('[data-hex-pane]')).toBeTruthy();
   });
 
   it('reveals the covering result row when the hex pane reports a byte click', async () => {
@@ -881,9 +1023,28 @@ describe('Inspector Workbench', () => {
     await user.keyboard('{Control>}b{/Control}');
     expect(appShell.classList.contains('explorer-collapsed')).toBe(true);
 
-    expect(appShell.classList.contains('inspector-collapsed')).toBe(false);
+    // Wide layout: Mod+I shows and hides Values beside Bytes.
+    const dockBody = document.querySelector('.trace-dock-body')!;
+    const valuesPanel = dockBody.querySelector('.trace-values') as HTMLElement;
+    expect(valuesPanel.hidden).toBe(false);
     await user.keyboard('{Control>}i{/Control}');
-    expect(appShell.classList.contains('inspector-collapsed')).toBe(true);
+    expect(valuesPanel.hidden).toBe(true);
+    await user.keyboard('{Control>}i{/Control}');
+    expect(valuesPanel.hidden).toBe(false);
+  });
+
+  it('opens the dock on Bytes and focuses goto with Mod+G', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    // Collapse the dock first, so the shortcut has to reopen it.
+    await user.click(screen.getByRole('button', { name: 'Hide inspection' }));
+    expect(document.querySelector('[data-trace-dock]')?.getAttribute('data-dock-collapsed')).toBe('true');
+
+    await user.keyboard('{Control>}g{/Control}');
+    expect(document.querySelector('[data-trace-dock]')?.getAttribute('data-dock-collapsed')).toBe('false');
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Go to offset')));
   });
 
   it('marks the workbench file picker input multi-select and forwards every picked file', async () => {

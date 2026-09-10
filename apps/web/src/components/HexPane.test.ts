@@ -5,7 +5,17 @@ import { userEvent } from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CoverageIndex } from '../lib/hex/coverage.js';
+import { asciiByteX, columnLayout, offsetDigits, type HexMetrics } from '../lib/hex/layout.js';
 import HexPane from './HexPane.svelte';
+
+/** jsdom exposes no 2D context, so the pane uses its documented 7.2 px fallback advance width. */
+const paneMetrics: HexMetrics = {
+  charWidth: 7.2,
+  rowHeight: 18,
+  gutterDigits: offsetDigits(64),
+  padding: 12,
+};
+const paneLayout = columnLayout(paneMetrics);
 
 /** A coverage stub whose rangeAt always returns one fixed record. */
 function fixedCoverage(record: { start: number; end: number }): CoverageIndex {
@@ -121,7 +131,7 @@ describe('HexPane', () => {
 
   it('double-click records the full covering interval via rangeAt, not a clipped byte', async () => {
     // jsdom canvas rects are zero-origin, so client coords pass straight through byteAtPoint.
-    // x=455 lands in the ascii column (index 0) of row 0 → offset 0; the stub records [2, 9).
+    // Derive the ascii column from the layout helpers rather than assuming a font's advance width.
     const onreveal = vi.fn();
     const onselectionchange = vi.fn();
     const { container } = renderPane({
@@ -131,7 +141,8 @@ describe('HexPane', () => {
       onselectionchange,
     });
     const canvas = container.querySelector('canvas') as HTMLCanvasElement;
-    await fireEvent.dblClick(canvas, { clientX: 455, clientY: 5 });
+    // Ascii column, byte index 0 of row 0 → offset 0; the coverage stub records [2, 9).
+    await fireEvent.dblClick(canvas, { clientX: asciiByteX(paneMetrics, paneLayout, 0) + 1, clientY: 5 });
     const root = container.querySelector('[data-hex-pane]');
     expect(root?.getAttribute('data-hex-selection')).toBe('2-9');
     expect(onselectionchange).toHaveBeenLastCalledWith({ start: 2, end: 9 });
@@ -245,5 +256,73 @@ describe('HexPane', () => {
     await user.click(getByRole('button', { name: 'Collapse hex view' }));
     expect(container.querySelector('[data-hex-pane]')?.getAttribute('data-hex-collapsed')).toBe('true');
     expect(localStorage.getItem('byteql.hexpane.collapsed')).toBe('true');
+  });
+});
+
+describe('HexPane embedded in the inspection dock', () => {
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  const renderEmbedded = (overrides: Record<string, unknown> = {}) =>
+    renderPane({ layout: 'embedded', visible: true, ...overrides });
+
+  it('hands its geometry chrome to the parent dock', () => {
+    const { container, queryByRole } = renderEmbedded();
+
+    // The dock owns the separator and the collapse control; the pane offers neither.
+    expect(queryByRole('separator', { name: 'Resize hex view' })).toBeNull();
+    expect(queryByRole('button', { name: 'Collapse hex view' })).toBeNull();
+    expect(queryByRole('button', { name: 'Expand hex view' })).toBeNull();
+
+    const root = container.querySelector<HTMLElement>('[data-hex-pane]')!;
+    expect(root.getAttribute('data-hex-layout')).toBe('embedded');
+    // No fixed height of its own: it fills whatever the dock gives it.
+    expect(root.style.height).toBe('');
+  });
+
+  it('does not read or write the standalone geometry preferences', async () => {
+    localStorage.setItem('byteql.hexpane.collapsed', 'true');
+    localStorage.setItem('byteql.hexpane.height', '999');
+    const user = userEvent.setup();
+
+    const { container, getByLabelText } = renderEmbedded();
+    const root = container.querySelector('[data-hex-pane]')!;
+    // A stored standalone collapse flag must not hide an embedded pane the dock is showing.
+    expect(root.getAttribute('data-hex-collapsed')).toBe('false');
+
+    await user.type(getByLabelText('Go to offset'), '0x10{Enter}');
+    expect(localStorage.getItem('byteql.hexpane.collapsed')).toBe('true');
+    expect(localStorage.getItem('byteql.hexpane.height')).toBe('999');
+  });
+
+  it('follows the parent visibility instead of its own collapse state', async () => {
+    const { container, rerender } = renderEmbedded({ visible: false });
+    const root = container.querySelector('[data-hex-pane]')!;
+    expect(root.getAttribute('data-hex-collapsed')).toBe('true');
+
+    await rerender({ layout: 'embedded', visible: true });
+    expect(root.getAttribute('data-hex-collapsed')).toBe('false');
+  });
+
+  it('keeps caret and selection across a hide and show', async () => {
+    const user = userEvent.setup();
+    const { container, getByLabelText, getByRole, rerender } = renderEmbedded();
+
+    await user.type(getByLabelText('Go to offset'), '4{Enter}');
+    getByRole('application', { name: 'Hex viewer' }).focus();
+    await user.keyboard('{Shift>}{ArrowRight}{/Shift}');
+
+    const root = container.querySelector('[data-hex-pane]')!;
+    expect(root.getAttribute('data-hex-caret')).toBe('5');
+    expect(root.getAttribute('data-hex-selection')).toBe('4-6');
+
+    await rerender({ layout: 'embedded', visible: false });
+    await rerender({ layout: 'embedded', visible: true });
+
+    // Hiding a tab must not reset what the user selected.
+    expect(root.getAttribute('data-hex-caret')).toBe('5');
+    expect(root.getAttribute('data-hex-selection')).toBe('4-6');
   });
 });

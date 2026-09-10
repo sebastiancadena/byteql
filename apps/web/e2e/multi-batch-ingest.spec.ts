@@ -17,7 +17,7 @@ test('ingests a multi-batch events table and counts every row via DuckDB', async
   const { bytes, eventRowCount } = largeMidiFixture(33_000);
   expect(eventRowCount).toBe(66_001);
 
-  await page.getByLabel('Open file').setInputFiles({
+  await page.getByLabel('Open file input').setInputFiles({
     name: 'multi-batch.mid',
     mimeType: 'audio/midi',
     buffer: Buffer.from(bytes),

@@ -383,6 +383,10 @@ for (const format of ['csv', 'parquet'] as const) {
     expect(storedProvenance.columns).toEqual(['_src_start', '_src_end']);
     expect(storedProvenance.types).toEqual(['Uint64', 'Uint64']);
     expect(storedProvenance.rows).toHaveLength(3);
+    // The options popover is nonmodal: running a query is a click outside it, which dismisses
+    // it and returns focus to its opener. Reopen it to continue.
+    await expect(page.getByRole('dialog', { name: 'Download results' })).toBeHidden();
+    await page.getByRole('button', { name: 'Download results', exact: true }).click();
     const provenance = page.getByRole('checkbox', {
       name: 'Include hidden columns and byte provenance',
     });

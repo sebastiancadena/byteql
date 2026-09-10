@@ -14,11 +14,11 @@ test('opens the bundled sample, queries five events, and inspects provenance', a
 
   await expect(page.getByRole('columnheader', { name: 'note Uint8' })).toBeVisible();
   await page.getByRole('row', { name: 'Row 1', exact: true }).click();
-  // The Inspector's provenance is now a single clickable byte-range button (e.g. "0x1c – 0x29")
-  // inside the Provenance section, replacing the old raw `_src_start` text.
+  // Provenance is a single clickable byte-range button inside the Provenance section, sharing
+  // the trace strip's formatter: lowercase hex, at least eight digits, last included byte.
   await expect(
     page
       .getByRole('region', { name: 'Provenance' })
-      .getByRole('button', { name: /0x[0-9a-f]+ – 0x[0-9a-f]+/u }),
+      .getByRole('button', { name: /^0x[\da-f]{8,}–0x[\da-f]{8,} · \d+ bytes$/u }),
   ).toBeVisible();
 });

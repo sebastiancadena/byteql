@@ -26,7 +26,9 @@ test('a two-file pcap session catalogs both files, groups per-file counts, and a
   const nameA = 'multi-a.pcap';
   const nameB = 'multi-b.pcap';
 
-  await page.getByLabel('Open file').setInputFiles([asFile(nameA, fileA.bytes), asFile(nameB, fileB.bytes)]);
+  await page
+    .getByLabel('Open file input')
+    .setInputFiles([asFile(nameA, fileA.bytes), asFile(nameB, fileB.bytes)]);
 
   // 1. Session opens ready; the Explorer lists `_files`.
   const tablesRegion = page.getByRole('region', { name: 'Tables' });

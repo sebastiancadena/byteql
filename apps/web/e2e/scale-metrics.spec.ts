@@ -68,7 +68,7 @@ test('scaled capture meets proportional throughput and pushdown read-fraction', 
     await waitForAppReady(page);
 
     const openStartedAt = performance.now();
-    await page.getByLabel('Open file').setInputFiles(capturePath);
+    await page.getByLabel('Open file input').setInputFiles(capturePath);
     await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible({ timeout: 570_000 });
     const parseElapsedMs = performance.now() - openStartedAt;
 

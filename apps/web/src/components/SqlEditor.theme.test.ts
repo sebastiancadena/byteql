@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import editorSource from './SqlEditor.svelte?raw';
 import hexPaneSource from './HexPane.svelte?raw';
 
-const appCss = readFileSync(new URL('../app.css', import.meta.url), 'utf8');
+const tokensCss = readFileSync(new URL('../styles/tokens.css', import.meta.url), 'utf8');
 
 const editorColorTokens = [
   '--color-editor-text',
@@ -25,19 +25,33 @@ const editorColorTokens = [
   '--color-syntax-invalid',
 ] as const;
 
-const commandDeckTokens = [
-  '--color-canvas',
-  '--color-surface',
-  '--color-surface-inset',
-  '--color-surface-raised',
-  '--color-accent',
-  '--color-accent-dim',
-  '--color-evidence',
-] as const;
+/** Extract the declarations of one top-level rule, keyed by custom-property name. */
+function declarations(selector: string): Map<string, string> {
+  const start = tokensCss.indexOf(`${selector} {`);
+  if (start < 0) throw new Error(`Missing rule: ${selector}`);
+  const open = tokensCss.indexOf('{', start);
+  const close = tokensCss.indexOf('\n}', open);
+  if (close < 0) throw new Error(`Unterminated rule: ${selector}`);
+  const entries = new Map<string, string>();
+  for (const line of tokensCss.slice(open + 1, close).split('\n')) {
+    const match = /^\s*(--[\w-]+):\s*(.+);\s*$/u.exec(line);
+    if (match?.[1] && match[2]) entries.set(match[1], match[2].trim());
+  }
+  return entries;
+}
 
-function cssHexToken(name: string): string {
-  const value = appCss.match(new RegExp(`${name}:\\s*(#[\\da-f]{6})`, 'iu'))?.[1];
-  if (!value) throw new Error(`Missing hexadecimal CSS token: ${name}`);
+const lightDeclarations = declarations(':root');
+const darkDeclarations = new Map([...lightDeclarations, ...declarations(":root[data-theme='dark']")]);
+
+/** Resolve a token through simple `var(--other)` aliases down to a literal color. */
+function resolve(palette: Map<string, string>, token: string, seen = new Set<string>()): string {
+  if (seen.has(token)) throw new Error(`Circular token alias: ${token}`);
+  seen.add(token);
+  const value = palette.get(token);
+  if (!value) throw new Error(`Missing CSS token: ${token}`);
+  const alias = /^var\((--[\w-]+)\)$/u.exec(value);
+  if (alias?.[1]) return resolve(palette, alias[1], seen);
+  if (!/^#[\da-f]{6}$/iu.test(value)) throw new Error(`Token ${token} is not a plain color: ${value}`);
   return value;
 }
 
@@ -60,50 +74,134 @@ function contrastRatio(foreground: string, background: string): number {
   return (light + 0.05) / (dark + 0.05);
 }
 
+const appearances = [
+  ['light', lightDeclarations],
+  ['dark', darkDeclarations],
+] as const;
+
+const textSurfaces = [
+  '--color-canvas',
+  '--color-surface',
+  '--color-surface-inset',
+  '--color-surface-raised',
+  '--color-surface-hover',
+  '--color-selection',
+  '--color-hex-highlight',
+] as const;
+
+const syntaxTokens = [
+  '--color-syntax-keyword',
+  '--color-syntax-string',
+  '--color-syntax-number',
+  '--color-syntax-comment',
+  '--color-syntax-operator',
+  '--color-syntax-name',
+  '--color-syntax-invalid',
+] as const;
+
 describe('SQL editor color contract', () => {
-  it('sources every CodeMirror theme and token color from app CSS custom properties', () => {
+  it('sources every CodeMirror theme and token color from CSS custom properties', () => {
     expect(editorSource).not.toMatch(/#[\da-f]{3,8}\b/iu);
 
     for (const token of editorColorTokens) {
       expect(editorSource, token).toContain(`var(${token})`);
-      expect(appCss, token).toMatch(new RegExp(`${token}:\\s*#[\\da-f]{6}`, 'iu'));
+      expect(() => resolve(lightDeclarations, token), token).not.toThrow();
+      expect(() => resolve(darkDeclarations, token), token).not.toThrow();
     }
   });
 
-  it('defines the Command Deck shell without the former mint accent', () => {
-    for (const token of commandDeckTokens) expect(appCss).toContain(`${token}:`);
-    expect(appCss).not.toContain('#55d8be');
+  it('switches appearance through its own compartment rather than a fixed dark flag', () => {
+    expect(editorSource).toContain('appearanceCompartment.reconfigure(themes[appearance])');
+    expect(editorSource).toContain('light: EditorView.theme(themeRules, { dark: false })');
+    expect(editorSource).toContain('dark: EditorView.theme(themeRules, { dark: true })');
+    // One rule set shared by both appearances: colors stay in CSS, never duplicated per theme.
+    expect(editorSource.match(/EditorView\.theme\(/gu)).toHaveLength(2);
   });
 
-  it('keeps small theme text at WCAG AA contrast on every surface where it appears', () => {
-    const pairs = [
-      ['subtle text on canvas', '--color-text-subtle', '--color-canvas'],
-      ['subtle text on base surface', '--color-text-subtle', '--color-surface'],
-      ['subtle text on inset surface', '--color-text-subtle', '--color-surface-inset'],
-      ['subtle text on raised surface', '--color-text-subtle', '--color-surface-raised'],
-      ['subtle text on hovered row', '--color-text-subtle', '--color-surface-hover'],
-      ['subtle text on selected row', '--color-text-subtle', '--color-selection'],
-      [
-        'editor gutter text on gutter background',
-        '--color-editor-gutter-text',
-        '--color-editor-gutter-background',
-      ],
-      ['editor gutter text on active line', '--color-editor-gutter-text', '--color-editor-active-line'],
-      ['syntax comments on editor', '--color-syntax-comment', '--color-editor-background'],
-      ['syntax comments on active line', '--color-syntax-comment', '--color-editor-active-line'],
-    ] as const;
+  it('defines the Trace Workspace palette in both appearances without Command Deck colors', () => {
+    expect(tokensCss).toContain(":root[data-theme='dark']");
+    expect(tokensCss).not.toContain('#36c2ff');
+    expect(tokensCss).not.toContain('#55d8be');
+    expect(tokensCss).not.toMatch(/--color-(canvas-glow|header-glass|accent-halo|accent-wash|accent-dim)\b/u);
+    for (const token of ['--color-evidence', '--color-warning', '--color-success'] as const) {
+      expect(resolve(lightDeclarations, token)).not.toBe(resolve(darkDeclarations, token));
+    }
+  });
+});
 
-    for (const [label, foreground, background] of pairs) {
-      expect(contrastRatio(cssHexToken(foreground), cssHexToken(background)), label).toBeGreaterThanOrEqual(
-        4.5,
+describe.each(appearances)('%s appearance contrast', (appearance, palette) => {
+  const ratio = (foreground: string, background: string): number =>
+    contrastRatio(resolve(palette, foreground), resolve(palette, background));
+
+  it.each(textSurfaces)('keeps subtle metadata readable on %s', (surface) => {
+    expect(ratio('--color-text-subtle', surface)).toBeGreaterThanOrEqual(4.5);
+    expect(ratio('--color-text-muted', surface)).toBeGreaterThanOrEqual(4.5);
+    expect(ratio('--color-text', surface)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(syntaxTokens)('keeps %s readable on the editor bed and its active line', (token) => {
+    expect(ratio(token, '--color-editor-background')).toBeGreaterThanOrEqual(4.5);
+    expect(ratio(token, '--color-editor-active-line')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps the gutter readable', () => {
+    expect(ratio('--color-editor-gutter-text', '--color-editor-gutter-background')).toBeGreaterThanOrEqual(
+      4.5,
+    );
+    expect(ratio('--color-editor-gutter-text', '--color-editor-active-line')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps state text readable on its own surface', () => {
+    expect(ratio('--color-danger', '--color-danger-surface')).toBeGreaterThanOrEqual(4.5);
+    expect(ratio('--color-warning', '--color-warning-surface')).toBeGreaterThanOrEqual(4.5);
+    expect(ratio('--color-success', '--color-surface')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps primary action text readable on its fill', () => {
+    expect(ratio('--color-accent-ink', '--color-accent')).toBeGreaterThanOrEqual(4.5);
+    expect(ratio('--color-accent-ink', '--color-accent-strong')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps the evidence color readable wherever a trace range is shown', () => {
+    for (const surface of [
+      '--color-canvas',
+      '--color-surface',
+      '--color-surface-inset',
+      '--color-selection',
+    ] as const) {
+      expect(ratio('--color-evidence', surface), surface).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it('keeps focus rings and control boundaries visible against adjacent surfaces', () => {
+    for (const surface of [
+      '--color-canvas',
+      '--color-surface',
+      '--color-surface-inset',
+      '--color-surface-raised',
+      '--color-surface-hover',
+    ] as const) {
+      expect(ratio('--color-focus', surface), `focus on ${surface}`).toBeGreaterThanOrEqual(3);
+      expect(ratio('--color-border-strong', surface), `border on ${surface}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+});
+
+describe('hex canvas fallbacks', () => {
+  it('falls back to the light palette rather than the removed Command Deck colors', () => {
+    for (const [token, expected] of [
+      ['--color-surface-inset', '--color-surface-inset'],
+      ['--color-text-subtle', '--color-text-subtle'],
+      ['--color-text', '--color-text'],
+      ['--color-text-muted', '--color-text-muted'],
+      ['--color-hex-selection', '--color-hex-selection'],
+      ['--color-focus', '--color-focus'],
+    ] as const) {
+      expect(hexPaneSource).toContain(
+        `readColor(style, '${token}') || '${resolve(lightDeclarations, expected)}'`,
       );
     }
-  });
-
-  it('keeps canvas fallbacks aligned with the Command Deck cyan theme', () => {
-    expect(hexPaneSource).toContain("readColor(style, '--color-hex-selection') || '#1e558a'");
-    expect(hexPaneSource).toContain("readColor(style, '--color-accent-wash') || 'rgb(54 194 255 / 8%)'");
-    expect(hexPaneSource).not.toContain('#183b3a');
-    expect(hexPaneSource).not.toContain('rgb(85 216 190 / 8%)');
+    expect(hexPaneSource).not.toContain('--color-accent-wash');
+    expect(hexPaneSource).not.toContain('#1e558a');
   });
 });

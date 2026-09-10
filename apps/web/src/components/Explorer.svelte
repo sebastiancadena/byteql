@@ -1,18 +1,49 @@
 <script lang="ts">
+  import { SvelteSet } from 'svelte/reactivity';
+
   import type { SessionState } from '../lib/session/state.js';
+  import Icon from './ui/Icon.svelte';
 
   interface Props {
     state: SessionState;
     collapsed?: boolean;
+    /** The source whose bytes the viewer is showing; marked, never inferred from selection. */
+    currentFile?: string | null;
     onquery: (sql: string) => void;
     onbrowse: (table: string) => void;
+    onselectsource?: (file: string) => void;
   }
 
-  let { state, collapsed = false, onquery, onbrowse }: Props = $props();
+  // The public prop stays `state`; it is bound to another name because a local `state`
+  // identifier would make the `$state` rune parse as a store read.
+  let {
+    state: session,
+    collapsed = false,
+    currentFile = null,
+    onquery,
+    onbrowse,
+    onselectsource = () => undefined,
+  }: Props = $props();
 
   const DIAGNOSTICS_CAP = 50;
-  const shownIssues = $derived(state.issues.slice(0, DIAGNOSTICS_CAP));
-  const extraIssueCount = $derived(Math.max(0, state.issues.length - DIAGNOSTICS_CAP));
+  const shownIssues = $derived(session.issues.slice(0, DIAGNOSTICS_CAP));
+  const extraIssueCount = $derived(Math.max(0, session.issues.length - DIAGNOSTICS_CAP));
+
+  // Keyed by table name, but the DOM ids below come from the index — a table name is not a
+  // safe id or CSS selector. SvelteSet makes membership changes reactive on mutation.
+  let expandedTables = new SvelteSet<string>();
+
+  function toggleSchema(name: string): void {
+    if (!expandedTables.delete(name)) expandedTables.add(name);
+  }
+
+  // Only a new batch of sources resets what the user expanded.
+  let lastSource: unknown;
+  $effect(() => {
+    if (session.source === lastSource) return;
+    lastSource = session.source;
+    expandedTables.clear();
+  });
 
   function issueTable(issue: unknown): string | undefined {
     return (issue as { table?: string }).table;
@@ -20,78 +51,90 @@
 </script>
 
 <nav class:collapsed class="explorer" aria-label="Data explorer">
-  <div class="pane-heading">
-    <div>
-      <p class="eyebrow">Capture map</p>
-      <h2>Explorer</h2>
-    </div>
-  </div>
-
-  {#if state.source}
+  {#if session.source}
     <section class="explorer-section" aria-labelledby="source-heading">
-      <h3 id="source-heading">Source</h3>
-      {#each state.source.files as file (file.name)}
-        <div class="source-card">
-          <span class="file-glyph" aria-hidden="true">◇</span>
-          <div class="min-width-zero">
-            <strong class="truncate">{file.name}</strong>
-            <span>{file.size.toLocaleString()} bytes</span>
-          </div>
-        </div>
-      {/each}
-      {#if state.format}
-        <span class="format-badge">{state.format.title}</span>
+      <h3 id="source-heading">Sources</h3>
+      <ul class="source-list">
+        {#each session.source.files as file (file.name)}
+          <li>
+            <button
+              class="source-row"
+              type="button"
+              title={file.name}
+              aria-current={file.name === currentFile ? 'true' : undefined}
+              onclick={() => onselectsource(file.name)}
+            >
+              <span class="source-glyph" aria-hidden="true"><Icon name="file" /></span>
+              <span class="min-width-zero">
+                <span class="source-name truncate">{file.name}</span>
+                <!-- The marker sits with the size, so the filename keeps the full row width.
+                     It wraps rather than truncating: a half-shown state marker says nothing. -->
+                <span class="source-meta">
+                  {file.size.toLocaleString()} bytes{#if file.name === currentFile}<span
+                      class="source-current">· Viewing bytes</span
+                    >{/if}
+                </span>
+              </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+      {#if session.format}
+        <span class="format-badge">{session.format.title}</span>
       {/if}
     </section>
   {/if}
 
-  {#if state.tables.length > 0}
+  {#if session.tables.length > 0}
     <section class="explorer-section" aria-labelledby="tables-heading">
       <div class="section-title-row">
         <h3 id="tables-heading">Tables</h3>
-        <span>{state.tables.length}</span>
+        <span>{session.tables.length}</span>
       </div>
       <ul class="table-list">
-        {#each state.tables as table (table.name)}
-          <li>
-            <details>
-              <summary>
-                <span class="table-name"><span aria-hidden="true">▦</span> {table.name}</span>
-                <span class="row-count">{table.rowCount.toLocaleString()} rows</span>
-                <button
-                  class="table-browse"
-                  type="button"
-                  aria-label={`Browse ${table.name}`}
-                  onclick={(event) => {
-                    event.preventDefault();
-                    onbrowse(table.name);
-                  }}>Browse</button
-                >
-              </summary>
-              <dl class="schema-list">
-                {#each table.columns as column (column.name)}
-                  <div>
-                    <dt>{column.name}</dt>
-                    <dd>{column.type}{column.nullable ? '?' : ''}</dd>
-                  </div>
-                {/each}
-              </dl>
-            </details>
+        {#each session.tables as table, tableIndex (table.name)}
+          <li class="table-entry">
+            <div class="table-entry-heading">
+              <button
+                class="table-disclosure"
+                type="button"
+                aria-expanded={expandedTables.has(table.name)}
+                aria-controls={`schema-${tableIndex}`}
+                onclick={() => toggleSchema(table.name)}
+              >
+                <span class="table-name truncate">{table.name}</span>
+                <span class="row-count truncate">{table.rowCount.toLocaleString()} rows</span>
+              </button>
+              <button
+                class="table-browse"
+                type="button"
+                aria-label={`Browse ${table.name}`}
+                onclick={() => onbrowse(table.name)}>Browse</button
+              >
+            </div>
+            <dl id={`schema-${tableIndex}`} hidden={!expandedTables.has(table.name)} class="schema-list">
+              {#each table.columns as column (column.name)}
+                <div>
+                  <dt>{column.name}</dt>
+                  <dd>{column.type}{column.nullable ? '?' : ''}</dd>
+                </div>
+              {/each}
+            </dl>
           </li>
         {/each}
       </ul>
     </section>
   {/if}
 
-  {#if state.queries.length > 0}
+  {#if session.queries.length > 0}
     <section class="explorer-section query-section" aria-labelledby="queries-heading">
-      <h3 id="queries-heading">Saved queries</h3>
+      <h3 id="queries-heading">Example queries</h3>
       <ul class="query-list">
-        {#each state.queries as query (query.id)}
+        {#each session.queries as query (query.id)}
           <li>
             <button type="button" onclick={() => onquery(query.sql)}>
-              <span aria-hidden="true">↗</span>
-              <span>{query.title}</span>
+              <span class="query-glyph" aria-hidden="true"><Icon name="arrow" /></span>
+              <span class="truncate">{query.title}</span>
             </button>
           </li>
         {/each}
@@ -99,12 +142,14 @@
     </section>
   {/if}
 
-  {#if state.issues.length > 0}
+  {#if session.issues.length > 0}
     <section class="explorer-section issue-summary" aria-label="Parse diagnostics">
       <details>
         <summary>
           <strong
-            >{state.issues.length} parse {state.issues.length === 1 ? 'diagnostic' : 'diagnostics'}</strong
+            >{session.issues.length} parse {session.issues.length === 1
+              ? 'diagnostic'
+              : 'diagnostics'}</strong
           >
           <span>Partial data may still be queryable.</span>
         </summary>

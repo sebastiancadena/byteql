@@ -1,4 +1,6 @@
 <script lang="ts">
+  /* global HTMLElement */
+  import { popoverMenu } from '../lib/ui/menu.js';
   import type { ViewerCapability } from '../lib/viewers/registry.js';
 
   interface Props {
@@ -8,6 +10,13 @@
 
   let { viewers, onselect }: Props = $props();
   let open = $state(false);
+  let menu = $state<HTMLElement | null>(null);
+
+  $effect(() => {
+    const element = menu;
+    if (!open || !element) return;
+    return popoverMenu(element, () => (open = false));
+  });
 
   function select(viewer: ViewerCapability): void {
     open = false;
@@ -24,7 +33,7 @@
       onclick={() => (open = !open)}>Open in…</button
     >
     {#if open}
-      <div class="viewer-options" role="menu" aria-label="Compatible viewers">
+      <div bind:this={menu} class="viewer-options" role="menu" aria-label="Compatible viewers">
         {#each viewers as viewer (viewer.id)}
           <button type="button" role="menuitem" onclick={() => select(viewer)}>{viewer.label}</button>
         {/each}
@@ -39,25 +48,28 @@
   }
 
   .viewer-options {
+    z-index: var(--layer-popover);
     position: absolute;
-    z-index: 10;
-    top: calc(100% + 0.3rem);
+    top: calc(100% + var(--space-1));
     right: 0;
     min-width: 10rem;
-    padding: 0.3rem;
-    border: 1px solid var(--color-border);
-    border-radius: 0.45rem;
+    padding: var(--space-1);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-overlay);
     background: var(--color-surface-raised);
-    box-shadow: 0 0.7rem 1.5rem rgb(0 0 0 / 18%);
+    box-shadow: var(--shadow-overlay);
   }
 
   .viewer-options button {
     width: 100%;
-    padding: 0.55rem 0.65rem;
+    min-height: var(--control-height);
+    padding: var(--space-2);
     border: 0;
-    border-radius: 0.3rem;
-    text-align: left;
+    border-radius: var(--radius-control);
+    color: var(--color-text);
     background: transparent;
+    font-size: var(--text-md);
+    text-align: left;
     cursor: pointer;
   }
 

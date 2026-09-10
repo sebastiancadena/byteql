@@ -80,11 +80,18 @@ export async function openMidiSample(
   }
   await page.getByRole('button', { name: /Try sample/u }).click();
   await page.getByRole('menuitem', { name: 'MIDI song (.mid)' }).click();
-  await expect(page.getByRole('button', { name: 'Browse events' })).toBeVisible();
+  // Below 960 px the catalog is a closed drawer, and a `hidden` subtree is outside the
+  // accessibility tree — so role queries cannot see it at all. Wait on readiness the session
+  // actually publishes instead. A test that wants to click Browse at those widths must open
+  // Sources first.
+  await expect(page.locator('[data-hex-pane]')).toBeAttached();
+  await expect(page.locator('.explorer .table-browse').first()).toBeAttached();
 }
 
 export async function openFixture(page: Page, name: string): Promise<void> {
-  await page.getByLabel('Open file').setInputFiles(fixturePath(name));
+  // The intake keeps one visible "Open file" button; this is its attached input, kept for
+  // drag-and-drop, automation and the picker fallback.
+  await page.getByLabel('Open file input').setInputFiles(fixturePath(name));
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 }
 

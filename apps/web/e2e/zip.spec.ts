@@ -23,7 +23,7 @@ test('a two-zip session catalogs both archives and exposes local_files', async (
   const nameA = 'first.zip';
   const nameB = 'second.zip';
 
-  await page.getByLabel('Open file').setInputFiles([asFile(nameA, zipA), asFile(nameB, zipB)]);
+  await page.getByLabel('Open file input').setInputFiles([asFile(nameA, zipA), asFile(nameB, zipB)]);
 
   // 1. Session opens ready; the Explorer lists the `_files` catalog.
   const tablesRegion = page.getByRole('region', { name: 'Tables' });
@@ -58,4 +58,43 @@ test('a two-zip session catalogs both archives and exposes local_files', async (
   await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
   await page.getByRole('row', { name: 'Row 1', exact: true }).click();
   await expect(hexFileSwitcher).toHaveValue(nameB);
+});
+
+test('a zip member traces to its original archive offsets and back', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  await waitForAppReady(page);
+
+  const archive = makeZip([
+    { name: 'alpha.txt', data: 'alpha contents' },
+    { name: 'notes/readme.md', data: '# hello' },
+  ]);
+  const name = 'members.zip';
+  await page.getByLabel('Open file input').setInputFiles([asFile(name, archive)]);
+  await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
+
+  await runSql(page, 'select * from local_files order by _src_start;');
+  const row = page.getByRole('row', { name: 'Row 2', exact: true });
+  await row.click();
+
+  const strip = page.getByRole('region', { name: 'Source trace' });
+  await expect(strip).toHaveAttribute('data-trace-state', 'linked');
+  await expect(strip).toContainText(name);
+
+  // The range is an offset into the original archive, not into decompressed member content:
+  // it must lie inside the file that was actually opened.
+  const highlight = (await page.locator('[data-hex-pane]').getAttribute('data-hex-highlight'))!;
+  const [start, end] = highlight.split('-').map(Number);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start!);
+  expect(end).toBeLessThanOrEqual(archive.length);
+
+  // Go to the member's start, then Enter reveals the row that covers it.
+  await page.getByRole('button', { name: 'Inspect source' }).click();
+  await page.getByLabel('Go to offset').fill(`0x${start!.toString(16)}`);
+  await page.getByLabel('Go to offset').press('Enter');
+  await expect(page.locator('[data-hex-pane]')).toHaveAttribute('data-hex-caret', String(start));
+
+  await page.getByRole('application', { name: 'Hex viewer' }).press('Enter');
+  await expect(row).toHaveAttribute('aria-selected', 'true');
 });

@@ -1,0 +1,413 @@
+/* Startup, intake, diagnostics, values/provenance, activity states and the status bar. */
+
+.startup-state {
+  display: grid;
+  width: 100%;
+  height: 100dvh;
+  place-items: center;
+  background: var(--color-canvas);
+}
+
+.startup-card {
+  --brand-lockup-size: 80px;
+
+  display: grid;
+  gap: var(--space-3);
+  justify-items: center;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.startup-card h1 {
+  margin: 0;
+  color: var(--color-text);
+}
+
+.startup-card p {
+  margin: 0;
+}
+
+.startup-diagnostic {
+  z-index: var(--layer-dialog);
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-6);
+  max-width: min(30rem, calc(100vw - var(--space-6)));
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-overlay);
+  color: var(--color-danger);
+  background: var(--color-danger-surface);
+  box-shadow: var(--shadow-overlay);
+  font-size: var(--text-md);
+}
+
+.drop-overlay {
+  z-index: var(--layer-drop);
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--color-evidence);
+  margin: var(--space-3);
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* Intake — a work surface, not a landing page: left-aligned, one file action. */
+
+.empty-main {
+  display: grid;
+  overflow: auto;
+  align-content: start;
+  justify-items: center;
+  padding: var(--space-6);
+  background: var(--color-canvas);
+}
+
+.intake {
+  display: grid;
+  width: 100%;
+  max-width: 1120px;
+  gap: var(--space-5);
+  text-align: left;
+}
+
+.intake-lede {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+
+  /* The supplied square artwork, uncropped, at the spec's desktop size. */
+  --brand-lockup-size: 80px;
+}
+
+/* Never let flex shrink the mark below its declared size — that would crop the artwork. */
+.intake-lede [data-brand-lockup] {
+  flex: 0 0 auto;
+}
+
+.intake-lede h1 {
+  margin: 0;
+  font-size: var(--text-intake);
+  font-weight: 600;
+  line-height: var(--leading-intake);
+}
+
+.intake-copy {
+  max-width: 64ch;
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+}
+
+.intake-columns {
+  display: grid;
+  grid-template-columns: 5fr 3fr;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.intake-open,
+.intake-samples {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+}
+
+.intake.dragging .intake-open {
+  border-color: var(--color-evidence);
+}
+
+.intake-samples h2 {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--leading-md);
+}
+
+.intake-facts {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.intake-facts div {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.intake-facts dt,
+.intake-facts dd {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.intake-facts dt {
+  color: var(--color-text-muted);
+}
+
+.intake-facts dd {
+  font-family: var(--font-mono);
+}
+
+.intake-privacy,
+.drop-hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+}
+
+/* Descriptive rows explain the choices; the Try sample menu stays the only click target. */
+.sample-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sample-list li {
+  display: grid;
+  gap: 2px;
+}
+
+.sample-list strong {
+  font-weight: 600;
+}
+
+.sample-list span {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+.format-badge,
+.selection-chip,
+.result-count {
+  display: inline-flex;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  font-size: var(--text-xs);
+}
+
+.format-badge {
+  margin-top: var(--space-2);
+}
+
+.selection-chip,
+.result-count {
+  margin: 0;
+  font-family: var(--font-mono);
+}
+
+@media (max-width: 959px) {
+  .empty-main {
+    padding: var(--space-4);
+  }
+
+  .intake-lede {
+    --brand-lockup-size: 64px;
+  }
+
+  .intake-lede h1 {
+    font-size: var(--text-intake-narrow);
+    line-height: var(--leading-lg);
+  }
+
+  .intake-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Diagnostics */
+
+.inline-diagnostic {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-control);
+  color: var(--color-danger);
+  background: var(--color-danger-surface);
+  font-size: var(--text-md);
+}
+
+.issue-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-warning);
+  font-size: var(--text-xs);
+}
+
+.issue-summary summary {
+  cursor: pointer;
+}
+
+.diagnostics-list {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diagnostics-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.diagnostic-code {
+  color: var(--color-warning);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.diagnostic-table {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+}
+
+.diagnostic-message {
+  flex: 1 1 100%;
+}
+
+.diagnostic-more {
+  color: var(--color-text-subtle);
+  font-style: italic;
+}
+
+/* Values and provenance */
+
+.value-list div,
+.provenance dl div {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.provenance dd {
+  color: var(--color-text);
+  font-size: var(--text-sm);
+}
+
+.provenance-link {
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-evidence);
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background var(--duration-quick) ease;
+}
+
+.provenance-link:hover {
+  background: var(--color-surface-hover);
+}
+
+/* Placeholders and activity */
+
+.inspector-placeholder,
+.results-placeholder,
+.activity-state,
+.drop-hint {
+  color: var(--color-text-muted);
+}
+
+.inspector-placeholder,
+.results-placeholder,
+.activity-state {
+  display: grid;
+  height: 100%;
+  padding: var(--space-6);
+  place-content: center;
+  place-items: center;
+  text-align: center;
+}
+
+.inspector-placeholder span,
+.results-placeholder span {
+  color: var(--color-text-subtle);
+  font-size: var(--text-lg);
+}
+
+.inspector-placeholder p,
+.results-placeholder p {
+  max-width: 64ch;
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+}
+
+.activity-state {
+  gap: var(--space-3);
+  font-size: var(--text-md);
+}
+
+.activity-spinner {
+  width: var(--space-5);
+  height: var(--space-5);
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-text);
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+
+.activity-state progress {
+  accent-color: var(--color-accent);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* Status bar */
+
+.status-bar {
+  z-index: var(--layer-sticky);
+  grid-area: status;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 0 var(--space-3);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.status-primary,
+.status-metrics {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.status-metrics {
+  font-variant-numeric: tabular-nums;
+}
+
+.status-metrics span + span {
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--color-border);
+}

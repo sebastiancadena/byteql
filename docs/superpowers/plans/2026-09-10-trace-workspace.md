@@ -17,7 +17,8 @@ Testing Library, and Playwright. Local IBM Plex font assets; no new runtime pack
 
 **Spec:** [Trace Workspace design](../specs/2026-09-10-trace-workspace-design.md).
 
-**Status:** Proposed execution instructions, based on `af54133`; no implementation performed.
+**Status:** Implemented on `feature/trace-workspace`, one commit per task. See
+[Handoff](#handoff) for what was built, what was verified, and what remains.
 
 **Confirmed choices:** The user selected the precision-instrument personality and warm light
 default with a fully specified dark mode. Keep these choices fixed; this confirmation does not
@@ -945,3 +946,70 @@ the exact request; do not allowlist fonts, analytics, or sample fetches after re
 fail contrast, adjust the relevant semantic token in both spec and implementation and rerun the
 affected pair checks; do not lower the threshold. If the approved visual direction changes,
 revise the spec and plan together before continuing implementation.
+
+## Handoff
+
+Implemented on `feature/trace-workspace`, branched from `8623751`, one commit per task.
+
+### Deviations from the written plan
+
+- **Task 4 used `SvelteSet` instead of replacing a plain `Set`.** The plan's snippet trips the
+  repository's `svelte/prefer-svelte-reactivity` lint rule. `SvelteSet` satisfies the same
+  requirement — reactive schema expansion — and keeps the lint gate green.
+- **`Explorer` binds its `state` prop to a local `session`.** The public prop name is unchanged;
+  a local identifier named `state` makes the `$state` rune parse as a store read.
+- **The catalog's collapse is two pieces of state, not one.** The plan implied a single flag.
+  With one flag, resizing a wide window below 960 px turned an ordinary open column into a modal
+  drawer covering the whole workspace. A wide-column choice and a narrow-drawer choice are kept
+  separately, which satisfies both "preserve user choice across a breakpoint" and "do not cover
+  the workspace with an unrequested drawer".
+- **`TraceDock` hides its body rather than unmounting it when collapsed.** The plan says a
+  collapsed dock "hides its body"; unmounting it lost the byte caret, which the spec requires to
+  survive dock changes.
+- **`scripts/check-worker-privacy.mjs` was updated.** Not listed in the plan, but it asserts the
+  old intake label and the removed whole-workbench tabs, and runs inside `pnpm -r test`.
+- **A shared `lib/ui/menu.ts` was added** for the two popover menus, alongside the planned
+  `lib/ui/focus.ts`. Menus rove focus and are not modal; only drawers and dialogs contain focus.
+
+### Verification
+
+| Gate | Result |
+| --- | --- |
+| `pnpm check` (build, package checks, `prettier --check`) | pass |
+| `pnpm lint` | pass |
+| `pnpm -r test -- --run` (1,084 unit tests, incl. the production-build privacy/a11y script) | pass |
+| `pnpm --filter @byteql/web check:bundle` | pass — 12 assets, 3 local WOFF2, no external URL |
+| `pnpm --filter @byteql/web test:e2e` | 85 passed, 1 pre-existing flake (below) |
+| `git diff --check` | clean |
+
+**Known pre-existing flake, not caused by this work:** `query-result-scrolling.spec.ts` →
+"seamless demand reaches row one million with bounded geometry" fails only in a complete e2e run
+under load, and passes in isolation and with its whole alphabetical prefix. The identical failure
+reproduces on unmodified `af54133` in a full run, verified in a throwaway worktree. Its settle
+window after a synthetic scroll is a single animation frame.
+
+### Screenshots
+
+`e2e/screenshots.spec.ts` captures the spec's matrix — 1440×900 and 1280×720 in both appearances,
+1024×768 loaded in both, 390×844 idle/loaded with the drawer closed, open and the dock expanded,
+plus selected MIDI, selected pcap, ZIP entry provenance, an aggregate without provenance, a SQL
+failure and the download options. Images are written to the run's output directory via
+`testInfo.outputPath`, so a routine run commits nothing. Each case records its fixture, SQL,
+viewport and appearance in the test.
+
+### Defects found by inspecting rendered screens, and fixed
+
+Appearance changes cross-faded the whole palette; source rows sized the catalog to its longest
+filename and gave it a horizontal scrollbar; the reveal flash painted an opaque band over the
+bytes it pointed at; numeric column headers read type-before-name; table names truncated to
+fragments to make room for their row counts; the intake was inset behind an empty grid column.
+
+### Not done
+
+- **The unaided human usability review is still open.** Spec §7 requires a person to reproduce
+  sample → table → row → bytes without help and judge the visuals. Automated tests cannot stand
+  in for it, and it is not claimed here.
+- **Forced-colors mode was not inspected.** No forced-colors display was available in this
+  environment.
+- The hidden-columns chip still wraps below the grid header rather than sitting inline with it.
+  Pre-existing, and the plan asks to keep the control as it is.

@@ -2,8 +2,10 @@
 
 Date: 2026-09-10
 
-Status: Precision-instrument direction and light default with dark mode confirmed by the user.
-Detailed design remains available for review. Implementation has not been authorized in this task.
+Status: Implemented on `feature/trace-workspace`. The precision-instrument direction and the light
+default with dark mode were confirmed by the user; the detailed design below was then built and
+verified against the acceptance gates in §7. Deviations found while building are recorded in the
+plan's handoff notes.
 
 Companion: [Implementation plan](../plans/2026-09-10-trace-workspace.md).
 

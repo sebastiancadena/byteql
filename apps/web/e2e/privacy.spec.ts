@@ -41,9 +41,21 @@ test('emits zero network events or local-data sentinels after application readin
   const requests: RecordedRequest[] = [];
   page.on('request', (request) => requests.push(recordRequest(request)));
 
+  // Presentation changes must not fetch anything either: appearance is CSS tokens, the fonts
+  // are already registered, and the icons are inline SVG.
+  await page.getByRole('button', { name: 'Use dark appearance' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.getByRole('button', { name: 'Use light appearance' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.getByRole('button', { name: /Try sample/u }).click();
+  await expect(page.getByRole('menu', { name: 'Sample files' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Keyboard shortcuts' }).click();
+  await page.keyboard.press('Escape');
+
   const privateFileName = 'private-local-fixture-7b684d.mid';
   const sqlSentinel = 'BYTEQL_PRIVATE_SQL_4d20f8';
-  await page.getByLabel('Open file').setInputFiles({
+  await page.getByLabel('Open file input').setInputFiles({
     name: privateFileName,
     mimeType: 'audio/midi',
     buffer: await readFile(fixturePath('demo.mid')),
@@ -54,6 +66,11 @@ test('emits zero network events or local-data sentinels after application readin
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
   await page.getByRole('row', { name: 'Row 1', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Provenance' })).toBeVisible();
+
+  // Collapsing and reopening the inspection dock is presentation only.
+  await page.getByRole('button', { name: 'Hide inspection' }).click();
+  await page.getByRole('button', { name: 'Show inspection' }).click();
+  await expect(page.getByRole('region', { name: 'Source trace' })).toBeVisible();
 
   await runSql(page, 'select i from range(20000) t(i)');
   await expect(

@@ -16,7 +16,7 @@ test('opens a pcap and runs the DNS-join query', async ({ page }) => {
   await page.goto('/');
   await waitForAppReady(page);
 
-  await page.getByLabel('Open file').setInputFiles(samplePcapPath);
+  await page.getByLabel('Open file input').setInputFiles(samplePcapPath);
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 
   // C1 regression: the sample fixture is a single eth -> ipv4 -> udp -> dns packet, so only
@@ -41,7 +41,7 @@ test('reassembles a two-segment DNS-over-TCP query and joins its stream tables',
   await page.goto('/');
   await waitForAppReady(page);
 
-  await page.getByLabel('Open file').setInputFiles(streamPcapPath);
+  await page.getByLabel('Open file input').setInputFiles(streamPcapPath);
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 
   await runSql(

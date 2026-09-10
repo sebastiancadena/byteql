@@ -1,0 +1,1180 @@
+/* Shell geometry, source catalog, query editor, results grid and the byte dock.
+   Task 1 keeps the existing three-column shell; the two-column workspace lands with the dock. */
+
+/* Two outer columns: the source catalog, and one workspace that owns everything else.
+   Results receive the full workspace width, including the area the inspector used to take. */
+.app-shell {
+  display: grid;
+  grid-template:
+    'header header' var(--header-height)
+    'explorer workbench' minmax(0, 1fr)
+    'status status' var(--status-height)
+    / 224px minmax(0, 1fr);
+  width: 100%;
+  height: 100dvh;
+  background: var(--color-canvas);
+}
+
+.app-shell.explorer-collapsed {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+/* Header */
+
+.app-header {
+  z-index: var(--layer-sticky);
+  grid-area: header;
+  display: grid;
+  grid-template-columns: 1fr minmax(8rem, auto) 1fr;
+  align-items: center;
+  gap: var(--space-4);
+  padding-inline: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.header-leading,
+.header-context,
+.query-actions,
+.section-title-row,
+.editor-heading,
+.results-heading {
+  display: flex;
+  align-items: center;
+}
+
+.header-leading {
+  gap: var(--space-3);
+}
+
+.header-context {
+  min-width: 0;
+  justify-content: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  gap: var(--space-2);
+}
+
+.source-chip {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  font-family: var(--font-mono);
+}
+
+.source-chip > span:not(.source-pulse):not(.truncate) {
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--color-border);
+  color: var(--color-text-subtle);
+  font-size: var(--text-xs);
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: var(--leading-lg);
+  text-decoration: none;
+}
+
+.product-kicker {
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+}
+
+.source-pulse,
+.status-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-text-subtle);
+}
+
+.source-pulse,
+.status-dot.active {
+  background: var(--color-evidence);
+}
+
+.status-dot.failed {
+  background: var(--color-danger);
+}
+
+/* Source catalog and the values column */
+
+.explorer,
+.inspector {
+  min-width: 0;
+  overflow: auto;
+  background: var(--color-surface);
+}
+
+.explorer {
+  grid-area: explorer;
+  border-right: 1px solid var(--color-border);
+}
+
+/* Values live inside the dock now; the dock owns their visibility through `hidden`. */
+.inspector {
+  width: 100%;
+  height: 100%;
+}
+
+.explorer.collapsed {
+  visibility: hidden;
+  opacity: 0;
+}
+
+.pane-heading {
+  display: flex;
+  min-height: var(--toolbar-height);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.pane-heading h2,
+.editor-heading h1,
+.results-heading h2 {
+  margin: 0;
+  color: var(--color-text);
+}
+
+.pane-heading h2,
+.results-heading h2,
+.editor-heading h1 {
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--leading-md);
+}
+
+.explorer-section,
+.inspector-section {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.explorer-section h3,
+.inspector-section h3 {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-subtle);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: var(--leading-xs);
+  text-transform: uppercase;
+}
+
+.source-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Grid items default to min-width: auto, which would size each row to its longest
+   filename and give the catalog a horizontal scrollbar of its own. */
+.source-list li {
+  min-width: 0;
+}
+
+/* 32 px navigation rows; the full filename is available through the row's title. */
+.source-row {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--duration-quick) ease;
+}
+
+.source-row:hover {
+  background: var(--color-surface-hover);
+}
+
+.source-row[aria-current='true'] {
+  background: var(--color-selection);
+}
+
+.source-glyph {
+  display: flex;
+  flex: 0 0 auto;
+  color: var(--color-text-subtle);
+}
+
+/* The name column yields first, so the "Viewing bytes" marker is never clipped. */
+.source-row > .min-width-zero {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.source-name,
+.source-meta {
+  display: block;
+}
+
+.source-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.source-meta {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.source-current {
+  margin-left: var(--space-1);
+  color: var(--color-evidence);
+}
+
+.section-title-row {
+  justify-content: space-between;
+}
+
+.section-title-row > span {
+  color: var(--color-text-subtle);
+  font-size: var(--text-xs);
+}
+
+.table-list,
+.query-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A disclosure and a Browse action side by side — never a button nested in a summary. */
+.table-entry-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Name above count: side by side, a narrow catalog truncated the table name to a fragment
+   ("pac…") to make room for its row count. */
+.table-disclosure {
+  display: grid;
+  min-width: 0;
+  min-height: 32px;
+  flex: 1 1 auto;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--duration-quick) ease;
+}
+
+.table-disclosure:hover,
+.query-list button:hover {
+  background: var(--color-surface-hover);
+}
+
+.table-name {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.row-count {
+  min-width: 0;
+  color: var(--color-text-subtle);
+  font-size: var(--text-xs);
+}
+
+.table-browse {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background var(--duration-quick) ease;
+}
+
+.table-browse:hover {
+  background: var(--color-surface-hover);
+}
+
+.schema-list,
+.schema-inspector,
+.value-list,
+.provenance dl {
+  margin: 0;
+}
+
+.schema-list {
+  padding: var(--space-1) var(--space-2) var(--space-2) var(--space-5);
+}
+
+.schema-list div,
+.schema-inspector div,
+.value-list div,
+.provenance dl div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+
+.schema-list dt,
+.schema-list dd,
+.schema-inspector dt,
+.schema-inspector dd,
+.value-list dt,
+.value-list dd,
+.provenance dt,
+.provenance dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.value-list dt,
+.provenance dt {
+  color: var(--color-text-muted);
+}
+
+/* Column types read as metadata, not as data. */
+.schema-list dd,
+.schema-inspector dd {
+  color: var(--color-text-subtle);
+  font-size: var(--text-xs);
+}
+
+.query-list button {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: transparent;
+  font-size: var(--text-md);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--duration-quick) ease;
+}
+
+.query-glyph {
+  display: flex;
+  flex: 0 0 auto;
+  color: var(--color-text-subtle);
+}
+
+/* Query workspace */
+
+.workbench-main,
+.empty-main {
+  grid-area: workbench;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Idle mounts no catalog and no values column, so intake owns the whole page width
+   rather than sitting inset behind an empty grid column. */
+.empty-main {
+  grid-column: 1 / -1;
+}
+
+/* Vertical overflow only, and only when the minimum tool chrome cannot fit; this must never
+   become a second horizontal scroller competing with `.grid-scroll`. */
+.workbench-main {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.sql-workspace {
+  display: grid;
+
+  /* Positional rows — the template relies on a fixed child order: query toolbar, SQL editor,
+     query notices (always rendered, empty → 0), results toolbar, results panel (the flexible
+     row), inspection dock (sized by its own drag height). Growing the dock therefore shrinks
+     the results panel above it. */
+  grid-template-rows: 36px 116px auto 36px minmax(128px, 1fr) auto;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  outline: none;
+}
+
+/* Short screens give the editor less room before anything else has to yield. */
+@media (max-height: 759px) {
+  .sql-workspace {
+    grid-template-rows: 36px 80px auto 36px minmax(128px, 1fr) auto;
+  }
+}
+
+.results-panel,
+.result-grid,
+.trace-dock,
+.trace-values,
+.trace-bytes {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Inspection dock */
+
+.trace-dock {
+  display: grid;
+  position: relative;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-surface-inset);
+}
+
+.trace-dock.compact {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.trace-dock[data-dock-collapsed='true'] {
+  grid-template-rows: auto;
+}
+
+/* Scoped so it wins over the standalone `.hex-resize` rule regardless of source order:
+   the separator is taken out of flow, leaving the dock's grid rows to strip and body. */
+.trace-dock .dock-resize {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 6px;
+  margin-bottom: 0;
+}
+
+.trace-dock-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.trace-dock-tabs button {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-muted);
+  background: transparent;
+  font-size: var(--text-md);
+  cursor: pointer;
+  transition: background var(--duration-quick) ease;
+}
+
+.trace-dock-tabs button:hover {
+  background: var(--color-surface-hover);
+}
+
+.trace-dock-tabs button[aria-selected='true'] {
+  border-bottom-color: var(--color-evidence);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* Values beside Bytes; when Values are hidden, Bytes span the whole dock. */
+.trace-dock-body {
+  display: grid;
+  grid-template-columns: 256px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.trace-dock.compact .trace-dock-body,
+.trace-dock.values-hidden .trace-dock-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.trace-values {
+  overflow: auto;
+  border-right: 1px solid var(--color-border);
+}
+
+.trace-dock.compact .trace-values {
+  border-right: 0;
+}
+
+.trace-bytes {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+.editor-heading,
+.results-heading {
+  min-height: var(--toolbar-height);
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+}
+
+.editor-heading {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.query-actions {
+  gap: var(--space-2);
+}
+
+.shortcut {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.sql-editor {
+  min-height: 0;
+  overflow: auto;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-inset);
+}
+
+.sql-editor .cm-editor {
+  height: 100%;
+  color: var(--color-text);
+  background: transparent;
+}
+
+.sql-editor .cm-gutters {
+  border-right-color: var(--color-border);
+  color: var(--color-text-subtle);
+  background: var(--color-surface-inset);
+}
+
+.sql-editor .cm-activeLine,
+.sql-editor .cm-activeLineGutter {
+  background: var(--color-selection);
+}
+
+.sql-editor .cm-focused {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+.sql-editor.disabled {
+  opacity: 0.72;
+}
+
+.query-diagnostic {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-danger);
+  color: var(--color-danger);
+  background: var(--color-danger-surface);
+  font-size: var(--text-md);
+}
+
+.format-notice {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-strong);
+  color: var(--color-warning);
+  background: var(--color-warning-surface);
+  font-size: var(--text-md);
+}
+
+.results-heading {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.results-heading .result-count {
+  margin: 0;
+}
+
+.results-heading-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Result grid */
+
+.results-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+/* `.grid-scroll` is the only result-grid scroller, on both axes. */
+.result-grid {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.grid-header,
+.grid-row {
+  display: grid;
+
+  /* min-content, not max-content: size each 1fr column to its 9rem floor (content-independent)
+     so every row and the header share identical column widths. Long cell values are clipped by
+     the overflow/ellipsis on `.grid-row > div`; sizing to content here would widen a row's columns
+     to fit its longest value and break alignment with the header and other rows. */
+  min-width: min-content;
+}
+
+.grid-header {
+  z-index: 2;
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+}
+
+/* Name reads as the column; the type reads as metadata beneath it. */
+.grid-header > div {
+  display: flex;
+  min-width: 9rem;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-right: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: var(--leading-xs);
+}
+
+.grid-header small {
+  color: var(--color-text-subtle);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
+
+/* The header keeps name-then-type in every column: reversing it for numeric columns made the
+   type read as if it belonged to the column before it. Only the cells are right-aligned. */
+
+.cell-numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.hidden-chip {
+  z-index: 3;
+  position: sticky;
+  right: 0;
+  align-self: center;
+  justify-self: end;
+  margin: 0 var(--space-1);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  font-size: var(--text-xs);
+  transition: background var(--duration-quick) ease;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.hidden-chip:hover {
+  background: var(--color-surface-hover);
+}
+
+.grid-scroll {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+}
+
+.grid-virtual-space {
+  position: relative;
+  min-width: min-content;
+}
+
+.grid-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 36px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  cursor: default;
+}
+
+.grid-row:nth-child(even) {
+  background: var(--color-canvas);
+}
+
+.grid-row:hover {
+  background: var(--color-surface-hover);
+}
+
+/* A functional inset marker, not decoration: it never changes the row's height or box.
+   It only turns ochre once the row's trace has actually been validated. */
+.grid-row.selected {
+  background: var(--color-selection);
+  box-shadow: inset 3px 0 var(--color-focus);
+}
+
+[data-trace-linked='true'] .grid-row.selected {
+  box-shadow: inset 3px 0 var(--color-evidence);
+}
+
+.grid-row > div {
+  min-width: 9rem;
+  overflow: hidden;
+  padding: var(--space-2);
+  border-right: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grid-row .cell-numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.null-value {
+  color: var(--color-text-subtle);
+  font-style: italic;
+}
+
+.grid-empty {
+  margin: 0;
+  padding: var(--space-5) var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+}
+
+.result-sentinel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.result-sentinel button {
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.result-sentinel button:hover {
+  background: var(--color-surface-hover);
+}
+
+/* Trace strip — the signature line: row → file → range. It may wrap past its 40 px
+   minimum at narrow widths rather than truncating the relationship it states. */
+
+.trace-bar {
+  display: flex;
+  min-height: var(--trace-strip-height);
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border-top: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+}
+
+.trace-readout {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.trace-row {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.trace-arrow,
+.trace-file {
+  color: var(--color-text-muted);
+}
+
+.trace-file {
+  max-width: 24ch;
+}
+
+.trace-range {
+  color: var(--color-evidence);
+}
+
+.trace-message {
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+}
+
+.trace-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Byte dock */
+
+.hex-pane {
+  display: flex;
+  position: relative;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface-inset);
+}
+
+.hex-pane.collapsed {
+  height: auto;
+}
+
+.hex-resize {
+  /* Sits above the toolbar it overlaps (margin-bottom pulls the toolbar up over
+     its lower half); without this, static stacking lets the toolbar swallow the
+     pointerdown and the drag-to-resize never starts. */
+  position: relative;
+  z-index: 1;
+  height: 6px;
+  margin-bottom: -3px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.hex-resize:hover,
+.hex-resize:focus-visible {
+  background: var(--color-border-strong);
+  outline: none;
+}
+
+.hex-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--toolbar-height);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.hex-readout {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 8rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.hex-readout-offset {
+  color: var(--color-evidence);
+}
+
+.hex-readout-empty {
+  color: var(--color-text-subtle);
+  font-style: italic;
+}
+
+.hex-goto {
+  display: flex;
+  position: relative;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.hex-goto-input {
+  width: 8rem;
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.hex-goto-input[aria-invalid='true'] {
+  border-color: var(--color-danger);
+}
+
+.hex-goto-error {
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+.hex-file-switcher {
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.hex-action,
+.hex-collapse {
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: var(--text-md);
+  cursor: pointer;
+  transition: background var(--duration-quick) ease;
+}
+
+.hex-action:hover,
+.hex-collapse:hover {
+  background: var(--color-surface-hover);
+}
+
+.hex-collapse {
+  margin-left: auto;
+}
+
+.hex-hint {
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  background: var(--color-surface-inset);
+  font-size: var(--text-md);
+}
+
+.hex-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--color-danger);
+  color: var(--color-danger);
+  background: var(--color-danger-surface);
+  font-size: var(--text-md);
+}
+
+.hex-error button {
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-control);
+  color: var(--color-danger);
+  background: transparent;
+  cursor: pointer;
+}
+
+.hex-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.hex-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-surface-inset);
+  touch-action: none;
+}
+
+.hex-viewport:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+.hex-canvas {
+  display: block;
+}
+
+.hex-scrollbar {
+  position: relative;
+  flex: 0 0 12px;
+  width: 12px;
+  background: var(--color-surface);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.hex-scrollbar-thumb {
+  position: absolute;
+  right: 2px;
+  left: 2px;
+  border-radius: 4px;
+  background: var(--color-border-strong);
+  cursor: grab;
+}
+
+.hex-scrollbar-thumb:hover {
+  background: var(--color-text-subtle);
+}
+
+/* Responsive geometry — 1280 px tabs the dock, 960 px moves the catalog into a drawer,
+   700 px collapses the dock by default unless the user has a stored preference. */
+
+@media (max-width: 1279px) {
+  .app-shell {
+    grid-template-columns: 208px minmax(0, 1fr);
+  }
+
+  .app-shell.explorer-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 959px) {
+  .app-shell,
+  .app-shell.explorer-collapsed {
+    grid-template:
+      'header' var(--header-height)
+      'workbench' minmax(0, 1fr)
+      'status' var(--status-height)
+      / minmax(0, 1fr);
+  }
+
+  .header-context {
+    display: none;
+  }
+
+  /* An opaque drawer over the workspace, closed by default. */
+  .explorer-drawer.drawer {
+    z-index: calc(var(--layer-drawer) + 1);
+    grid-area: workbench;
+    display: flex;
+    width: min(280px, 88vw);
+    flex-direction: column;
+    border-right: 1px solid var(--color-border-strong);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-overlay);
+  }
+
+  .explorer-drawer.drawer .explorer {
+    min-height: 0;
+    flex: 1 1 auto;
+    border-right: 0;
+  }
+
+  .drawer-heading {
+    display: flex;
+    min-height: var(--toolbar-height);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .drawer-heading h2 {
+    margin: 0;
+    font-size: var(--text-md);
+    font-weight: 600;
+  }
+
+  /* The drawer's own heading already says Sources; keep the section's label for assistive
+     technology without showing it twice. */
+  .explorer-drawer.drawer #source-heading {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .drawer-backdrop {
+    z-index: var(--layer-drawer);
+    grid-area: workbench;
+    background: rgb(0 0 0 / 40%);
+    transition: opacity var(--duration-drawer) ease;
+  }
+}
+
+/* Wide layouts keep the catalog as an ordinary column. */
+.explorer-drawer {
+  display: contents;
+}
+
+@media (max-width: 699px) {
+  .product-kicker,
+  .shortcut,
+  .status-metrics span:last-child {
+    display: none;
+  }
+
+  .sql-workspace {
+    grid-template-rows: 36px 80px auto 36px minmax(128px, 1fr) auto;
+  }
+
+  .editor-heading,
+  .results-heading {
+    flex-wrap: wrap;
+    padding-inline: var(--space-2);
+  }
+}

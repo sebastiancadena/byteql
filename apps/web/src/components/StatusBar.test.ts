@@ -147,10 +147,20 @@ describe('StatusBar progress readout', () => {
     expect(container.textContent).not.toMatch(/150%/);
   });
 
+  it('announces the phase but not the changing throughput numbers', () => {
+    const { container } = render(StatusBar, { state: stateWith({ phase: 'parsing' }) });
+
+    const primary = container.querySelector('.status-primary')!;
+    const metrics = container.querySelector('.status-metrics')!;
+    expect(primary.getAttribute('aria-live')).toBe('polite');
+    // Rates and timings tick continuously; a live region here would narrate the whole parse.
+    expect(metrics.getAttribute('aria-live')).toBe('off');
+  });
+
   it('shows the byte selection readout', () => {
     const state = { ...initialSessionState, byteSelection: { file: 'capture.pcap', start: 0x40, end: 0x78 } };
     const { getByText } = render(StatusBar, { props: { state } });
-    expect(getByText('0x40–0x77 · 56 bytes')).toBeTruthy();
+    expect(getByText('0x00000040–0x00000077 · 56 bytes')).toBeTruthy();
   });
 
   it('shows the batch position marker only when a batch has more than one file', () => {
