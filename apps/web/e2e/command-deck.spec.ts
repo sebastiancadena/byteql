@@ -90,8 +90,11 @@ test('keeps the narrow source surface opaque over the loaded workbench', async (
   await waitForAppReady(page);
 
   await openMidiSample(page, { navigate: false });
+  // The catalog is a closed drawer at this width; open it before inspecting the surface.
+  await page.getByRole('button', { name: 'Show sources', exact: true }).click();
 
-  const surface = page.getByRole('navigation', { name: 'Data explorer' });
+  const surface = page.getByRole('dialog', { name: 'Sources' });
+  await expect(surface).toBeVisible();
   const background = await surface.evaluate((element) => getComputedStyle(element).backgroundColor);
   // Opaque: nothing from the workspace beneath may show through.
   expect(background).not.toContain('rgba');

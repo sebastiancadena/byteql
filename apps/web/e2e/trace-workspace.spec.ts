@@ -102,6 +102,103 @@ test('an aggregate row states it has no source range and offers no reveal', asyn
   await expect(page.locator('[data-hex-pane]')).toHaveAttribute('data-hex-highlight', '');
 });
 
+test.describe('responsive composition', () => {
+  test('narrow source drawer returns focus and does not cover results by default', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openMidiSample(page);
+
+    const opener = page.getByRole('button', { name: 'Show sources', exact: true });
+    // Never cover the work surface with a drawer nobody asked for.
+    await expect(page.getByRole('dialog', { name: 'Sources' })).toBeHidden();
+    await expect(page.getByRole('grid', { name: 'Query results' })).toBeVisible();
+
+    await opener.click();
+    const drawer = page.getByRole('dialog', { name: 'Sources' });
+    await expect(drawer).toBeVisible();
+    // Focus moves inside and the workspace beneath is inert.
+    await expect(drawer.locator(':focus')).toHaveCount(1);
+    await expect(page.locator('.workbench-main')).toHaveAttribute('inert', '');
+
+    await drawer.press('Escape');
+    await expect(drawer).toBeHidden();
+    await expect(opener).toBeFocused();
+    await expect(page.locator('.workbench-main')).not.toHaveAttribute('inert', '');
+  });
+
+  test('browsing from the narrow drawer closes it and shows the result', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openMidiSample(page);
+
+    await page.getByRole('button', { name: 'Show sources', exact: true }).click();
+    await page.getByRole('button', { name: 'Browse events' }).click();
+
+    await expect(page.getByRole('dialog', { name: 'Sources' })).toBeHidden();
+    await expect(page.getByRole('grid', { name: 'Query results' })).toBeVisible();
+  });
+
+  for (const { width, tabs } of [
+    { width: 1280, tabs: false },
+    { width: 1279, tabs: true },
+    { width: 960, tabs: true },
+    { width: 959, tabs: true },
+  ]) {
+    test(`the dock ${tabs ? 'tabs' : 'shows'} its panels at ${width} px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await openMidiSample(page);
+
+      const tablist = page.getByRole('tablist', { name: 'Inspection views' });
+      await expect(tablist).toHaveCount(tabs ? 1 : 0);
+      if (!tabs) {
+        // Side by side: both panels are on screen at once.
+        await expect(page.locator('.trace-values')).toBeVisible();
+        await expect(page.locator('.trace-bytes')).toBeVisible();
+      }
+    });
+  }
+
+  test('crossing a breakpoint keeps the row selection, the byte caret and the user choices', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openMidiSample(page);
+    await page.getByRole('button', { name: 'Browse events' }).click();
+
+    const row = page.getByRole('row', { name: 'Row 3', exact: true });
+    await row.click();
+    await page.getByLabel('Go to offset').fill('0x10');
+    await page.getByLabel('Go to offset').press('Enter');
+    const pane = page.locator('[data-hex-pane]');
+    await expect(pane).toHaveAttribute('data-hex-caret', '16');
+
+    for (const width of [1279, 959, 699, 960, 1280]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect(row).toHaveAttribute('aria-selected', 'true');
+      await expect(pane).toHaveAttribute('data-hex-caret', '16');
+      // A breakpoint crossing never reopens a dock the user has open, nor opens the drawer.
+      await expect(page.locator('[data-trace-dock]')).toHaveAttribute('data-dock-collapsed', 'false');
+      if (width < 960) await expect(page.getByRole('dialog', { name: 'Sources' })).toBeHidden();
+    }
+  });
+
+  test('only the active dock panel is keyboard reachable when tabbed', async ({ page }) => {
+    // 1024 px tabs the dock but keeps the catalog as an ordinary column.
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await openMidiSample(page);
+    await page.getByRole('button', { name: 'Browse events' }).click();
+
+    await expect(page.getByRole('tab', { name: 'Bytes' })).toHaveAttribute('aria-selected', 'true');
+    // The hidden panel keeps its component mounted but takes nothing out of the tab order.
+    await expect(page.locator('.trace-values')).toBeHidden();
+    await expect(page.locator('.trace-values .inspector')).toHaveCount(1);
+    await expect(page.getByRole('application', { name: 'Hex viewer' })).toBeVisible();
+
+    await page.getByRole('tab', { name: 'Bytes' }).press('ArrowLeft');
+    await expect(page.getByRole('tab', { name: 'Values' })).toBeFocused();
+    await expect(page.locator('.trace-values')).toBeVisible();
+    await expect(page.locator('.trace-bytes')).toBeHidden();
+  });
+});
+
 test('selecting a source switches which bytes are shown without rerunning the query', async ({ page }) => {
   await page.goto('/');
   await waitForAppReady(page);

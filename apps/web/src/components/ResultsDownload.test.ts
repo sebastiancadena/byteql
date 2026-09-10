@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { Field, Int32, List, Schema, Utf8, tableFromArrays } from 'apache-arrow';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -118,6 +118,33 @@ describe('ResultsDownload', () => {
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Download results' })).toBeNull();
     expect(document.activeElement).toBe(opener);
+  });
+
+  it('dismisses on an outside click and returns focus, without trapping Tab', async () => {
+    enableOpfs();
+    const user = userEvent.setup();
+    render(ResultsDownload, { controller: controllerDouble(), session: sessionState() });
+
+    const opener = screen.getByRole('button', { name: 'Download results' });
+    await user.click(opener);
+    expect(screen.getByRole('dialog', { name: 'Download results' })).toBeTruthy();
+    // Nonmodal: it must not claim modality over the workspace behind it.
+    expect(screen.getByRole('dialog', { name: 'Download results' }).getAttribute('aria-modal')).toBeNull();
+
+    await fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('dialog', { name: 'Download results' })).toBeNull();
+    await vi.waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
+  it('stays open for a click inside its own panel', async () => {
+    enableOpfs();
+    const user = userEvent.setup();
+    render(ResultsDownload, { controller: controllerDouble(), session: sessionState() });
+
+    await user.click(screen.getByRole('button', { name: 'Download results' }));
+    const dialog = screen.getByRole('dialog', { name: 'Download results' });
+    await fireEvent.pointerDown(dialog);
+    expect(screen.getByRole('dialog', { name: 'Download results' })).toBeTruthy();
   });
 
   it('disables the control without a result but keeps a zero-row result exportable', async () => {

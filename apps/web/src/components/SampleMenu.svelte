@@ -1,5 +1,7 @@
 <script lang="ts">
+  /* global HTMLElement */
   import { SAMPLES, type SampleId } from '../lib/session/samples.js';
+  import { popoverMenu } from '../lib/ui/menu.js';
   import Icon from './ui/Icon.svelte';
 
   interface Props {
@@ -9,6 +11,13 @@
 
   let { busy = false, onselect }: Props = $props();
   let open = $state(false);
+  let menu = $state<HTMLElement | null>(null);
+
+  $effect(() => {
+    const element = menu;
+    if (!open || !element) return;
+    return popoverMenu(element, () => (open = false));
+  });
 
   function choose(id: SampleId): void {
     open = false;
@@ -28,7 +37,7 @@
     <span class="sample-menu-chevron"><Icon name="chevron" /></span>
   </button>
   {#if open}
-    <div class="sample-options" role="menu" aria-label="Sample files">
+    <div bind:this={menu} class="sample-options" role="menu" aria-label="Sample files">
       {#each SAMPLES as sample (sample.id)}
         <button type="button" role="menuitem" onclick={() => choose(sample.id)}>{sample.label}</button>
       {/each}

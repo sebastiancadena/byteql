@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global HTMLButtonElement, HTMLElement, KeyboardEvent, navigator */
+  /* global HTMLButtonElement, HTMLElement, KeyboardEvent, Node, PointerEvent, document, navigator */
 
   import { tick } from 'svelte';
 
@@ -101,6 +101,19 @@
     event.preventDefault();
     close();
   }
+
+  // Nonmodal: an outside click dismisses it, but Tab is never trapped and the rest of the
+  // workspace stays reachable while it is open.
+  $effect(() => {
+    const panel = dialog;
+    if (!open || !panel) return;
+    const onPointerdown = (event: PointerEvent): void => {
+      const target = event.target as Node | null;
+      if (target && !panel.contains(target) && !opener?.contains(target)) close();
+    };
+    document.addEventListener('pointerdown', onPointerdown, true);
+    return () => document.removeEventListener('pointerdown', onPointerdown, true);
+  });
 
   function startDownload(): void {
     boundaryError = null;

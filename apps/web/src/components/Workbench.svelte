@@ -10,6 +10,7 @@
   import type { SampleId } from '../lib/session/samples.js';
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
   import { sqlIdentifier } from '../lib/sql-literal.js';
+  import { containFocus } from '../lib/ui/focus.js';
   import { applyTheme, readTheme, type Theme } from '../lib/ui/theme.js';
   import { buildTraceSummary } from '../lib/ui/trace.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
@@ -29,6 +30,7 @@
   import SqlEditor from './SqlEditor.svelte';
   import StatusBar from './StatusBar.svelte';
   import TraceDock from './TraceDock.svelte';
+  import Icon from './ui/Icon.svelte';
 
   interface ControllerPort {
     subscribe(listener: (state: SessionState) => void): () => void;
@@ -59,10 +61,29 @@
   let draftSql = $state('');
   let actionError = $state<string | null>(null);
   let coverageMessage = $state<string | null>(null);
-  // Narrow viewports render the catalog as a drawer over the workspace, so it starts closed:
-  // never cover the work surface with a drawer nobody asked for.
-  let explorerCollapsed = $state(untrack(() => window.matchMedia('(max-width: 959px)').matches));
+  /**
+   * The catalog has two presentations with two independent user choices: a wide column that is
+   * open until collapsed, and a narrow modal drawer that is closed until opened. Keeping them
+   * apart means crossing a breakpoint preserves what the user chose in each, and never turns an
+   * ordinary open column into a drawer covering the workspace.
+   */
+  let columnCollapsed = $state(false);
+  let drawerOpen = $state(false);
   let inspectorCollapsed = $state(false);
+  /** Below 960 px the catalog becomes a modal drawer over the workspace. */
+  let drawerMode = $state(untrack(() => window.matchMedia('(max-width: 959px)').matches));
+  let drawerElement = $state<HTMLElement | null>(null);
+  /** Whichever presentation is active, this is whether the catalog is currently hidden. */
+  const explorerCollapsed = $derived(drawerMode ? !drawerOpen : columnCollapsed);
+
+  function toggleSources(): void {
+    if (drawerMode) drawerOpen = !drawerOpen;
+    else columnCollapsed = !columnCollapsed;
+  }
+
+  function closeDrawer(): void {
+    drawerOpen = false;
+  }
   /** Below 1280 px the dock tabs Values and Bytes instead of showing them side by side. */
   let compactDock = $state(false);
   let dockTab = $state<'values' | 'bytes'>('bytes');
@@ -330,6 +351,15 @@
   }
 
   onMount(() => {
+    // Crossing this breakpoint only changes how the catalog is presented. Each presentation
+    // keeps its own choice, so an open column never becomes a drawer over the workspace.
+    const drawerQuery = window.matchMedia('(max-width: 959px)');
+    const syncDrawerMode = (event: MediaQueryListEvent | MediaQueryList): void => {
+      drawerMode = event.matches;
+    };
+    syncDrawerMode(drawerQuery);
+    drawerQuery.addEventListener('change', syncDrawerMode);
+
     // Below 1280 px the dock tabs its two panels rather than showing them side by side.
     const dockQuery = window.matchMedia('(max-width: 1279px)');
     const syncCompactDock = (event: MediaQueryListEvent | MediaQueryList): void => {
@@ -372,6 +402,7 @@
     });
 
     return () => {
+      drawerQuery.removeEventListener('change', syncDrawerMode);
       dockQuery.removeEventListener('change', syncCompactDock);
       unsubscribe();
     };
@@ -398,6 +429,32 @@
     if (!sql.trim()) return;
     draftSql = sql;
     perform(() => controller.runQuery(sql));
+  }
+
+  // While the drawer is a modal surface, Tab stays inside it and Escape closes it; on close,
+  // focus returns to whatever opened it.
+  $effect(() => {
+    const panel = drawerElement;
+    if (!drawerMode || !drawerOpen || !panel) return;
+    return containFocus(panel, closeDrawer);
+  });
+
+  function loadQueryFromCatalog(sql: string): void {
+    closeDrawer();
+    loadQuery(sql);
+  }
+
+  function browseFromCatalog(name: string): void {
+    closeDrawer();
+    run(`select * from ${sqlIdentifier(name)}`);
+  }
+
+  /** Choosing a source is a request to look at its bytes, so Bytes is what opens. */
+  function selectSourceFromCatalog(file: string): void {
+    closeDrawer();
+    switchHexFile(file);
+    setDockCollapsed(false);
+    if (compactDock) dockTab = 'bytes';
   }
 
   /**
@@ -467,7 +524,7 @@
       openPicker();
     } else if (key === 'b') {
       event.preventDefault();
-      explorerCollapsed = !explorerCollapsed;
+      toggleSources();
     } else if (key === 'i') {
       event.preventDefault();
       showValues();
@@ -555,7 +612,7 @@
     {appearance}
     onappearancechange={changeAppearance}
     onshortcuts={() => (shortcutsOpen = true)}
-    ontoggleexplorer={idle ? undefined : () => (explorerCollapsed = !explorerCollapsed)}
+    ontoggleexplorer={idle ? undefined : toggleSources}
     ontoggleinspector={idle ? undefined : showValues}
     onopen={idle ? undefined : openPicker}
   />
@@ -588,19 +645,56 @@
       />
     </main>
   {:else}
-    <Explorer
-      state={session}
-      collapsed={explorerCollapsed}
-      currentFile={hexFile}
-      onquery={loadQuery}
-      onbrowse={(name) => run(`select * from ${sqlIdentifier(name)}`)}
-      onselectsource={switchHexFile}
-    />
+    <!-- Narrow: an opaque modal drawer over the workspace. Wide: an ordinary column. The nav
+         itself is the same mounted element either way, so nothing inside it remounts. -->
+    <div
+      bind:this={drawerElement}
+      class="explorer-drawer"
+      class:drawer={drawerMode}
+      role={drawerMode ? 'dialog' : undefined}
+      aria-modal={drawerMode ? 'true' : undefined}
+      aria-label={drawerMode ? 'Sources' : undefined}
+      hidden={drawerMode && explorerCollapsed}
+    >
+      {#if drawerMode}
+        <div class="drawer-heading">
+          <h2>Sources</h2>
+          <button class="icon-button" type="button" aria-label="Close sources" onclick={closeDrawer}>
+            <Icon name="close" />
+          </button>
+        </div>
+      {/if}
+      <Explorer
+        state={session}
+        collapsed={!drawerMode && explorerCollapsed}
+        currentFile={hexFile}
+        onquery={loadQueryFromCatalog}
+        onbrowse={browseFromCatalog}
+        onselectsource={selectSourceFromCatalog}
+      />
+    </div>
 
+    {#if drawerMode && !explorerCollapsed}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class="drawer-backdrop"
+        onclick={(event) => {
+          // Only a click on the backdrop itself closes; a click that bubbled from the drawer
+          // must not dismiss it.
+          if (event.target === event.currentTarget) closeDrawer();
+        }}
+      ></div>
+    {/if}
+
+    <!-- While the modal drawer is open the workspace beneath it is inert, so its controls are
+         neither clickable nor tab-reachable. Only this subtree — never an ancestor of the
+         drawer itself — is marked. -->
     <div
       class="workbench-main"
       role="main"
       aria-label="Results"
+      inert={drawerMode && !explorerCollapsed}
       data-trace-linked={traceSummary.kind === 'linked'}
     >
       <section class="sql-workspace" aria-label="SQL workspace">

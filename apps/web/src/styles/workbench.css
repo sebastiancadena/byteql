@@ -1057,21 +1057,64 @@
   }
 
   /* An opaque drawer over the workspace, closed by default. */
-  .explorer,
-  .app-shell .explorer:not(.collapsed) {
-    z-index: var(--layer-drawer);
+  .explorer-drawer.drawer {
+    z-index: calc(var(--layer-drawer) + 1);
     grid-area: workbench;
+    display: flex;
     width: min(280px, 88vw);
-    visibility: visible;
-    opacity: 1;
+    flex-direction: column;
+    border-right: 1px solid var(--color-border-strong);
     background: var(--color-surface);
     box-shadow: var(--shadow-overlay);
   }
 
-  .explorer.collapsed {
-    visibility: hidden;
-    opacity: 0;
+  .explorer-drawer.drawer .explorer {
+    min-height: 0;
+    flex: 1 1 auto;
+    border-right: 0;
   }
+
+  .drawer-heading {
+    display: flex;
+    min-height: var(--toolbar-height);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .drawer-heading h2 {
+    margin: 0;
+    font-size: var(--text-md);
+    font-weight: 600;
+  }
+
+  /* The drawer's own heading already says Sources; keep the section's label for assistive
+     technology without showing it twice. */
+  .explorer-drawer.drawer #source-heading {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .drawer-backdrop {
+    z-index: var(--layer-drawer);
+    grid-area: workbench;
+    background: rgb(0 0 0 / 40%);
+    transition: opacity var(--duration-drawer) ease;
+  }
+}
+
+/* Wide layouts keep the catalog as an ordinary column. */
+.explorer-drawer {
+  display: contents;
 }
 
 @media (max-width: 699px) {
