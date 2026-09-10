@@ -252,11 +252,8 @@
 }
 
 .source-current {
-  flex: 0 0 auto;
-  margin-left: auto;
+  margin-left: var(--space-1);
   color: var(--color-evidence);
-  font-size: var(--text-xs);
-  white-space: nowrap;
 }
 
 .section-title-row {
@@ -282,14 +279,13 @@
   gap: var(--space-1);
 }
 
+/* Name above count: side by side, a narrow catalog truncated the table name to a fragment
+   ("pac…") to make room for its row count. */
 .table-disclosure {
-  display: flex;
+  display: grid;
   min-width: 0;
   min-height: 32px;
   flex: 1 1 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
   border: 0;
   border-radius: var(--radius-control);
@@ -312,7 +308,7 @@
 }
 
 .row-count {
-  flex: 0 0 auto;
+  min-width: 0;
   color: var(--color-text-subtle);
   font-size: var(--text-xs);
 }
@@ -695,9 +691,8 @@
   font-weight: 400;
 }
 
-.grid-header > div.cell-numeric {
-  flex-direction: row-reverse;
-}
+/* The header keeps name-then-type in every column: reversing it for numeric columns made the
+   type read as if it belonged to the column before it. Only the cells are right-aligned. */
 
 .cell-numeric {
   text-align: right;

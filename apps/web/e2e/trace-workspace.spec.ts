@@ -199,6 +199,146 @@ test.describe('responsive composition', () => {
   });
 });
 
+test.describe('appearance stability', () => {
+  test('appearance preserves row and byte selection', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openMidiSample(page);
+    await page.getByRole('button', { name: 'Browse events' }).click();
+    const row = page.getByRole('row', { name: 'Row 3', exact: true });
+    await row.click();
+    const pane = page.locator('[data-hex-pane]');
+    const before = await pane.getAttribute('data-hex-highlight');
+    await page.getByLabel('Go to offset').fill('0x10');
+    await page.getByLabel('Go to offset').press('Enter');
+    await page.getByRole('button', { name: 'Use dark appearance' }).click();
+    await expect(row).toHaveAttribute('aria-selected', 'true');
+    await expect(pane).toHaveAttribute('data-hex-highlight', before!);
+    await expect(pane).toHaveAttribute('data-hex-caret', '16');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  });
+
+  test('appearance preserves the editor undo history in both directions', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openMidiSample(page);
+
+    const editor = page.getByRole('textbox', { name: 'SQL query' });
+    await expect(editor).toHaveAttribute('contenteditable', 'true');
+    await editor.fill('select 1');
+    const before = await editor.textContent();
+
+    await editor.press('End');
+    await editor.pressSequentially(' as edited');
+    await expect(editor).toHaveText(/as edited/u);
+
+    for (const appearance of ['dark', 'light'] as const) {
+      await page
+        .getByRole('button', { name: appearance === 'dark' ? 'Use dark appearance' : 'Use light appearance' })
+        .click();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', appearance);
+    }
+
+    // Reconfiguring the theme compartment is an ordinary transaction: undo still reaches back
+    // past the edit, in both directions of the swap.
+    await editor.click();
+    await editor.press('Control+z');
+    await expect(editor).toHaveText(before!.trim());
+  });
+
+  test('appearance leaves the result scroll position where it was', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openMidiSample(page);
+    await page.getByRole('button', { name: 'Browse events' }).click();
+    await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
+
+    const scroller = page.locator('.grid-scroll');
+    await scroller.hover();
+    await page.mouse.wheel(0, 1200);
+    // Poll: the virtual list settles its scroll offset asynchronously.
+    await expect
+      .poll(async () => scroller.evaluate((el) => (el as HTMLElement).scrollTop))
+      .toBeGreaterThan(0);
+    const before = await scroller.evaluate((el) => (el as HTMLElement).scrollTop);
+
+    await page.getByRole('button', { name: 'Use dark appearance' }).click();
+    expect(
+      Math.abs((await scroller.evaluate((el) => (el as HTMLElement).scrollTop)) - before),
+    ).toBeLessThanOrEqual(1);
+
+    await page.getByRole('button', { name: 'Use light appearance' }).click();
+    expect(
+      Math.abs((await scroller.evaluate((el) => (el as HTMLElement).scrollTop)) - before),
+    ).toBeLessThanOrEqual(1);
+  });
+});
+
+test.describe('typography', () => {
+  test('a failed font load falls back without breaking byte hit testing', async ({ page }) => {
+    // Abort every bundled face before navigation: the session must still become ready.
+    await page.route('**/*.woff2', (route) => route.abort());
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openMidiSample(page);
+
+    await expect(page.locator('html')).toHaveAttribute('data-fonts', 'fallback');
+    await page.getByRole('button', { name: 'Browse events' }).click();
+    await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
+    await expectByteClicksLandOnTheirOffsets(page);
+  });
+
+  test('loaded fonts keep measured and painted glyph positions aligned', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openMidiSample(page);
+    await expect(page.locator('html')).toHaveAttribute('data-fonts', 'loaded');
+    await page.getByRole('button', { name: 'Browse events' }).click();
+    await expectByteClicksLandOnTheirOffsets(page);
+  });
+});
+
+/**
+ * Clicks byte positions derived from the pane's own measured font metrics and the shared column
+ * helpers — never from hard-coded pixel guesses — and checks the caret lands where it should.
+ */
+async function expectByteClicksLandOnTheirOffsets(page: import('@playwright/test').Page): Promise<void> {
+  const canvas = page.locator('.hex-canvas');
+  await expect(canvas).toBeVisible();
+  // Start from the top of the file so row 0 is the first painted row.
+  await page.getByLabel('Go to offset').fill('0x0');
+  await page.getByLabel('Go to offset').press('Enter');
+  await expect(page.locator('[data-hex-pane]')).toHaveAttribute('data-hex-first-row', '0');
+
+  const layout = await page.evaluate(() => {
+    const pane = document.querySelector<HTMLElement>('[data-hex-pane]')!;
+    const family = getComputedStyle(pane).getPropertyValue('--font-mono').trim();
+    const context = document.createElement('canvas').getContext('2d')!;
+    context.font = `12px ${family}`;
+    const charWidth = context.measureText('0').width || 7.2;
+    const gutterDigits = 8;
+    const padding = 12;
+    const gutterX = padding;
+    const hexX = gutterX + (gutterDigits + 2) * charWidth;
+    const hexWidth = (16 * 3 + 1) * charWidth;
+    const asciiX = hexX + hexWidth + 2 * charWidth;
+    return { charWidth, hexX, asciiX };
+  });
+
+  // hexByteX: byte i sits at hexX + (i*3 + (i >= 8 ? 1 : 0)) * charWidth.
+  const hexByteX = (index: number): number =>
+    layout.hexX + (index * 3 + (index >= 8 ? 1 : 0)) * layout.charWidth;
+
+  const cases: { x: number; expected: number }[] = [
+    { x: hexByteX(3) + layout.charWidth, expected: 3 },
+    // The first byte after the eight-byte gap, where the extra column would shift a naive guess.
+    { x: hexByteX(8) + layout.charWidth, expected: 8 },
+    { x: layout.asciiX + 5 * layout.charWidth + layout.charWidth / 2, expected: 5 },
+  ];
+
+  for (const { x, expected } of cases) {
+    // Positions resolve against the canvas's box at click time, so nothing can go stale between
+    // measuring and clicking. y = 9 is the middle of the first 18 px row.
+    await canvas.click({ position: { x, y: 9 } });
+    await expect(page.locator('[data-hex-pane]')).toHaveAttribute('data-hex-caret', String(expected));
+  }
+}
+
 test('selecting a source switches which bytes are shown without rerunning the query', async ({ page }) => {
   await page.goto('/');
   await waitForAppReady(page);

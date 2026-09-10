@@ -86,11 +86,12 @@ describe('Explorer source catalog', () => {
     renderCatalog({ currentFile: 'second.pcap' });
 
     const current = screen.getByRole('button', { name: /second\.pcap/u });
-    expect(within(current).getByText('Viewing bytes')).toBeTruthy();
+    expect(current.textContent).toContain('Viewing bytes');
     expect(current.getAttribute('aria-current')).toBe('true');
 
     const other = screen.getByRole('button', { name: /first\.pcap/u });
-    expect(within(other).queryByText('Viewing bytes')).toBeNull();
+    expect(other.textContent).not.toContain('Viewing bytes');
+    expect(other.getAttribute('aria-current')).toBeNull();
   });
 
   it('calls only onbrowse from a table Browse action', async () => {

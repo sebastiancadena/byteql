@@ -67,11 +67,14 @@
               <span class="source-glyph" aria-hidden="true"><Icon name="file" /></span>
               <span class="min-width-zero">
                 <span class="source-name truncate">{file.name}</span>
-                <span class="source-meta">{file.size.toLocaleString()} bytes</span>
+                <!-- The marker sits with the size, so the filename keeps the full row width.
+                     It wraps rather than truncating: a half-shown state marker says nothing. -->
+                <span class="source-meta">
+                  {file.size.toLocaleString()} bytes{#if file.name === currentFile}<span
+                      class="source-current">· Viewing bytes</span
+                    >{/if}
+                </span>
               </span>
-              {#if file.name === currentFile}
-                <span class="source-current">Viewing bytes</span>
-              {/if}
             </button>
           </li>
         {/each}
@@ -100,7 +103,7 @@
                 onclick={() => toggleSchema(table.name)}
               >
                 <span class="table-name truncate">{table.name}</span>
-                <span class="row-count">{table.rowCount.toLocaleString()} rows</span>
+                <span class="row-count truncate">{table.rowCount.toLocaleString()} rows</span>
               </button>
               <button
                 class="table-browse"
