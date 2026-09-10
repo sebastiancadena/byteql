@@ -63,7 +63,9 @@
 </script>
 
 <footer class="status-bar">
-  <div class="status-primary">
+  <!-- Only the phase is announced. Throughput and timings change continuously; putting them in
+       a live region would narrate every tick of a parse. -->
+  <div class="status-primary" aria-live="polite">
     <span
       class:active={state.phase !== 'idle' && state.phase !== 'failed'}
       class:failed={state.phase === 'failed'}
@@ -74,7 +76,7 @@
       <span>{batchSummary}</span>
     {/if}
   </div>
-  <div class="status-metrics">
+  <div class="status-metrics" aria-live="off">
     {#if progressPercent !== null}
       <span>{progressPercent}%</span>
     {/if}

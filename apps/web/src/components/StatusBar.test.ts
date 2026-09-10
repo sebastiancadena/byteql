@@ -147,6 +147,16 @@ describe('StatusBar progress readout', () => {
     expect(container.textContent).not.toMatch(/150%/);
   });
 
+  it('announces the phase but not the changing throughput numbers', () => {
+    const { container } = render(StatusBar, { state: stateWith({ phase: 'parsing' }) });
+
+    const primary = container.querySelector('.status-primary')!;
+    const metrics = container.querySelector('.status-metrics')!;
+    expect(primary.getAttribute('aria-live')).toBe('polite');
+    // Rates and timings tick continuously; a live region here would narrate the whole parse.
+    expect(metrics.getAttribute('aria-live')).toBe('off');
+  });
+
   it('shows the byte selection readout', () => {
     const state = { ...initialSessionState, byteSelection: { file: 'capture.pcap', start: 0x40, end: 0x78 } };
     const { getByText } = render(StatusBar, { props: { state } });

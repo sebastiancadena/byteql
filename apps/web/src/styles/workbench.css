@@ -673,6 +673,7 @@
   background: var(--color-surface);
 }
 
+/* Name reads as the column; the type reads as metadata beneath it. */
 .grid-header > div {
   display: flex;
   min-width: 9rem;
@@ -681,6 +682,7 @@
   gap: var(--space-2);
   padding: var(--space-2);
   border-right: 1px solid var(--color-border);
+  color: var(--color-text);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   font-weight: 600;
@@ -691,6 +693,10 @@
   color: var(--color-text-subtle);
   font-size: var(--text-xs);
   font-weight: 400;
+}
+
+.grid-header > div.cell-numeric {
+  flex-direction: row-reverse;
 }
 
 .cell-numeric {
@@ -752,9 +758,15 @@
   background: var(--color-surface-hover);
 }
 
+/* A functional inset marker, not decoration: it never changes the row's height or box.
+   It only turns ochre once the row's trace has actually been validated. */
 .grid-row.selected {
   background: var(--color-selection);
   box-shadow: inset 3px 0 var(--color-focus);
+}
+
+[data-trace-linked='true'] .grid-row.selected {
+  box-shadow: inset 3px 0 var(--color-evidence);
 }
 
 .grid-row > div {
@@ -768,9 +780,46 @@
   white-space: nowrap;
 }
 
+.grid-row .cell-numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .null-value {
   color: var(--color-text-subtle);
   font-style: italic;
+}
+
+.grid-empty {
+  margin: 0;
+  padding: var(--space-5) var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+}
+
+.result-sentinel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.result-sentinel button {
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.result-sentinel button:hover {
+  background: var(--color-surface-hover);
 }
 
 /* Trace strip — the signature line: row → file → range. It may wrap past its 40 px

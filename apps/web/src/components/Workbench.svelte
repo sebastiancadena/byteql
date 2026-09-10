@@ -808,8 +808,7 @@
             </div>
           {:else}
             <div class="results-placeholder">
-              <span aria-hidden="true">▦</span>
-              <p>Choose a saved query or write SQL to populate the grid.</p>
+              <p>Choose an example query, or write SQL and run it.</p>
             </div>
           {/if}
         </div>

@@ -83,10 +83,7 @@
 
 <aside class:collapsed class:mobile-open={mobileOpen} class="inspector" aria-label="Inspector">
   <div class="pane-heading inspector-heading">
-    <div>
-      <p class="eyebrow">Selected evidence</p>
-      <h2>Inspector</h2>
-    </div>
+    <h2>Values</h2>
     <div class="inspector-actions">
       {#if selectedGlobalRow !== null}
         <span class="selection-chip">Row {selectedGlobalRow + 1}</span>
@@ -102,7 +99,7 @@
     <Viewer table={viewerTable} engineFactory={audioEngineFactory} onclose={oncloseviewer} />
   {:else if table && selectedRow !== null}
     <section class="inspector-section" aria-labelledby="values-heading">
-      <h3 id="values-heading">Values</h3>
+      <h3 id="values-heading" class="visually-hidden">Field values</h3>
       <dl class="value-list">
         {#each table.schema.fields as field, columnIndex (field.name)}
           {#if !provenanceNames.has(field.name)}
@@ -117,7 +114,6 @@
     </section>
 
     <section class="inspector-section provenance" aria-labelledby="provenance-heading">
-      <p class="eyebrow">Original source</p>
       <h3 id="provenance-heading">Provenance</h3>
       {#if provenanceRange && provenanceLabel}
         <dl>

@@ -6,6 +6,7 @@
   import { selectExportColumns, type ExportFormat, type ExportOptions } from '../lib/export/options.js';
   import type { SessionController } from '../lib/session/controller.js';
   import type { SessionState } from '../lib/session/state.js';
+  import Icon from './ui/Icon.svelte';
 
   type DownloadController = Pick<
     SessionController,
@@ -195,9 +196,9 @@
     >
       <div class="results-download-heading">
         <h3 id="results-download-title">Download results</h3>
-        <button class="icon-button" type="button" aria-label="Close download options" onclick={close}
-          >×</button
-        >
+        <button class="icon-button" type="button" aria-label="Close download options" onclick={close}>
+          <Icon name="close" />
+        </button>
       </div>
 
       {#if active || download?.phase === 'cancelling'}
@@ -289,19 +290,23 @@
     position: relative;
   }
 
+  /* Clamped to the viewport and scrolled internally, so a long capability explanation can
+     never push the dialog off screen. */
   .results-download-popover {
+    z-index: var(--layer-popover);
     position: absolute;
-    z-index: 20;
-    top: calc(100% + 0.4rem);
+    top: calc(100% + var(--space-1));
     right: 0;
     display: grid;
-    gap: 0.65rem;
-    width: min(22rem, calc(100vw - 1rem));
-    padding: 0.9rem;
+    width: min(360px, calc(100vw - 24px));
+    max-height: min(70vh, 560px);
+    gap: var(--space-2);
+    overflow-y: auto;
+    padding: var(--space-3);
     border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-overlay);
     background: var(--color-surface-raised);
-    box-shadow: var(--shadow-pane);
+    box-shadow: var(--shadow-overlay);
   }
 
   .results-download-heading,
@@ -312,7 +317,7 @@
 
   .results-download-heading {
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: var(--space-3);
   }
 
   .results-download-heading h3,
@@ -321,19 +326,21 @@
   }
 
   .results-download-heading h3 {
-    font-size: var(--text-base);
+    font-size: var(--text-md);
+    font-weight: 600;
+    line-height: var(--leading-md);
   }
 
   .results-download-check {
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .results-download-help,
   .results-download-explanation,
   .results-download-status,
   .results-download-error {
-    font-size: var(--text-sm);
-    line-height: 1.45;
+    font-size: var(--text-md);
+    line-height: var(--leading-md);
   }
 
   .results-download-help,

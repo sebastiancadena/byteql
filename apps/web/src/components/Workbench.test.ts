@@ -314,13 +314,13 @@ describe('Inspector Workbench', () => {
     expect(within(workspace).getByText('2 rows')).toBeTruthy();
     expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
 
-    // Values and the trace strip now live inside the workspace's inspection dock.
+    // Values and the trace strip now live inside the workspace's inspection dock, under one
+    // heading each — the old eyebrow/title pairs are gone.
     expect(within(workspace).getByRole('region', { name: 'Source trace' })).toBeTruthy();
-    expect(
-      within(within(workspace).getByRole('complementary', { name: 'Inspector' })).getByText(
-        'Selected evidence',
-      ),
-    ).toBeTruthy();
+    const values = within(workspace).getByRole('complementary', { name: 'Inspector' });
+    expect(within(values).getByRole('heading', { name: 'Values' })).toBeTruthy();
+    expect(within(values).queryByText('Selected evidence')).toBeNull();
+    expect(within(values).queryByText('Original source')).toBeNull();
   });
 
   it('places Download results beside the result count rather than inside the result grid', () => {
@@ -439,6 +439,49 @@ describe('Inspector Workbench', () => {
     const inspector = screen.getByRole('complementary', { name: 'Inspector' });
     expect(within(inspector).queryByRole('button', { name: /0x/u })).toBeNull();
     expect(within(inspector).getByText('Source bytes are unavailable for this row.')).toBeTruthy();
+  });
+
+  it('keeps the schema headers and explains a zero-row result', () => {
+    const empty = tableFromArrays({ record_id: [1n], label: ['alpha'] }).slice(0, 0);
+    const controller = new FakeController({ ...readyState(), result: pagedResult(empty) });
+    render(Workbench, { controller });
+
+    // Not the intake screen: an empty result still describes its shape.
+    expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: /record_id/u })).toBeTruthy();
+    expect(screen.getByText('No rows returned. Adjust the query and run again.')).toBeTruthy();
+    expect(screen.queryByText(/nothing is uploaded/iu)).toBeNull();
+  });
+
+  it('marks the selected row as evidence only when its trace is validated', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    const workspace = screen.getByRole('main', { name: 'Results' });
+
+    expect(workspace.getAttribute('data-trace-linked')).toBe('false');
+    await fireEvent.click(screen.getByRole('row', { name: /^Row 1$/u }));
+    expect(workspace.getAttribute('data-trace-linked')).toBe('true');
+
+    // An aggregate has no provenance, so the bracket must not claim one.
+    const aggregate = tableFromArrays({ n: [262n] });
+    controller.publish({ ...controller.state, result: pagedResult(aggregate), selectedRow: 0 });
+    await vi.waitFor(() => expect(workspace.getAttribute('data-trace-linked')).toBe('false'));
+    expect(screen.getByText('This row has no source byte range.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Inspect source' })).toBeNull();
+  });
+
+  it('does not borrow a range for a row outside the decoded window', () => {
+    const controller = new FakeController({
+      ...readyState(),
+      // The selection points past the loaded window, so no local row backs it.
+      result: pagedResult(result, { windowStart: 0, loadedRows: 20_000, complete: false }),
+      selectedRow: 16_500,
+    });
+    render(Workbench, { controller });
+
+    expect(screen.getByText('Selected row is outside the loaded window.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Inspect source' })).toBeNull();
+    expect(screen.getByRole('main', { name: 'Results' }).getAttribute('data-trace-linked')).toBe('false');
   });
 
   it('loads an example query into a focused editor without running it', async () => {

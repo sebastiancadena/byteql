@@ -5,6 +5,7 @@
   import { onDestroy, untrack } from 'svelte';
 
   import { ToneAudioEngine, type AudioEngine, type AudioRow } from '../lib/viewers/tone-engine.js';
+  import Icon from './ui/Icon.svelte';
 
   interface Props {
     table: Table;
@@ -193,11 +194,10 @@
 
 <section class="audio-viewer" aria-labelledby="audio-viewer-heading">
   <div class="audio-viewer-heading">
-    <div>
-      <p class="eyebrow">Specialized viewer</p>
-      <h3 id="audio-viewer-heading">Audio playback</h3>
-    </div>
-    <button class="icon-button" type="button" aria-label="Close audio viewer" onclick={close}>×</button>
+    <h3 id="audio-viewer-heading">Audio playback</h3>
+    <button class="icon-button" type="button" aria-label="Close audio viewer" onclick={close}>
+      <Icon name="close" />
+    </button>
   </div>
 
   <div class="audio-controls">
@@ -248,8 +248,8 @@
 <style>
   .audio-viewer {
     display: grid;
-    gap: 1rem;
-    padding: 1rem 1.1rem;
+    gap: var(--space-4);
+    padding: var(--space-3);
     border-bottom: 1px solid var(--color-border);
   }
 
@@ -263,24 +263,26 @@
   .audio-viewer-heading,
   .audio-metrics {
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: var(--space-3);
   }
 
   .audio-viewer-heading h3 {
-    margin: 0.15rem 0 0;
+    margin: 0;
     color: var(--color-text);
-    font-size: 0.9rem;
+    font-size: var(--text-md);
+    font-weight: 600;
+    line-height: var(--leading-md);
   }
 
   .audio-controls {
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .audio-seek {
     display: grid;
-    gap: 0.45rem;
-    color: var(--color-text-muted);
-    font-size: 0.68rem;
+    gap: var(--space-1);
+    color: var(--color-text-subtle);
+    font-size: var(--text-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
@@ -292,13 +294,13 @@
 
   .audio-metrics {
     color: var(--color-text-muted);
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
   }
 
   .inline-diagnostic {
     margin: 0;
-    font-size: 0.72rem;
-    line-height: 1.5;
+    font-size: var(--text-md);
+    line-height: var(--leading-md);
   }
 </style>
