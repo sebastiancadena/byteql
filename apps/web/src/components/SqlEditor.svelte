@@ -108,6 +108,11 @@
     };
   });
 
+  /** Put the caret in the editor — used after loading an example query, which never runs it. */
+  export function focus(): void {
+    view?.focus();
+  }
+
   $effect(() => {
     const editor = view;
     if (!editor) return;

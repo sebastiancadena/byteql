@@ -294,7 +294,7 @@ describe('Inspector Workbench', () => {
     render(Workbench, { controller });
 
     const navigation = screen.getByRole('navigation', { name: 'Data explorer' });
-    expect(within(navigation).getByText('Capture map')).toBeTruthy();
+    expect(within(navigation).getByRole('heading', { name: 'Sources' })).toBeTruthy();
     expect(within(navigation).getByText('capture.bin')).toBeTruthy();
     expect(within(navigation).getByText('Example records')).toBeTruthy();
     expect(within(navigation).getByText('records')).toBeTruthy();
@@ -415,6 +415,48 @@ describe('Inspector Workbench', () => {
     expect(textOf(editor)).toContain('select * from records limit 100');
   });
 
+  it('loads an example query into a focused editor without running it', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Recent records' }));
+
+    const editor = screen.getByRole('textbox', { name: 'SQL query' });
+    expect(textOf(editor)).toContain('order by record_id desc');
+    // Loading fills and focuses the editor; running stays an explicit action.
+    expect(controller.runQuery).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(editor.contains(document.activeElement)).toBe(true));
+  });
+
+  it('switches which source the byte viewer shows without rerunning or rewriting SQL', async () => {
+    const controller = new FakeController({
+      ...readyState(),
+      source: {
+        files: [
+          { name: 'capture.bin', size: 1536 },
+          { name: 'second.bin', size: 640 },
+        ],
+        totalSize: 2176,
+      },
+    });
+    render(Workbench, { controller });
+
+    const navigation = screen.getByRole('navigation', { name: 'Data explorer' });
+    const first = within(navigation).getByRole('button', { name: /capture\.bin/u });
+    expect(first.getAttribute('aria-current')).toBe('true');
+
+    await fireEvent.click(within(navigation).getByRole('button', { name: /second\.bin/u }));
+
+    expect(
+      within(navigation)
+        .getByRole('button', { name: /second\.bin/u })
+        .getAttribute('aria-current'),
+    ).toBe('true');
+    expect(controller.runQuery).not.toHaveBeenCalled();
+    // Switching source drops the byte selection that belonged to the previous file.
+    expect(controller.selectByteRange).toHaveBeenCalledWith(null);
+  });
+
   it('loads a pack query, executes with the keyboard, cancels work, and tears down its editor', async () => {
     const destroy = vi.spyOn(EditorView.prototype, 'destroy');
     const controller = new FakeController(readyState());
@@ -472,12 +514,14 @@ describe('Inspector Workbench', () => {
     const controller = new FakeController({ ...readyState(), queries: midiQueries });
     render(Workbench, { controller });
 
-    const savedQueries = screen.getByRole('region', { name: 'Saved queries' });
+    // "Example queries": these come from the format pack, not from a save/history feature.
+    const exampleQueries = screen.getByRole('region', { name: 'Example queries' });
+    expect(screen.queryByRole('region', { name: 'Saved queries' })).toBeNull();
     expect(
-      within(savedQueries)
+      within(exampleQueries)
         .getAllByRole('button')
         .map((button) => button.textContent?.trim()),
-    ).toEqual(midiQueries.map((query) => `↗ ${query.title}`));
+    ).toEqual(midiQueries.map((query) => query.title));
   });
 
   it('selects the pack play_all query through the saved-query path', async () => {

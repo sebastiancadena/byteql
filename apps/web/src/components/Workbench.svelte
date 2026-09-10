@@ -2,7 +2,7 @@
   /* global Blob, DragEvent, Event, File, HTMLButtonElement, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, document, window */
 
   import type { Table } from 'apache-arrow';
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
 
   import type { ExportOptions } from '../lib/export/options.js';
   import { createCoverageMemo, provenanceOfRow } from '../lib/hex/coverage.js';
@@ -160,6 +160,7 @@
   });
 
   let hexPane = $state<HexPane>();
+  let sqlEditor = $state<ReturnType<typeof SqlEditor> | null>(null);
 
   // Memoize on result identity: session is reassigned on every publish (caret moves, progress
   // events), but buildCoverage must run once per result, not once per publish.
@@ -335,8 +336,10 @@
     });
   }
 
+  /** Loading an example query fills the editor and focuses it; it never runs the query. */
   function loadQuery(sql: string): void {
     draftSql = sql;
+    void tick().then(() => sqlEditor?.focus());
   }
 
   function run(sql: string): void {
@@ -458,8 +461,10 @@
     <Explorer
       state={session}
       collapsed={explorerCollapsed}
+      currentFile={hexFile}
       onquery={loadQuery}
       onbrowse={(name) => run(`select * from ${sqlIdentifier(name)}`)}
+      onselectsource={switchHexFile}
     />
 
     {#if compactMode}
@@ -528,6 +533,7 @@
         </div>
 
         <SqlEditor
+          bind:this={sqlEditor}
           sql={draftSql}
           {appearance}
           disabled={session.phase === 'querying'}

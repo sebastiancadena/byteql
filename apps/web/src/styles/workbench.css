@@ -199,42 +199,66 @@
   text-transform: uppercase;
 }
 
-.source-card {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-raised);
+.source-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.source-card strong,
-.source-card span {
+/* 32 px navigation rows; the full filename is available through the row's title. */
+.source-row {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--duration-quick) ease;
+}
+
+.source-row:hover {
+  background: var(--color-surface-hover);
+}
+
+.source-row[aria-current='true'] {
+  background: var(--color-selection);
+}
+
+.source-glyph {
+  display: flex;
+  flex: 0 0 auto;
+  color: var(--color-text-subtle);
+}
+
+.source-name,
+.source-meta {
   display: block;
 }
 
-.source-card strong {
+.source-name {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  font-weight: 600;
 }
 
-.source-card span:not(.file-glyph) {
-  margin-top: 2px;
+.source-meta {
   color: var(--color-text-muted);
   font-size: var(--text-xs);
 }
 
-.file-glyph {
-  display: grid !important;
-  width: var(--control-height);
-  height: var(--control-height);
+.source-current {
   flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-control);
-  color: var(--color-text-muted);
-  background: var(--color-surface);
+  margin-left: auto;
+  color: var(--color-evidence);
+  font-size: var(--text-xs);
+  white-space: nowrap;
 }
 
 .section-title-row {
@@ -253,28 +277,40 @@
   list-style: none;
 }
 
-.table-list summary {
+/* A disclosure and a Browse action side by side — never a button nested in a summary. */
+.table-entry-heading {
   display: flex;
-  min-height: var(--control-height);
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.table-disclosure {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  flex: 1 1 auto;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
+  border: 0;
   border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: transparent;
+  text-align: left;
   cursor: pointer;
   transition: background var(--duration-quick) ease;
 }
 
-.table-list summary:hover,
+.table-disclosure:hover,
 .query-list button:hover {
   background: var(--color-surface-hover);
 }
 
 .table-name {
-  overflow: hidden;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  text-overflow: ellipsis;
 }
 
 .row-count {
@@ -285,7 +321,8 @@
 
 .table-browse {
   flex: 0 0 auto;
-  padding: 2px var(--space-2);
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-control);
   color: var(--color-text);
@@ -335,17 +372,23 @@
   font-size: var(--text-sm);
 }
 
-.schema-list dd,
-.schema-inspector dd,
 .value-list dt,
 .provenance dt {
   color: var(--color-text-muted);
 }
 
+/* Column types read as metadata, not as data. */
+.schema-list dd,
+.schema-inspector dd {
+  color: var(--color-text-subtle);
+  font-size: var(--text-xs);
+}
+
 .query-list button {
   display: flex;
   width: 100%;
-  min-height: var(--control-height);
+  min-width: 0;
+  min-height: 32px;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
@@ -359,7 +402,9 @@
   transition: background var(--duration-quick) ease;
 }
 
-.query-list button span:first-child {
+.query-glyph {
+  display: flex;
+  flex: 0 0 auto;
   color: var(--color-text-subtle);
 }
 
