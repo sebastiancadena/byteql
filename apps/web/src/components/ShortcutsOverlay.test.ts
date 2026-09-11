@@ -45,6 +45,34 @@ describe('ShortcutsOverlay', () => {
     expect(screen.getByText('Ctrl+G')).toBeTruthy();
   });
 
+  it('explains how a divider is resized and how a drag is abandoned', () => {
+    render(ShortcutsOverlay, { props: { onclose: vi.fn() } });
+
+    expect(
+      screen.getByText(
+        /Resize panel: focus divider, use arrows; Shift for larger steps; Home\/End for limits; double-click to reset one size\./u,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText(/Escape while dragging a divider cancels that drag/u)).toBeTruthy();
+  });
+
+  it('offers the panel reset only when a loaded workspace supplies one', async () => {
+    const user = userEvent.setup();
+    const view = render(ShortcutsOverlay, { props: { onclose: vi.fn() } });
+    expect(screen.queryByRole('button', { name: 'Reset panel sizes' })).toBeNull();
+    view.unmount();
+
+    const onclose = vi.fn();
+    const onresetpanels = vi.fn();
+    render(ShortcutsOverlay, { props: { onclose, onresetpanels } });
+
+    await user.click(screen.getByRole('button', { name: 'Reset panel sizes' }));
+    expect(onresetpanels).toHaveBeenCalledOnce();
+    // Resetting is not dismissing: the dialog stays where it is.
+    expect(onclose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+
   it('closes on Escape, on the close button and on a backdrop click', async () => {
     const user = userEvent.setup();
     const onclose = vi.fn();
