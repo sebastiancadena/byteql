@@ -1,8 +1,8 @@
-/* Shell geometry, source catalog, query editor, results grid and the byte dock.
-   Task 1 keeps the existing three-column shell; the two-column workspace lands with the dock. */
+/* Shell geometry, source catalog, query editor, results grid and the byte dock. */
 
-/* Two outer columns: the source catalog, and one workspace that owns everything else.
-   Results receive the full workspace width, including the area the inspector used to take. */
+/* Three outer columns: the source catalog, the divider track between them, and one workspace
+   that owns everything else. Results receive the full workspace width, including the area the
+   inspector used to take. */
 .app-shell {
   /* The divider tracks. Coarse pointers get a target they can actually hit. */
   --panel-gutter: 8px;
@@ -1206,8 +1206,9 @@
   background: var(--color-text-subtle);
 }
 
-/* Responsive geometry — 1280 px tabs the dock, 960 px moves the catalog into a drawer,
-   700 px collapses the dock by default unless the user has a stored preference. */
+/* Responsive geometry — 960 px moves the catalog into a drawer and 700 px collapses the dock by
+   default unless the user has a stored preference. Tab mode is not a breakpoint: the layout
+   coordinator decides it from the dock's own measured width. */
 
 @media (max-width: 959px) {
   .app-shell,

@@ -278,6 +278,7 @@ describe('Inspector Workbench', () => {
     measuredHeights.set('query-notices', 0);
     measuredHeights.set('workbench-main', 800);
     measuredWidths.set('workbench-main', 1216);
+    measuredWidths.set('app-shell', 1440);
   });
 
   it('explains local processing and exposes accessible source actions in the empty state', async () => {
@@ -763,6 +764,11 @@ describe('Inspector Workbench', () => {
     expect(values.getAttribute('aria-valuemax')).toBe('480');
     expect(values.getAttribute('aria-controls')).toBe('dock-panel-values');
     expect(document.getElementById('dock-panel-values')?.classList.contains('trace-values')).toBe(true);
+
+    // A narrower shell republishes the limit rather than leaving a stale one on the separator.
+    measuredWidths.set('app-shell', 1000);
+    await remeasure();
+    expect(sources.getAttribute('aria-valuemax')).toBe('352');
   });
 
   it('publishes a wider Sources column without disturbing the vertical budget', async () => {
