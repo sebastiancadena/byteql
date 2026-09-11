@@ -81,4 +81,43 @@ describe('ResultGrid demand guard', () => {
 
     expect(onloadmore).toHaveBeenCalledTimes(2);
   });
+  it('does not demand backward from the scroll position a forward rebase just wrote', async () => {
+    const onloadwindow = vi.fn();
+    const table = tableFromArrays({ value: Int32Array.from({ length: 200 }, (_, index) => index) });
+    const { container, rerender } = render(ResultGrid, {
+      table,
+      windowStart: 100,
+      loadedRows: 1000,
+      complete: true,
+      loadingMore: false,
+      pageError: null,
+      pageErrorRetryable: false,
+      onselect: vi.fn(),
+      onloadmore: vi.fn(),
+      onloadwindow,
+      onretry: vi.fn(),
+    });
+
+    // Park mid-window before the first inspection: far from either edge, so nothing is demanded.
+    const scroll = container.querySelector('.grid-scroll') as HTMLElement;
+    scroll.scrollTop = 50 * 36;
+    await fireEvent.scroll(scroll);
+    flushFrames();
+    expect(onloadwindow).not.toHaveBeenCalled();
+
+    // An explicit forward jump. Scroll compensation keeps the same global row in view, which
+    // for this jump means scrollTop 0 — the top of the new window. That position is the grid's
+    // own write, not the user asking for earlier rows, so it must not demand backward.
+    await rerender({ windowStart: 150 });
+    flushFrames();
+    expect(scroll.scrollTop).toBe(0);
+    expect(onloadwindow).not.toHaveBeenCalled();
+
+    // The reader then actually moves. Still inside the top edge band, so backward paging
+    // resumes normally — the gate only ignores the position the rebase itself wrote.
+    scroll.scrollTop = 5 * 36;
+    await fireEvent.scroll(scroll);
+    flushFrames();
+    expect(onloadwindow).toHaveBeenCalledWith(149);
+  });
 });

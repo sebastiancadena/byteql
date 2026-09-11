@@ -51,6 +51,13 @@
   let rebaseFrame: number | null = null;
   let demandFrame: number | null = null;
   let previousWindowStart = 0;
+  /**
+   * The scroll offset the last window rebase wrote. Held until the reader actually moves, so a
+   * position the grid produced is never mistaken for the reader asking for earlier rows. Not
+   * cleared by the rebase effect's teardown: Svelte runs that before every re-run, which would
+   * drop the guard while the viewport is still parked where the rebase left it.
+   */
+  let rebaseTop: number | null = null;
   let hasPreviousWindowStart = false;
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: untrack(() => table.numRows),
@@ -103,6 +110,7 @@
       if (rebaseFrame !== null) globalThis.cancelAnimationFrame(rebaseFrame);
       const adjustment = scrollCompensation(previousWindowStart, nextStart, RESULT_ROW_HEIGHT);
       element.scrollTop = Math.max(0, element.scrollTop + adjustment);
+      rebaseTop = element.scrollTop;
       rebaseFrame = globalThis.requestAnimationFrame(() => {
         rebaseFrame = null;
         demandSuppressed = false;
@@ -127,6 +135,7 @@
         : null;
     const firstVisible = physicalRange?.firstVisible ?? first.index;
     const lastVisible = physicalRange?.lastVisible ?? last.index;
+    if (rebaseTop !== null && scrollElement && scrollElement.scrollTop !== rebaseTop) rebaseTop = null;
     const direction = resultDemand({
       firstVisible,
       lastVisible,
@@ -139,6 +148,11 @@
       demandGuard = null;
       return;
     }
+    // A backward demand means the reader scrolled toward earlier rows. While the viewport is
+    // still parked exactly where a rebase put it, nobody has scrolled: paging backward there
+    // would undo the rebase, and a forward slide that lands on local row 0 would oscillate
+    // between the last two windows.
+    if (direction === 'backward' && rebaseTop !== null) return;
     const key = `${direction}:${windowStart + firstVisible}:${windowStart + lastVisible}`;
     if (demandGuard === key) return;
     demandGuard = key;
