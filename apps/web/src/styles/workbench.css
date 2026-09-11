@@ -478,8 +478,15 @@
   min-height: 0;
 }
 
+/* The measured grid item deliberately does NOT scroll. A scroll container's automatic minimum
+   size is zero, so an `auto` row holding one collapses to nothing the moment the workspace is
+   over-constrained — which hid the diagnostic completely at 1440x480 instead of letting
+   `.workbench-main` scroll. The bound and the scrolling belong one level in. */
 .query-notices {
   grid-area: notices;
+}
+
+.query-notices-scroll {
   max-height: min(160px, 25dvh);
   overflow-y: auto;
 }

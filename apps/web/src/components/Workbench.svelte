@@ -959,26 +959,29 @@
           />
         </div>
 
-        <!-- Always present, so the notices row has an element to measure even when empty. -->
+        <!-- Always present, so the notices row has an element to measure even when empty. The
+             inner wrapper is the one that scrolls: see `.query-notices` in workbench.css. -->
         <div bind:this={noticesElement} class="query-notices">
-          {#if session.queryError || actionError}
-            <div class="query-diagnostic" role="alert">
-              <strong>Query diagnostic</strong>
-              <span>{session.queryError ?? actionError}</span>
-            </div>
-          {/if}
+          <div class="query-notices-scroll">
+            {#if session.queryError || actionError}
+              <div class="query-diagnostic" role="alert">
+                <strong>Query diagnostic</strong>
+                <span>{session.queryError ?? actionError}</span>
+              </div>
+            {/if}
 
-          {#if coverageMessage}
-            <div class="format-notice" role="status" aria-label="Coverage notice">
-              {coverageMessage}
-            </div>
-          {/if}
+            {#if coverageMessage}
+              <div class="format-notice" role="status" aria-label="Coverage notice">
+                {coverageMessage}
+              </div>
+            {/if}
 
-          {#each disabledCapabilityReasons as reason (reason)}
-            <div class="format-notice" role="status" aria-label="Format capability notice">
-              {reason}
-            </div>
-          {/each}
+            {#each disabledCapabilityReasons as reason (reason)}
+              <div class="format-notice" role="status" aria-label="Format capability notice">
+                {reason}
+              </div>
+            {/each}
+          </div>
         </div>
 
         <div bind:this={queryGutterElement} class="query-resize-slot">
