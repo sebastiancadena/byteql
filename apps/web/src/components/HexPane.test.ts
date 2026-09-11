@@ -2,10 +2,10 @@
 // apps/web/src/components/HexPane.test.ts
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { userEvent } from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CoverageIndex } from '../lib/hex/coverage.js';
-import { asciiByteX, columnLayout, offsetDigits, type HexMetrics } from '../lib/hex/layout.js';
+import { asciiByteX, columnLayout, hexByteX, offsetDigits, type HexMetrics } from '../lib/hex/layout.js';
 import HexPane from './HexPane.svelte';
 
 /** jsdom exposes no 2D context, so the pane uses its documented 7.2 px fallback advance width. */
@@ -324,5 +324,209 @@ describe('HexPane embedded in the inspection dock', () => {
     // Hiding a tab must not reset what the user selected.
     expect(root.getAttribute('data-hex-caret')).toBe('5');
     expect(root.getAttribute('data-hex-selection')).toBe('4-6');
+  });
+});
+
+/**
+ * Narrow-pane behaviour: the pane paints a fixed 16-byte row, so a pane narrower than that row
+ * has to scroll sideways rather than clip. jsdom lays nothing out, so each test states the
+ * geometry it is reasoning about explicitly.
+ */
+describe('HexPane in a pane narrower than one hex row', () => {
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  const bigBlob = new Blob([new Uint8Array(4096)]);
+
+  /** Gives the viewport a scroll range and a settable scrollLeft, which jsdom pins to zero. */
+  function stubViewportScrolling(
+    container: HTMLElement,
+    { clientWidth, scrollWidth }: { clientWidth: number; scrollWidth: number },
+  ): { readonly value: number; setScrollWidth(next: number): void } {
+    const viewport = container.querySelector('.hex-viewport') as HTMLElement;
+    let scrollLeft = 0;
+    let width = scrollWidth;
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, get: () => clientWidth });
+    Object.defineProperty(viewport, 'scrollWidth', { configurable: true, get: () => width });
+    Object.defineProperty(viewport, 'scrollLeft', {
+      configurable: true,
+      get: () => scrollLeft,
+      set: (next: number) => {
+        scrollLeft = next;
+      },
+    });
+    return {
+      get value() {
+        return scrollLeft;
+      },
+      setScrollWidth(next: number) {
+        width = next;
+      },
+    };
+  }
+
+  it('exposes the caret hex cell on explicit navigation, and leaves it alone on a repaint', async () => {
+    const user = userEvent.setup();
+    const { container, getByLabelText, rerender } = renderPane({ blob: bigBlob, fileSize: 4096 });
+    const scroll = stubViewportScrolling(container, { clientWidth: 120, scrollWidth: 600 });
+
+    // Byte 15 sits past the right edge of a 120 px window, so goto scrolls just far enough.
+    await user.type(getByLabelText('Go to offset'), '0x0f{Enter}');
+    const right = hexByteX(paneMetrics, paneLayout, 15) + 2 * paneMetrics.charWidth;
+    expect(scroll.value).toBeCloseTo(right - 120, 5);
+
+    // Byte 0 sits left of the scrolled window, so it pulls the viewport back to that column.
+    await user.clear(getByLabelText('Go to offset'));
+    await user.type(getByLabelText('Go to offset'), '0x0{Enter}');
+    expect(scroll.value).toBeCloseTo(hexByteX(paneMetrics, paneLayout, 0), 5);
+
+    // An appearance change only repaints: it must not drag the caret's column back into view.
+    const parked = scroll.value;
+    await rerender({ appearance: 'dark' });
+    expect(scroll.value).toBe(parked);
+  });
+
+  it('treats Shift and horizontal wheel deltas as sideways scrolling, never as byte rows', async () => {
+    const { container } = renderPane({ blob: bigBlob, fileSize: 4096 });
+    const viewport = container.querySelector('.hex-viewport') as HTMLElement;
+    const root = container.querySelector('[data-hex-pane]')!;
+    const scroll = stubViewportScrolling(container, { clientWidth: 120, scrollWidth: 400 });
+
+    await fireEvent.wheel(viewport, { deltaX: 40, deltaY: 0 });
+    expect(scroll.value).toBe(40);
+    expect(root.getAttribute('data-hex-first-row')).toBe('0');
+
+    await fireEvent.wheel(viewport, { deltaX: 0, deltaY: 30, shiftKey: true });
+    expect(scroll.value).toBe(70);
+    expect(root.getAttribute('data-hex-first-row')).toBe('0');
+
+    // deltaMode 1 counts lines — one byte row each.
+    await fireEvent.wheel(viewport, { deltaX: 2, deltaY: 0, deltaMode: 1 });
+    expect(scroll.value).toBe(70 + 2 * 18);
+
+    // A plain vertical wheel keeps its custom three-row step and leaves the column alone.
+    await fireEvent.wheel(viewport, { deltaX: 0, deltaY: 10 });
+    expect(root.getAttribute('data-hex-first-row')).toBe('3');
+    expect(scroll.value).toBe(106);
+
+    // With nothing to scroll sideways the gesture belongs to the page, and moves no byte rows.
+    scroll.setScrollWidth(120);
+    await fireEvent.wheel(viewport, { deltaX: 400, deltaY: 0 });
+    expect(root.getAttribute('data-hex-first-row')).toBe('3');
+    expect(scroll.value).toBe(106);
+  });
+});
+
+describe('HexPane chrome height reporting', () => {
+  const CHROME = 40;
+  const PANE_BORDER = 2;
+  const SCROLLBAR = 12;
+  let observed: Element[] = [];
+  let disconnects = 0;
+  const originals = new Map<string, PropertyDescriptor>();
+
+  function stubBoxes(): void {
+    for (const name of ['offsetHeight', 'clientHeight'] as const) {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
+      if (descriptor) originals.set(name, descriptor);
+    }
+    // Border boxes for the three elements the report adds up; everything else stays at zero.
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.classList.contains('hex-chrome')) return CHROME;
+        if (this.classList.contains('hex-pane')) return 200 + PANE_BORDER;
+        if (this.classList.contains('hex-viewport')) return 100;
+        return 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.classList.contains('hex-pane')) return 200;
+        if (this.classList.contains('hex-viewport')) return 100 - SCROLLBAR;
+        return 0;
+      },
+    });
+  }
+
+  beforeEach(() => {
+    observed = [];
+    disconnects = 0;
+    stubBoxes();
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe(element: Element) {
+          observed.push(element);
+        }
+        disconnect() {
+          disconnects += 1;
+        }
+        unobserve() {}
+      },
+    );
+  });
+
+  afterEach(() => {
+    cleanup();
+    for (const [name, descriptor] of originals) {
+      Object.defineProperty(HTMLElement.prototype, name, descriptor);
+    }
+    originals.clear();
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it('reports chrome, pane border and scrollbar thickness — never the whole pane height', () => {
+    const onchromeheightchange = vi.fn();
+    renderPane({ layout: 'embedded', visible: true, onchromeheightchange });
+    expect(onchromeheightchange).toHaveBeenCalledTimes(1);
+    expect(onchromeheightchange).toHaveBeenCalledWith(CHROME + PANE_BORDER + SCROLLBAR);
+  });
+
+  it('observes the chrome wrapper and the viewport once each, and disconnects when unmounted', () => {
+    const { container, unmount } = renderPane({
+      layout: 'embedded',
+      visible: true,
+      onchromeheightchange: vi.fn(),
+    });
+    const chrome = container.querySelector('.hex-chrome');
+    const viewport = container.querySelector('.hex-viewport');
+    expect(observed.filter((element) => element === chrome)).toHaveLength(1);
+    expect(observed).toContain(viewport);
+    unmount();
+    expect(disconnects).toBeGreaterThanOrEqual(1);
+  });
+
+  it('stays silent while nothing changes, and observes nothing when no parent asked', async () => {
+    const onchromeheightchange = vi.fn();
+    const { rerender } = renderPane({ layout: 'embedded', visible: true, onchromeheightchange });
+    await rerender({ layout: 'embedded', visible: true, onchromeheightchange, appearance: 'dark' });
+    expect(onchromeheightchange).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    observed = [];
+    const { container } = renderPane({ layout: 'embedded', visible: true });
+    expect(observed).not.toContain(container.querySelector('.hex-chrome'));
+  });
+});
+
+describe('HexPane chrome markup', () => {
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  it('gathers the toolbar, the hint and the read-error row into one measurable wrapper', () => {
+    const { container } = renderPane({ coverageReason: 'too-large' });
+    const chrome = container.querySelector('.hex-chrome')!;
+    expect(chrome.querySelector('.hex-toolbar')).not.toBeNull();
+    expect(chrome.querySelector('[data-hex-hint]')?.textContent).toContain('Result too large to index');
+    // The drawing surface stays outside the chrome the parent budgets against.
+    expect(chrome.querySelector('.hex-body')).toBeNull();
+    expect(container.querySelector('.hex-pane > .hex-body')).not.toBeNull();
   });
 });

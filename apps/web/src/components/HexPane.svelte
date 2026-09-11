@@ -13,6 +13,7 @@
     byteAtPoint,
     clampScrollRow,
     columnLayout,
+    hexByteX,
     offsetDigits,
     paneResizeBounds,
     rowsInView,
@@ -55,6 +56,12 @@
     onselectionchange: (range: { start: number; end: number } | null) => void;
     onfilter: (range: { start: number; end: number }) => void;
     onfilechange?: (file: string) => void;
+    /**
+     * Every vertical pixel of the pane that is NOT drawing surface: the `.hex-chrome` border box,
+     * the pane's own border, and the viewport's horizontal scrollbar. It is not the pane height.
+     * The parent's layout coordinator budgets hex rows against exactly this number.
+     */
+    onchromeheightchange?: (height: number) => void;
   }
 
   let {
@@ -75,6 +82,7 @@
     onselectionchange,
     onfilter,
     onfilechange = () => undefined,
+    onchromeheightchange,
   }: Props = $props();
 
   const COLLAPSED_KEY = 'byteql.hexpane.collapsed';
@@ -94,6 +102,12 @@
   // Fixed for the life of the instance: the geometry preferences below are read once at
   // construction, so a mid-life switch between modes is not a supported transition.
   const embedded = untrack(() => layout === 'embedded');
+
+  /**
+   * Also fixed for the life of the instance: a parent either budgets against this pane's chrome
+   * or it does not, and reading it once keeps an inline callback from rebuilding the observer.
+   */
+  const reportChromeTo = untrack(() => onchromeheightchange);
 
   /** Embedded, the parent dock owns these preferences; the pane must not read or write them. */
   function readGeometryPreference(key: string): string | null {
@@ -119,6 +133,7 @@
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let viewportEl = $state<HTMLDivElement | null>(null);
+  let chromeEl = $state<HTMLDivElement | null>(null);
   let gotoInput = $state<HTMLInputElement | null>(null);
   let rootEl = $state<HTMLElement | null>(null);
   let cache = $state<ByteCache | null>(null);
@@ -194,6 +209,10 @@
       selection = null;
       readError = false;
       flashRow = null;
+      // A new source starts at the first column, exactly as it starts at the first row. Ordinary
+      // resizing, hiding, appearance and tab changes leave the horizontal scroll alone.
+      byteScrollLeft = 0;
+      if (viewportEl) viewportEl.scrollLeft = 0;
       if (!current) {
         cache = null;
         return;
@@ -324,6 +343,13 @@
     canvas.style.height = `${cssHeight}px`;
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+    // The canvas only just took its width, so this is the first moment a restored horizontal
+    // scroll can land on a real scroll range. It clamps naturally against the current width.
+    if (restoreScrollLeft && viewportEl) {
+      restoreScrollLeft = false;
+      viewportEl.scrollLeft = byteScrollLeft;
+    }
+
     const style = getComputedStyle(canvas);
     const colors: HexColors = {
       background: readColor(style, '--color-surface-inset') || '#eeede5',
@@ -388,6 +414,7 @@
       scrollRow = clampScrollRow(row - Math.floor(view / 2), total, view);
     }
     if (moveCaret) apply({ type: 'point', offset, extend: false });
+    keepCaretHorizontallyVisible(offset);
     flash(row);
   }
 
@@ -396,6 +423,28 @@
     const row = rowOf(caret);
     if (row < scrollRow) scrollRow = clampScrollRow(row, total, view);
     else if (row >= scrollRow + view) scrollRow = clampScrollRow(row - view + 1, total, view);
+  }
+
+  /**
+   * Scrolls the narrow viewport just far enough to expose one byte's hex cell. Called only from
+   * explicit navigation — caret movement, goto and reveal — never from a paint or a resize, so an
+   * ordinary resize keeps the scroll and the selection the user left behind. While the pane is
+   * hidden there is no viewport to scroll, and exposure waits for the reveal/focus path to open it.
+   */
+  function keepCaretHorizontallyVisible(offset: number): void {
+    if (!viewportEl) return;
+    const left = hexByteX(metrics, columns, offset % BYTES_PER_ROW);
+    const right = left + 2 * metrics.charWidth;
+    if (left < viewportEl.scrollLeft) viewportEl.scrollLeft = left;
+    else if (right > viewportEl.scrollLeft + viewportEl.clientWidth) {
+      viewportEl.scrollLeft = right - viewportEl.clientWidth;
+    }
+  }
+
+  /** Explicit navigation: put the caret's row AND its hex cell in view. */
+  function keepCaretVisible(): void {
+    keepCaretInView();
+    if (caret !== null) keepCaretHorizontallyVisible(caret);
   }
 
   /** Apply a selection action and emit the range change. */
@@ -450,7 +499,7 @@
   function moveBy(delta: number, extend: boolean): void {
     if (selection === null) apply({ type: 'point', offset: 0, extend: false });
     else apply({ type: 'move', delta, extend, fileSize });
-    keepCaretInView();
+    keepCaretVisible();
   }
 
   let copyStatus = $state('');
@@ -481,13 +530,13 @@
     if (mod && event.key === 'Home') {
       event.preventDefault();
       apply({ type: 'point', offset: 0, extend: shift });
-      keepCaretInView();
+      keepCaretVisible();
       return;
     }
     if (mod && event.key === 'End') {
       event.preventDefault();
       apply({ type: 'point', offset: Math.max(0, fileSize - 1), extend: shift });
-      keepCaretInView();
+      keepCaretVisible();
       return;
     }
     switch (event.key) {
@@ -582,10 +631,47 @@
   }
 
   // --- Scrolling ----------------------------------------------------------
+  /**
+   * The viewport's horizontal scroll, held in component state so a viewport that is unmounted
+   * (collapsed dock, tab switch) and mounted again comes back where the user left it. The native
+   * scroll event is the single writer, so a programmatic scroll updates it too.
+   */
+  let byteScrollLeft = 0;
+  let restoreScrollLeft = false;
+
+  function onViewportScroll(): void {
+    if (viewportEl) byteScrollLeft = viewportEl.scrollLeft;
+  }
+
+  // Re-arm restoration whenever the conditionally rendered viewport is created again.
+  $effect(() => {
+    if (!viewportEl) return;
+    restoreScrollLeft = true;
+    schedulePaint();
+  });
+
+  /** Wheel delta for a horizontal gesture: a dominant deltaX, or Shift over the vertical axis. */
+  function horizontalWheelDelta(event: WheelEvent): number {
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return event.deltaX;
+    return event.shiftKey ? event.deltaY : 0;
+  }
+
   function onWheel(event: WheelEvent): void {
+    const element = viewportEl;
+    const sideways = horizontalWheelDelta(event);
+    if (sideways !== 0) {
+      const maxScroll = element ? element.scrollWidth - element.clientWidth : 0;
+      // Nothing to scroll sideways: leave the gesture to the page, and move no byte rows for it.
+      if (!element || maxScroll <= 0) return;
+      // deltaMode: 0 pixels, 1 lines (one byte row), 2 pages (one viewport width).
+      const unit =
+        event.deltaMode === 1 ? metrics.rowHeight : event.deltaMode === 2 ? element.clientWidth : 1;
+      event.preventDefault();
+      element.scrollLeft = Math.max(0, Math.min(maxScroll, element.scrollLeft + sideways * unit));
+      return;
+    }
     event.preventDefault();
-    const step = event.shiftKey ? view * Math.sign(event.deltaY) : 3 * Math.sign(event.deltaY);
-    scrollRow = clampScrollRow(scrollRow + step, total, view);
+    scrollRow = clampScrollRow(scrollRow + 3 * Math.sign(event.deltaY), total, view);
   }
 
   let thumbDragging = $state(false);
@@ -686,6 +772,39 @@
     return () => observer.disconnect();
   });
 
+  /**
+   * Reports every vertical pixel of this pane that cannot hold a byte row: the chrome wrapper's
+   * border box, the pane's own border, and the thickness of the viewport's horizontal scrollbar
+   * (the viewport itself has no border, so that difference is the scrollbar). Never the whole
+   * pane height — the parent owns that.
+   */
+  let reportedChrome = 0;
+  function reportChromeHeight(): void {
+    if (!reportChromeTo) return;
+    const chrome = chromeEl?.offsetHeight ?? 0;
+    const border = rootEl ? rootEl.offsetHeight - rootEl.clientHeight : 0;
+    const scrollbar = viewportEl ? viewportEl.offsetHeight - viewportEl.clientHeight : 0;
+    const height = chrome + border + scrollbar;
+    // A pane that is not laid out reports nothing rather than a zero the parent would budget for.
+    if (height <= 0 || height === reportedChrome) return;
+    reportedChrome = height;
+    reportChromeTo(height);
+  }
+
+  // One observer across the chrome wrapper and the viewport: the toolbar wraps, the hint and the
+  // read-error row come and go, and the horizontal scrollbar appears and disappears with width.
+  $effect(() => {
+    const chrome = chromeEl;
+    const viewport = viewportEl;
+    if (!reportChromeTo) return;
+    untrack(reportChromeHeight);
+    if (typeof window.ResizeObserver !== 'function') return;
+    const observer = new window.ResizeObserver(() => reportChromeHeight());
+    if (chrome) observer.observe(chrome);
+    if (viewport) observer.observe(viewport);
+    return () => observer.disconnect();
+  });
+
   // Track viewport height so the canvas fills the pane body.
   $effect(() => {
     const element = viewportEl;
@@ -750,83 +869,85 @@
     ></div>
   {/if}
 
-  <div class="hex-toolbar">
-    <div class="hex-readout" aria-hidden="true">
-      {#if caret !== null}
-        <span class="hex-readout-offset">{caretHex}</span>
-        {#if caretByte !== null}
-          <span class="hex-readout-byte">{caretByteHex} · {caretByte}</span>
+  <div bind:this={chromeEl} class="hex-chrome">
+    <div class="hex-toolbar">
+      <div class="hex-readout" aria-hidden="true">
+        {#if caret !== null}
+          <span class="hex-readout-offset">{caretHex}</span>
+          {#if caretByte !== null}
+            <span class="hex-readout-byte">{caretByteHex} · {caretByte}</span>
+          {/if}
+        {:else}
+          <span class="hex-readout-empty">No byte selected</span>
         {/if}
-      {:else}
-        <span class="hex-readout-empty">No byte selected</span>
+      </div>
+
+      <div class="hex-goto">
+        <input
+          bind:this={gotoInput}
+          class="hex-goto-input"
+          type="text"
+          inputmode="text"
+          placeholder="0x0"
+          aria-label="Go to offset"
+          aria-invalid={gotoInvalid}
+          onkeydown={onGotoKeydown}
+          oninput={onGotoInput}
+        />
+        {#if gotoInvalid}
+          <span class="hex-goto-error" role="alert">Enter an offset like 0x1a or 42</span>
+        {/if}
+      </div>
+
+      {#if files.length > 1}
+        <select
+          class="hex-file-switcher"
+          aria-label="Hex file"
+          value={currentFile ?? ''}
+          onchange={(event) => onfilechange((event.currentTarget as HTMLSelectElement).value)}
+        >
+          {#each files as file (file.name)}
+            <option value={file.name}>{file.name}</option>
+          {/each}
+        </select>
+      {/if}
+
+      {#if showFilter && range}
+        <button
+          type="button"
+          class="hex-action"
+          onclick={() => onfilter(range)}
+          aria-label="Filter results to selection"
+        >
+          Filter to selection
+        </button>
+      {/if}
+
+      {#if !embedded}
+        <button
+          type="button"
+          class="hex-collapse"
+          onclick={toggleCollapsed}
+          aria-label={collapsed ? 'Expand hex view' : 'Collapse hex view'}
+        >
+          {collapsed ? '▸' : '▾'}
+        </button>
       {/if}
     </div>
 
-    <div class="hex-goto">
-      <input
-        bind:this={gotoInput}
-        class="hex-goto-input"
-        type="text"
-        inputmode="text"
-        placeholder="0x0"
-        aria-label="Go to offset"
-        aria-invalid={gotoInvalid}
-        onkeydown={onGotoKeydown}
-        oninput={onGotoInput}
-      />
-      {#if gotoInvalid}
-        <span class="hex-goto-error" role="alert">Enter an offset like 0x1a or 42</span>
-      {/if}
-    </div>
-
-    {#if files.length > 1}
-      <select
-        class="hex-file-switcher"
-        aria-label="Hex file"
-        value={currentFile ?? ''}
-        onchange={(event) => onfilechange((event.currentTarget as HTMLSelectElement).value)}
-      >
-        {#each files as file (file.name)}
-          <option value={file.name}>{file.name}</option>
-        {/each}
-      </select>
+    {#if hintText}
+      <p class="hex-hint" data-hex-hint>{hintText}</p>
     {/if}
 
-    {#if showFilter && range}
-      <button
-        type="button"
-        class="hex-action"
-        onclick={() => onfilter(range)}
-        aria-label="Filter results to selection"
-      >
-        Filter to selection
-      </button>
-    {/if}
-
-    {#if !embedded}
-      <button
-        type="button"
-        class="hex-collapse"
-        onclick={toggleCollapsed}
-        aria-label={collapsed ? 'Expand hex view' : 'Collapse hex view'}
-      >
-        {collapsed ? '▸' : '▾'}
-      </button>
-    {/if}
-  </div>
-
-  {#if hintText}
-    <p class="hex-hint" data-hex-hint>{hintText}</p>
-  {/if}
-
-  {#if !hidden}
-    {#if readError}
+    {#if !hidden && readError}
       <div class="hex-error" role="alert">
         <span>Could not read part of this file — it may have changed on disk.</span>
         <button type="button" onclick={retryRead}>Retry</button>
       </div>
     {/if}
+  </div>
 
+  {#if !hidden}
     <div class="hex-body">
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -838,6 +959,7 @@
         bind:this={viewportEl}
         onkeydown={onCanvasKeydown}
         onwheel={onWheel}
+        onscroll={onViewportScroll}
       >
         <canvas
           bind:this={canvas}

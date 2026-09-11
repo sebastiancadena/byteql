@@ -264,6 +264,11 @@
   let metricsObserver: { schedule(): void; destroy(): void } | null = null;
   /** Until the byte pane reports its own chrome the budget assumes a single toolbar row. */
   const HEX_CHROME_FALLBACK = 36;
+  /** Non-drawing vertical pixels the embedded byte pane reports for itself. */
+  let hexChrome = $state(HEX_CHROME_FALLBACK);
+  const reportHexChrome = (height: number): void => {
+    hexChrome = height;
+  };
 
   function readMetrics(): LayoutMetrics | null {
     const main = mainElement;
@@ -280,7 +285,7 @@
       resultsToolbar: resultsToolbarElement?.offsetHeight ?? 0,
       strip: dockChrome.strip,
       tabs: dockChrome.tabs,
-      hexChrome: HEX_CHROME_FALLBACK,
+      hexChrome,
       // The divider track is whatever the pointer-size token renders it as.
       gutter: queryGutterElement?.offsetHeight ?? 0,
       dockCollapsed,
@@ -321,6 +326,7 @@
     void dockCollapsed;
     void bytesVisible;
     void dockChrome;
+    void hexChrome;
     metricsObserver?.schedule();
   });
 
@@ -759,6 +765,7 @@
       controller.selectByteRange(range && hexFile ? { file: hexFile, ...range } : null)}
     onfilter={(range) => hexFile && run(wrapFilterSql(draftSql || session.sql, { file: hexFile, ...range }))}
     onfilechange={switchHexFile}
+    onchromeheightchange={reportHexChrome}
   />
 {/snippet}
 

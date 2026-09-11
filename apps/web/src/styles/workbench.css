@@ -1040,6 +1040,13 @@
   outline: none;
 }
 
+/* Everything above the drawing surface, measured as one border box and reported to the
+   workspace's layout coordinator so it can budget hex rows against it. */
+.hex-chrome {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
 .hex-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1164,13 +1171,18 @@
 .hex-body {
   display: flex;
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 
+/* The viewport owns horizontal scrolling; vertical scrolling stays custom, in the adjacent
+   `.hex-scrollbar`. The canvas keeps its fixed 16-byte width and is never scaled to fit. */
 .hex-viewport {
   flex: 1;
+  min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: var(--color-surface-inset);
   touch-action: none;
 }
@@ -1182,6 +1194,8 @@
 
 .hex-canvas {
   display: block;
+  flex-shrink: 0;
+  max-width: none;
 }
 
 .hex-scrollbar {
