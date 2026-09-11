@@ -509,6 +509,26 @@ describe('resizeHandle keyboard handling', () => {
     action.destroy();
   });
 
+  it('ignores Escape combined with Ctrl, Alt, or Meta, leaving an active drag running', () => {
+    const spy = spies();
+    const handle = buildHandle();
+    const action = resizeHandle(handle, baseOptions(spy));
+
+    pointer(handle, 'pointerdown', { y: 100 });
+    for (const modifiers of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      const event = keydown(handle, 'Escape', modifiers);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(spy.oncancel).not.toHaveBeenCalled();
+
+    // The transaction the modified Escapes left alone still ends normally.
+    pointer(handle, 'pointerup', { y: 150 });
+    expect(spy.oncommit).toHaveBeenCalledOnce();
+    expect(spy.oncancel).not.toHaveBeenCalled();
+
+    action.destroy();
+  });
+
   it('resets via double-click after canceling any active transaction', () => {
     const spy = spies();
     const handle = buildHandle();

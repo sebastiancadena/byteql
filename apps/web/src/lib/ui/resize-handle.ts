@@ -35,7 +35,6 @@ interface Transaction {
   origin: number;
   /** The value the current baseline grows from. Rebased on clamp. */
   startValue: number;
-  lastCoordinate: number;
 }
 
 function coordinateFor(orientation: ResizeOptions['orientation'], event: PointerEvent): number {
@@ -75,7 +74,6 @@ export function resizeHandle(
       tx.origin = coordinate;
       tx.startValue = next;
     }
-    tx.lastCoordinate = coordinate;
     return next;
   }
 
@@ -147,7 +145,6 @@ export function resizeHandle(
       pointerId: event.pointerId,
       origin: coordinate,
       startValue: options.value,
-      lastCoordinate: coordinate,
     };
     document.body.style.cursor = cursorFor(options.orientation);
     document.body.style.userSelect = 'none';
@@ -218,6 +215,7 @@ export function resizeHandle(
 
   function onKeydown(event: KeyboardEvent): void {
     if (options.disabled) return;
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key === 'Escape') {
       if (active) {
         event.preventDefault();
@@ -225,7 +223,6 @@ export function resizeHandle(
       }
       return;
     }
-    if (event.ctrlKey || event.altKey || event.metaKey) return;
     const next = nextValueForKey(event);
     if (next === null) return;
     event.preventDefault();

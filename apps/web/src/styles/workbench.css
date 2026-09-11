@@ -448,6 +448,10 @@
    therefore is the only pane either divider exchanges space with. */
 .sql-workspace {
   --inspection-gutter: var(--panel-gutter);
+  /* Published by the layout coordinator; same purpose and fallbacks as `.app-shell`'s
+     `--sources-width` above — survive an unlaid-out first frame, never seen once mounted. */
+  --query-height: 116px;
+  --dock-height: 248px;
 
   display: grid;
   grid-template-areas:
@@ -594,6 +598,7 @@
 
 .trace-dock {
   --values-gutter: 0px;
+  --values-width: 256px;
 
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1206,7 +1211,13 @@
 }
 
 .hex-scrollbar {
+  /* Sized to the viewport's clientHeight (bound inline, in step with `viewportHeight`), not
+     stretched to the flex row's cross size — those two heights diverge by the horizontal
+     scrollbar's thickness whenever `.hex-viewport` overflows, which is exactly when a classic
+     (non-overlay) scrollbar is in play. Stretching here would put the track and the thumb math
+     in different coordinate spaces. */
   position: relative;
+  align-self: flex-start;
   flex: 0 0 12px;
   width: 12px;
   background: var(--color-surface);

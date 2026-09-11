@@ -250,6 +250,11 @@
    * It is presentation only — nothing here reaches the session controller. */
   const panels = createPanelLayout(browserStorage());
   const layout = $derived(panels.layout);
+  // Narrows the compact-mode effect below to the one field it cares about: `layout` itself is a
+  // fresh object on every recomputation, so an effect reading `layout.compact` directly would
+  // re-run on any layout change. This derived re-evaluates just as often, but Svelte only wakes
+  // dependents when the primitive value it resolves to actually flips.
+  const layoutCompact = $derived(layout.compact);
   /** The catalog is resizable only as an ordinary open column: the modal drawer has a fixed
    * width and a collapsed column has no edge, so neither renders a separator at all. */
   const sourcesResizable = $derived(!idle && !drawerMode && !explorerCollapsed);
@@ -332,11 +337,11 @@
 
   // The coordinator is the only thing that decides compact mode, and this is the only thing that
   // reads that decision. Declared after the measuring effect so the first run already sees a
-  // measured viewport instead of the coordinator's safe fallback. `layout.compact` is the sole
+  // measured viewport instead of the coordinator's safe fallback. `layoutCompact` is the sole
   // tracked dependency: everything the switch inspects is read untracked, because a mode change
   // is the only event allowed to move focus.
   $effect(() => {
-    const next = layout.compact;
+    const next = layoutCompact;
     untrack(() => switchCompactDock(next));
   });
 

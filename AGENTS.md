@@ -115,7 +115,9 @@ its vitest suites run without a browser).
   `replaceTables` (Arrow IPC in-memory only), serialized query path
 - `apps/web` — Svelte UI: `src/workers/parse.worker.ts` (probe registry → `FormatPack.open` →
   drain batches → one `ParseResult`), `src/lib/session/` (controller + state machine),
-  `src/components/`, `src/lib/viewers/` (capability-gated viewer registry; audio today)
+  `src/components/`, `src/lib/viewers/` (capability-gated viewer registry; audio today),
+  `src/lib/ui/` (layout-agnostic panel resizing/coordination: `resize-handle.ts`,
+  `use-panel-layout.svelte.ts`, `panel-layout.ts`)
 
 ## Commands (from repo root)
 
@@ -149,7 +151,9 @@ its vitest suites run without a browser).
 - Conventional-commit messages; no Co-Authored-By trailers or AI branding in commits, issues,
   or PRs.
 - TDD; unit tests co-located as `*.test.ts` (vitest), browser acceptance in `apps/web/e2e`.
-- Prettier + eslint run inside `check`; keep test output pristine.
+- `check` is `pnpm build && pnpm -r check && pnpm format:check` (build, per-package
+  `svelte-check`/`tsc`, and Prettier); eslint runs separately via `pnpm lint`. Keep test output
+  pristine.
 
 ## Key documents
 

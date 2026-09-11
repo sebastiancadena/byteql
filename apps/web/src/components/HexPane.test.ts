@@ -530,3 +530,48 @@ describe('HexPane chrome markup', () => {
     expect(container.querySelector('.hex-pane > .hex-body')).not.toBeNull();
   });
 });
+
+describe('HexPane vertical scrollbar track', () => {
+  // A classic (non-overlay) scrollbar carves real space out of the viewport's border box, so
+  // its clientHeight (what the thumb math uses as `viewportHeight`) is shorter than its
+  // offsetHeight (what flex `align-items: stretch` would size the track to).
+  const VIEWPORT_CLIENT = 100;
+  const VIEWPORT_OFFSET = 115;
+  const originals = new Map<string, PropertyDescriptor>();
+
+  function stubViewportBox(): void {
+    for (const name of ['offsetHeight', 'clientHeight'] as const) {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
+      if (descriptor) originals.set(name, descriptor);
+    }
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains('hex-viewport') ? VIEWPORT_OFFSET : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains('hex-viewport') ? VIEWPORT_CLIENT : 0;
+      },
+    });
+  }
+
+  afterEach(() => {
+    cleanup();
+    for (const [name, descriptor] of originals) {
+      Object.defineProperty(HTMLElement.prototype, name, descriptor);
+    }
+    originals.clear();
+    localStorage.clear();
+  });
+
+  it('sizes the scrollbar track from the same measurement the thumb math uses, not the viewport border box', () => {
+    stubViewportBox();
+    const { container } = renderPane();
+    const track = container.querySelector('.hex-scrollbar') as HTMLElement;
+    expect(track.style.height).toBe(`${VIEWPORT_CLIENT}px`);
+    expect(track.style.height).not.toBe(`${VIEWPORT_OFFSET}px`);
+  });
+});

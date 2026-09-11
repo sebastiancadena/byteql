@@ -972,7 +972,12 @@
         ></canvas>
       </div>
 
-      <div class="hex-scrollbar" onpointerdown={onTrackPointerdown} role="presentation">
+      <div
+        class="hex-scrollbar"
+        style:height={`${viewportHeight}px`}
+        onpointerdown={onTrackPointerdown}
+        role="presentation"
+      >
         <div
           class="hex-scrollbar-thumb"
           role="presentation"
