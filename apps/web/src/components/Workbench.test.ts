@@ -21,24 +21,65 @@ import Workbench from './Workbench.svelte';
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
 
-Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
-  configurable: true,
-  get() {
-    return this.classList.contains('grid-scroll') ? 360 : 0;
-  },
-});
-Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
-  configurable: true,
-  get() {
-    return this.classList.contains('grid-scroll') ? 360 : 0;
-  },
-});
-Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
-  configurable: true,
-  get() {
-    return this.classList.contains('grid-scroll') ? 960 : 0;
-  },
-});
+/**
+ * jsdom gives every element a zero box, so the panes the layout budget measures are declared
+ * here by class. These are the design's worked example: an 800 px workspace, 36 px toolbars,
+ * 8 px divider tracks and a 40 px trace strip, which solves to Query 116 / dock 248.
+ */
+const measuredHeights = new Map<string, number>([
+  ['grid-scroll', 360],
+  ['workbench-main', 800],
+  ['editor-heading', 36],
+  ['results-heading', 36],
+  ['query-notices', 0],
+  ['query-resize-slot', 8],
+  ['trace-dock-strip', 40],
+]);
+const measuredWidths = new Map<string, number>([
+  ['grid-scroll', 960],
+  ['workbench-main', 1216],
+  ['app-shell', 1440],
+]);
+
+function measured(sizes: Map<string, number>) {
+  return function (this: HTMLElement): number {
+    for (const [token, value] of sizes) if (this.classList.contains(token)) return value;
+    return 0;
+  };
+}
+
+for (const property of ['clientHeight', 'offsetHeight'] as const) {
+  Object.defineProperty(HTMLElement.prototype, property, {
+    configurable: true,
+    get: measured(measuredHeights),
+  });
+}
+for (const property of ['clientWidth', 'offsetWidth'] as const) {
+  Object.defineProperty(HTMLElement.prototype, property, {
+    configurable: true,
+    get: measured(measuredWidths),
+  });
+}
+
+const sqlWorkspace = (): HTMLElement => document.querySelector('.sql-workspace') as HTMLElement;
+
+/** jsdom has no PointerEvent constructor; the fields the resize action reads are set by hand. */
+function pointer(target: HTMLElement, type: string, clientY: number, pointerId = 1): void {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    pointerId: { value: pointerId },
+    isPrimary: { value: true },
+    button: { value: 0 },
+    clientX: { value: 0 },
+    clientY: { value: clientY },
+  });
+  target.dispatchEvent(event);
+}
+
+/** Waits for the first measured frame to reach the coordinator. */
+async function settleLayout(): Promise<void> {
+  await vi.waitFor(() => expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('116px'));
+}
 
 const textOf = (element: Element): string => element.textContent ?? '';
 
@@ -198,6 +239,10 @@ const removeMediaListener = vi.fn();
 
 describe('Inspector Workbench', () => {
   beforeEach(() => {
+    // These renders share one localStorage, so the geometry preferences start from a known
+    // baseline rather than from whatever the previous test happened to leave behind.
+    localStorage.clear();
+    localStorage.setItem('byteql.hexpane.collapsed', 'false');
     compactMode = false;
     addMediaListener.mockClear();
     removeMediaListener.mockClear();
@@ -215,6 +260,8 @@ describe('Inspector Workbench', () => {
     cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    measuredHeights.set('query-notices', 0);
+    measuredHeights.set('workbench-main', 800);
   });
 
   it('explains local processing and exposes accessible source actions in the empty state', async () => {
@@ -549,24 +596,176 @@ describe('Inspector Workbench', () => {
     expect(destroy).toHaveBeenCalledOnce();
   });
 
-  it('keeps the inspection dock anchored after the flexible results panel as diagnostics come and go', async () => {
+  it('keeps every workspace pane in its own named area as diagnostics come and go', async () => {
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
+    await settleLayout();
 
-    const workspace = document.querySelector('.sql-workspace') as HTMLElement;
-    const dock = workspace.querySelector('[data-trace-dock]') as HTMLElement;
-    // The workspace grid sizes rows positionally, so conditional diagnostics must never shift
-    // how children map to grid rows. The dock's resize budget comes from an explicit reference
-    // to the results panel, not from sibling order.
-    expect(workspace.lastElementChild).toBe(dock);
-    expect(dock.previousElementSibling?.classList.contains('results-panel')).toBe(true);
-    const childCount = workspace.children.length;
+    const areas = [
+      'editor-heading',
+      'query-pane',
+      'query-notices',
+      'query-resize-slot',
+      'results-heading',
+      'results-panel',
+      'inspection-resize-slot',
+      'trace-dock',
+    ];
+    const panes = (): string[] =>
+      Array.from(sqlWorkspace().children).map((child) => child.classList[0] ?? '');
+    expect(panes()).toEqual(areas);
 
+    const notices = sqlWorkspace().querySelector('.query-notices');
+    const dock = sqlWorkspace().querySelector('[data-trace-dock]');
+
+    // A diagnostic grows the notices pane in place. It adds no pane and moves nothing.
     controller.publish({ ...controller.state, queryError: 'Unexpected token near FROM' });
-    await vi.waitFor(() => expect(within(workspace).getByRole('alert')).toBeTruthy());
-    expect(workspace.children.length).toBe(childCount);
-    expect(workspace.lastElementChild).toBe(dock);
-    expect(dock.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+    await vi.waitFor(() => expect(within(sqlWorkspace()).getByRole('alert')).toBeTruthy());
+    expect(panes()).toEqual(areas);
+    expect(sqlWorkspace().querySelector('.query-notices')).toBe(notices);
+    expect(sqlWorkspace().querySelector('[data-trace-dock]')).toBe(dock);
+
+    controller.publish({ ...controller.state, queryError: null });
+    await vi.waitFor(() => expect(within(sqlWorkspace()).queryByRole('alert')).toBeNull());
+    expect(panes()).toEqual(areas);
+    expect(sqlWorkspace().querySelector('[data-trace-dock]')).toBe(dock);
+  });
+
+  it('solves the vertical budget from measured chrome and publishes it to the grid', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    // 800 px of workspace less 36 + 0 + 36 + 8 + 8 of chrome leaves a 712 px budget.
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+
+    const query = screen.getByRole('separator', { name: 'Resize query' });
+    expect(query.getAttribute('aria-valuenow')).toBe('116');
+    expect(query.getAttribute('aria-valuemin')).toBe('80');
+    // 712 - 248 of dock - 128 of results minimum.
+    expect(query.getAttribute('aria-valuemax')).toBe('336');
+    expect(query.getAttribute('aria-controls')).toBe('query-pane');
+
+    const inspection = screen.getByRole('separator', { name: 'Resize inspection' });
+    expect(inspection.getAttribute('aria-valuenow')).toBe('248');
+    // 40 of strip, no tab row, and a 112 px body floor.
+    expect(inspection.getAttribute('aria-valuemin')).toBe('152');
+    expect(inspection.getAttribute('aria-valuemax')).toBe('468');
+    expect(inspection.getAttribute('aria-controls')).toBe('inspection-pane');
+    expect(document.getElementById('inspection-pane')?.dataset.traceDock).toBe('');
+  });
+
+  it('charges a wrapped notices row to the budget rather than to the panes', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    measuredHeights.set('query-notices', 48);
+    window.dispatchEvent(new Event('resize'));
+
+    const query = screen.getByRole('separator', { name: 'Resize query' });
+    await vi.waitFor(() => expect(query.getAttribute('aria-valuemax')).toBe('288'));
+    // The panes keep their sizes; only the space they may still claim shrank.
+    expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('116px');
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+  });
+
+  it('keeps both dividers usable while a query is running', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    controller.publish({ ...controller.state, phase: 'querying' });
+    const editor = screen.getByRole('textbox', { name: 'SQL query' });
+    await vi.waitFor(() => expect(editor.getAttribute('contenteditable')).toBe('false'));
+
+    for (const name of ['Resize query', 'Resize inspection']) {
+      const separator = screen.getByRole('separator', { name });
+      expect(separator.getAttribute('aria-disabled')).toBeNull();
+      expect(separator.getAttribute('tabindex')).toBe('0');
+    }
+
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize query' }), {
+      key: 'ArrowDown',
+    });
+    expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('134px');
+    expect(controller.runQuery).not.toHaveBeenCalled();
+  });
+
+  it('removes the inspection divider and its track when the dock is collapsed', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Hide inspection' }));
+    await vi.waitFor(() => expect(screen.queryByRole('separator', { name: 'Resize inspection' })).toBeNull());
+    expect(document.querySelector('.inspection-resize-slot')).toBeNull();
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('auto');
+    expect(sqlWorkspace().style.getPropertyValue('--inspection-gutter')).toBe('0px');
+    // Query keeps its divider, and the collapsed dock keeps no height of its own.
+    expect(screen.getByRole('separator', { name: 'Resize query' })).toBeTruthy();
+    expect((document.querySelector('[data-trace-dock]') as HTMLElement).style.height).toBe('');
+  });
+
+  it('resizing runs no session work and leaves the editor document and history intact', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    const host = document.querySelector('.sql-editor') as HTMLElement;
+    const view = EditorView.findFromDOM(host)!;
+    const original = view.state.doc.toString();
+    view.dispatch({ changes: { from: 0, to: original.length, insert: 'select 7' } });
+    controller.runQuery.mockClear();
+    controller.selectResultRow.mockClear();
+
+    const separator = screen.getByRole('separator', { name: 'Resize query' });
+    await fireEvent.keyDown(separator, { key: 'ArrowDown' });
+    await fireEvent.keyDown(separator, { key: 'ArrowUp' });
+
+    expect(controller.runQuery).not.toHaveBeenCalled();
+    expect(controller.openFile).not.toHaveBeenCalled();
+    expect(controller.openFiles).not.toHaveBeenCalled();
+    expect(controller.selectResultRow).not.toHaveBeenCalled();
+
+    // The same host, the same EditorView, the same document.
+    expect(document.querySelector('.sql-editor')).toBe(host);
+    expect(EditorView.findFromDOM(host)).toBe(view);
+    expect(view.state.doc.toString()).toBe('select 7');
+
+    // And the edit made before the resize is still undoable.
+    await fireEvent.keyDown(view.contentDOM, { key: 'z', ctrlKey: true });
+    expect(view.state.doc.toString()).toBe(original);
+  });
+
+  it('completes a drag that spans a result generation replacement', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    const separator = screen.getByRole('separator', { name: 'Resize query' });
+    Object.assign(separator, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: vi.fn(() => true),
+      releasePointerCapture: vi.fn(),
+    });
+
+    pointer(separator, 'pointerdown', 400);
+    controller.publish({
+      ...controller.state,
+      result: pagedResult(result, { generation: 2 }),
+    });
+    await vi.waitFor(() => expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy());
+    pointer(separator, 'pointerup', 460);
+
+    // Dragging down 60 px grows Query by 60 and takes it from Results alone.
+    await vi.waitFor(() => expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('176px'));
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+    expect(controller.runQuery).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem('byteql.ui.layout.v1')!)).toMatchObject({
+      queryHeight: 176,
+      dockHeight: 248,
+    });
   });
 
   it('keeps the whole workbench visible instead of tabbing Results against Values', () => {

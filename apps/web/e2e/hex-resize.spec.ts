@@ -2,10 +2,11 @@ import { expect, test } from '@playwright/test';
 
 import { openMidiSample } from './support/app.js';
 
-// Regression: the inspection dock's resize grabber overlaps the trace strip below it. It must
-// stay stacked above that strip, otherwise the strip swallows the pointerdown and
-// drag-to-resize silently does nothing — the cursor changes on hover but the dock never moves.
-// The dock owns this separator now; `.hex-resize` is kept as its compatibility class.
+// Regression: the inspection divider used to overlap the chrome next to it, which swallowed the
+// pointerdown and made drag-to-resize silently do nothing — the cursor changed on hover but the
+// dock never moved. The divider now lives in the workspace, in a track of its own between
+// Results and the dock; `.hex-resize` is kept as its compatibility class. It must still be the
+// topmost element at its own centre, and must still not overlap either neighbour.
 // A taller viewport than the default: at 720p the workspace rows already sit at their minimums,
 // so the dock honestly has no room to grow (it never fakes growth into clipped overflow).
 test.use({ viewport: { width: 1280, height: 960 } });
@@ -39,7 +40,7 @@ test('dock resize grabber drags the inspection dock taller', async ({ page }) =>
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
 
-  // The grabber — not the strip beneath it — must be topmost at its own center.
+  // The grabber — not the chrome around it — must be topmost at its own center.
   const topmostClass = await page.evaluate(
     ({ px, py }) => (document.elementFromPoint(px, py) as HTMLElement | null)?.className ?? '',
     { px: x, py: y },
@@ -47,6 +48,13 @@ test('dock resize grabber drags the inspection dock taller', async ({ page }) =>
   expect(topmostClass).toContain('hex-resize');
 
   const before = await dockBox(page);
+
+  // Its track is its own: it sits under Results and over the dock, overlapping neither.
+  const resultsBottom = await page
+    .locator('.results-panel')
+    .evaluate((el) => (el as HTMLElement).getBoundingClientRect().bottom);
+  expect(box.y).toBeGreaterThanOrEqual(resultsBottom - 1);
+  expect(box.y + box.height).toBeLessThanOrEqual(before.top + 1);
 
   // Drag the top grabber upward → the dock grows.
   await page.mouse.move(x, y);

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TraceSummary } from '../lib/ui/trace.js';
 import TraceDockHarness from './TraceDock.harness.svelte';
@@ -13,11 +13,36 @@ const linked: TraceSummary = {
   label: '0x00000062–0x000000c3 · 98 bytes',
 };
 
+/** jsdom gives every element a zero box, so the two measured rows are declared explicitly. */
+const chromeHeights = new Map<string, number>();
+
+class FakeResizeObserver {
+  static instances: FakeResizeObserver[] = [];
+  observed: Element[] = [];
+
+  constructor(readonly callback: () => void) {
+    FakeResizeObserver.instances.push(this);
+  }
+
+  observe(element: Element): void {
+    this.observed.push(element);
+  }
+
+  disconnect(): void {
+    this.observed = [];
+  }
+}
+
+const notifyObservers = (): void => {
+  for (const observer of FakeResizeObserver.instances) observer.callback();
+};
+
 function renderDock(overrides: Record<string, unknown> = {}) {
   const handlers = {
     oncollapsedchange: vi.fn(),
     ontabchange: vi.fn(),
     onreveal: vi.fn(),
+    onchromechange: vi.fn(),
   };
   const view = render(TraceDockHarness, {
     summary: linked,
@@ -25,7 +50,6 @@ function renderDock(overrides: Record<string, unknown> = {}) {
     compact: false,
     showValues: true,
     tab: 'bytes',
-    resultsElement: null,
     ...handlers,
     ...overrides,
   });
@@ -34,105 +58,117 @@ function renderDock(overrides: Record<string, unknown> = {}) {
 
 const dock = (): HTMLElement => document.querySelector<HTMLElement>('[data-trace-dock]')!;
 
-/** jsdom reports every clientHeight as 0, so the results panel is measured explicitly. */
-function measuredResults(clientHeight: number): HTMLElement {
-  const element = document.createElement('div');
-  Object.defineProperty(element, 'clientHeight', { configurable: true, value: clientHeight });
-  return element;
-}
+beforeEach(() => {
+  chromeHeights.clear();
+  chromeHeights.set('trace-dock-strip', 40);
+  chromeHeights.set('trace-dock-tabs', 36);
+  FakeResizeObserver.instances = [];
+  vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      for (const [token, value] of chromeHeights) {
+        if (this.classList.contains(token)) return value;
+      }
+      return 0;
+    },
+  });
+});
 
 afterEach(() => {
   cleanup();
-  localStorage.clear();
+  vi.unstubAllGlobals();
 });
 
 describe('TraceDock geometry', () => {
-  it('owns an explicit height only while expanded', async () => {
-    const { rerender } = renderDock();
-    expect(dock().style.height).toBe('248px');
+  it('takes its height from the workspace and only while expanded', async () => {
+    const { rerender } = renderDock({ height: 320 });
+    expect(dock().style.height).toBe('320px');
     expect(dock().getAttribute('data-dock-collapsed')).toBe('false');
 
-    await rerender({ collapsed: true, summary: linked, compact: false, showValues: true, tab: 'bytes' });
+    await rerender({
+      summary: linked,
+      compact: false,
+      showValues: true,
+      tab: 'bytes',
+      height: 420,
+      collapsed: false,
+    });
+    expect(dock().style.height).toBe('420px');
+
+    // Collapsed the strip alone decides how tall the dock is.
+    await rerender({
+      summary: linked,
+      compact: false,
+      showValues: true,
+      tab: 'bytes',
+      height: 420,
+      collapsed: true,
+    });
     expect(dock().style.height).toBe('');
     expect(dock().getAttribute('data-dock-collapsed')).toBe('true');
   });
 
-  it('starts from a validated stored height', () => {
-    localStorage.setItem('byteql.hexpane.height', 'garbage');
+  it('publishes the resolved Values width and an addressable pane id', () => {
+    renderDock({ valuesWidth: 288 });
+    expect(dock().style.getPropertyValue('--values-width')).toBe('288px');
+    expect(dock().id).toBe('inspection-pane');
+  });
+
+  it('owns no separator of its own — the workspace does', () => {
     renderDock();
-    expect(dock().style.height).toBe('248px');
-    cleanup();
-
-    localStorage.setItem('byteql.hexpane.height', '320');
-    renderDock();
-    expect(dock().style.height).toBe('320px');
+    expect(screen.queryByRole('separator')).toBeNull();
   });
 
-  it('exposes a labelled separator with numeric bounds', () => {
-    renderDock();
-    const separator = screen.getByRole('separator', { name: 'Resize inspection' });
-    expect(separator.getAttribute('aria-orientation')).toBe('horizontal');
-    expect(separator.getAttribute('tabindex')).toBe('0');
-    expect(Number(separator.getAttribute('aria-valuenow'))).toBe(248);
-    expect(Number(separator.getAttribute('aria-valuemin'))).toBe(152);
-    expect(Number(separator.getAttribute('aria-valuemax'))).toBeGreaterThanOrEqual(248);
+  it('keeps no height preference of its own in storage', async () => {
+    const { onchromechange } = renderDock();
+    await fireEvent.click(screen.getByRole('button', { name: 'Hide inspection' }));
+    expect(localStorage.getItem('byteql.hexpane.height')).toBeNull();
+    expect(onchromechange).toHaveBeenCalled();
   });
 
-  it('keeps the compatibility class that pins it above adjacent chrome', () => {
-    renderDock();
-    expect(screen.getByRole('separator', { name: 'Resize inspection' }).classList).toContain('hex-resize');
+  it('reports the strip height on mount and again when the strip wraps', async () => {
+    const { onchromechange } = renderDock();
+    expect(onchromechange).toHaveBeenCalledExactlyOnceWith({ strip: 40, tabs: 0 });
+
+    chromeHeights.set('trace-dock-strip', 72);
+    notifyObservers();
+    await Promise.resolve();
+    expect(onchromechange).toHaveBeenLastCalledWith({ strip: 72, tabs: 0 });
+
+    // An unchanged measurement is not news.
+    notifyObservers();
+    expect(onchromechange).toHaveBeenCalledTimes(2);
   });
 
-  it('changes height by one row with the arrows and persists it', async () => {
-    renderDock({ resultsElement: measuredResults(360) });
-    const separator = screen.getByRole('separator', { name: 'Resize inspection' });
+  it('reports the tab row height only while the tabs are on screen', async () => {
+    const { onchromechange, rerender } = renderDock({ compact: true });
+    expect(onchromechange).toHaveBeenLastCalledWith({ strip: 40, tabs: 36 });
 
-    await fireEvent.keyDown(separator, { key: 'ArrowDown' });
-    expect(dock().style.height).toBe('230px');
-    expect(localStorage.getItem('byteql.hexpane.height')).toBe('230');
-
-    await fireEvent.keyDown(separator, { key: 'ArrowUp' });
-    expect(dock().style.height).toBe('248px');
-    expect(localStorage.getItem('byteql.hexpane.height')).toBe('248');
-  });
-
-  it('stops at its minimum and at the space the results panel can spare', async () => {
-    renderDock({ resultsElement: measuredResults(360) });
-    const separator = screen.getByRole('separator', { name: 'Resize inspection' });
-
-    await fireEvent.keyDown(separator, { key: 'Home' });
-    expect(dock().style.height).toBe('152px');
-
-    // 360 px of results, 128 px of which the grid keeps: 232 px of slack.
-    await fireEvent.keyDown(separator, { key: 'End' });
-    expect(dock().style.height).toBe('384px');
-  });
-
-  it('will not grow when the results panel has nothing to spare', async () => {
-    renderDock({ resultsElement: measuredResults(128) });
-    const separator = screen.getByRole('separator', { name: 'Resize inspection' });
-
-    await fireEvent.keyDown(separator, { key: 'ArrowUp' });
-    expect(dock().style.height).toBe('248px');
-  });
-
-  it('drops pointer capture when a drag is cancelled', async () => {
-    renderDock();
-    const separator = screen.getByRole('separator', { name: 'Resize inspection' });
-    const release = vi.fn();
-    Object.assign(separator, {
-      setPointerCapture: vi.fn(),
-      hasPointerCapture: vi.fn(() => true),
-      releasePointerCapture: release,
+    await rerender({
+      summary: linked,
+      compact: true,
+      showValues: true,
+      tab: 'bytes',
+      collapsed: true,
     });
+    expect(onchromechange).toHaveBeenLastCalledWith({ strip: 40, tabs: 0 });
+  });
 
-    await fireEvent.pointerDown(separator, { pointerId: 1, clientY: 400 });
-    await fireEvent.pointerCancel(separator, { pointerId: 1 });
-    expect(release).toHaveBeenCalledWith(1);
+  it('keeps the same panel nodes across height, collapse and tab changes', async () => {
+    const { rerender } = renderDock({ compact: true, height: 248 });
+    const values = screen.getByTestId('values-panel');
+    const bytes = screen.getByTestId('bytes-panel');
 
-    // A cancelled drag leaves no residual dragging state.
-    await fireEvent.pointerMove(separator, { pointerId: 1, clientY: 100 });
-    expect(dock().style.height).toBe('248px');
+    for (const next of [
+      { height: 320, collapsed: false, tab: 'values' as const },
+      { height: 320, collapsed: true, tab: 'values' as const },
+      { height: 200, collapsed: false, tab: 'bytes' as const },
+    ]) {
+      await rerender({ summary: linked, compact: true, showValues: true, ...next });
+      expect(screen.getByTestId('values-panel')).toBe(values);
+      expect(screen.getByTestId('bytes-panel')).toBe(bytes);
+    }
   });
 });
 
@@ -155,7 +191,6 @@ describe('TraceDock composition', () => {
   it('shows only the trace strip when collapsed, without unmounting its panels', () => {
     renderDock({ collapsed: true });
     expect(screen.getByRole('region', { name: 'Source trace' })).toBeTruthy();
-    expect(screen.queryByRole('separator', { name: 'Resize inspection' })).toBeNull();
 
     // Hidden, not destroyed: collapsing must not reset caret, scroll or playback.
     expect(screen.getByTestId('values-panel').closest('[hidden]')).not.toBeNull();
@@ -230,12 +265,5 @@ describe('TraceDock compact tabs', () => {
 
     await fireEvent.keyDown(bytes, { key: 'ArrowLeft' });
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Values' }));
-  });
-
-  it('reserves room for the tab row in its minimum height', async () => {
-    renderDock({ compact: true, tab: 'bytes' });
-    const separator = screen.getByRole('separator', { name: 'Resize inspection' });
-    await fireEvent.keyDown(separator, { key: 'Home' });
-    expect(dock().style.height).toBe('188px');
   });
 });

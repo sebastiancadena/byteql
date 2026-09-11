@@ -13,6 +13,11 @@
   import { containFocus } from '../lib/ui/focus.js';
   import { applyTheme, readTheme, type Theme } from '../lib/ui/theme.js';
   import { buildTraceSummary } from '../lib/ui/trace.js';
+  import {
+    createPanelLayout,
+    observePanelMetrics,
+    type LayoutMetrics,
+  } from '../lib/ui/use-panel-layout.svelte.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import {
     compatibleTableViewers,
@@ -24,6 +29,7 @@
   import Explorer from './Explorer.svelte';
   import HexPane from './HexPane.svelte';
   import Inspector from './Inspector.svelte';
+  import ResizeHandle from './ResizeHandle.svelte';
   import ResultGrid from './ResultGrid.svelte';
   import ResultsDownload from './ResultsDownload.svelte';
   import ShortcutsOverlay from './ShortcutsOverlay.svelte';
@@ -77,8 +83,11 @@
   const explorerCollapsed = $derived(drawerMode ? !drawerOpen : columnCollapsed);
 
   function toggleSources(): void {
-    if (drawerMode) drawerOpen = !drawerOpen;
-    else columnCollapsed = !columnCollapsed;
+    if (drawerMode) {
+      // The drawer is modal: no divider transaction may survive underneath it.
+      if (!drawerOpen) panels.cancel();
+      drawerOpen = !drawerOpen;
+    } else columnCollapsed = !columnCollapsed;
   }
 
   function closeDrawer(): void {
@@ -87,13 +96,18 @@
   /** Below 1280 px the dock tabs Values and Bytes instead of showing them side by side. */
   let compactDock = $state(false);
   let dockTab = $state<'values' | 'bytes'>('bytes');
-  let resultsElement = $state<HTMLElement | null>(null);
   let overviewSource: string | null = null;
   let activeViewerId = $state<string | null>(null);
   let dragCounter = 0;
   let dropActive = $state(false);
   let filePickerInput = $state<HTMLInputElement>();
   let shortcutsOpen = $state(false);
+
+  function setShortcutsOpen(open: boolean): void {
+    // The overlay takes focus; any divider transaction ends before it does.
+    if (open) panels.cancel();
+    shortcutsOpen = open;
+  }
   let emptyState = $state<ReturnType<typeof EmptyState> | null>(null);
 
   const idle = $derived(session.phase === 'idle' || session.phase === 'failed');
@@ -209,6 +223,8 @@
   }
 
   function setDockCollapsed(collapsed: boolean): void {
+    // Collapsing removes the inspection divider; no transaction may outlive its handle.
+    if (collapsed) panels.cancel();
     dockCollapsed = collapsed;
     try {
       localStorage.setItem('byteql.hexpane.collapsed', String(collapsed));
@@ -221,6 +237,73 @@
     !dockCollapsed && (compactDock ? dockTab === 'values' : !inspectorCollapsed),
   );
   const bytesVisible = $derived(!dockCollapsed && (!compactDock || dockTab === 'bytes'));
+
+  /** One owner for every resizable panel: preferences, effective sizes, and drag transactions.
+   * It is presentation only — nothing here reaches the session controller. */
+  const panels = createPanelLayout(browserStorage());
+  const layout = $derived(panels.layout);
+  let shellElement = $state<HTMLElement | null>(null);
+  let mainElement = $state<HTMLElement | null>(null);
+  let queryToolbarElement = $state<HTMLElement | null>(null);
+  let noticesElement = $state<HTMLElement | null>(null);
+  let resultsToolbarElement = $state<HTMLElement | null>(null);
+  let queryGutterElement = $state<HTMLElement | null>(null);
+  /** Border-box heights the dock reports for its strip and, when tabbed, its tab row. */
+  let dockChrome = $state({ strip: 40, tabs: 0 });
+  let metricsObserver: { schedule(): void; destroy(): void } | null = null;
+  /** Until the byte pane reports its own chrome the budget assumes a single toolbar row. */
+  const HEX_CHROME_FALLBACK = 36;
+
+  function readMetrics(): LayoutMetrics | null {
+    const main = mainElement;
+    if (!main) return null;
+    return {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      shellWidth: shellElement?.clientWidth ?? main.clientWidth,
+      // The budget is the height the workspace was given, never the height its rows grew to.
+      workspaceHeight: main.clientHeight,
+      dockWidth: main.clientWidth,
+      queryToolbar: queryToolbarElement?.offsetHeight ?? 0,
+      notices: noticesElement?.offsetHeight ?? 0,
+      resultsToolbar: resultsToolbarElement?.offsetHeight ?? 0,
+      strip: dockChrome.strip,
+      tabs: dockChrome.tabs,
+      hexChrome: HEX_CHROME_FALLBACK,
+      // The divider track is whatever the pointer-size token renders it as.
+      gutter: queryGutterElement?.offsetHeight ?? 0,
+      dockCollapsed,
+      bytesVisible,
+    };
+  }
+
+  // Rebuilt only when a bound element is replaced — never when one of them merely changes size.
+  $effect(() => {
+    const elements = [
+      shellElement,
+      mainElement,
+      queryToolbarElement,
+      noticesElement,
+      resultsToolbarElement,
+      queryGutterElement,
+    ].filter((element): element is HTMLElement => element !== null);
+    if (elements.length === 0) return;
+    const observer = observePanelMetrics(readMetrics, elements, (value) => panels.measure(value));
+    metricsObserver = observer;
+    return () => {
+      observer.destroy();
+      metricsObserver = null;
+    };
+  });
+
+  // Collapse, tab mode and the dock's reported chrome are state rather than geometry, so they
+  // have to ask for the next measurement themselves.
+  $effect(() => {
+    void dockCollapsed;
+    void bytesVisible;
+    void dockChrome;
+    metricsObserver?.schedule();
+  });
 
   // Memoize on result identity: session is reassigned on every publish (caret moves, progress
   // events), but buildCoverage must run once per result, not once per publish.
@@ -514,7 +597,7 @@
     const mod = event.metaKey || event.ctrlKey;
     if (event.key === '?' && !mod && !inEditableTarget(event)) {
       event.preventDefault();
-      shortcutsOpen = !shortcutsOpen;
+      setShortcutsOpen(!shortcutsOpen);
       return;
     }
     if (!mod) return;
@@ -586,10 +669,11 @@
 {/snippet}
 
 {#if shortcutsOpen}
-  <ShortcutsOverlay onclose={() => (shortcutsOpen = false)} />
+  <ShortcutsOverlay onclose={() => setShortcutsOpen(false)} />
 {/if}
 
 <div
+  bind:this={shellElement}
   class:explorer-collapsed={explorerCollapsed}
   class="app-shell"
   role="presentation"
@@ -611,7 +695,7 @@
     {intakeBusy}
     {appearance}
     onappearancechange={changeAppearance}
-    onshortcuts={() => (shortcutsOpen = true)}
+    onshortcuts={() => setShortcutsOpen(true)}
     ontoggleexplorer={idle ? undefined : toggleSources}
     ontoggleinspector={idle ? undefined : showValues}
     onopen={idle ? undefined : openPicker}
@@ -691,14 +775,23 @@
          neither clickable nor tab-reachable. Only this subtree — never an ancestor of the
          drawer itself — is marked. -->
     <div
+      bind:this={mainElement}
       class="workbench-main"
       role="main"
       aria-label="Results"
       inert={drawerMode && !explorerCollapsed}
       data-trace-linked={traceSummary.kind === 'linked'}
     >
-      <section class="sql-workspace" aria-label="SQL workspace">
-        <div class="editor-heading">
+      <!-- Named grid areas, so a notice or a removed divider can never shift what a row means.
+           The two vertical sizes are the coordinator's, published as custom properties. -->
+      <section
+        class="sql-workspace"
+        aria-label="SQL workspace"
+        style:--query-height={`${layout.queryHeight}px`}
+        style:--dock-height={dockCollapsed ? 'auto' : `${layout.dockHeight}px`}
+        style:--inspection-gutter={dockCollapsed ? '0px' : null}
+      >
+        <div bind:this={queryToolbarElement} class="editor-heading">
           <h1>Query</h1>
           <div class="query-actions">
             <span class="shortcut" aria-hidden="true">⌘ Enter</span>
@@ -722,18 +815,21 @@
           </div>
         </div>
 
-        <SqlEditor
-          bind:this={sqlEditor}
-          sql={draftSql}
-          {appearance}
-          disabled={session.phase === 'querying'}
-          onrun={run}
-          onchange={(sql) => (draftSql = sql)}
-        />
+        <!-- A wrapper supplies the grid area; the editor host and its EditorView are untouched
+             by resizing, so the document, undo history and selection all survive. -->
+        <div id="query-pane" class="query-pane">
+          <SqlEditor
+            bind:this={sqlEditor}
+            sql={draftSql}
+            {appearance}
+            disabled={session.phase === 'querying'}
+            onrun={run}
+            onchange={(sql) => (draftSql = sql)}
+          />
+        </div>
 
-        <!-- Always present so the workspace grid's positional rows never shift when
-             diagnostics come and go; empty it collapses to a zero-height row. -->
-        <div class="query-notices">
+        <!-- Always present, so the notices row has an element to measure even when empty. -->
+        <div bind:this={noticesElement} class="query-notices">
           {#if session.queryError || actionError}
             <div class="query-diagnostic" role="alert">
               <strong>Query diagnostic</strong>
@@ -754,7 +850,25 @@
           {/each}
         </div>
 
-        <div class="results-heading">
+        <div bind:this={queryGutterElement} class="query-resize-slot">
+          <ResizeHandle
+            orientation="horizontal"
+            direction={1}
+            value={layout.queryHeight}
+            min={layout.queryBounds.min}
+            max={layout.queryBounds.max}
+            cancelEpoch={panels.cancelEpoch}
+            onstart={() => panels.begin('query')}
+            onpreview={(value) => panels.preview('query', value)}
+            oncommit={(value) => panels.commit('query', value)}
+            oncancel={() => panels.cancel()}
+            onreset={() => panels.reset('query')}
+            label="Resize query"
+            controls="query-pane"
+          />
+        </div>
+
+        <div bind:this={resultsToolbarElement} class="results-heading">
           <h2>Results</h2>
           <div class="results-heading-meta">
             {#if session.result}
@@ -771,7 +885,7 @@
           </div>
         </div>
 
-        <div class="results-panel" bind:this={resultsElement}>
+        <div class="results-panel">
           {#if session.result}
             {#key session.result.generation}
               <ResultGrid
@@ -813,6 +927,29 @@
           {/if}
         </div>
 
+        {#if !dockCollapsed}
+          <!-- `.hex-resize` stays as a compatibility class: the topmost-hit-test regression it
+               names still applies, now to a divider that owns a real track of its own. -->
+          <div class="inspection-resize-slot">
+            <ResizeHandle
+              orientation="horizontal"
+              direction={-1}
+              value={layout.dockHeight}
+              min={layout.dockBounds.min}
+              max={layout.dockBounds.max}
+              cancelEpoch={panels.cancelEpoch}
+              onstart={() => panels.begin('inspection')}
+              onpreview={(value) => panels.preview('inspection', value)}
+              oncommit={(value) => panels.commit('inspection', value)}
+              oncancel={() => panels.cancel()}
+              onreset={() => panels.reset('inspection')}
+              label="Resize inspection"
+              controls="inspection-pane"
+              compatibilityClass="hex-resize"
+            />
+          </div>
+        {/if}
+
         <TraceDock
           summary={traceSummary}
           collapsed={dockCollapsed}
@@ -822,7 +959,9 @@
           tab={dockTab}
           ontabchange={(tab) => (dockTab = tab)}
           onreveal={inspectSource}
-          {resultsElement}
+          height={layout.dockHeight}
+          valuesWidth={layout.valuesWidth}
+          onchromechange={(value) => (dockChrome = value)}
           {values}
           {bytes}
         />
