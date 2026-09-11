@@ -132,3 +132,71 @@ test('collapsing and reopening the dock keeps the row selection and byte caret',
   await expect(pane).toHaveAttribute('data-hex-caret', '16');
   await expect(pane).toHaveAttribute('data-hex-highlight', highlight!);
 });
+
+/**
+ * The grid tracks and the numeric solution are two descriptions of the same layout, and only a
+ * real browser can tell whether they still agree. A track the solver does not charge for — a
+ * missed gutter, a row that swallowed the notices, a header sized differently from its
+ * measurement — shows up here and nowhere else in the suite.
+ */
+const solvedAgainstRendered = (page: import('@playwright/test').Page) =>
+  page.evaluate(() => {
+    const height = (selector: string) =>
+      (document.querySelector(selector) as HTMLElement).getBoundingClientRect().height;
+    const workspace = document.querySelector('.sql-workspace') as HTMLElement;
+    const main = document.querySelector('.workbench-main') as HTMLElement;
+    const token = (name: string) =>
+      Number.parseFloat(globalThis.getComputedStyle(workspace).getPropertyValue(name));
+    const query = token('--query-height');
+    const dock = token('--dock-height');
+    // Chrome as the SOLVER charges it: one measured divider track, counted once for the query
+    // divider and once for the expanded dock's. Measuring the rendered inspection track instead
+    // would make this sum self-consistent and blind to a track the grid forgot to lay out.
+    const gutter = height('.query-resize-slot');
+    const chrome =
+      height('.editor-heading') + height('.query-notices') + height('.results-heading') + 2 * gutter;
+    return {
+      query: { solved: query, rendered: height('.sql-editor') },
+      dock: { solved: dock, rendered: height('[data-trace-dock]') },
+      results: { solved: main.clientHeight - chrome - query - dock, rendered: height('.results-panel') },
+    };
+  });
+
+test('the rendered panes match the solved vertical budget, at rest and after a drag', async ({ page }) => {
+  await openMidiSample(page);
+  await page.getByRole('button', { name: 'Browse events' }).click();
+  await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
+  await page.waitForLoadState('networkidle');
+
+  const agrees = (panes: Awaited<ReturnType<typeof solvedAgainstRendered>>) => {
+    for (const [name, pane] of Object.entries(panes)) {
+      expect(Math.abs(pane.rendered - pane.solved), `${name} is off the solved budget`).toBeLessThanOrEqual(
+        1,
+      );
+    }
+  };
+
+  const before = await solvedAgainstRendered(page);
+  expect(before.results.rendered).toBeGreaterThanOrEqual(128);
+  agrees(before);
+
+  const handle = page.getByRole('separator', { name: 'Resize query', exact: true });
+  const box = await handle.boundingBox();
+  if (!box) throw new Error('query divider has no box');
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y + 60, { steps: 8 });
+  await page.mouse.up();
+
+  // Dragging the query divider down 60 px must take exactly those pixels from Results, leaving
+  // the dock alone — and the grid must still render what the solver decided.
+  await expect
+    .poll(async () => Math.round((await solvedAgainstRendered(page)).query.rendered - before.query.rendered))
+    .toBe(60);
+  const after = await solvedAgainstRendered(page);
+  agrees(after);
+  expect(Math.abs(after.results.rendered - (before.results.rendered - 60))).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.dock.rendered - before.dock.rendered)).toBeLessThanOrEqual(1);
+});

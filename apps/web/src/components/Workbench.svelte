@@ -288,6 +288,14 @@
       queryGutterElement,
     ].filter((element): element is HTMLElement => element !== null);
     if (elements.length === 0) return;
+    // Measure once synchronously, before the observer's first frame, so the first painted
+    // layout already uses the real viewport instead of the coordinator's safe fallback. Like
+    // every other measurement, this writes nothing. Untracked: reading the collapse and chrome
+    // state here must not make them rebuild the observer — that is the other effect's job.
+    untrack(() => {
+      const initial = readMetrics();
+      if (initial) panels.measure(initial);
+    });
     const observer = observePanelMetrics(readMetrics, elements, (value) => panels.measure(value));
     metricsObserver = observer;
     return () => {

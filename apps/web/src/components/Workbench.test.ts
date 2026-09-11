@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { tableFromArrays } from 'apache-arrow';
+import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorView } from 'codemirror';
 import { midiQueries } from '@byteql/midi';
@@ -653,6 +654,23 @@ describe('Inspector Workbench', () => {
     expect(inspection.getAttribute('aria-valuemax')).toBe('468');
     expect(inspection.getAttribute('aria-controls')).toBe('inspection-pane');
     expect(document.getElementById('inspection-pane')?.dataset.traceDock).toBe('');
+  });
+
+  it('measures once on mount, before any animation frame, without writing a preference', async () => {
+    // No frame ever runs: whatever the workspace renders had to come from the mount-time
+    // measurement, not from the observer's queued frame.
+    vi.stubGlobal('requestAnimationFrame', () => 1);
+    vi.stubGlobal('cancelAnimationFrame', () => undefined);
+
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await tick();
+
+    // jsdom's 1024x768 viewport is wide and tall enough for the roomy defaults, so a fallback
+    // that assumed a zero viewport would show the narrow 80 px editor instead.
+    expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('116px');
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+    expect(localStorage.getItem('byteql.ui.layout.v1')).toBeNull();
   });
 
   it('charges a wrapped notices row to the budget rather than to the panes', async () => {

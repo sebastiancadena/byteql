@@ -204,12 +204,18 @@ export function createPanelLayout(storage: LayoutStorage | null): PanelLayoutCon
     writeLayoutPreferences(storage, next);
   }
 
-  function cancel(): void {
-    if (!drag) return;
+  /** Drops an in-flight transaction and restores the preferences it started from. Callers decide
+   * whether the handles also have to hear about it through `cancelEpoch`. */
+  function abandon(): boolean {
+    if (!drag) return false;
     const restored = drag.preferences;
     drag = null;
     preferences = restored;
-    cancelEpoch += 1;
+    return true;
+  }
+
+  function cancel(): void {
+    if (abandon()) cancelEpoch += 1;
   }
 
   function measure(next: LayoutMetrics): void {
@@ -238,8 +244,10 @@ export function createPanelLayout(storage: LayoutStorage | null): PanelLayoutCon
   }
 
   function begin(panel: PanelId): void {
-    // One transaction at a time: a second pointer down abandons whatever was in flight.
-    cancel();
+    // One transaction at a time. Whatever was in flight is abandoned WITHOUT bumping the epoch:
+    // the action marks its own drag active before calling `onstart`, so an epoch change here
+    // would reach the handle that is starting and tear that one down instead.
+    abandon();
     const current = layout;
     drag = {
       panel,

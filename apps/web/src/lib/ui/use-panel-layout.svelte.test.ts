@@ -181,6 +181,30 @@ describe('panel layout coordinator', () => {
     expect(storage.setItem).not.toHaveBeenCalled();
   });
 
+  it('starts a second divider without cancelling the handle that just took the pointer', () => {
+    const { storage } = memoryStorage();
+    const model = createPanelLayout(storage);
+
+    model.measure(baseMetrics);
+    model.begin('query');
+    model.preview('query', 200);
+
+    // A second pointer lands on the other divider while the first is still captured. The epoch
+    // reaches every handle, so bumping it here would tear down the drag that is starting.
+    model.begin('inspection');
+    expect(model.active).toBe('inspection');
+    expect(model.cancelEpoch).toBe(0);
+
+    model.preview('inspection', 300);
+    expect(model.layout).toMatchObject({ queryHeight: 116, dockHeight: 300 });
+
+    model.commit('inspection', 300);
+    expect(model.active).toBeNull();
+    expect(storage.setItem).toHaveBeenCalledTimes(1);
+    // The abandoned drag left no trace of its preview behind.
+    expect(model.layout.queryHeight).toBe(116);
+  });
+
   it('leaves an idle coordinator untouched when cancelled', () => {
     const { storage } = memoryStorage();
     const model = createPanelLayout(storage);
