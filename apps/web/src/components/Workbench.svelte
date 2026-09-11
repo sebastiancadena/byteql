@@ -366,14 +366,18 @@
       return panel !== null && focused !== null && panel.contains(focused);
     };
     if (next) {
-      if (holds('dock-panel-values') && !inspectorCollapsed) dockTab = 'values';
+      // Values the user put away stay away: the tabs open on Bytes whatever had focus.
+      if (inspectorCollapsed) dockTab = 'bytes';
+      else if (holds('dock-panel-values')) dockTab = 'values';
       else if (holds('dock-panel-bytes')) dockTab = 'bytes';
     }
     // The Values divider and the tab row trade places across this switch; whichever one holds
-    // focus is about to be removed, and only that earns a focus move.
+    // focus is about to be removed, and only that earns a focus move. Leaving the tabs while
+    // Values are hidden takes the panel itself away, which strands focus just as surely.
     const stranded = focused?.closest('.values-resize-slot, .trace-dock-tabs') != null;
+    const losesPanel = !next && inspectorCollapsed && holds('dock-panel-values');
     compactDock = next;
-    if (!stranded) return;
+    if (!stranded && !losesPanel) return;
     focusFallback(
       next
         ? [`.trace-dock-tabs [data-dock-tab='${dockTab}']`, HEADER_VALUES_TOGGLE]
@@ -612,6 +616,23 @@
   }
 
   /**
+   * The one way Values reach the screen in tab mode. `inspectorCollapsed` and `dockTab` are two
+   * answers to the same question — are Values showing? — so asking for the Values tab has to
+   * clear the hidden flag too. Left to disagree, widening would take away what the user just
+   * opened, and narrowing would hand back what they put away.
+   */
+  function openValuesTab(): void {
+    inspectorCollapsed = false;
+    dockTab = 'values';
+  }
+
+  /** Choosing Bytes is the ordinary tab state, not a request to hide Values for good. */
+  function selectDockTab(tab: 'values' | 'bytes'): void {
+    if (tab === 'values') openValuesTab();
+    else dockTab = 'bytes';
+  }
+
+  /**
    * Wide: Values toggle beside Bytes. Compact: open the dock on Values, or switch to Bytes
    * when Values are already what is showing.
    */
@@ -628,14 +649,14 @@
       return;
     }
     setDockCollapsed(false);
-    dockTab = 'values';
+    openValuesTab();
   }
 
   /** Opening a viewer shows Values; it never runs SQL and never changes the selection. */
   function openViewer(viewer: ViewerCapability): void {
     activeViewerId = viewer.id;
     setDockCollapsed(false);
-    if (compactDock) dockTab = 'values';
+    if (compactDock) openValuesTab();
     else inspectorCollapsed = false;
   }
 
@@ -1060,7 +1081,7 @@
           compact={compactDock}
           showValues={!inspectorCollapsed}
           tab={dockTab}
-          ontabchange={(tab) => (dockTab = tab)}
+          ontabchange={selectDockTab}
           onreveal={inspectSource}
           height={layout.dockHeight}
           valuesWidth={layout.valuesWidth}

@@ -925,6 +925,59 @@ describe('Inspector Workbench', () => {
     expect(document.getElementById('dock-panel-values')?.hidden).toBe(false);
   });
 
+  it('opens the tabs on Bytes when the user has put Values away', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    // Leave the compact tab on Values, then widen and hide Values from the header.
+    measuredWidths.set('workbench-main', 880);
+    await remeasure();
+    await user.click(screen.getByRole('tab', { name: 'Values' }));
+    measuredWidths.set('workbench-main', 1216);
+    await remeasure();
+    await user.click(screen.getByRole('button', { name: 'Hide values' }));
+    expect(document.getElementById('dock-panel-values')?.hidden).toBe(true);
+
+    measuredWidths.set('workbench-main', 880);
+    await remeasure();
+
+    // A narrower dock must not hand back what the user put away.
+    expect(screen.getByRole('tab', { name: 'Bytes' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Values' }).getAttribute('aria-selected')).toBe('false');
+    expect(document.getElementById('dock-panel-values')?.hidden).toBe(true);
+  });
+
+  it('keeps Values, and the focus inside them, when tabs opened them and the dock widens', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    // Hide Values on the wide layout, narrow, then ask for them again in tab mode.
+    await user.click(screen.getByRole('button', { name: 'Hide values' }));
+    measuredWidths.set('workbench-main', 880);
+    await remeasure();
+    await user.keyboard('{Control>}i{/Control}');
+    expect(screen.getByRole('tab', { name: 'Values' }).getAttribute('aria-selected')).toBe('true');
+
+    controller.selectResultRow(0);
+    await vi.waitFor(() => expect(document.querySelector('.provenance-link')).toBeTruthy());
+    const link = document.querySelector('.provenance-link') as HTMLElement;
+    link.focus();
+
+    measuredWidths.set('workbench-main', 1216);
+    await remeasure();
+
+    // Opening Values in tabs is the same request as showing them beside Bytes, so widening keeps
+    // them on screen — and keeps the focus that was inside rather than dropping it on the body.
+    expect(document.getElementById('dock-panel-values')?.hidden).toBe(false);
+    expect(document.activeElement).toBe(link);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(screen.getByRole('separator', { name: 'Resize values' })).toBeTruthy();
+  });
+
   it('moves focus off a separator the mode switch removes, and never merely for a width', async () => {
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
