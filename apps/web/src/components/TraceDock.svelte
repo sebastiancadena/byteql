@@ -1,9 +1,10 @@
 <script lang="ts">
-  /* global HTMLElement, KeyboardEvent, PointerEvent, localStorage, window */
+  /* global HTMLElement, KeyboardEvent, ResizeObserver */
   import type { Snippet } from 'svelte';
 
-  import { dockBounds, storedDockHeight } from '../lib/ui/dock-layout.js';
+  import type { Bounds } from '../lib/ui/panel-layout.js';
   import type { TraceSummary } from '../lib/ui/trace.js';
+  import ResizeHandle from './ResizeHandle.svelte';
   import TraceBar from './TraceBar.svelte';
 
   type DockTab = 'values' | 'bytes';
@@ -18,8 +19,22 @@
     tab: DockTab;
     ontabchange: (tab: DockTab) => void;
     onreveal: () => void;
-    /** The results panel above, measured for the resize budget — never a sibling lookup. */
-    resultsElement: HTMLElement | null;
+    /** Effective dock height from the workspace layout. The dock owns no size of its own. */
+    height: number;
+    /** Effective width of the Values column, published for the dock's own grid. */
+    valuesWidth: number;
+    /** Limits for the Values separator. The dock renders that separator; it owns no preference,
+     * and every value it reports goes straight back to the workspace's layout coordinator. */
+    valuesBounds: Bounds;
+    /** Bumped by the coordinator to abandon an in-flight drag. */
+    cancelEpoch: number;
+    onvaluestart: () => void;
+    onvaluespreview: (value: number) => void;
+    onvaluescommit: (value: number) => void;
+    onvaluescancel: () => void;
+    onvaluesreset: () => void;
+    /** Border-box heights of the chrome the workspace budget has to account for. */
+    onchromechange: (value: { strip: number; tabs: number }) => void;
     values: Snippet;
     bytes: Snippet;
   }
@@ -33,115 +48,45 @@
     tab,
     ontabchange,
     onreveal,
-    resultsElement,
+    height,
+    valuesWidth,
+    valuesBounds,
+    cancelEpoch,
+    onvaluestart,
+    onvaluespreview,
+    onvaluescommit,
+    onvaluescancel,
+    onvaluesreset,
+    onchromechange,
     values,
     bytes,
   }: Props = $props();
 
-  const HEIGHT_KEY = 'byteql.hexpane.height';
-  const ROW_STEP = 18;
-
-  function readStoredHeight(): string | null {
-    try {
-      return localStorage.getItem(HEIGHT_KEY);
-    } catch {
-      return null;
-    }
-  }
-
-  function writeStoredHeight(value: number): void {
-    try {
-      localStorage.setItem(HEIGHT_KEY, String(Math.round(value)));
-    } catch {
-      // Geometry preferences are optional.
-    }
-  }
-
-  let rootEl = $state<HTMLElement | null>(null);
   let stripEl = $state<HTMLElement | null>(null);
-  let height = $state(storedDockHeight(readStoredHeight()));
-  let stripHeight = $state(40);
-  let resizing = $state(false);
-  let resizeStartY = 0;
-  let resizeStartHeight = 0;
+  let tabsEl = $state<HTMLElement | null>(null);
+  let reported = { strip: -1, tabs: -1 };
 
-  function bounds(): { min: number; max: number } {
-    const parent = rootEl?.parentElement;
-    return dockBounds({
-      height,
-      resultsHeight: resultsElement?.clientHeight ?? 0,
-      overflow: parent ? parent.scrollHeight - parent.clientHeight : 0,
-      stripHeight,
-      compact,
-    });
+  /** A hidden tab row honestly contributes nothing to the budget, so it reports zero. */
+  function reportChrome(): void {
+    const strip = stripEl?.offsetHeight ?? 0;
+    const tabs = tabsEl && !tabsEl.hidden ? tabsEl.offsetHeight : 0;
+    if (strip === reported.strip && tabs === reported.tabs) return;
+    reported = { strip, tabs };
+    onchromechange({ strip, tabs });
   }
 
-  function clampTo(next: number): void {
-    const { min, max } = bounds();
-    height = Math.max(min, Math.min(max, next));
-  }
-
-  // Geometry changes clamp immediately and without animation.
+  // The strip wraps on narrow layouts and the tab row exists only in compact mode, so both are
+  // measured rather than assumed. Re-runs when either element is created, removed or hidden.
   $effect(() => {
-    const parent = rootEl?.parentElement;
-    if (collapsed || !parent || typeof window.ResizeObserver !== 'function') return;
-    const observer = new window.ResizeObserver(() => {
-      if (stripEl) stripHeight = stripEl.offsetHeight;
-      const { min, max } = bounds();
-      if (height > max) height = Math.max(min, max);
-    });
-    observer.observe(parent);
-    if (resultsElement) observer.observe(resultsElement);
-    if (stripEl) observer.observe(stripEl);
+    const strip = stripEl;
+    const tabs = tabsEl;
+    void collapsed;
+    reportChrome();
+    if (typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(reportChrome);
+    if (strip) observer.observe(strip);
+    if (tabs) observer.observe(tabs);
     return () => observer.disconnect();
-  });
-
-  function onResizePointerdown(event: PointerEvent): void {
-    event.preventDefault();
-    resizing = true;
-    resizeStartY = event.clientY;
-    resizeStartHeight = height;
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-  }
-
-  function onResizePointermove(event: PointerEvent): void {
-    if (!resizing) return;
-    clampTo(resizeStartHeight - (event.clientY - resizeStartY));
-  }
-
-  /** Also handles pointercancel: capture must never outlive the drag. */
-  function endResize(event: PointerEvent): void {
-    if (!resizing) return;
-    resizing = false;
-    const handle = event.currentTarget as HTMLElement;
-    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
-    writeStoredHeight(height);
-  }
-
-  function onResizeKeydown(event: KeyboardEvent): void {
-    const { min, max } = bounds();
-    let next: number | null = null;
-    if (event.key === 'ArrowUp') next = height + ROW_STEP;
-    else if (event.key === 'ArrowDown') next = height - ROW_STEP;
-    else if (event.key === 'Home') next = min;
-    else if (event.key === 'End') next = max;
-    if (next === null) return;
-    event.preventDefault();
-    height = Math.max(min, Math.min(max, next));
-    writeStoredHeight(height);
-  }
-
-  const separatorBounds = $derived.by(() => {
-    void height;
-    void stripHeight;
-    void compact;
-    return dockBounds({
-      height,
-      resultsHeight: resultsElement?.clientHeight ?? 0,
-      overflow: 0,
-      stripHeight,
-      compact,
-    });
   });
 
   function onTabKeydown(event: KeyboardEvent): void {
@@ -160,47 +105,35 @@
 
   const valuesActive = $derived(compact ? tab === 'values' : showValues);
   const bytesActive = $derived(compact ? tab === 'bytes' : true);
+  /** Only a Values column that is actually beside Bytes has an edge to drag. Tabs, a collapsed
+   * dock and hidden Values each remove the separator from the DOM rather than hiding it. */
+  const valuesResizable = $derived(!collapsed && !compact && showValues);
 </script>
 
 <section
-  bind:this={rootEl}
+  id="inspection-pane"
   class="trace-dock"
   class:compact
   class:values-hidden={!compact && !showValues}
+  class:values-resizable={valuesResizable}
   data-trace-dock
   data-dock-collapsed={collapsed}
   style:height={collapsed ? undefined : `${height}px`}
+  style:--values-width={`${valuesWidth}px`}
 >
-  {#if !collapsed}
-    <!-- Above the strip, with a 6 px hit area layered over adjacent chrome so the pointerdown
-         reaches it rather than the toolbar it overlaps. `.hex-resize` is kept as a
-         compatibility class: the topmost-hit-test regression still applies, with a new owner. -->
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="hex-resize dock-resize"
-      role="separator"
-      aria-orientation="horizontal"
-      aria-label="Resize inspection"
-      aria-valuenow={Math.round(height)}
-      aria-valuemin={Math.round(separatorBounds.min)}
-      aria-valuemax={Math.round(separatorBounds.max)}
-      tabindex="0"
-      onpointerdown={onResizePointerdown}
-      onpointermove={onResizePointermove}
-      onpointerup={endResize}
-      onpointercancel={endResize}
-      onkeydown={onResizeKeydown}
-    ></div>
-  {/if}
-
   <div bind:this={stripEl} class="trace-dock-strip">
     <TraceBar {summary} {collapsed} {onreveal} ontoggle={() => oncollapsedchange(!collapsed)} />
   </div>
 
   <!-- Hidden, never unmounted: collapsing the dock must not reset caret, scroll or playback. -->
   {#if compact}
-    <div class="trace-dock-tabs" role="tablist" aria-label="Inspection views" hidden={collapsed}>
+    <div
+      bind:this={tabsEl}
+      class="trace-dock-tabs"
+      role="tablist"
+      aria-label="Inspection views"
+      hidden={collapsed}
+    >
       <button
         type="button"
         role="tab"
@@ -236,6 +169,25 @@
     >
       {@render values()}
     </div>
+    {#if valuesResizable}
+      <div class="values-resize-slot">
+        <ResizeHandle
+          orientation="vertical"
+          direction={1}
+          value={valuesWidth}
+          min={valuesBounds.min}
+          max={valuesBounds.max}
+          {cancelEpoch}
+          onstart={onvaluestart}
+          onpreview={onvaluespreview}
+          oncommit={onvaluescommit}
+          oncancel={onvaluescancel}
+          onreset={onvaluesreset}
+          label="Resize values"
+          controls="dock-panel-values"
+        />
+      </div>
+    {/if}
     <div
       class="trace-bytes"
       id="dock-panel-bytes"

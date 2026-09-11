@@ -13,6 +13,11 @@
   import { containFocus } from '../lib/ui/focus.js';
   import { applyTheme, readTheme, type Theme } from '../lib/ui/theme.js';
   import { buildTraceSummary } from '../lib/ui/trace.js';
+  import {
+    createPanelLayout,
+    observePanelMetrics,
+    type LayoutMetrics,
+  } from '../lib/ui/use-panel-layout.svelte.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import {
     compatibleTableViewers,
@@ -24,6 +29,7 @@
   import Explorer from './Explorer.svelte';
   import HexPane from './HexPane.svelte';
   import Inspector from './Inspector.svelte';
+  import ResizeHandle from './ResizeHandle.svelte';
   import ResultGrid from './ResultGrid.svelte';
   import ResultsDownload from './ResultsDownload.svelte';
   import ShortcutsOverlay from './ShortcutsOverlay.svelte';
@@ -77,17 +83,27 @@
   const explorerCollapsed = $derived(drawerMode ? !drawerOpen : columnCollapsed);
 
   function toggleSources(): void {
-    if (drawerMode) drawerOpen = !drawerOpen;
-    else columnCollapsed = !columnCollapsed;
+    if (drawerMode) {
+      // The drawer is modal: no divider transaction may survive underneath it.
+      if (!drawerOpen) panels.cancel();
+      drawerOpen = !drawerOpen;
+      return;
+    }
+    // Collapsing the column takes its divider with it; no transaction may outlive its handle.
+    if (!columnCollapsed) panels.cancel();
+    columnCollapsed = !columnCollapsed;
   }
 
   function closeDrawer(): void {
     drawerOpen = false;
   }
-  /** Below 1280 px the dock tabs Values and Bytes instead of showing them side by side. */
+  /**
+   * Whether the dock tabs Values and Bytes instead of showing them side by side. The layout
+   * coordinator decides that from measured widths; this mirrors its decision so a switch can
+   * settle the dock's tab and rescue focus before the controls around it change.
+   */
   let compactDock = $state(false);
   let dockTab = $state<'values' | 'bytes'>('bytes');
-  let resultsElement = $state<HTMLElement | null>(null);
   let overviewSource: string | null = null;
   let activeViewerId = $state<string | null>(null);
   let dragCounter = 0;
@@ -208,7 +224,15 @@
     }
   }
 
+  function setShortcutsOpen(open: boolean): void {
+    // The overlay takes focus; any divider transaction ends before it does.
+    if (open) panels.cancel();
+    shortcutsOpen = open;
+  }
+
   function setDockCollapsed(collapsed: boolean): void {
+    // Collapsing removes the inspection divider; no transaction may outlive its handle.
+    if (collapsed) panels.cancel();
     dockCollapsed = collapsed;
     try {
       localStorage.setItem('byteql.hexpane.collapsed', String(collapsed));
@@ -221,6 +245,156 @@
     !dockCollapsed && (compactDock ? dockTab === 'values' : !inspectorCollapsed),
   );
   const bytesVisible = $derived(!dockCollapsed && (!compactDock || dockTab === 'bytes'));
+
+  /** One owner for every resizable panel: preferences, effective sizes, and drag transactions.
+   * It is presentation only — nothing here reaches the session controller. */
+  const panels = createPanelLayout(browserStorage());
+  const layout = $derived(panels.layout);
+  // Narrows the compact-mode effect below to the one field it cares about: `layout` itself is a
+  // fresh object on every recomputation, so an effect reading `layout.compact` directly would
+  // re-run on any layout change. This derived re-evaluates just as often, but Svelte only wakes
+  // dependents when the primitive value it resolves to actually flips.
+  const layoutCompact = $derived(layout.compact);
+  /** The catalog is resizable only as an ordinary open column: the modal drawer has a fixed
+   * width and a collapsed column has no edge, so neither renders a separator at all. */
+  const sourcesResizable = $derived(!idle && !drawerMode && !explorerCollapsed);
+  let shellElement = $state<HTMLElement | null>(null);
+  let mainElement = $state<HTMLElement | null>(null);
+  let queryToolbarElement = $state<HTMLElement | null>(null);
+  let noticesElement = $state<HTMLElement | null>(null);
+  let resultsToolbarElement = $state<HTMLElement | null>(null);
+  let queryGutterElement = $state<HTMLElement | null>(null);
+  /** Border-box heights the dock reports for its strip and, when tabbed, its tab row. */
+  let dockChrome = $state({ strip: 40, tabs: 0 });
+  let metricsObserver: { schedule(): void; destroy(): void } | null = null;
+  /** Until the byte pane reports its own chrome the budget assumes a single toolbar row. */
+  const HEX_CHROME_FALLBACK = 36;
+  /** Non-drawing vertical pixels the embedded byte pane reports for itself. */
+  let hexChrome = $state(HEX_CHROME_FALLBACK);
+  const reportHexChrome = (height: number): void => {
+    hexChrome = height;
+  };
+
+  function readMetrics(): LayoutMetrics | null {
+    const main = mainElement;
+    if (!main) return null;
+    return {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      shellWidth: shellElement?.clientWidth ?? main.clientWidth,
+      // The budget is the height the workspace was given, never the height its rows grew to.
+      workspaceHeight: main.clientHeight,
+      dockWidth: main.clientWidth,
+      queryToolbar: queryToolbarElement?.offsetHeight ?? 0,
+      notices: noticesElement?.offsetHeight ?? 0,
+      resultsToolbar: resultsToolbarElement?.offsetHeight ?? 0,
+      strip: dockChrome.strip,
+      tabs: dockChrome.tabs,
+      hexChrome,
+      // The divider track is whatever the pointer-size token renders it as.
+      gutter: queryGutterElement?.offsetHeight ?? 0,
+      dockCollapsed,
+      bytesVisible,
+    };
+  }
+
+  // Rebuilt only when a bound element is replaced — never when one of them merely changes size.
+  $effect(() => {
+    const elements = [
+      shellElement,
+      mainElement,
+      queryToolbarElement,
+      noticesElement,
+      resultsToolbarElement,
+      queryGutterElement,
+    ].filter((element): element is HTMLElement => element !== null);
+    if (elements.length === 0) return;
+    // Measure once synchronously, before the observer's first frame, so the first painted
+    // layout already uses the real viewport instead of the coordinator's safe fallback. Like
+    // every other measurement, this writes nothing. Untracked: reading the collapse and chrome
+    // state here must not make them rebuild the observer — that is the other effect's job.
+    untrack(() => {
+      const initial = readMetrics();
+      if (initial) panels.measure(initial);
+    });
+    const observer = observePanelMetrics(readMetrics, elements, (value) => panels.measure(value));
+    metricsObserver = observer;
+    return () => {
+      observer.destroy();
+      metricsObserver = null;
+    };
+  });
+
+  // Collapse, tab mode and the dock's reported chrome are state rather than geometry, so they
+  // have to ask for the next measurement themselves.
+  $effect(() => {
+    void dockCollapsed;
+    void bytesVisible;
+    void dockChrome;
+    void hexChrome;
+    metricsObserver?.schedule();
+  });
+
+  // The coordinator is the only thing that decides compact mode, and this is the only thing that
+  // reads that decision. Declared after the measuring effect so the first run already sees a
+  // measured viewport instead of the coordinator's safe fallback. `layoutCompact` is the sole
+  // tracked dependency: everything the switch inspects is read untracked, because a mode change
+  // is the only event allowed to move focus.
+  $effect(() => {
+    const next = layoutCompact;
+    untrack(() => switchCompactDock(next));
+  });
+
+  const HEADER_SOURCES_TOGGLE =
+    '.app-header [aria-label="Hide sources"], .app-header [aria-label="Show sources"]';
+  const HEADER_VALUES_TOGGLE =
+    '.app-header [aria-label="Hide values"], .app-header [aria-label="Show values"]';
+
+  /** Focuses the first of these that exists, once the DOM has settled. Called only when the
+   * control the user was actually on is leaving the page — never because a pane changed size. */
+  function focusFallback(selectors: readonly string[]): void {
+    void tick().then(() => {
+      for (const selector of selectors) {
+        const target = document.querySelector<HTMLElement>(selector);
+        if (target) {
+          target.focus();
+          return;
+        }
+      }
+    });
+  }
+
+  /**
+   * Adopts the coordinator's compact decision. Focus is inspected against the dock's own panels
+   * before the switch, while they still hold it: the panel the user was working in becomes the
+   * active tab, so their place survives the change.
+   */
+  function switchCompactDock(next: boolean): void {
+    if (next === compactDock) return;
+    const focused = document.activeElement;
+    const holds = (id: string): boolean => {
+      const panel = mainElement?.querySelector<HTMLElement>(`#${id}`) ?? null;
+      return panel !== null && focused !== null && panel.contains(focused);
+    };
+    if (next) {
+      // Values the user put away stay away: the tabs open on Bytes whatever had focus.
+      if (inspectorCollapsed) dockTab = 'bytes';
+      else if (holds('dock-panel-values')) dockTab = 'values';
+      else if (holds('dock-panel-bytes')) dockTab = 'bytes';
+    }
+    // The Values divider and the tab row trade places across this switch; whichever one holds
+    // focus is about to be removed, and only that earns a focus move. Leaving the tabs while
+    // Values are hidden takes the panel itself away, which strands focus just as surely.
+    const stranded = focused?.closest('.values-resize-slot, .trace-dock-tabs') != null;
+    const losesPanel = !next && inspectorCollapsed && holds('dock-panel-values');
+    compactDock = next;
+    if (!stranded && !losesPanel) return;
+    focusFallback(
+      next
+        ? [`.trace-dock-tabs [data-dock-tab='${dockTab}']`, HEADER_VALUES_TOGGLE]
+        : ['.values-resize-slot [role="separator"]', HEADER_VALUES_TOGGLE],
+    );
+  }
 
   // Memoize on result identity: session is reassigned on every publish (caret moves, progress
   // events), but buildCoverage must run once per result, not once per publish.
@@ -355,18 +529,14 @@
     // keeps its own choice, so an open column never becomes a drawer over the workspace.
     const drawerQuery = window.matchMedia('(max-width: 959px)');
     const syncDrawerMode = (event: MediaQueryListEvent | MediaQueryList): void => {
+      // The drawer has no divider, so crossing into it strands whoever was on the sources one.
+      const stranded =
+        drawerMode !== event.matches && document.activeElement?.closest('.source-resize-slot') != null;
       drawerMode = event.matches;
+      if (stranded) focusFallback([HEADER_SOURCES_TOGGLE]);
     };
     syncDrawerMode(drawerQuery);
     drawerQuery.addEventListener('change', syncDrawerMode);
-
-    // Below 1280 px the dock tabs its two panels rather than showing them side by side.
-    const dockQuery = window.matchMedia('(max-width: 1279px)');
-    const syncCompactDock = (event: MediaQueryListEvent | MediaQueryList): void => {
-      compactDock = event.matches;
-    };
-    syncCompactDock(dockQuery);
-    dockQuery.addEventListener('change', syncCompactDock);
 
     const unsubscribe = controller.subscribe((next) => {
       if (next.result?.window !== session.result?.window) coverageMessage = null;
@@ -403,7 +573,6 @@
 
     return () => {
       drawerQuery.removeEventListener('change', syncDrawerMode);
-      dockQuery.removeEventListener('change', syncCompactDock);
       unsubscribe();
     };
   });
@@ -458,11 +627,30 @@
   }
 
   /**
+   * The one way Values reach the screen in tab mode. `inspectorCollapsed` and `dockTab` are two
+   * answers to the same question — are Values showing? — so asking for the Values tab has to
+   * clear the hidden flag too. Left to disagree, widening would take away what the user just
+   * opened, and narrowing would hand back what they put away.
+   */
+  function openValuesTab(): void {
+    inspectorCollapsed = false;
+    dockTab = 'values';
+  }
+
+  /** Choosing Bytes is the ordinary tab state, not a request to hide Values for good. */
+  function selectDockTab(tab: 'values' | 'bytes'): void {
+    if (tab === 'values') openValuesTab();
+    else dockTab = 'bytes';
+  }
+
+  /**
    * Wide: Values toggle beside Bytes. Compact: open the dock on Values, or switch to Bytes
    * when Values are already what is showing.
    */
   function showValues(): void {
     if (!compactDock) {
+      // Hiding Values takes its divider with it; no transaction may outlive its handle.
+      if (!inspectorCollapsed) panels.cancel();
       inspectorCollapsed = !inspectorCollapsed;
       if (!inspectorCollapsed) setDockCollapsed(false);
       return;
@@ -472,14 +660,14 @@
       return;
     }
     setDockCollapsed(false);
-    dockTab = 'values';
+    openValuesTab();
   }
 
   /** Opening a viewer shows Values; it never runs SQL and never changes the selection. */
   function openViewer(viewer: ViewerCapability): void {
     activeViewerId = viewer.id;
     setDockCollapsed(false);
-    if (compactDock) dockTab = 'values';
+    if (compactDock) openValuesTab();
     else inspectorCollapsed = false;
   }
 
@@ -514,7 +702,7 @@
     const mod = event.metaKey || event.ctrlKey;
     if (event.key === '?' && !mod && !inEditableTarget(event)) {
       event.preventDefault();
-      shortcutsOpen = !shortcutsOpen;
+      setShortcutsOpen(!shortcutsOpen);
       return;
     }
     if (!mod) return;
@@ -582,17 +770,24 @@
       controller.selectByteRange(range && hexFile ? { file: hexFile, ...range } : null)}
     onfilter={(range) => hexFile && run(wrapFilterSql(draftSql || session.sql, { file: hexFile, ...range }))}
     onfilechange={switchHexFile}
+    onchromeheightchange={reportHexChrome}
   />
 {/snippet}
 
 {#if shortcutsOpen}
-  <ShortcutsOverlay onclose={() => (shortcutsOpen = false)} />
+  <ShortcutsOverlay
+    onclose={() => setShortcutsOpen(false)}
+    onresetpanels={idle ? undefined : () => panels.reset()}
+  />
 {/if}
 
 <div
+  bind:this={shellElement}
   class:explorer-collapsed={explorerCollapsed}
+  class:sources-resizable={sourcesResizable}
   class="app-shell"
   role="presentation"
+  style:--sources-width={`${layout.sourcesWidth}px`}
   ondragenter={onDragEnter}
   ondragleave={onDragLeave}
   ondragover={onDragOver}
@@ -611,7 +806,7 @@
     {intakeBusy}
     {appearance}
     onappearancechange={changeAppearance}
-    onshortcuts={() => (shortcutsOpen = true)}
+    onshortcuts={() => setShortcutsOpen(true)}
     ontoggleexplorer={idle ? undefined : toggleSources}
     ontoggleinspector={idle ? undefined : showValues}
     onopen={idle ? undefined : openPicker}
@@ -649,6 +844,7 @@
          itself is the same mounted element either way, so nothing inside it remounts. -->
     <div
       bind:this={drawerElement}
+      id="source-pane"
       class="explorer-drawer"
       class:drawer={drawerMode}
       role={drawerMode ? 'dialog' : undefined}
@@ -674,6 +870,28 @@
       />
     </div>
 
+    {#if sourcesResizable}
+      <!-- A shell column of its own between the catalog and the workspace, so the separator has
+           a real track instead of overlapping either neighbour. -->
+      <div class="source-resize-slot">
+        <ResizeHandle
+          orientation="vertical"
+          direction={1}
+          value={layout.sourcesWidth}
+          min={layout.sourcesBounds.min}
+          max={layout.sourcesBounds.max}
+          cancelEpoch={panels.cancelEpoch}
+          onstart={() => panels.begin('sources')}
+          onpreview={(value) => panels.preview('sources', value)}
+          oncommit={(value) => panels.commit('sources', value)}
+          oncancel={() => panels.cancel()}
+          onreset={() => panels.reset('sources')}
+          label="Resize sources"
+          controls="source-pane"
+        />
+      </div>
+    {/if}
+
     {#if drawerMode && !explorerCollapsed}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -691,20 +909,31 @@
          neither clickable nor tab-reachable. Only this subtree — never an ancestor of the
          drawer itself — is marked. -->
     <div
+      bind:this={mainElement}
       class="workbench-main"
       role="main"
       aria-label="Results"
       inert={drawerMode && !explorerCollapsed}
       data-trace-linked={traceSummary.kind === 'linked'}
     >
-      <section class="sql-workspace" aria-label="SQL workspace">
-        <div class="editor-heading">
+      <!-- Named grid areas, so a notice or a removed divider can never shift what a row means.
+           The two vertical sizes are the coordinator's, published as custom properties. -->
+      <section
+        class="sql-workspace"
+        aria-label="SQL workspace"
+        style:--query-height={`${layout.queryHeight}px`}
+        style:--dock-height={dockCollapsed ? 'auto' : `${layout.dockHeight}px`}
+        style:--inspection-gutter={dockCollapsed ? '0px' : null}
+      >
+        <div bind:this={queryToolbarElement} class="editor-heading">
           <h1>Query</h1>
           <div class="query-actions">
             <span class="shortcut" aria-hidden="true">⌘ Enter</span>
             {#if session.phase === 'querying'}
+              <!-- Compact like Run query: the two states share a slot, so starting a query must
+                   not change the toolbar's height and resize the panes below it. -->
               <button
-                class="button button-secondary"
+                class="button button-secondary button-compact"
                 type="button"
                 onclick={() => perform(() => controller.cancel())}
               >
@@ -722,39 +951,63 @@
           </div>
         </div>
 
-        <SqlEditor
-          bind:this={sqlEditor}
-          sql={draftSql}
-          {appearance}
-          disabled={session.phase === 'querying'}
-          onrun={run}
-          onchange={(sql) => (draftSql = sql)}
-        />
-
-        <!-- Always present so the workspace grid's positional rows never shift when
-             diagnostics come and go; empty it collapses to a zero-height row. -->
-        <div class="query-notices">
-          {#if session.queryError || actionError}
-            <div class="query-diagnostic" role="alert">
-              <strong>Query diagnostic</strong>
-              <span>{session.queryError ?? actionError}</span>
-            </div>
-          {/if}
-
-          {#if coverageMessage}
-            <div class="format-notice" role="status" aria-label="Coverage notice">
-              {coverageMessage}
-            </div>
-          {/if}
-
-          {#each disabledCapabilityReasons as reason (reason)}
-            <div class="format-notice" role="status" aria-label="Format capability notice">
-              {reason}
-            </div>
-          {/each}
+        <!-- A wrapper supplies the grid area; the editor host and its EditorView are untouched
+             by resizing, so the document, undo history and selection all survive. -->
+        <div id="query-pane" class="query-pane">
+          <SqlEditor
+            bind:this={sqlEditor}
+            sql={draftSql}
+            {appearance}
+            disabled={session.phase === 'querying'}
+            onrun={run}
+            onchange={(sql) => (draftSql = sql)}
+          />
         </div>
 
-        <div class="results-heading">
+        <!-- Always present, so the notices row has an element to measure even when empty. The
+             inner wrapper is the one that scrolls: see `.query-notices` in workbench.css. -->
+        <div bind:this={noticesElement} class="query-notices">
+          <div class="query-notices-scroll">
+            {#if session.queryError || actionError}
+              <div class="query-diagnostic" role="alert">
+                <strong>Query diagnostic</strong>
+                <span>{session.queryError ?? actionError}</span>
+              </div>
+            {/if}
+
+            {#if coverageMessage}
+              <div class="format-notice" role="status" aria-label="Coverage notice">
+                {coverageMessage}
+              </div>
+            {/if}
+
+            {#each disabledCapabilityReasons as reason (reason)}
+              <div class="format-notice" role="status" aria-label="Format capability notice">
+                {reason}
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div bind:this={queryGutterElement} class="query-resize-slot">
+          <ResizeHandle
+            orientation="horizontal"
+            direction={1}
+            value={layout.queryHeight}
+            min={layout.queryBounds.min}
+            max={layout.queryBounds.max}
+            cancelEpoch={panels.cancelEpoch}
+            onstart={() => panels.begin('query')}
+            onpreview={(value) => panels.preview('query', value)}
+            oncommit={(value) => panels.commit('query', value)}
+            oncancel={() => panels.cancel()}
+            onreset={() => panels.reset('query')}
+            label="Resize query"
+            controls="query-pane"
+          />
+        </div>
+
+        <div bind:this={resultsToolbarElement} class="results-heading">
           <h2>Results</h2>
           <div class="results-heading-meta">
             {#if session.result}
@@ -771,7 +1024,7 @@
           </div>
         </div>
 
-        <div class="results-panel" bind:this={resultsElement}>
+        <div class="results-panel">
           {#if session.result}
             {#key session.result.generation}
               <ResultGrid
@@ -813,6 +1066,29 @@
           {/if}
         </div>
 
+        {#if !dockCollapsed}
+          <!-- `.hex-resize` stays as a compatibility class: the topmost-hit-test regression it
+               names still applies, now to a divider that owns a real track of its own. -->
+          <div class="inspection-resize-slot">
+            <ResizeHandle
+              orientation="horizontal"
+              direction={-1}
+              value={layout.dockHeight}
+              min={layout.dockBounds.min}
+              max={layout.dockBounds.max}
+              cancelEpoch={panels.cancelEpoch}
+              onstart={() => panels.begin('inspection')}
+              onpreview={(value) => panels.preview('inspection', value)}
+              oncommit={(value) => panels.commit('inspection', value)}
+              oncancel={() => panels.cancel()}
+              onreset={() => panels.reset('inspection')}
+              label="Resize inspection"
+              controls="inspection-pane"
+              compatibilityClass="hex-resize"
+            />
+          </div>
+        {/if}
+
         <TraceDock
           summary={traceSummary}
           collapsed={dockCollapsed}
@@ -820,9 +1096,18 @@
           compact={compactDock}
           showValues={!inspectorCollapsed}
           tab={dockTab}
-          ontabchange={(tab) => (dockTab = tab)}
+          ontabchange={selectDockTab}
           onreveal={inspectSource}
-          {resultsElement}
+          height={layout.dockHeight}
+          valuesWidth={layout.valuesWidth}
+          valuesBounds={layout.valuesBounds}
+          cancelEpoch={panels.cancelEpoch}
+          onvaluestart={() => panels.begin('values')}
+          onvaluespreview={(value) => panels.preview('values', value)}
+          onvaluescommit={(value) => panels.commit('values', value)}
+          onvaluescancel={() => panels.cancel()}
+          onvaluesreset={() => panels.reset('values')}
+          onchromechange={(value) => (dockChrome = value)}
           {values}
           {bytes}
         />

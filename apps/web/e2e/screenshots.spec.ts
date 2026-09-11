@@ -121,6 +121,17 @@ test('download options 1440x900 light', async ({ page }, testInfo) => {
 });
 
 for (const appearance of ['light', 'dark'] as const) {
+  // The design's short-viewport review case: every divider is on screen at once and the
+  // workspace has to scroll, so the handles are seen exactly where they crowd each other most.
+  test(`short 1440x480 ${appearance}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 480 });
+    await openMidiSample(page);
+    await page.getByRole('button', { name: 'Browse events' }).click();
+    await page.getByRole('row', { name: 'Row 3', exact: true }).click();
+    await setAppearance(page, appearance);
+    await shoot(page, testInfo, `short-1440x480-${appearance}`);
+  });
+
   test(`narrow 390x844 ${appearance}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await openMidiSample(page);

@@ -35,8 +35,14 @@ test('results span the workspace and the dock sits beneath them', async ({ page 
     .locator('.trace-bytes')
     .evaluate((el) => (el as HTMLElement).getBoundingClientRect());
   expect(values.left).toBeGreaterThanOrEqual(dock.left - 1);
-  expect(bytes.left).toBeGreaterThanOrEqual(values.right - 1);
   expect(Math.round(values.width)).toBe(256);
+
+  // The Values separator now owns a track between the two panels, so Bytes start one gutter on.
+  const gutter = await page
+    .locator('.values-resize-slot')
+    .evaluate((el) => (el as HTMLElement).getBoundingClientRect().width);
+  expect(Math.round(gutter)).toBe(8);
+  expect(Math.round(bytes.left - values.right)).toBe(8);
 });
 
 test('long source names truncate instead of giving the catalog its own scrollbar', async ({ page }) => {

@@ -1,22 +1,41 @@
-/* Shell geometry, source catalog, query editor, results grid and the byte dock.
-   Task 1 keeps the existing three-column shell; the two-column workspace lands with the dock. */
+/* Shell geometry, source catalog, query editor, results grid and the byte dock. */
 
-/* Two outer columns: the source catalog, and one workspace that owns everything else.
-   Results receive the full workspace width, including the area the inspector used to take. */
+/* Three outer columns: the source catalog, the divider track between them, and one workspace
+   that owns everything else. Results receive the full workspace width, including the area the
+   inspector used to take. */
 .app-shell {
+  /* The divider tracks. Coarse pointers get a target they can actually hit. */
+  --panel-gutter: 8px;
+  /* Published by the workspace's layout coordinator. The fallbacks only have to survive the
+     first frame of an idle shell, which mounts no catalog and no divider at all. */
+  --sources-width: 224px;
+  --sources-gutter: 0px;
+
   display: grid;
   grid-template:
-    'header header' var(--header-height)
-    'explorer workbench' minmax(0, 1fr)
-    'status status' var(--status-height)
-    / 224px minmax(0, 1fr);
+    'header header header' var(--header-height)
+    'explorer source-handle workbench' minmax(0, 1fr)
+    'status status status' var(--status-height)
+    / var(--sources-width) var(--sources-gutter) minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
   background: var(--color-canvas);
 }
 
+/* The divider track exists only while a separator is in it, so a collapsed catalog or a modal
+   drawer leaves no empty gap between the columns. */
+.app-shell.sources-resizable {
+  --sources-gutter: var(--panel-gutter);
+}
+
 .app-shell.explorer-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr);
+  grid-template-columns: 0 0 minmax(0, 1fr);
+}
+
+@media (pointer: coarse) {
+  .app-shell {
+    --panel-gutter: 24px;
+  }
 }
 
 /* Header */
@@ -127,7 +146,6 @@
 }
 
 .explorer {
-  grid-area: explorer;
   border-right: 1px solid var(--color-border);
 }
 
@@ -422,27 +440,149 @@
 .workbench-main {
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
+/* Named areas, so optional notices, toolbars and dividers can never shift what a row means.
+   Query and the dock are sized by the layout coordinator; Results takes the remainder and
+   therefore is the only pane either divider exchanges space with. */
 .sql-workspace {
-  display: grid;
+  --inspection-gutter: var(--panel-gutter);
+  /* Published by the layout coordinator; same purpose and fallbacks as `.app-shell`'s
+     `--sources-width` above — survive an unlaid-out first frame, never seen once mounted. */
+  --query-height: 116px;
+  --dock-height: 248px;
 
-  /* Positional rows — the template relies on a fixed child order: query toolbar, SQL editor,
-     query notices (always rendered, empty → 0), results toolbar, results panel (the flexible
-     row), inspection dock (sized by its own drag height). Growing the dock therefore shrinks
-     the results panel above it. */
-  grid-template-rows: 36px 116px auto 36px minmax(128px, 1fr) auto;
+  display: grid;
+  grid-template-areas:
+    'query-heading'
+    'editor'
+    'notices'
+    'query-handle'
+    'results-heading'
+    'results'
+    'inspection-handle'
+    'dock';
+  grid-template-rows:
+    auto var(--query-height) auto var(--panel-gutter)
+    auto minmax(128px, 1fr) var(--inspection-gutter) var(--dock-height);
   height: 100%;
   min-width: 0;
   min-height: 0;
   outline: none;
 }
 
-/* Short screens give the editor less room before anything else has to yield. */
-@media (max-height: 759px) {
-  .sql-workspace {
-    grid-template-rows: 36px 80px auto 36px minmax(128px, 1fr) auto;
-  }
+.editor-heading {
+  grid-area: query-heading;
+}
+
+.query-pane {
+  grid-area: editor;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The measured grid item deliberately does NOT scroll. A scroll container's automatic minimum
+   size is zero, so an `auto` row holding one collapses to nothing the moment the workspace is
+   over-constrained — which hid the diagnostic completely at 1440x480 instead of letting
+   `.workbench-main` scroll. The bound and the scrolling belong one level in. */
+.query-notices {
+  grid-area: notices;
+}
+
+.query-notices-scroll {
+  max-height: min(160px, 25dvh);
+  overflow-y: auto;
+}
+
+.query-notices,
+.query-diagnostic span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.query-resize-slot {
+  grid-area: query-handle;
+}
+
+.results-heading {
+  grid-area: results-heading;
+}
+
+.results-panel {
+  grid-area: results;
+}
+
+.inspection-resize-slot {
+  grid-area: inspection-handle;
+}
+
+.trace-dock {
+  grid-area: dock;
+}
+
+/* Divider tracks own their geometry; the separator inside simply fills one. */
+.query-resize-slot,
+.inspection-resize-slot,
+.source-resize-slot,
+.values-resize-slot {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The sources divider is a shell column of its own, between the catalog and the workspace. */
+.source-resize-slot {
+  grid-area: source-handle;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel-resize {
+  --panel-rule: var(--color-border);
+
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+}
+
+/* A 1 px rule centred in the track, painted as a gradient so nothing can overlap the panes. */
+.panel-resize[data-orientation='horizontal'] {
+  background: linear-gradient(
+    to bottom,
+    transparent calc(50% - 0.5px),
+    var(--panel-rule) calc(50% - 0.5px),
+    var(--panel-rule) calc(50% + 0.5px),
+    transparent calc(50% + 0.5px)
+  );
+  cursor: row-resize;
+}
+
+.panel-resize[data-orientation='vertical'] {
+  background: linear-gradient(
+    to right,
+    transparent calc(50% - 0.5px),
+    var(--panel-rule) calc(50% - 0.5px),
+    var(--panel-rule) calc(50% + 0.5px),
+    transparent calc(50% + 0.5px)
+  );
+  cursor: col-resize;
+}
+
+.panel-resize:hover,
+.panel-resize:focus-visible {
+  --panel-rule: var(--color-border-strong);
+}
+
+/* Inset so the ring stays inside the track rather than painting over the panes. */
+.panel-resize:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
 }
 
 .results-panel,
@@ -457,8 +597,10 @@
 /* Inspection dock */
 
 .trace-dock {
+  --values-gutter: 0px;
+  --values-width: 256px;
+
   display: grid;
-  position: relative;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
@@ -472,18 +614,6 @@
 
 .trace-dock[data-dock-collapsed='true'] {
   grid-template-rows: auto;
-}
-
-/* Scoped so it wins over the standalone `.hex-resize` rule regardless of source order:
-   the separator is taken out of flow, leaving the dock's grid rows to strip and body. */
-.trace-dock .dock-resize {
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  right: 0;
-  left: 0;
-  height: 6px;
-  margin-bottom: 0;
 }
 
 .trace-dock-tabs {
@@ -516,10 +646,14 @@
   font-weight: 600;
 }
 
+.trace-dock.values-resizable {
+  --values-gutter: var(--panel-gutter);
+}
+
 /* Values beside Bytes; when Values are hidden, Bytes span the whole dock. */
 .trace-dock-body {
   display: grid;
-  grid-template-columns: 256px minmax(0, 1fr);
+  grid-template-columns: var(--values-width) var(--values-gutter) minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
 }
@@ -567,17 +701,26 @@
   font-size: var(--text-xs);
 }
 
+/* One scroll owner for the editor: `.cm-scroller`. The host is a fixed-height clipping box. */
 .sql-editor {
+  height: 100%;
+  min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface-inset);
 }
 
 .sql-editor .cm-editor {
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   color: var(--color-text);
   background: transparent;
+}
+
+.sql-editor .cm-scroller {
+  overflow: auto;
 }
 
 .sql-editor .cm-gutters {
@@ -889,7 +1032,9 @@
   height: auto;
 }
 
-.hex-resize {
+/* The standalone pane's own separator. The embedded pane has none — the workspace owns that
+   divider, with a real track, so this overlap trick is scoped away from it. */
+.hex-pane > .hex-resize {
   /* Sits above the toolbar it overlaps (margin-bottom pulls the toolbar up over
      its lower half); without this, static stacking lets the toolbar swallow the
      pointerdown and the drag-to-resize never starts. */
@@ -901,10 +1046,17 @@
   touch-action: none;
 }
 
-.hex-resize:hover,
-.hex-resize:focus-visible {
+.hex-pane > .hex-resize:hover,
+.hex-pane > .hex-resize:focus-visible {
   background: var(--color-border-strong);
   outline: none;
+}
+
+/* Everything above the drawing surface, measured as one border box and reported to the
+   workspace's layout coordinator so it can budget hex rows against it. */
+.hex-chrome {
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .hex-toolbar {
@@ -1031,13 +1183,18 @@
 .hex-body {
   display: flex;
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 
+/* The viewport owns horizontal scrolling; vertical scrolling stays custom, in the adjacent
+   `.hex-scrollbar`. The canvas keeps its fixed 16-byte width and is never scaled to fit. */
 .hex-viewport {
   flex: 1;
+  min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: var(--color-surface-inset);
   touch-action: none;
 }
@@ -1049,10 +1206,18 @@
 
 .hex-canvas {
   display: block;
+  flex-shrink: 0;
+  max-width: none;
 }
 
 .hex-scrollbar {
+  /* Sized to the viewport's clientHeight (bound inline, in step with `viewportHeight`), not
+     stretched to the flex row's cross size — those two heights diverge by the horizontal
+     scrollbar's thickness whenever `.hex-viewport` overflows, which is exactly when a classic
+     (non-overlay) scrollbar is in play. Stretching here would put the track and the thumb math
+     in different coordinate spaces. */
   position: relative;
+  align-self: flex-start;
   flex: 0 0 12px;
   width: 12px;
   background: var(--color-surface);
@@ -1073,18 +1238,9 @@
   background: var(--color-text-subtle);
 }
 
-/* Responsive geometry — 1280 px tabs the dock, 960 px moves the catalog into a drawer,
-   700 px collapses the dock by default unless the user has a stored preference. */
-
-@media (max-width: 1279px) {
-  .app-shell {
-    grid-template-columns: 208px minmax(0, 1fr);
-  }
-
-  .app-shell.explorer-collapsed {
-    grid-template-columns: 0 minmax(0, 1fr);
-  }
-}
+/* Responsive geometry — 960 px moves the catalog into a drawer and 700 px collapses the dock by
+   default unless the user has a stored preference. Tab mode is not a breakpoint: the layout
+   coordinator decides it from the dock's own measured width. */
 
 @media (max-width: 959px) {
   .app-shell,
@@ -1156,9 +1312,19 @@
   }
 }
 
-/* Wide layouts keep the catalog as an ordinary column. */
+/* Wide layouts keep the catalog as an ordinary column — a real box, so the sources divider has
+   something to size, and so the same mounted Explorer can simply fill it. */
 .explorer-drawer {
-  display: contents;
+  grid-area: explorer;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.explorer-drawer > .explorer {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 @media (max-width: 699px) {
@@ -1166,10 +1332,6 @@
   .shortcut,
   .status-metrics span:last-child {
     display: none;
-  }
-
-  .sql-workspace {
-    grid-template-rows: 36px 80px auto 36px minmax(128px, 1fr) auto;
   }
 
   .editor-heading,

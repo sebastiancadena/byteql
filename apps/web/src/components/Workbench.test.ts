@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { tableFromArrays } from 'apache-arrow';
+import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorView } from 'codemirror';
 import { midiQueries } from '@byteql/midi';
@@ -21,24 +22,74 @@ import Workbench from './Workbench.svelte';
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
 
-Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
-  configurable: true,
-  get() {
-    return this.classList.contains('grid-scroll') ? 360 : 0;
-  },
-});
-Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
-  configurable: true,
-  get() {
-    return this.classList.contains('grid-scroll') ? 360 : 0;
-  },
-});
-Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
-  configurable: true,
-  get() {
-    return this.classList.contains('grid-scroll') ? 960 : 0;
-  },
-});
+/**
+ * jsdom gives every element a zero box, so the panes the layout budget measures are declared
+ * here by class. These are the design's worked example: an 800 px workspace, 36 px toolbars,
+ * 8 px divider tracks and a 40 px trace strip, which solves to Query 116 / dock 248.
+ */
+const measuredHeights = new Map<string, number>([
+  ['grid-scroll', 360],
+  ['workbench-main', 800],
+  ['editor-heading', 36],
+  ['results-heading', 36],
+  ['query-notices', 0],
+  ['query-resize-slot', 8],
+  ['trace-dock-strip', 40],
+]);
+const measuredWidths = new Map<string, number>([
+  ['grid-scroll', 960],
+  ['workbench-main', 1216],
+  ['app-shell', 1440],
+]);
+
+function measured(sizes: Map<string, number>) {
+  return function (this: HTMLElement): number {
+    for (const [token, value] of sizes) if (this.classList.contains(token)) return value;
+    return 0;
+  };
+}
+
+for (const property of ['clientHeight', 'offsetHeight'] as const) {
+  Object.defineProperty(HTMLElement.prototype, property, {
+    configurable: true,
+    get: measured(measuredHeights),
+  });
+}
+for (const property of ['clientWidth', 'offsetWidth'] as const) {
+  Object.defineProperty(HTMLElement.prototype, property, {
+    configurable: true,
+    get: measured(measuredWidths),
+  });
+}
+
+const sqlWorkspace = (): HTMLElement => document.querySelector('.sql-workspace') as HTMLElement;
+
+/** jsdom has no PointerEvent constructor; the fields the resize action reads are set by hand. */
+function pointer(target: HTMLElement, type: string, clientY: number, pointerId = 1): void {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    pointerId: { value: pointerId },
+    isPrimary: { value: true },
+    button: { value: 0 },
+    clientX: { value: 0 },
+    clientY: { value: clientY },
+  });
+  target.dispatchEvent(event);
+}
+
+/** Reports a fresh measurement and waits for the observer's frame to reach the coordinator. */
+async function remeasure(): Promise<void> {
+  window.dispatchEvent(new Event('resize'));
+  await new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve(null)));
+  });
+  await tick();
+}
+
+/** Waits for the first measured frame to reach the coordinator. */
+async function settleLayout(): Promise<void> {
+  await vi.waitFor(() => expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('116px'));
+}
 
 const textOf = (element: Element): string => element.textContent ?? '';
 
@@ -193,12 +244,21 @@ const queries = [
 ];
 
 let compactMode = false;
+/** Compact mode is now measured, not matched: it follows the viewport and the dock's own width.
+ * jsdom's 1024 px default would tab every render, so the wide shell is declared explicitly. */
+let viewportWidth = 1440;
 const addMediaListener = vi.fn();
 const removeMediaListener = vi.fn();
 
 describe('Inspector Workbench', () => {
   beforeEach(() => {
+    // These renders share one localStorage, so the geometry preferences start from a known
+    // baseline rather than from whatever the previous test happened to leave behind.
+    localStorage.clear();
+    localStorage.setItem('byteql.hexpane.collapsed', 'false');
     compactMode = false;
+    viewportWidth = 1440;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, get: () => viewportWidth });
     addMediaListener.mockClear();
     removeMediaListener.mockClear();
     vi.stubGlobal(
@@ -215,6 +275,10 @@ describe('Inspector Workbench', () => {
     cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    measuredHeights.set('query-notices', 0);
+    measuredHeights.set('workbench-main', 800);
+    measuredWidths.set('workbench-main', 1216);
+    measuredWidths.set('app-shell', 1440);
   });
 
   it('explains local processing and exposes accessible source actions in the empty state', async () => {
@@ -549,24 +613,542 @@ describe('Inspector Workbench', () => {
     expect(destroy).toHaveBeenCalledOnce();
   });
 
-  it('keeps the inspection dock anchored after the flexible results panel as diagnostics come and go', async () => {
+  it('keeps every workspace pane in its own named area as diagnostics come and go', async () => {
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
+    await settleLayout();
 
-    const workspace = document.querySelector('.sql-workspace') as HTMLElement;
-    const dock = workspace.querySelector('[data-trace-dock]') as HTMLElement;
-    // The workspace grid sizes rows positionally, so conditional diagnostics must never shift
-    // how children map to grid rows. The dock's resize budget comes from an explicit reference
-    // to the results panel, not from sibling order.
-    expect(workspace.lastElementChild).toBe(dock);
-    expect(dock.previousElementSibling?.classList.contains('results-panel')).toBe(true);
-    const childCount = workspace.children.length;
+    const areas = [
+      'editor-heading',
+      'query-pane',
+      'query-notices',
+      'query-resize-slot',
+      'results-heading',
+      'results-panel',
+      'inspection-resize-slot',
+      'trace-dock',
+    ];
+    const panes = (): string[] =>
+      Array.from(sqlWorkspace().children).map((child) => child.classList[0] ?? '');
+    expect(panes()).toEqual(areas);
 
+    const notices = sqlWorkspace().querySelector('.query-notices');
+    const dock = sqlWorkspace().querySelector('[data-trace-dock]');
+
+    // A diagnostic grows the notices pane in place. It adds no pane and moves nothing.
     controller.publish({ ...controller.state, queryError: 'Unexpected token near FROM' });
-    await vi.waitFor(() => expect(within(workspace).getByRole('alert')).toBeTruthy());
-    expect(workspace.children.length).toBe(childCount);
-    expect(workspace.lastElementChild).toBe(dock);
-    expect(dock.previousElementSibling?.classList.contains('results-panel')).toBe(true);
+    await vi.waitFor(() => expect(within(sqlWorkspace()).getByRole('alert')).toBeTruthy());
+    expect(panes()).toEqual(areas);
+    expect(sqlWorkspace().querySelector('.query-notices')).toBe(notices);
+    expect(sqlWorkspace().querySelector('[data-trace-dock]')).toBe(dock);
+
+    controller.publish({ ...controller.state, queryError: null });
+    await vi.waitFor(() => expect(within(sqlWorkspace()).queryByRole('alert')).toBeNull());
+    expect(panes()).toEqual(areas);
+    expect(sqlWorkspace().querySelector('[data-trace-dock]')).toBe(dock);
+  });
+
+  it('solves the vertical budget from measured chrome and publishes it to the grid', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    // 800 px of workspace less 36 + 0 + 36 + 8 + 8 of chrome leaves a 712 px budget.
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+
+    const query = screen.getByRole('separator', { name: 'Resize query' });
+    expect(query.getAttribute('aria-valuenow')).toBe('116');
+    expect(query.getAttribute('aria-valuemin')).toBe('80');
+    // 712 - 248 of dock - 128 of results minimum.
+    expect(query.getAttribute('aria-valuemax')).toBe('336');
+    expect(query.getAttribute('aria-controls')).toBe('query-pane');
+
+    const inspection = screen.getByRole('separator', { name: 'Resize inspection' });
+    expect(inspection.getAttribute('aria-valuenow')).toBe('248');
+    // 40 of strip, no tab row, and a 112 px body floor.
+    expect(inspection.getAttribute('aria-valuemin')).toBe('152');
+    expect(inspection.getAttribute('aria-valuemax')).toBe('468');
+    expect(inspection.getAttribute('aria-controls')).toBe('inspection-pane');
+    expect(document.getElementById('inspection-pane')?.dataset.traceDock).toBe('');
+  });
+
+  it('measures once on mount, before any animation frame, without writing a preference', async () => {
+    // No frame ever runs: whatever the workspace renders had to come from the mount-time
+    // measurement, not from the observer's queued frame.
+    vi.stubGlobal('requestAnimationFrame', () => 1);
+    vi.stubGlobal('cancelAnimationFrame', () => undefined);
+
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await tick();
+
+    // jsdom's 1024x768 viewport is wide and tall enough for the roomy defaults, so a fallback
+    // that assumed a zero viewport would show the narrow 80 px editor instead.
+    expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('116px');
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+    expect(localStorage.getItem('byteql.ui.layout.v1')).toBeNull();
+  });
+
+  it('charges a wrapped notices row to the budget rather than to the panes', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    measuredHeights.set('query-notices', 48);
+    window.dispatchEvent(new Event('resize'));
+
+    const query = screen.getByRole('separator', { name: 'Resize query' });
+    await vi.waitFor(() => expect(query.getAttribute('aria-valuemax')).toBe('288'));
+    // The panes keep their sizes; only the space they may still claim shrank.
+    expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('116px');
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+  });
+
+  it('keeps both dividers usable while a query is running', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    controller.publish({ ...controller.state, phase: 'querying' });
+    const editor = screen.getByRole('textbox', { name: 'SQL query' });
+    await vi.waitFor(() => expect(editor.getAttribute('contenteditable')).toBe('false'));
+
+    for (const name of ['Resize query', 'Resize inspection']) {
+      const separator = screen.getByRole('separator', { name });
+      expect(separator.getAttribute('aria-disabled')).toBeNull();
+      expect(separator.getAttribute('tabindex')).toBe('0');
+    }
+
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize query' }), {
+      key: 'ArrowDown',
+    });
+    expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('134px');
+    expect(controller.runQuery).not.toHaveBeenCalled();
+  });
+
+  it('removes the inspection divider and its track when the dock is collapsed', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Hide inspection' }));
+    await vi.waitFor(() => expect(screen.queryByRole('separator', { name: 'Resize inspection' })).toBeNull());
+    expect(document.querySelector('.inspection-resize-slot')).toBeNull();
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('auto');
+    expect(sqlWorkspace().style.getPropertyValue('--inspection-gutter')).toBe('0px');
+    // Query keeps its divider, and the collapsed dock keeps no height of its own.
+    expect(screen.getByRole('separator', { name: 'Resize query' })).toBeTruthy();
+    expect((document.querySelector('[data-trace-dock]') as HTMLElement).style.height).toBe('');
+  });
+
+  it('solves both widths from the measured shell and dock, and addresses their panes', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    const shell = document.querySelector('.app-shell') as HTMLElement;
+    expect(shell.style.getPropertyValue('--sources-width')).toBe('224px');
+
+    const sources = screen.getByRole('separator', { name: 'Resize sources' });
+    expect(sources.getAttribute('aria-orientation')).toBe('vertical');
+    expect(sources.getAttribute('aria-valuenow')).toBe('224');
+    expect(sources.getAttribute('aria-valuemin')).toBe('192');
+    // 1440 of shell less an 8 px track and the 640 px workspace floor, capped at 420.
+    expect(sources.getAttribute('aria-valuemax')).toBe('420');
+    expect(sources.getAttribute('aria-controls')).toBe('source-pane');
+    expect(document.getElementById('source-pane')?.classList.contains('explorer-drawer')).toBe(true);
+
+    const values = screen.getByRole('separator', { name: 'Resize values' });
+    expect(values.getAttribute('aria-valuenow')).toBe('256');
+    expect(values.getAttribute('aria-valuemin')).toBe('200');
+    expect(values.getAttribute('aria-valuemax')).toBe('480');
+    expect(values.getAttribute('aria-controls')).toBe('dock-panel-values');
+    expect(document.getElementById('dock-panel-values')?.classList.contains('trace-values')).toBe(true);
+
+    // A narrower shell republishes the limit rather than leaving a stale one on the separator.
+    measuredWidths.set('app-shell', 1000);
+    await remeasure();
+    expect(sources.getAttribute('aria-valuemax')).toBe('352');
+  });
+
+  it('publishes a wider Sources column without disturbing the vertical budget', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    const shell = document.querySelector('.app-shell') as HTMLElement;
+    const separator = screen.getByRole('separator', { name: 'Resize sources' });
+    await fireEvent.keyDown(separator, { key: 'ArrowRight', shiftKey: true });
+
+    expect(shell.style.getPropertyValue('--sources-width')).toBe('296px');
+    expect(separator.getAttribute('aria-valuenow')).toBe('296');
+    // A width is not a height: the solved vertical budget is untouched.
+    expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('116px');
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+    expect(JSON.parse(localStorage.getItem('byteql.ui.layout.v1')!)).toMatchObject({
+      sourcesWidth: 296,
+      queryHeight: null,
+    });
+  });
+
+  it('publishes a wider Values column and charges it to Bytes alone', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    const dock = document.querySelector('[data-trace-dock]') as HTMLElement;
+    const separator = screen.getByRole('separator', { name: 'Resize values' });
+    await fireEvent.keyDown(separator, { key: 'ArrowRight', shiftKey: true });
+
+    expect(dock.style.getPropertyValue('--values-width')).toBe('328px');
+    expect(separator.getAttribute('aria-valuenow')).toBe('328');
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+    expect(JSON.parse(localStorage.getItem('byteql.ui.layout.v1')!)).toMatchObject({
+      valuesWidth: 328,
+      dockHeight: null,
+    });
+  });
+
+  it('both width separators stop at the limits they publish', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    for (const name of ['Resize sources', 'Resize values']) {
+      const separator = screen.getByRole('separator', { name });
+      const min = separator.getAttribute('aria-valuemin');
+      const max = separator.getAttribute('aria-valuemax');
+
+      await fireEvent.keyDown(separator, { key: 'End' });
+      expect(separator.getAttribute('aria-valuenow'), name).toBe(max);
+      await fireEvent.keyDown(separator, { key: 'ArrowRight', shiftKey: true });
+      expect(separator.getAttribute('aria-valuenow'), name).toBe(max);
+
+      await fireEvent.keyDown(separator, { key: 'Home' });
+      expect(separator.getAttribute('aria-valuenow'), name).toBe(min);
+      await fireEvent.keyDown(separator, { key: 'ArrowLeft', shiftKey: true });
+      expect(separator.getAttribute('aria-valuenow'), name).toBe(min);
+    }
+  });
+
+  it('takes the sources divider away with the collapsed column and restores its width', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize sources' }), {
+      key: 'ArrowRight',
+      shiftKey: true,
+    });
+    const shell = document.querySelector('.app-shell') as HTMLElement;
+    expect(shell.style.getPropertyValue('--sources-width')).toBe('296px');
+
+    await user.click(screen.getByRole('button', { name: 'Hide sources' }));
+    // Absent from the DOM, not merely invisible: a hidden separator must not stay tabbable.
+    expect(screen.queryByRole('separator', { name: 'Resize sources' })).toBeNull();
+    expect(document.querySelector('.source-resize-slot')).toBeNull();
+    expect(shell.classList.contains('sources-resizable')).toBe(false);
+
+    await user.click(screen.getByRole('button', { name: 'Show sources' }));
+    expect(screen.getByRole('separator', { name: 'Resize sources' }).getAttribute('aria-valuenow')).toBe(
+      '296',
+    );
+    expect(shell.style.getPropertyValue('--sources-width')).toBe('296px');
+  });
+
+  it('hiding Values takes its divider away, and showing them restores its width', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize values' }), {
+      key: 'ArrowRight',
+      shiftKey: true,
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Hide values' }));
+    expect(screen.queryByRole('separator', { name: 'Resize values' })).toBeNull();
+    expect(document.querySelector('.values-resize-slot')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Show values' }));
+    expect(screen.getByRole('separator', { name: 'Resize values' }).getAttribute('aria-valuenow')).toBe(
+      '328',
+    );
+  });
+
+  it('tabs the dock from the measured dock width, not from a viewport media query', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+    expect(screen.queryByRole('tablist', { name: 'Inspection views' })).toBeNull();
+
+    // Inside the 900-923 band the previous mode wins, so columns stay columns.
+    measuredWidths.set('workbench-main', 910);
+    await remeasure();
+    expect(screen.queryByRole('tablist', { name: 'Inspection views' })).toBeNull();
+
+    // A wide viewport with a dock too narrow for two columns: only a measurement can see this.
+    measuredWidths.set('workbench-main', 880);
+    await remeasure();
+    expect(screen.getByRole('tablist', { name: 'Inspection views' })).toBeTruthy();
+    expect(screen.queryByRole('separator', { name: 'Resize values' })).toBeNull();
+
+    // The same banded width now keeps the tabs, because tabs are what came before it.
+    measuredWidths.set('workbench-main', 910);
+    await remeasure();
+    expect(screen.getByRole('tablist', { name: 'Inspection views' })).toBeTruthy();
+
+    measuredWidths.set('workbench-main', 924);
+    await remeasure();
+    expect(screen.queryByRole('tablist', { name: 'Inspection views' })).toBeNull();
+    expect(screen.getByRole('separator', { name: 'Resize values' })).toBeTruthy();
+  });
+
+  it('keeps focus in the panel it was in when the dock becomes tabbed', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+    controller.selectResultRow(0);
+    await vi.waitFor(() => expect(document.querySelector('.provenance-link')).toBeTruthy());
+
+    const link = document.querySelector('.provenance-link') as HTMLElement;
+    link.focus();
+
+    measuredWidths.set('workbench-main', 880);
+    await remeasure();
+
+    // The panel that held focus is the one the tabs open on, so the user keeps their place.
+    expect(screen.getByRole('tab', { name: 'Values' }).getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(link);
+    expect(document.getElementById('dock-panel-values')?.hidden).toBe(false);
+  });
+
+  it('opens the tabs on Bytes when the user has put Values away', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    // Leave the compact tab on Values, then widen and hide Values from the header.
+    measuredWidths.set('workbench-main', 880);
+    await remeasure();
+    await user.click(screen.getByRole('tab', { name: 'Values' }));
+    measuredWidths.set('workbench-main', 1216);
+    await remeasure();
+    await user.click(screen.getByRole('button', { name: 'Hide values' }));
+    expect(document.getElementById('dock-panel-values')?.hidden).toBe(true);
+
+    measuredWidths.set('workbench-main', 880);
+    await remeasure();
+
+    // A narrower dock must not hand back what the user put away.
+    expect(screen.getByRole('tab', { name: 'Bytes' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Values' }).getAttribute('aria-selected')).toBe('false');
+    expect(document.getElementById('dock-panel-values')?.hidden).toBe(true);
+  });
+
+  it('keeps Values, and the focus inside them, when tabs opened them and the dock widens', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    // Hide Values on the wide layout, narrow, then ask for them again in tab mode.
+    await user.click(screen.getByRole('button', { name: 'Hide values' }));
+    measuredWidths.set('workbench-main', 880);
+    await remeasure();
+    await user.keyboard('{Control>}i{/Control}');
+    expect(screen.getByRole('tab', { name: 'Values' }).getAttribute('aria-selected')).toBe('true');
+
+    controller.selectResultRow(0);
+    await vi.waitFor(() => expect(document.querySelector('.provenance-link')).toBeTruthy());
+    const link = document.querySelector('.provenance-link') as HTMLElement;
+    link.focus();
+
+    measuredWidths.set('workbench-main', 1216);
+    await remeasure();
+
+    // Opening Values in tabs is the same request as showing them beside Bytes, so widening keeps
+    // them on screen — and keeps the focus that was inside rather than dropping it on the body.
+    expect(document.getElementById('dock-panel-values')?.hidden).toBe(false);
+    expect(document.activeElement).toBe(link);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(screen.getByRole('separator', { name: 'Resize values' })).toBeTruthy();
+  });
+
+  it('moves focus off a separator the mode switch removes, and never merely for a width', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    const separator = screen.getByRole('separator', { name: 'Resize values' });
+    separator.focus();
+
+    // A width change alone leaves focus exactly where it was.
+    await fireEvent.keyDown(separator, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(separator);
+
+    measuredWidths.set('workbench-main', 880);
+    await remeasure();
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Bytes' })));
+  });
+
+  it('resets every panel size from the shortcuts dialog without touching the session', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    controller.selectResultRow(1);
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize sources' }), {
+      key: 'ArrowRight',
+      shiftKey: true,
+    });
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize values' }), {
+      key: 'ArrowRight',
+      shiftKey: true,
+    });
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize query' }), {
+      key: 'ArrowDown',
+      shiftKey: true,
+    });
+    await user.click(screen.getByRole('button', { name: 'Use dark appearance' }));
+    controller.runQuery.mockClear();
+
+    await user.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }));
+    const dialog = screen.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    await user.click(within(dialog).getByRole('button', { name: 'Reset panel sizes' }));
+
+    // The dialog stays open; only the sizes moved.
+    expect(screen.getByRole('dialog', { name: 'Keyboard shortcuts' })).toBeTruthy();
+    const shell = document.querySelector('.app-shell') as HTMLElement;
+    expect(shell.style.getPropertyValue('--sources-width')).toBe('224px');
+    expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('116px');
+    expect(
+      (document.querySelector('[data-trace-dock]') as HTMLElement).style.getPropertyValue('--values-width'),
+    ).toBe('256px');
+    expect(JSON.parse(localStorage.getItem('byteql.ui.layout.v1')!)).toEqual({
+      version: 1,
+      sourcesWidth: null,
+      queryHeight: null,
+      dockHeight: null,
+      valuesWidth: null,
+    });
+
+    // Theme, dock collapse, tab and selection are not geometry and are left alone.
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(document.querySelector('[data-trace-dock]')?.getAttribute('data-dock-collapsed')).toBe('false');
+    expect(controller.state.selectedRow).toBe(1);
+    expect(controller.runQuery).not.toHaveBeenCalled();
+  });
+
+  it('offers no panel reset while the workspace is idle', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController({ ...readyState(), phase: 'idle', source: null, result: null });
+    render(Workbench, { controller });
+
+    await user.keyboard('?');
+    const dialog = screen.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    expect(within(dialog).queryByRole('button', { name: 'Reset panel sizes' })).toBeNull();
+  });
+
+  it('still moves every divider when storage refuses to answer', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('storage blocked');
+      },
+      setItem: () => {
+        throw new Error('storage blocked');
+      },
+      removeItem: () => {
+        throw new Error('storage blocked');
+      },
+    });
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize sources' }), {
+      key: 'ArrowRight',
+      shiftKey: true,
+    });
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize values' }), {
+      key: 'ArrowRight',
+      shiftKey: true,
+    });
+    await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize query' }), {
+      key: 'ArrowDown',
+    });
+
+    const shell = document.querySelector('.app-shell') as HTMLElement;
+    expect(shell.style.getPropertyValue('--sources-width')).toBe('296px');
+    expect(
+      (document.querySelector('[data-trace-dock]') as HTMLElement).style.getPropertyValue('--values-width'),
+    ).toBe('328px');
+    expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('134px');
+  });
+
+  it('resizing runs no session work and leaves the editor document and history intact', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    const host = document.querySelector('.sql-editor') as HTMLElement;
+    const view = EditorView.findFromDOM(host)!;
+    const original = view.state.doc.toString();
+    view.dispatch({ changes: { from: 0, to: original.length, insert: 'select 7' } });
+    controller.runQuery.mockClear();
+    controller.selectResultRow.mockClear();
+
+    const separator = screen.getByRole('separator', { name: 'Resize query' });
+    await fireEvent.keyDown(separator, { key: 'ArrowDown' });
+    await fireEvent.keyDown(separator, { key: 'ArrowUp' });
+
+    expect(controller.runQuery).not.toHaveBeenCalled();
+    expect(controller.openFile).not.toHaveBeenCalled();
+    expect(controller.openFiles).not.toHaveBeenCalled();
+    expect(controller.selectResultRow).not.toHaveBeenCalled();
+
+    // The same host, the same EditorView, the same document.
+    expect(document.querySelector('.sql-editor')).toBe(host);
+    expect(EditorView.findFromDOM(host)).toBe(view);
+    expect(view.state.doc.toString()).toBe('select 7');
+
+    // And the edit made before the resize is still undoable.
+    await fireEvent.keyDown(view.contentDOM, { key: 'z', ctrlKey: true });
+    expect(view.state.doc.toString()).toBe(original);
+  });
+
+  it('completes a drag that spans a result generation replacement', async () => {
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+    await settleLayout();
+
+    const separator = screen.getByRole('separator', { name: 'Resize query' });
+    Object.assign(separator, {
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: vi.fn(() => true),
+      releasePointerCapture: vi.fn(),
+    });
+
+    pointer(separator, 'pointerdown', 400);
+    controller.publish({
+      ...controller.state,
+      result: pagedResult(result, { generation: 2 }),
+    });
+    await vi.waitFor(() => expect(screen.getByRole('grid', { name: 'Query results' })).toBeTruthy());
+    pointer(separator, 'pointerup', 460);
+
+    // Dragging down 60 px grows Query by 60 and takes it from Results alone.
+    await vi.waitFor(() => expect(sqlWorkspace().style.getPropertyValue('--query-height')).toBe('176px'));
+    expect(sqlWorkspace().style.getPropertyValue('--dock-height')).toBe('248px');
+    expect(controller.runQuery).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem('byteql.ui.layout.v1')!)).toMatchObject({
+      queryHeight: 176,
+      dockHeight: 248,
+    });
   });
 
   it('keeps the whole workbench visible instead of tabbing Results against Values', () => {
@@ -750,6 +1332,7 @@ describe('Inspector Workbench', () => {
 
   it('tabs Values against Bytes inside the dock on a compact layout', async () => {
     compactMode = true;
+    viewportWidth = 1024;
     const controller = new FakeController(readyState());
     render(Workbench, { controller });
 

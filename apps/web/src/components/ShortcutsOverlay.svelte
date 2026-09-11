@@ -6,9 +6,11 @@
 
   interface Props {
     onclose: () => void;
+    /** Supplied only by a loaded workspace; without it the dialog offers no reset. */
+    onresetpanels?: (() => void) | undefined;
   }
 
-  let { onclose }: Props = $props();
+  let { onclose, onresetpanels }: Props = $props();
   let panel = $state<HTMLElement>();
 
   const mod = navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl';
@@ -63,6 +65,20 @@
         <dd><kbd>{shortcut.keys}</kbd></dd>
       {/each}
     </dl>
+    <p class="shortcuts-hint">
+      Resize panel: focus divider, use arrows; Shift for larger steps; Home/End for limits; double-click to
+      reset one size.
+    </p>
+    <p class="shortcuts-hint">
+      Escape while dragging a divider cancels that drag and restores the size it started from.
+    </p>
+    {#if onresetpanels}
+      <div class="shortcuts-actions">
+        <button class="button button-secondary" type="button" onclick={onresetpanels}>
+          Reset panel sizes
+        </button>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -123,6 +139,18 @@
   .shortcuts-list dd {
     margin: 0;
     text-align: right;
+  }
+
+  .shortcuts-hint {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+  }
+
+  .shortcuts-actions {
+    display: flex;
+    justify-content: flex-end;
   }
 
   .shortcuts-list kbd {
