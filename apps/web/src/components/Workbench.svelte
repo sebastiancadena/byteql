@@ -796,8 +796,10 @@
           <div class="query-actions">
             <span class="shortcut" aria-hidden="true">⌘ Enter</span>
             {#if session.phase === 'querying'}
+              <!-- Compact like Run query: the two states share a slot, so starting a query must
+                   not change the toolbar's height and resize the panes below it. -->
               <button
-                class="button button-secondary"
+                class="button button-secondary button-compact"
                 type="button"
                 onclick={() => perform(() => controller.cancel())}
               >
