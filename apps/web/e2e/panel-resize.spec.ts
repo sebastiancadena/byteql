@@ -471,3 +471,106 @@ test('Bytes keeps its horizontal scroll across appearance, hiding and resizing',
   await expect.poll(async () => scrollLeftOf(page)).toBe(chosen);
   await expect(page.locator('[data-hex-pane]')).toHaveAttribute('data-hex-caret', caret!);
 });
+
+const LONG_LINE = `-- ${'wide-column-comment-'.repeat(25)}`; // one ~500 character line
+const LONG_SQL = [
+  ...Array.from({ length: 60 }, (_, index) => `-- comment line ${index + 1}`),
+  LONG_LINE,
+  'select 1 as sentinel',
+].join('\n');
+
+/** Overflow the host reports for itself versus the overflow its `.cm-scroller` reports. */
+const editorScrollOwnership = (page: Page) =>
+  page.evaluate(() => {
+    const host = document.querySelector('.sql-editor') as HTMLElement;
+    const scroller = document.querySelector('.sql-editor .cm-scroller') as HTMLElement;
+    return {
+      hostX: host.scrollWidth - host.clientWidth,
+      hostY: host.scrollHeight - host.clientHeight,
+      scrollerX: scroller.scrollWidth - scroller.clientWidth,
+      scrollerY: scroller.scrollHeight - scroller.clientHeight,
+      scrollerTop: scroller.scrollTop,
+    };
+  });
+
+test('a long query keeps one scroll owner, its selection and its undo history across a resize', async ({
+  page,
+}) => {
+  await openMidiSample(page);
+  const editor = page.getByRole('textbox', { name: 'SQL query' });
+  await expect(editor).toHaveAttribute('contenteditable', 'true');
+  await editor.fill(LONG_SQL);
+  await expect(editor).toContainText('sentinel');
+
+  // Scroll to the end of the document and select its last word.
+  await editor.focus();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.press('Control+Shift+ArrowLeft');
+  const scrolled = await editorScrollOwnership(page);
+  expect(scrolled.scrollerTop, 'the editor must have scrolled to its end').toBeGreaterThan(0);
+
+  // `.cm-scroller` owns BOTH axes; the host is a fixed clipping box with no scrolling of its own.
+  expect(scrolled.scrollerX, 'the 500 character line must scroll horizontally').toBeGreaterThan(0);
+  expect(scrolled.scrollerY, '60+ lines must scroll vertically').toBeGreaterThan(0);
+  expect(scrolled.hostX).toBe(0);
+  expect(scrolled.hostY).toBe(0);
+
+  await drag(page, 'Resize query', 0, 120);
+  await drag(page, 'Resize query', 0, -60);
+  const resized = await editorScrollOwnership(page);
+  expect(resized.hostX).toBe(0);
+  expect(resized.hostY).toBe(0);
+
+  // The selection survived the resize: typing replaces exactly the word that was selected…
+  await editor.focus();
+  await page.keyboard.type('marker');
+  await expect(editor).toContainText('select 1 as marker');
+  await expect(editor).not.toContainText('sentinel');
+
+  // …and undo puts it back, with the rest of the long document untouched.
+  await page.keyboard.press('Control+z');
+  await expect(editor).toContainText('select 1 as sentinel');
+  await expect(editor).toContainText('comment line 60');
+  await expect(editor).toContainText(LONG_LINE);
+
+  // A theme switch is a CodeMirror reconfigure, never a rerun: the result generation stands.
+  const before = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  await page.getByRole('button', { name: 'Use dark appearance' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(editor).toContainText('select 1 as sentinel');
+  const after = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  expect(after.sendCount).toBe(before.sendCount);
+  expect(after.resultOpfsPaths).toEqual(before.resultOpfsPaths);
+});
+
+test('enlarging Results crosses the demand threshold with no scroll event', async ({ page }) => {
+  await openMidiSample(page);
+  await runSql(page, 'select i from range(1000000) t(i)');
+  const meta = page.locator('.results-heading-meta');
+  await expect(meta.getByText('1,024 loaded · more available', { exact: true })).toBeVisible();
+
+  const scroll = page.locator('.grid-scroll');
+  // Park the last visible row one short of the forward-demand edge (loadedRows - 8 - 1).
+  await scroll.evaluate((node) => {
+    node.scrollTop = (1024 - 9) * 36 - node.clientHeight - 1;
+    node.dispatchEvent(new Event('scroll'));
+  });
+  await page.waitForTimeout(500);
+  await expect(meta.getByText('1,024 loaded · more available', { exact: true })).toBeVisible();
+
+  const parked = await scroll.evaluate((node) => ({ top: node.scrollTop, height: node.clientHeight }));
+  // Shrinking the dock hands Results more rows without producing a scroll event.
+  await drag(page, 'Resize inspection', 0, 90);
+  await expect.poll(async () => scroll.evaluate((node) => node.clientHeight)).toBeGreaterThan(parked.height);
+  expect(await scroll.evaluate((node) => node.scrollTop)).toBe(parked.top);
+
+  await expect
+    .poll(async () => (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).loadedRows)
+    .toBeGreaterThan(1024);
+
+  // One generation throughout: growing a panel never re-sends the query.
+  const metrics = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  expect(metrics.sendCount).toBe(1);
+  const generations = new Set(metrics.resultOpfsPaths.map((path) => path.split('/')[1]));
+  expect(generations.size).toBe(1);
+});
