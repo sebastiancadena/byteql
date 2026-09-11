@@ -267,6 +267,29 @@ describe('panel layout coordinator', () => {
     expect(model.layout.dockBounds.min).toBe(312);
   });
 
+  it('charges a coarse pointer for the whole 24 px divider track, once per rendered divider', () => {
+    const { storage } = memoryStorage();
+    const model = createPanelLayout(storage);
+
+    // Fine pointer: two 8 px tracks, and the design's worked example leaves Results 348 px.
+    model.measure(baseMetrics);
+    expect(model.layout.resultsHeight).toBe(348);
+
+    // Coarse pointer: the same two tracks are 24 px each, so 32 px more chrome leaves the budget
+    // and Results — the pane that takes the remainder — is the one that pays for it.
+    model.measure({ ...baseMetrics, gutter: 24 });
+    expect(model.layout).toMatchObject({ queryHeight: 116, dockHeight: 248, resultsHeight: 316 });
+    // Both dividers publish the smaller headroom that the wider tracks leave behind.
+    expect(model.layout.queryBounds.max).toBe(304);
+    expect(model.layout.dockBounds.max).toBe(436);
+
+    // A collapsed dock renders no inspection track, so only the query divider is charged for.
+    model.measure({ ...baseMetrics, gutter: 24, dockCollapsed: true });
+    expect(model.layout.resultsHeight).toBe(548);
+    model.measure({ ...baseMetrics, dockCollapsed: true });
+    expect(model.layout.resultsHeight).toBe(564);
+  });
+
   it('drops the hex chrome floor when Bytes is not on screen', () => {
     const { storage } = memoryStorage();
     const model = createPanelLayout(storage);
