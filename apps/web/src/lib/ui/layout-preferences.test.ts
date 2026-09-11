@@ -59,7 +59,13 @@ describe('readLayoutPreferences', () => {
   it('rejects bad fields without discarding valid fields', () => {
     const storage = {
       getItem: () =>
-        JSON.stringify({ version: 1, sourcesWidth: '300', queryHeight: -8, dockHeight: 320, valuesWidth: 1e9 }),
+        JSON.stringify({
+          version: 1,
+          sourcesWidth: '300',
+          queryHeight: -8,
+          dockHeight: 320,
+          valuesWidth: 1e9,
+        }),
       setItem: () => undefined,
     };
     expect(readLayoutPreferences(storage)).toEqual({ ...emptyPreferences(), dockHeight: 320 });
@@ -67,14 +73,26 @@ describe('readLayoutPreferences', () => {
 
   it('treats 0 as an invalid field value', () => {
     const storage = memoryStorage({
-      [LAYOUT_KEY]: JSON.stringify({ version: 1, sourcesWidth: 0, queryHeight: 100, dockHeight: 200, valuesWidth: 300 }),
+      [LAYOUT_KEY]: JSON.stringify({
+        version: 1,
+        sourcesWidth: 0,
+        queryHeight: 100,
+        dockHeight: 200,
+        valuesWidth: 300,
+      }),
     });
     expect(readLayoutPreferences(storage).sourcesWidth).toBeNull();
   });
 
   it('rounds valid fractional field values', () => {
     const storage = memoryStorage({
-      [LAYOUT_KEY]: JSON.stringify({ version: 1, sourcesWidth: 300.6, queryHeight: null, dockHeight: null, valuesWidth: null }),
+      [LAYOUT_KEY]: JSON.stringify({
+        version: 1,
+        sourcesWidth: 300.6,
+        queryHeight: null,
+        dockHeight: null,
+        valuesWidth: null,
+      }),
     });
     expect(readLayoutPreferences(storage).sourcesWidth).toBe(301);
   });
@@ -105,7 +123,13 @@ describe('readLayoutPreferences', () => {
 
   it('returns empty preferences for an unsupported version', () => {
     const storage = memoryStorage({
-      [LAYOUT_KEY]: JSON.stringify({ version: 2, sourcesWidth: 300, queryHeight: 100, dockHeight: 200, valuesWidth: 300 }),
+      [LAYOUT_KEY]: JSON.stringify({
+        version: 2,
+        sourcesWidth: 300,
+        queryHeight: 100,
+        dockHeight: 200,
+        valuesWidth: 300,
+      }),
     });
     expect(readLayoutPreferences(storage)).toEqual(emptyPreferences());
   });
@@ -160,7 +184,13 @@ describe('writeLayoutPreferences', () => {
     expect(Object.keys(stored).sort()).toEqual(
       ['dockHeight', 'queryHeight', 'sourcesWidth', 'valuesWidth', 'version'].sort(),
     );
-    expect(stored).toEqual({ version: 1, sourcesWidth: 300, queryHeight: 120, dockHeight: 240, valuesWidth: 260 });
+    expect(stored).toEqual({
+      version: 1,
+      sourcesWidth: 300,
+      queryHeight: 120,
+      dockHeight: 240,
+      valuesWidth: 260,
+    });
   });
 
   it('does nothing when there is no storage', () => {

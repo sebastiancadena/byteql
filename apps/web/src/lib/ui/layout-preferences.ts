@@ -60,10 +60,7 @@ export function readLayoutPreferences(storage: LayoutStorage | null): LayoutPref
 /** Writes a freshly constructed whitelist object with exactly the five known fields — never the
  * caller's object, so stray extra properties can never reach storage. Failures are swallowed;
  * the preference is optional. */
-export function writeLayoutPreferences(
-  storage: LayoutStorage | null,
-  preferences: LayoutPreferences,
-): void {
+export function writeLayoutPreferences(storage: LayoutStorage | null, preferences: LayoutPreferences): void {
   if (!storage) return;
   const whitelisted: LayoutPreferences = {
     version: 1,

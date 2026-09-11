@@ -148,7 +148,13 @@ describe('fitHorizontal', () => {
   });
 
   it('never reports a maximum below its own minimum on a narrow shell', () => {
-    const layout = fitHorizontal({ shellWidth: 390, dockWidth: 390, gutter: 8, sourcesWidth: 200, valuesWidth: 200 });
+    const layout = fitHorizontal({
+      shellWidth: 390,
+      dockWidth: 390,
+      gutter: 8,
+      sourcesWidth: 200,
+      valuesWidth: 200,
+    });
     expect(layout.sourcesBounds.max).toBeGreaterThanOrEqual(layout.sourcesBounds.min);
     expect(layout.valuesBounds.max).toBeGreaterThanOrEqual(layout.valuesBounds.min);
   });

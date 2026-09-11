@@ -66,11 +66,7 @@ export function defaultSizes(viewportWidth: number, viewportHeight: number) {
 
 /** Below 900 px the dock cannot hold its tabs side by side; above 924 px it always can. Between
  * those two thresholds the previous state wins, so a drag near the boundary does not flicker. */
-export function compactForWidth(
-  viewportWidth: number,
-  dockWidth: number,
-  wasCompact: boolean,
-): boolean {
+export function compactForWidth(viewportWidth: number, dockWidth: number, wasCompact: boolean): boolean {
   if (viewportWidth < 1280 || dockWidth < 900) return true;
   if (dockWidth >= 924) return false;
   return wasCompact;
