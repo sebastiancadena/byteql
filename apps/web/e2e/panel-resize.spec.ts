@@ -1053,8 +1053,23 @@ test('the dock floor is composed from the byte pane chrome the browser actually 
     .toBe(composedDockMinimum(grown));
 });
 
+/**
+ * The loaded file's size in bytes, read from the catalog card the session renders for it — a
+ * source of truth outside the byte pane, so the pane's own idea of where the file ends can be
+ * checked against something rather than against itself.
+ */
+async function loadedFileSize(page: Page): Promise<number> {
+  const label = await page.locator('#source-pane').innerText();
+  const match = /([\d,]+)\s+bytes/u.exec(label);
+  expect(match, `no byte count in the source catalog: ${label}`).not.toBeNull();
+  const size = Number(match![1].replaceAll(',', ''));
+  expect(size, 'the catalog reported a nonsensical file size').toBeGreaterThan(16);
+  return size;
+}
+
 test('a narrowed Bytes pane keeps the caret exposed and reaches the end of the file', async ({ page }) => {
   await openMidiSample(page);
+  const fileSize = await loadedFileSize(page);
   const geometry = await hexGeometry(page);
   await narrowBytesByDragging(page);
 
@@ -1080,21 +1095,33 @@ test('a narrowed Bytes pane keeps the caret exposed and reaches the end of the f
     );
   expect(await exposed(1), 'the caret cell is still off-screen after ArrowRight').toBe(true);
 
-  // Control+End goes to the last byte of the file: its row is painted and its cell is exposed.
+  // Control+End goes to the LAST byte of the file — the offset the catalog's own size implies,
+  // not merely "somewhere past zero" — and the pane pages down to show it.
+  const lastOffset = fileSize - 1;
+  const lastRow = Math.floor(lastOffset / 16);
+  expect(lastRow, 'this fixture must not fit in one screen of rows').toBeGreaterThan(8);
   await page.keyboard.press('Control+End');
-  const caret = Number(await page.locator('[data-hex-pane]').getAttribute('data-hex-caret'));
-  expect(caret).toBeGreaterThan(0);
+  await expect(page.locator('[data-hex-pane]')).toHaveAttribute('data-hex-caret', String(lastOffset));
+
   const tail = await page.evaluate(() => {
     const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
     const viewport = pane.querySelector('.hex-viewport') as HTMLElement;
     return {
       firstRow: Number(pane.dataset.hexFirstRow),
-      rows: Math.floor(viewport.clientHeight / 18),
+      // `rowsInView` in src/lib/hex/layout.ts, against the 18 px row the canvas paints.
+      rows: Math.max(1, Math.floor(viewport.clientHeight / 18)),
     };
   });
-  expect(Math.floor(caret / 16)).toBeGreaterThanOrEqual(tail.firstRow);
-  expect(Math.floor(caret / 16)).toBeLessThan(tail.firstRow + tail.rows + 1);
-  expect(await exposed(caret % 16)).toBe(true);
+  // The view actually scrolled to the bottom of the file, and the caret row is inside it.
+  expect(tail.firstRow, 'the byte rows never moved off the top of the file').toBeGreaterThan(0);
+  expect(lastRow).toBeGreaterThanOrEqual(tail.firstRow);
+  expect(lastRow).toBeLessThan(tail.firstRow + tail.rows);
+  expect(await exposed(lastOffset % 16), 'the last byte cell is off-screen').toBe(true);
+
+  // Home again returns to the first byte, so the range covered is the whole file.
+  await page.keyboard.press('Control+Home');
+  await expect(page.locator('[data-hex-pane]')).toHaveAttribute('data-hex-caret', '0');
+  await expect(page.locator('[data-hex-pane]')).toHaveAttribute('data-hex-first-row', '0');
 });
 
 test('a legacy hex height becomes the dock height, and only the new record is written', async ({ page }) => {
@@ -1308,4 +1335,98 @@ test.describe('coarse pointers', () => {
     await page.mouse.up();
     await expect.poll(async () => Math.round(await widthOf(page, '#source-pane'))).toBe(before + 40);
   });
+});
+
+/**
+ * The workspace's vertical shape as the user can observe it: where each row starts and ends, and
+ * the numbers both vertical dividers publish. Anything that changes the budget shows up here.
+ */
+const WORKSPACE_ROWS = [
+  '#query-pane',
+  '.query-notices',
+  '.query-resize-slot',
+  '.results-heading',
+  '.results-panel',
+  '.inspection-resize-slot',
+  '#inspection-pane',
+] as const;
+
+const workspaceShape = (page: Page) =>
+  page.evaluate(
+    (selectors) => {
+      const rows = selectors.map((selector) => {
+        const element = document.querySelector(selector) as HTMLElement;
+        const rect = element.getBoundingClientRect();
+        return { selector, top: Math.round(rect.top), bottom: Math.round(rect.bottom) };
+      });
+      const separators = ['Resize query', 'Resize inspection'].map((label) => {
+        const node = document.querySelector(`[aria-label="${label}"]`) as HTMLElement;
+        return {
+          label,
+          min: node.getAttribute('aria-valuemin'),
+          now: node.getAttribute('aria-valuenow'),
+          max: node.getAttribute('aria-valuemax'),
+        };
+      });
+      return { rows, separators };
+    },
+    WORKSPACE_ROWS as unknown as string[],
+  );
+
+const expectNoOverlap = (shape: Awaited<ReturnType<typeof workspaceShape>>) => {
+  for (let index = 1; index < shape.rows.length; index += 1) {
+    expect(
+      shape.rows[index].top,
+      `${shape.rows[index].selector} overlaps ${shape.rows[index - 1].selector}`,
+    ).toBeGreaterThanOrEqual(shape.rows[index - 1].bottom);
+  }
+};
+
+test('every export state leaves the divider bounds and the workspace rows exactly as they were', async ({
+  page,
+}) => {
+  // No file picker, so the download takes the in-page fallback path and reaches its own
+  // "ready to save" and "file saved" states rather than handing off to the browser immediately.
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, 'showSaveFilePicker');
+  });
+  await openMidiSample(page);
+  await runSql(page, 'select i from range(50) t(i)');
+  await expect(page.locator('.results-heading-meta').getByText('50 rows', { exact: true })).toBeVisible();
+
+  const before = await workspaceShape(page);
+  expectNoOverlap(before);
+
+  // The export surface is an out-of-flow popover anchored in the results toolbar, so none of its
+  // states may take a pixel from the budget. Each one is checked, not assumed.
+  await page.getByRole('button', { name: 'Download results', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Download results' })).toBeVisible();
+  expect(await workspaceShape(page), 'opening the export options moved the layout').toEqual(before);
+
+  await page.getByRole('button', { name: 'Download', exact: true }).click();
+  const status = page.locator('.results-download-status');
+  await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
+  await expect(status).toBeVisible();
+  expect(await workspaceShape(page), 'an export status moved the layout').toEqual(before);
+
+  const pending = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save file', exact: true }).click();
+  await pending;
+  await expect(status).toContainText('Download handed to the browser.');
+  const saved = await workspaceShape(page);
+  expect(saved, 'a terminal export state moved the layout').toEqual(before);
+  expectNoOverlap(saved);
+
+  // Nothing keeps re-measuring behind the finished export: a beat later the shape still agrees.
+  await page.waitForTimeout(600);
+  expect(await workspaceShape(page), 'the layout is still settling after an export').toEqual(before);
+
+  // And with the export state still on record, both dividers still move.
+  await page.getByRole('button', { name: 'Close download options' }).click();
+  await expect(page.getByRole('dialog', { name: 'Download results' })).toHaveCount(0);
+  await drag(page, 'Resize query', 0, 40);
+  await expect
+    .poll(async () => Math.round(await heightOf(page, '#query-pane')))
+    .toBe(Number(before.separators[0].now) + 40);
+  expectNoOverlap(await workspaceShape(page));
 });
