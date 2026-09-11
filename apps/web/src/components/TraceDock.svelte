@@ -2,7 +2,9 @@
   /* global HTMLElement, KeyboardEvent, ResizeObserver */
   import type { Snippet } from 'svelte';
 
+  import type { Bounds } from '../lib/ui/panel-layout.js';
   import type { TraceSummary } from '../lib/ui/trace.js';
+  import ResizeHandle from './ResizeHandle.svelte';
   import TraceBar from './TraceBar.svelte';
 
   type DockTab = 'values' | 'bytes';
@@ -21,6 +23,16 @@
     height: number;
     /** Effective width of the Values column, published for the dock's own grid. */
     valuesWidth: number;
+    /** Limits for the Values separator. The dock renders that separator; it owns no preference,
+     * and every value it reports goes straight back to the workspace's layout coordinator. */
+    valuesBounds: Bounds;
+    /** Bumped by the coordinator to abandon an in-flight drag. */
+    cancelEpoch: number;
+    onvaluestart: () => void;
+    onvaluespreview: (value: number) => void;
+    onvaluescommit: (value: number) => void;
+    onvaluescancel: () => void;
+    onvaluesreset: () => void;
     /** Border-box heights of the chrome the workspace budget has to account for. */
     onchromechange: (value: { strip: number; tabs: number }) => void;
     values: Snippet;
@@ -38,6 +50,13 @@
     onreveal,
     height,
     valuesWidth,
+    valuesBounds,
+    cancelEpoch,
+    onvaluestart,
+    onvaluespreview,
+    onvaluescommit,
+    onvaluescancel,
+    onvaluesreset,
     onchromechange,
     values,
     bytes,
@@ -86,6 +105,9 @@
 
   const valuesActive = $derived(compact ? tab === 'values' : showValues);
   const bytesActive = $derived(compact ? tab === 'bytes' : true);
+  /** Only a Values column that is actually beside Bytes has an edge to drag. Tabs, a collapsed
+   * dock and hidden Values each remove the separator from the DOM rather than hiding it. */
+  const valuesResizable = $derived(!collapsed && !compact && showValues);
 </script>
 
 <section
@@ -93,6 +115,7 @@
   class="trace-dock"
   class:compact
   class:values-hidden={!compact && !showValues}
+  class:values-resizable={valuesResizable}
   data-trace-dock
   data-dock-collapsed={collapsed}
   style:height={collapsed ? undefined : `${height}px`}
@@ -146,6 +169,25 @@
     >
       {@render values()}
     </div>
+    {#if valuesResizable}
+      <div class="values-resize-slot">
+        <ResizeHandle
+          orientation="vertical"
+          direction={1}
+          value={valuesWidth}
+          min={valuesBounds.min}
+          max={valuesBounds.max}
+          {cancelEpoch}
+          onstart={onvaluestart}
+          onpreview={onvaluespreview}
+          oncommit={onvaluescommit}
+          oncancel={onvaluescancel}
+          onreset={onvaluesreset}
+          label="Resize values"
+          controls="dock-panel-values"
+        />
+      </div>
+    {/if}
     <div
       class="trace-bytes"
       id="dock-panel-bytes"

@@ -115,10 +115,57 @@ describe('TraceDock geometry', () => {
     expect(dock().id).toBe('inspection-pane');
   });
 
-  it('owns no separator of its own — the workspace does', () => {
-    renderDock();
-    expect(screen.queryByRole('separator')).toBeNull();
+  it('renders the Values separator against the bounds the workspace published', () => {
+    renderDock({ valuesWidth: 288, valuesBounds: { min: 200, max: 420 } });
+    const separator = screen.getByRole('separator', { name: 'Resize values' });
+    expect(separator.getAttribute('aria-orientation')).toBe('vertical');
+    expect(separator.getAttribute('aria-controls')).toBe('dock-panel-values');
+    expect(separator.getAttribute('aria-valuenow')).toBe('288');
+    expect(separator.getAttribute('aria-valuemin')).toBe('200');
+    expect(separator.getAttribute('aria-valuemax')).toBe('420');
+    // It sits between the two panels, in a track of its own.
+    const body = Array.from(document.querySelector('.trace-dock-body')!.children);
+    expect(body.map((child) => child.classList[0])).toEqual([
+      'trace-values',
+      'values-resize-slot',
+      'trace-bytes',
+    ]);
   });
+
+  it('reports every Values drag to the workspace and keeps no width of its own', async () => {
+    const handlers = {
+      onvaluestart: vi.fn(),
+      onvaluespreview: vi.fn(),
+      onvaluescommit: vi.fn(),
+      onvaluesreset: vi.fn(),
+    };
+    renderDock({ valuesWidth: 256, ...handlers });
+    const separator = screen.getByRole('separator', { name: 'Resize values' });
+
+    await fireEvent.keyDown(separator, { key: 'ArrowRight' });
+    expect(handlers.onvaluestart).toHaveBeenCalledOnce();
+    expect(handlers.onvaluescommit).toHaveBeenCalledExactlyOnceWith(274);
+    await fireEvent.dblClick(separator);
+    expect(handlers.onvaluesreset).toHaveBeenCalledOnce();
+
+    // The dock reports; it never adopts. Its column still shows what the workspace published.
+    expect(separator.getAttribute('aria-valuenow')).toBe('256');
+    expect(dock().style.getPropertyValue('--values-width')).toBe('256px');
+    expect(localStorage.getItem('byteql.ui.layout.v1')).toBeNull();
+  });
+
+  for (const { label, props } of [
+    { label: 'the dock is collapsed', props: { collapsed: true } },
+    { label: 'the panels are tabbed', props: { compact: true } },
+    { label: 'Values are hidden', props: { showValues: false } },
+  ]) {
+    it(`removes the Values separator from the DOM when ${label}`, () => {
+      renderDock(props);
+      // Absent, not merely invisible: a hidden separator must not stay tabbable.
+      expect(screen.queryByRole('separator', { name: 'Resize values' })).toBeNull();
+      expect(document.querySelector('.values-resize-slot')).toBeNull();
+    });
+  }
 
   it('keeps no height preference of its own in storage', async () => {
     const { onchromechange } = renderDock();

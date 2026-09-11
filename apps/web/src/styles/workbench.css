@@ -6,20 +6,30 @@
 .app-shell {
   /* The divider tracks. Coarse pointers get a target they can actually hit. */
   --panel-gutter: 8px;
+  /* Published by the workspace's layout coordinator. The fallbacks only have to survive the
+     first frame of an idle shell, which mounts no catalog and no divider at all. */
+  --sources-width: 224px;
+  --sources-gutter: 0px;
 
   display: grid;
   grid-template:
-    'header header' var(--header-height)
-    'explorer workbench' minmax(0, 1fr)
-    'status status' var(--status-height)
-    / 224px minmax(0, 1fr);
+    'header header header' var(--header-height)
+    'explorer source-handle workbench' minmax(0, 1fr)
+    'status status status' var(--status-height)
+    / var(--sources-width) var(--sources-gutter) minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
   background: var(--color-canvas);
 }
 
+/* The divider track exists only while a separator is in it, so a collapsed catalog or a modal
+   drawer leaves no empty gap between the columns. */
+.app-shell.sources-resizable {
+  --sources-gutter: var(--panel-gutter);
+}
+
 .app-shell.explorer-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr);
+  grid-template-columns: 0 0 minmax(0, 1fr);
 }
 
 @media (pointer: coarse) {
@@ -136,7 +146,6 @@
 }
 
 .explorer {
-  grid-area: explorer;
   border-right: 1px solid var(--color-border);
 }
 
@@ -503,8 +512,17 @@
 
 /* Divider tracks own their geometry; the separator inside simply fills one. */
 .query-resize-slot,
-.inspection-resize-slot {
+.inspection-resize-slot,
+.source-resize-slot,
+.values-resize-slot {
   display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The sources divider is a shell column of its own, between the catalog and the workspace. */
+.source-resize-slot {
+  grid-area: source-handle;
   min-width: 0;
   min-height: 0;
 }
@@ -568,6 +586,8 @@
 /* Inspection dock */
 
 .trace-dock {
+  --values-gutter: 0px;
+
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
@@ -614,10 +634,14 @@
   font-weight: 600;
 }
 
+.trace-dock.values-resizable {
+  --values-gutter: var(--panel-gutter);
+}
+
 /* Values beside Bytes; when Values are hidden, Bytes span the whole dock. */
 .trace-dock-body {
   display: grid;
-  grid-template-columns: 256px minmax(0, 1fr);
+  grid-template-columns: var(--values-width) var(--values-gutter) minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
 }
@@ -1185,16 +1209,6 @@
 /* Responsive geometry — 1280 px tabs the dock, 960 px moves the catalog into a drawer,
    700 px collapses the dock by default unless the user has a stored preference. */
 
-@media (max-width: 1279px) {
-  .app-shell {
-    grid-template-columns: 208px minmax(0, 1fr);
-  }
-
-  .app-shell.explorer-collapsed {
-    grid-template-columns: 0 minmax(0, 1fr);
-  }
-}
-
 @media (max-width: 959px) {
   .app-shell,
   .app-shell.explorer-collapsed {
@@ -1265,9 +1279,19 @@
   }
 }
 
-/* Wide layouts keep the catalog as an ordinary column. */
+/* Wide layouts keep the catalog as an ordinary column — a real box, so the sources divider has
+   something to size, and so the same mounted Explorer can simply fill it. */
 .explorer-drawer {
-  display: contents;
+  grid-area: explorer;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.explorer-drawer > .explorer {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 @media (max-width: 699px) {
