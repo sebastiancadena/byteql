@@ -87,13 +87,21 @@
       // The drawer is modal: no divider transaction may survive underneath it.
       if (!drawerOpen) panels.cancel();
       drawerOpen = !drawerOpen;
-    } else columnCollapsed = !columnCollapsed;
+      return;
+    }
+    // Collapsing the column takes its divider with it; no transaction may outlive its handle.
+    if (!columnCollapsed) panels.cancel();
+    columnCollapsed = !columnCollapsed;
   }
 
   function closeDrawer(): void {
     drawerOpen = false;
   }
-  /** Below 1280 px the dock tabs Values and Bytes instead of showing them side by side. */
+  /**
+   * Whether the dock tabs Values and Bytes instead of showing them side by side. The layout
+   * coordinator decides that from measured widths; this mirrors its decision so a switch can
+   * settle the dock's tab and rescue focus before the controls around it change.
+   */
   let compactDock = $state(false);
   let dockTab = $state<'values' | 'bytes'>('bytes');
   let overviewSource: string | null = null;
@@ -242,6 +250,9 @@
    * It is presentation only — nothing here reaches the session controller. */
   const panels = createPanelLayout(browserStorage());
   const layout = $derived(panels.layout);
+  /** The catalog is resizable only as an ordinary open column: the modal drawer has a fixed
+   * width and a collapsed column has no edge, so neither renders a separator at all. */
+  const sourcesResizable = $derived(!idle && !drawerMode && !explorerCollapsed);
   let shellElement = $state<HTMLElement | null>(null);
   let mainElement = $state<HTMLElement | null>(null);
   let queryToolbarElement = $state<HTMLElement | null>(null);
@@ -312,6 +323,63 @@
     void dockChrome;
     metricsObserver?.schedule();
   });
+
+  // The coordinator is the only thing that decides compact mode, and this is the only thing that
+  // reads that decision. Declared after the measuring effect so the first run already sees a
+  // measured viewport instead of the coordinator's safe fallback. `layout.compact` is the sole
+  // tracked dependency: everything the switch inspects is read untracked, because a mode change
+  // is the only event allowed to move focus.
+  $effect(() => {
+    const next = layout.compact;
+    untrack(() => switchCompactDock(next));
+  });
+
+  const HEADER_SOURCES_TOGGLE =
+    '.app-header [aria-label="Hide sources"], .app-header [aria-label="Show sources"]';
+  const HEADER_VALUES_TOGGLE =
+    '.app-header [aria-label="Hide values"], .app-header [aria-label="Show values"]';
+
+  /** Focuses the first of these that exists, once the DOM has settled. Called only when the
+   * control the user was actually on is leaving the page — never because a pane changed size. */
+  function focusFallback(selectors: readonly string[]): void {
+    void tick().then(() => {
+      for (const selector of selectors) {
+        const target = document.querySelector<HTMLElement>(selector);
+        if (target) {
+          target.focus();
+          return;
+        }
+      }
+    });
+  }
+
+  /**
+   * Adopts the coordinator's compact decision. Focus is inspected against the dock's own panels
+   * before the switch, while they still hold it: the panel the user was working in becomes the
+   * active tab, so their place survives the change.
+   */
+  function switchCompactDock(next: boolean): void {
+    if (next === compactDock) return;
+    const focused = document.activeElement;
+    const holds = (id: string): boolean => {
+      const panel = mainElement?.querySelector<HTMLElement>(`#${id}`) ?? null;
+      return panel !== null && focused !== null && panel.contains(focused);
+    };
+    if (next) {
+      if (holds('dock-panel-values') && !inspectorCollapsed) dockTab = 'values';
+      else if (holds('dock-panel-bytes')) dockTab = 'bytes';
+    }
+    // The Values divider and the tab row trade places across this switch; whichever one holds
+    // focus is about to be removed, and only that earns a focus move.
+    const stranded = focused?.closest('.values-resize-slot, .trace-dock-tabs') != null;
+    compactDock = next;
+    if (!stranded) return;
+    focusFallback(
+      next
+        ? [`.trace-dock-tabs [data-dock-tab='${dockTab}']`, HEADER_VALUES_TOGGLE]
+        : ['.values-resize-slot [role="separator"]', HEADER_VALUES_TOGGLE],
+    );
+  }
 
   // Memoize on result identity: session is reassigned on every publish (caret moves, progress
   // events), but buildCoverage must run once per result, not once per publish.
@@ -446,18 +514,14 @@
     // keeps its own choice, so an open column never becomes a drawer over the workspace.
     const drawerQuery = window.matchMedia('(max-width: 959px)');
     const syncDrawerMode = (event: MediaQueryListEvent | MediaQueryList): void => {
+      // The drawer has no divider, so crossing into it strands whoever was on the sources one.
+      const stranded =
+        drawerMode !== event.matches && document.activeElement?.closest('.source-resize-slot') != null;
       drawerMode = event.matches;
+      if (stranded) focusFallback([HEADER_SOURCES_TOGGLE]);
     };
     syncDrawerMode(drawerQuery);
     drawerQuery.addEventListener('change', syncDrawerMode);
-
-    // Below 1280 px the dock tabs its two panels rather than showing them side by side.
-    const dockQuery = window.matchMedia('(max-width: 1279px)');
-    const syncCompactDock = (event: MediaQueryListEvent | MediaQueryList): void => {
-      compactDock = event.matches;
-    };
-    syncCompactDock(dockQuery);
-    dockQuery.addEventListener('change', syncCompactDock);
 
     const unsubscribe = controller.subscribe((next) => {
       if (next.result?.window !== session.result?.window) coverageMessage = null;
@@ -494,7 +558,6 @@
 
     return () => {
       drawerQuery.removeEventListener('change', syncDrawerMode);
-      dockQuery.removeEventListener('change', syncCompactDock);
       unsubscribe();
     };
   });
@@ -554,6 +617,8 @@
    */
   function showValues(): void {
     if (!compactDock) {
+      // Hiding Values takes its divider with it; no transaction may outlive its handle.
+      if (!inspectorCollapsed) panels.cancel();
       inspectorCollapsed = !inspectorCollapsed;
       if (!inspectorCollapsed) setDockCollapsed(false);
       return;
@@ -677,14 +742,19 @@
 {/snippet}
 
 {#if shortcutsOpen}
-  <ShortcutsOverlay onclose={() => setShortcutsOpen(false)} />
+  <ShortcutsOverlay
+    onclose={() => setShortcutsOpen(false)}
+    onresetpanels={idle ? undefined : () => panels.reset()}
+  />
 {/if}
 
 <div
   bind:this={shellElement}
   class:explorer-collapsed={explorerCollapsed}
+  class:sources-resizable={sourcesResizable}
   class="app-shell"
   role="presentation"
+  style:--sources-width={`${layout.sourcesWidth}px`}
   ondragenter={onDragEnter}
   ondragleave={onDragLeave}
   ondragover={onDragOver}
@@ -741,6 +811,7 @@
          itself is the same mounted element either way, so nothing inside it remounts. -->
     <div
       bind:this={drawerElement}
+      id="source-pane"
       class="explorer-drawer"
       class:drawer={drawerMode}
       role={drawerMode ? 'dialog' : undefined}
@@ -765,6 +836,28 @@
         onselectsource={selectSourceFromCatalog}
       />
     </div>
+
+    {#if sourcesResizable}
+      <!-- A shell column of its own between the catalog and the workspace, so the separator has
+           a real track instead of overlapping either neighbour. -->
+      <div class="source-resize-slot">
+        <ResizeHandle
+          orientation="vertical"
+          direction={1}
+          value={layout.sourcesWidth}
+          min={layout.sourcesBounds.min}
+          max={layout.sourcesBounds.max}
+          cancelEpoch={panels.cancelEpoch}
+          onstart={() => panels.begin('sources')}
+          onpreview={(value) => panels.preview('sources', value)}
+          oncommit={(value) => panels.commit('sources', value)}
+          oncancel={() => panels.cancel()}
+          onreset={() => panels.reset('sources')}
+          label="Resize sources"
+          controls="source-pane"
+        />
+      </div>
+    {/if}
 
     {#if drawerMode && !explorerCollapsed}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -971,6 +1064,13 @@
           onreveal={inspectSource}
           height={layout.dockHeight}
           valuesWidth={layout.valuesWidth}
+          valuesBounds={layout.valuesBounds}
+          cancelEpoch={panels.cancelEpoch}
+          onvaluestart={() => panels.begin('values')}
+          onvaluespreview={(value) => panels.preview('values', value)}
+          onvaluescommit={(value) => panels.commit('values', value)}
+          onvaluescancel={() => panels.cancel()}
+          onvaluesreset={() => panels.reset('values')}
           onchromechange={(value) => (dockChrome = value)}
           {values}
           {bytes}
