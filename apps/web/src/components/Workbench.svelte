@@ -102,12 +102,6 @@
   let dropActive = $state(false);
   let filePickerInput = $state<HTMLInputElement>();
   let shortcutsOpen = $state(false);
-
-  function setShortcutsOpen(open: boolean): void {
-    // The overlay takes focus; any divider transaction ends before it does.
-    if (open) panels.cancel();
-    shortcutsOpen = open;
-  }
   let emptyState = $state<ReturnType<typeof EmptyState> | null>(null);
 
   const idle = $derived(session.phase === 'idle' || session.phase === 'failed');
@@ -220,6 +214,12 @@
     } catch {
       return null;
     }
+  }
+
+  function setShortcutsOpen(open: boolean): void {
+    // The overlay takes focus; any divider transaction ends before it does.
+    if (open) panels.cancel();
+    shortcutsOpen = open;
   }
 
   function setDockCollapsed(collapsed: boolean): void {
