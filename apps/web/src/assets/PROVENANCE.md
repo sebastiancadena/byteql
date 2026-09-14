@@ -1,4 +1,21 @@
-# Bundled sample assets — provenance
+# Bundled assets — provenance
+
+## Brand
+
+- `byteql.svg` — selected `byteql1_card_clean.png` from the sibling `byteql-assets`
+  repository. The original raster artwork is embedded unchanged. A solid `#fafafa`
+  rounded rectangle supplies the border; the image is clipped 12 source pixels inside
+  that boundary to remove residual matte noise on all four edges. The square viewBox
+  trims unused outer canvas while retaining the full card and wordmark.
+- `byteql-favicon.svg` — the same embedded artwork, framed around the blue query symbol
+  for legibility at browser-tab sizes. No separately traced or redrawn mark.
+- `byteql-favicon.png` — the 64 × 64 raster export of that SVG used by the browser tab,
+  avoiding loading the full source image for a tiny icon.
+
+Both SVGs are self-contained and require no external resources. The cleaned card is
+also saved as `assets/svg/byteql1_card_clean_v2.svg` in `byteql-assets`.
+
+## Samples
 
 These files back the empty-state "Try sample" picker (`src/lib/session/samples.ts`).
 

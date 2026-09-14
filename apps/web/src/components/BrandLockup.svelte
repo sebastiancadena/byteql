@@ -2,8 +2,8 @@
   import brandLockupUrl from '../assets/byteql.svg';
 </script>
 
-<!-- Full ByteQL logo lockup (icon + wordmark), shown uncropped so it stays crisp at
-     any size. -->
+<!-- Selected ByteQL card (symbol + wordmark), with a vector border and the
+     original raster artwork. Only the unused outer canvas has been trimmed. -->
 <span class="brand-lockup" data-brand-lockup>
   <img src={brandLockupUrl} alt="ByteQL" />
 </span>

@@ -16,7 +16,7 @@ async function expectBrandLockupComplete(lockup: import('@playwright/test').Loca
     return { width: rect.width, height: rect.height };
   });
 
-  // The supplied artwork is shown uncropped: byteql.svg is a 1024² viewBox, so the painted
+  // The full card uses a square viewBox with its unused outer canvas trimmed, so the painted
   // image must stay square at the spec's 80 px desktop / 64 px narrow placement.
   expect(painted.width).toBeGreaterThanOrEqual(64);
   expect(Math.abs(painted.width - painted.height)).toBeLessThanOrEqual(2);
