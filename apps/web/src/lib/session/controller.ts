@@ -656,11 +656,18 @@ export class SessionController {
   downloadResults(options: ExportOptions): Promise<void> {
     this.assertUsable();
     const resultState = this.state.result;
-    const result = this.activeQuery;
+    const base = this.activeQuery;
+    const view = this.activeResultView;
     let columns: number[];
     try {
-      if (!resultState || !result || resultState.generation !== this.queryGeneration) {
+      if (!resultState || !base || !view || resultState.generation !== this.queryGeneration) {
         throw new Error('Run a query before downloading results.');
+      }
+      if (!this.state.resultIsCurrent) {
+        throw new Error('Run the query again before downloading results.');
+      }
+      if (this.activeSort !== null) {
+        throw new Error('Finish or cancel the sort before downloading results.');
       }
       if (resultState.pageError) {
         throw new Error('Retry or rerun the query before downloading results.');
@@ -681,7 +688,11 @@ export class SessionController {
     const operation: ExportOperation = {
       generation,
       resultGeneration: resultState.generation,
-      result,
+      base,
+      // Both the view and its revision are captured here: the file must reproduce the order the
+      // user was looking at when they asked for it.
+      result: view,
+      orderRevision: resultState.orderRevision,
       abortController,
       destination: null,
       destinationAbort: null,
@@ -1127,10 +1138,15 @@ export class SessionController {
         throw new Error('Retry or rerun the query before downloading results.');
       }
 
-      while (!operation.result.status().complete) {
+      // Only the cursor-backed base can be asked for more rows. A derived view is complete by
+      // construction, so reaching for fetchNext on one would be a category error.
+      if (operation.result !== operation.base && !operation.result.status().complete) {
+        throw new Error('A sorted result must be complete before it can be downloaded.');
+      }
+      while (operation.result === operation.base && !operation.base.status().complete) {
         this.throwIfExportAborted(operation);
         try {
-          await operation.result.fetchNext(QUERY_PAGE_ROWS);
+          await operation.base.fetchNext(QUERY_PAGE_ROWS);
         } catch (error) {
           throw new Error(this.publishExportPageFailure(operation, error), { cause: error });
         }
@@ -1340,7 +1356,13 @@ export class SessionController {
 
   private refreshExportedResult(operation: ExportOperation): void {
     const current = this.state.result;
-    if (!current || current.generation !== operation.resultGeneration) return;
+    if (
+      !current ||
+      current.generation !== operation.resultGeneration ||
+      current.orderRevision !== operation.orderRevision
+    ) {
+      return;
+    }
     const status = operation.result.status();
     this.dispatch({
       type: 'queryWindowUpdated',
@@ -1383,9 +1405,11 @@ export class SessionController {
       !this.disposed &&
       this.exportGeneration === operation.generation &&
       this.activeExport === operation &&
-      this.activeQuery === operation.result &&
+      this.activeQuery === operation.base &&
+      this.activeResultView === operation.result &&
       this.queryGeneration === operation.resultGeneration &&
-      this.state.result?.generation === operation.resultGeneration
+      this.state.result?.generation === operation.resultGeneration &&
+      this.state.result.orderRevision === operation.orderRevision
     );
   }
 

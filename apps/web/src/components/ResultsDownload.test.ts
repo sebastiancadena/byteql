@@ -43,6 +43,7 @@ const sessionState = (overrides: Partial<SessionState> = {}): SessionState => ({
   phase: 'ready',
   source: { files: [{ name: 'capture.pcap', size: 32 }], totalSize: 32 },
   result: resultState(),
+  resultIsCurrent: true,
   ...overrides,
 });
 
@@ -255,6 +256,41 @@ describe('ResultsDownload', () => {
     expect((within(dialog).getByRole('button', { name: 'Download' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
+  });
+
+  it('blocks downloads while a sort is replacing the order on display', async () => {
+    enableOpfs();
+    const { getByRole, getByText } = render(ResultsDownload, {
+      controller: controllerDouble(),
+      session: sessionState({
+        sorting: {
+          requestId: 1,
+          queryGeneration: 1,
+          fromRevision: 0,
+          requestedSort: { columnIndex: 0, direction: 'asc' },
+          phase: 'sorting',
+          rows: 0,
+          totalRows: 3,
+          message: 'Sorting all 3 rows…',
+        },
+      }),
+    });
+    await fireEvent.click(getByRole('button', { name: 'Download results' }));
+
+    expect(getByText(/Finish or cancel the sort/iu)).toBeTruthy();
+    expect((getByRole('button', { name: 'Download' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('blocks downloads of a result left visible after a failed query', async () => {
+    enableOpfs();
+    const { getByRole, getByText } = render(ResultsDownload, {
+      controller: controllerDouble(),
+      session: sessionState({ resultIsCurrent: false }),
+    });
+    await fireEvent.click(getByRole('button', { name: 'Download results' }));
+
+    expect(getByText(/Run the query again/iu)).toBeTruthy();
+    expect((getByRole('button', { name: 'Download' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('blocks unresolved result-page errors with retry or rerun guidance', async () => {

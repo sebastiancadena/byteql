@@ -2535,6 +2535,64 @@ describe('SessionController', () => {
       await download.catch(() => undefined);
     });
 
+    it('downloads the committed display order, without draining the derived view', async () => {
+      const { controller, base } = await sortableController();
+      await controller.drainQueryResult();
+      vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
+      await controller.sortResults({ columnIndex: 0, direction: 'asc' });
+      const fetchesBefore = base.fetchCalls.length;
+
+      await controller.downloadResults({ format: 'csv', includeProvenance: true });
+
+      const encoded = csvClient.encode.mock.calls.map((call) => ipcToTable(call[0]));
+      expect(encoded.flatMap((table) => Array.from(table.getChildAt(0)!))).toEqual([1, 2, 3]);
+      // The derived view is complete by construction; asking its base for more rows would be
+      // reaching past the order being exported.
+      expect(base.fetchCalls.length).toBe(fetchesBefore);
+      expect(controller.getState().download).toMatchObject({ phase: 'saved' });
+    });
+
+    it('drains the original view exactly once when downloading in query order', async () => {
+      const { controller, base } = await sortableController();
+      expect(controller.getState().result!.complete).toBe(false);
+
+      await controller.downloadResults({ format: 'csv', includeProvenance: true });
+
+      expect(base.status().complete).toBe(true);
+      const encoded = csvClient.encode.mock.calls.map((call) => ipcToTable(call[0]));
+      expect(encoded.flatMap((table) => Array.from(table.getChildAt(0)!))).toEqual([3, 1, 2]);
+      expect(base.fetchCalls.length).toBeGreaterThan(0);
+    });
+
+    it('refuses to start a download while a sort owns the result', async () => {
+      const { controller } = await sortableController();
+      await controller.drainQueryResult();
+      const gate = deferred<QueryResultView>();
+      vi.mocked(database.createSortedView).mockReturnValue(gate.promise);
+      const sorting = controller.sortResults({ columnIndex: 0, direction: 'asc' });
+      await vi.waitFor(() => expect(controller.getState().sorting).not.toBeNull());
+
+      await controller.downloadResults({ format: 'csv', includeProvenance: true });
+      expect(controller.getState().download).toMatchObject({ phase: 'failed' });
+      expect(prepareDestination).not.toHaveBeenCalled();
+
+      gate.resolve(sortedView([1, 2, 3]));
+      await sorting;
+    });
+
+    it('releases a ready-to-save artifact built from the previous order', async () => {
+      const { controller } = await sortableController();
+      await controller.drainQueryResult();
+      vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
+      await controller.downloadResults({ format: 'csv', includeProvenance: true });
+      expect(controller.getState().download).not.toBeNull();
+
+      await controller.sortResults({ columnIndex: 0, direction: 'asc' });
+
+      // An obsolete file built from the old order must not still be offered for saving.
+      expect(controller.getState().download).toBeNull();
+    });
+
     it.each([
       ['a replacement query', (controller: SessionController) => controller.runQuery('select 2')],
       ['a file open', (controller: SessionController) => controller.openFile(midiFile('next.mid', 2))],

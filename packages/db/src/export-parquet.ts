@@ -1,7 +1,8 @@
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm';
-import { RecordBatch, Schema, Table, tableToIPC } from 'apache-arrow';
+import { Table, tableToIPC } from 'apache-arrow';
 
 import { createExportFiles, type ExportFiles } from './export-files.js';
+import { snapshotPage } from './result-snapshot.js';
 import {
   isSupportedParquetType,
   type ParquetArtifact,
@@ -12,6 +13,12 @@ import type { QueryResultView } from './types.js';
 
 const PAGE_TABLE = '__byteql_export_page';
 const RESULT_FILE = 'result.parquet';
+/**
+ * Private ordinal recording each row's position in the COMMITTED DISPLAY order. A parallel scan
+ * over the shards is free to return them in any order, so the final COPY orders by this rather
+ * than trusting shard names or scan order. It never appears in the exported file.
+ */
+const EXPORT_ORDINAL_COLUMN = '__byteql_export_ordinal';
 
 export interface ParquetWriterDependencies {
   readonly database: Pick<AsyncDuckDB, 'registerOPFSFileName' | 'dropFile'>;
@@ -36,15 +43,12 @@ const selectedFields = (result: QueryResultView, columns: readonly number[]) => 
   });
 };
 
-const renameSelectedColumns = (table: Table, columns: readonly number[]): Table => {
-  const selected = table.selectAt([...columns]);
-  const fields = selected.schema.fields.map((field, index) => field.clone({ name: `c${index}` }));
-  const schema = new Schema(fields, selected.schema.metadata);
-  return new Table(
-    schema,
-    selected.batches.map((batch) => new RecordBatch(schema, batch.data)),
-  );
-};
+/**
+ * Selects the exported columns, renames them to generated positional aliases so no user column
+ * name reaches a generated statement, and appends the display ordinal.
+ */
+const stageSelectedColumns = (table: Table, columns: readonly number[], startRow: number): Table =>
+  snapshotPage(table.selectAt([...columns]), startRow, EXPORT_ORDINAL_COLUMN);
 
 const combineErrors = (primary: unknown, cleanup: readonly unknown[], message: string): unknown => {
   if (cleanup.length === 0) return primary;
@@ -67,12 +71,14 @@ class ParquetWriter {
     const pages = this.result.pages();
     if (pages.length === 0) {
       const empty = new Table(this.result.schema);
-      shards.push(await this.writeShard(empty, this.options.columns, 0));
+      shards.push(await this.writeShard(empty, this.options.columns, 0, 0));
     } else {
       for (const page of pages) {
         this.options.signal.throwIfAborted();
         const stored = await this.result.readPage(page.index);
-        shards.push(await this.writeShard(stored.table, this.options.columns, page.index));
+        // The ordinal comes from the page's position in the DISPLAY, which is what the file must
+        // reproduce — not from the page index, which need not be contiguous.
+        shards.push(await this.writeShard(stored.table, this.options.columns, page.index, page.startRow));
         this.options.onProgress(page.startRow + page.rowCount);
       }
     }
@@ -83,8 +89,11 @@ class ParquetWriter {
       .map((field, index) => `${quoteIdentifier(`c${index}`)} AS ${quoteIdentifier(field.name)}`)
       .join(', ');
     const paths = shards.map(quoteString).join(', ');
+    // The projection names only the user's columns, so the private ordinal orders the rows and
+    // then disappears.
     await this.runStatement(
-      `COPY (SELECT ${projection} FROM parquet_scan([${paths}])) TO ${quoteString(output)} ` +
+      `COPY (SELECT ${projection} FROM parquet_scan([${paths}]) ` +
+        `ORDER BY ${quoteIdentifier(EXPORT_ORDINAL_COLUMN)} ASC) TO ${quoteString(output)} ` +
         '(FORMAT PARQUET, COMPRESSION SNAPPY)',
     );
 
@@ -111,9 +120,14 @@ class ParquetWriter {
     throw combineErrors(primary, cleanupErrors, 'Parquet export failed and cleanup was incomplete.');
   }
 
-  private async writeShard(table: Table, columns: readonly number[], index: number): Promise<string> {
+  private async writeShard(
+    table: Table,
+    columns: readonly number[],
+    index: number,
+    startRow: number,
+  ): Promise<string> {
     this.options.signal.throwIfAborted();
-    const selected = renameSelectedColumns(table, columns);
+    const selected = stageSelectedColumns(table, columns, startRow);
     const copy = tableToIPC(selected, 'stream').slice();
     await this.connection.insertArrowFromIPCStream(copy, { name: PAGE_TABLE, create: true });
     const path = await this.register(`shard-${index}.parquet`);
