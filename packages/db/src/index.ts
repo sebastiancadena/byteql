@@ -7,6 +7,19 @@ export {
   type ParquetExportOptions,
   unsupportedParquetTypeMessage,
 } from './export-types.js';
+export {
+  buildResultSortSql,
+  resultSortEligibility,
+  ResultSortError,
+  SORT_ORDINAL_COLUMN,
+  type ResultSort,
+  type ResultSortEligibility,
+  type ResultSortErrorCode,
+  type ResultSortOptions,
+  type ResultSortProgress,
+} from './result-sort.js';
+export { restoreResultSchema, snapshotPage } from './result-snapshot.js';
+export { probeResultSort, type ResultSortProbeReport } from './sort-probe.js';
 export { probeSpillCapability, type SpillProbeReport } from './spill-probe.js';
 export {
   probeResultsExport,
