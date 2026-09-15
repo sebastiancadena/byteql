@@ -216,11 +216,11 @@
       demandGuard = null;
       return;
     }
-    // A backward demand means the reader scrolled toward earlier rows. While the viewport is
-    // still parked exactly where a rebase put it, nobody has scrolled: paging backward there
-    // would undo the rebase, and a forward slide that lands on local row 0 would oscillate
-    // between the last two windows.
-    if (direction === 'backward' && rebaseTop !== null) return;
+    // While the viewport is still parked exactly where a rebase put it, nobody has scrolled, so
+    // there is no demand to infer in EITHER direction: paging backward would undo the rebase, and
+    // paging forward from a rebase that happened to land at the window tail would run away from
+    // the rows the reader was just taken to. Any real scroll clears this guard.
+    if (rebaseTop !== null) return;
     const key = `${direction}:${windowStart + firstVisible}:${windowStart + lastVisible}`;
     if (demandGuard === key) return;
     demandGuard = key;
@@ -337,7 +337,11 @@
           aria-sort={active ? (sort!.direction === 'asc' ? 'ascending' : 'descending') : undefined}
           title={field.type.toString()}
           class:cell-numeric={numeric(field.type.toString())}
+          aria-label={`${field.name} ${field.type.toString()}`}
         >
+          <!-- The header is named explicitly because its only child is a button whose own label
+               describes the sort ACTION. Without this the column a cell belongs to would be
+               announced as "Sort note ascending" instead of "note Uint8". -->
           <button
             type="button"
             class="result-sort-button"

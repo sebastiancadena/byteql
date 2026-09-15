@@ -13,6 +13,8 @@ import type { QueryResultView } from './types.js';
 
 const PAGE_TABLE = '__byteql_export_page';
 const RESULT_FILE = 'result.parquet';
+/** Relation alias for the shard scan, so the ordering reference can be qualified. */
+const SOURCE_ALIAS = '__byteql_export_src';
 /**
  * Private ordinal recording each row's position in the COMMITTED DISPLAY order. A parallel scan
  * over the shards is free to return them in any order, so the final COPY orders by this rather
@@ -90,11 +92,13 @@ class ParquetWriter {
       .join(', ');
     const paths = shards.map(quoteString).join(', ');
     // The projection names only the user's columns, so the private ordinal orders the rows and
-    // then disappears.
+    // then disappears. The ordering reference is QUALIFIED: a bare one binds to a SELECT-list
+    // alias first, so a user column named like the ordinal would otherwise silently order the
+    // file by that column instead of by display position.
     await this.runStatement(
-      `COPY (SELECT ${projection} FROM parquet_scan([${paths}]) ` +
-        `ORDER BY ${quoteIdentifier(EXPORT_ORDINAL_COLUMN)} ASC) TO ${quoteString(output)} ` +
-        '(FORMAT PARQUET, COMPRESSION SNAPPY)',
+      `COPY (SELECT ${projection} FROM parquet_scan([${paths}]) AS ${quoteIdentifier(SOURCE_ALIAS)} ` +
+        `ORDER BY ${quoteIdentifier(SOURCE_ALIAS)}.${quoteIdentifier(EXPORT_ORDINAL_COLUMN)} ASC) ` +
+        `TO ${quoteString(output)} (FORMAT PARQUET, COMPRESSION SNAPPY)`,
     );
 
     const cleanupErrors = await this.releaseHandles();

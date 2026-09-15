@@ -35,6 +35,11 @@ export interface ByteqlE2EControl {
     windowRows: number;
     sendCount: number;
     decodedBytes: number;
+    orderRevision: number;
+    sort: { columnIndex: number; direction: 'asc' | 'desc' } | null;
+    sortPending: boolean;
+    derivedViewCount: number;
+    viewCaches: readonly { kind: 'base' | 'display'; decodedBytes: number }[];
     resultOpfsPaths: readonly string[];
   }>;
   exportFiles(): Promise<readonly string[]>;

@@ -1901,6 +1901,23 @@ describe('Inspector Workbench', () => {
       expect(editor.textContent).toContain('select * from records');
     });
 
+    it('leaves an in-progress editor draft alone while a sort publishes progress', async () => {
+      const state = readyState();
+      const controller = new FakeController(state);
+      render(Workbench, { controller });
+      const editor = screen.getByRole('textbox', { name: 'SQL query' });
+      await fireEvent.input(editor, { target: { textContent: 'select 1 as drafted' } });
+
+      // A sort publishes progress continuously; none of it may reach into the editor.
+      controller.publish({ ...state, sorting: sortingState({ phase: 'staging', rows: 100 }) });
+      await tick();
+      controller.publish({ ...state, sorting: sortingState({ phase: 'storing', rows: 900 }) });
+      await tick();
+
+      expect(controller.runQuery).not.toHaveBeenCalled();
+      expect(screen.getByRole('textbox', { name: 'SQL query' }).textContent).toContain('select 1 as drafted');
+    });
+
     it('does not remount the grid when only the committed order changes', async () => {
       const state = readyState();
       const controller = new FakeController(state);

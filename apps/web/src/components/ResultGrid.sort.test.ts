@@ -103,6 +103,14 @@ describe('ResultGrid sort controls', () => {
     );
   });
 
+  it('still names the column itself, not the sort action, on the header', () => {
+    const { getByRole } = render(ResultGrid, props());
+    // The button inside describes the action; the header must keep describing the COLUMN, or a
+    // screen reader announces a cell's column as "Sort value ascending".
+    expect(getByRole('columnheader', { name: 'value Int32' })).toBeTruthy();
+    expect(getByRole('button', { name: 'Sort value ascending' })).toBeTruthy();
+  });
+
   it('leaves every header unmarked in original query order', () => {
     const { container } = render(ResultGrid, props());
     expect(container.querySelectorAll('[role="columnheader"][aria-sort]')).toHaveLength(0);

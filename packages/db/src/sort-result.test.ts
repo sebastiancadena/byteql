@@ -479,7 +479,10 @@ describe('writeSortedResult', () => {
       });
       expect(environments.registered.size).toBe(0);
       expect(environments.files.dispose).toHaveBeenCalled();
-      expect(environments.stores.every((store) => store.storedBytes === 0)).toBe(true);
+      // Disposal, not emptiness: a store that was never disposed also reports zero bytes.
+      for (const store of environments.stores) {
+        expect(() => store.pin([])).toThrow(/disposed/iu);
+      }
       expect(base.cancelCalls).toBe(0);
       expect(base.disposeCalls).toBe(0);
     });

@@ -33,8 +33,12 @@ On the `eh` bundle, with 20,000 rows carrying ties and nulls across page boundar
 - The original SQL is sent **exactly once**. Every staging and ordering statement runs on a
   separate connection; none reaches the connection that owns the original cursor.
 - Cancelling mid-statement settles, and the sorting connection is reusable afterwards.
-- A denied OPFS path outside the allowlist and a denied external URL are both refused, the denied
-  file's bytes are unchanged, and no network request is made after readiness.
+- A denied OPFS path outside the allowlist is refused and the denied file's bytes are unchanged,
+  `enable_external_access` reads back as false, `lock_configuration` as true, and the connection is
+  still usable. External access is proved from the locked settings rather than by attempting a
+  remote URL: the bundle audit forbids an external URL literal in runtime source, and a probe that
+  worked around that check would undermine the guarantee it claims to verify. That no network
+  request happens after readiness is asserted separately, here and in `privacy.spec.ts`.
 - Scratch shards and DuckDB file registrations are released; the scratch directory is left empty.
 
 Typed fixtures that round-trip exactly (`eh`): signed and unsigned integer widths including
@@ -100,8 +104,30 @@ Consequences for sorting:
 
 Fixing the bridge is out of scope for this feature and would need its own design record.
 
-## Not yet measured
+## Observed performance
 
-Performance (sort duration, peak decoded-cache bytes, scratch bytes) at 50,000 and 1,000,000 rows,
-plus screen-reader and touch acceptance, are execution gates for the browser-acceptance task and
-are recorded there once observed.
+Measured by `result-column-sorting.spec.ts` on the environment above, and attached to that test as
+`million-row-sort.json`. These are observations from one machine, not a throughput commitment.
+
+| Result                            | Sort duration | Window rows | Decoded cache (base / display) | Scratch page files |
+| --------------------------------- | ------------- | ----------- | ------------------------------ | ------------------ |
+| 1,000,000 numeric rows, ascending | 8.1 s         | 16,384      | 8.1 MB / 8.1 MB                | 612                |
+| 50,000 numeric rows, ascending    | under 1 s     | 16,384      | —                              | —                  |
+
+The million-row case sorts a result whose cursor had not finished, so the drain, the snapshot, the
+ordering and the paged read are all inside that duration. Both ends stay reachable afterwards by
+physical scrolling, the spacer never exceeds `16,384 x 36` px, there is one grid scroller, and the
+original SQL is sent exactly once.
+
+Ten consecutive sort/clear cycles return to base-only resources each time — one live view, no
+derived view, no leftover scratch files.
+
+## Outstanding manual checks
+
+These are not automated and have not been performed:
+
+- Screen-reader acceptance (announcements, `aria-sort`, button naming) with a real screen reader.
+- Touch acceptance on a real touch browser.
+- Light/dark and narrow/wide visual review by eye. The automated suite covers keyboard-only
+  operation, focus placement, one `aria-sort` at a time, hidden active columns and preserved
+  horizontal scroll, but not appearance.

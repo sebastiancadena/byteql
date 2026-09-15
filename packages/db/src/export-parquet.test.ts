@@ -169,7 +169,7 @@ describe('writeParquet', () => {
     expect(sent[2]!.sql).toContain('SELECT "c0" AS "value", "c1" AS "quoted""name"');
     // The final scan is explicitly ordered, and the private ordinal is not among the columns the
     // file ends up carrying.
-    expect(sent[2]!.sql).toContain('ORDER BY "__byteql_export_ordinal" ASC');
+    expect(sent[2]!.sql).toContain('ORDER BY "__byteql_export_src"."__byteql_export_ordinal" ASC');
     expect(sent[2]!.sql.split('FROM parquet_scan')[0]).not.toContain('__byteql_export_ordinal');
     expect(database.registerOPFSFileName.mock.calls.map(([path]) => path)).toEqual([
       'opfs://byteql-exports/tab/export/shard-1.parquet',
@@ -286,6 +286,9 @@ describe('writeParquet', () => {
     expect(Array.from(imported.getChild('__byteql_export_ordinal')!)).toEqual([0n, 1n]);
     const sent = connection.send.mock.calls.map(([sql]) => String(sql));
     expect(sent.at(-1)).toContain('"c0" AS "__byteql_export_ordinal"');
+    // The ordering must bind to the scanned shard column, never to the identically named output
+    // alias, or the file would come out in the user column's order instead of the display's.
+    expect(sent.at(-1)).toContain('ORDER BY "__byteql_export_src"."__byteql_export_ordinal" ASC');
   });
 
   it('rejects unsupported selected columns before acquiring export resources', async () => {

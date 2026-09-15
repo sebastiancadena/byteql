@@ -1179,13 +1179,15 @@ class BrowserDatabase implements ByteqlDatabase {
       controller.signal.throwIfAborted();
       // Checked again inside the queue: the base can be retired while this call waits its turn.
       this.assertSortableBase(base);
-      const store = await this.createSortedPageStore();
       const view = await writeSortedResult(
         {
           database: this.database,
           connect: () => this.database.connect(),
           createFiles: createExportFiles,
-          createStore: () => Promise.resolve(store),
+          // Built on demand, not in advance: allocating persistence eagerly creates its OPFS
+          // directory, and the writer only disposes a store it actually pulled through here, so a
+          // failure before that point would leave the directory behind with nothing owning it.
+          createStore: () => this.createSortedPageStore(),
           onCleanupFailure: (retry) => this.cleanupRetries.add(retry),
         },
         base,

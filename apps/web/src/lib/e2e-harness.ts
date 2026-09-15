@@ -9,7 +9,7 @@ import {
   type ExportArtifactReadback,
   type ByteqlDatabase,
   type FileStatisticsSummary,
-  type QuerySession,
+  type QueryResultView,
   type SpillProbeReport,
 } from '@byteql/db';
 import type { Table } from 'apache-arrow';
@@ -312,12 +312,25 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
           windowRows: 0,
           sendCount: 0,
           decodedBytes: 0,
+          orderRevision: 0,
+          sort: null,
+          sortPending: false,
+          derivedViewCount: 0,
+          viewCaches: [],
         };
         return { ...metrics, resultOpfsPaths: await collectOpfsFiles(RESULT_ROOT_NAME) };
       },
       async storedResult() {
-        const result = (queryController as unknown as { activeQuery?: QuerySession } | null)?.activeQuery;
+        // The DISPLAY view, so a readback reflects the committed order rather than the base.
+        const result = (queryController as unknown as { activeResultView?: QueryResultView } | null)
+          ?.activeResultView;
         if (!result) throw new Error('No stored query result is attached.');
+        const rowCap = 20_000;
+        if (result.status().loadedRows > rowCap) {
+          throw new Error(
+            `Refusing to serialize ${result.status().loadedRows} rows; use page metrics instead.`,
+          );
+        }
         const serialized: SerializableResult = {
           columns: result.schema.fields.map((field) => field.name),
           types: result.schema.fields.map((field) => field.type.toString()),

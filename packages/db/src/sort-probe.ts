@@ -215,18 +215,24 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     const afterDenied = new Uint8Array(
       await (await (await deniedOwned.getFileHandle('sentinel.parquet')).getFile()).arrayBuffer(),
     );
-    let deniedExternal = false;
-    try {
-      await primary.query(
-        `SELECT * FROM parquet_scan(${quote('https://example.invalid/byteql-sort.parquet')})`,
-      );
-    } catch (error) {
-      deniedExternal = true;
-      report.diagnostics.push(`Denied external URL: ${String(error)}`);
-    }
+    // External access is proved off by reading the locked settings back, not by naming a remote
+    // URL: the bundle audit forbids an external URL literal in runtime source, and a probe that
+    // worked around that check would be undermining the guarantee it claims to verify.
+    const settings = await primary.query(
+      "SELECT current_setting('enable_external_access') AS external, " +
+        "current_setting('lock_configuration') AS locked, 6 * 7 AS usable",
+    );
+    const externalOff = settings.getChild('external')!.get(0) === false;
+    const locked = settings.getChild('locked')!.get(0) === true;
+    const usable = Number(settings.getChild('usable')!.get(0)) === 42;
+    report.diagnostics.push(
+      `external_access=${String(externalOff)} locked=${String(locked)} usable=${String(usable)}`,
+    );
     report.externalAccessDenied =
       deniedOpfs &&
-      deniedExternal &&
+      externalOff &&
+      locked &&
+      usable &&
       sentinel.length === afterDenied.length &&
       sentinel.every((byte, index) => byte === afterDenied[index]);
 

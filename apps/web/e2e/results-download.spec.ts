@@ -531,3 +531,118 @@ test('two tabs retain separate fallback artifacts and clean up only their own fi
   await other.getByRole('button', { name: 'Dismiss' }).click();
   await expect.poll(() => other.evaluate(() => window.__BYTEQL_E2E__!.exportFiles())).toEqual([]);
 });
+
+/** Waits for a sort started from a header to commit. */
+async function sortByHeader(page: Page, label: string): Promise<void> {
+  await page.getByRole('button', { name: label, exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() =>
+          (
+            window.__BYTEQL_E2E__ as unknown as DownloadHarness & {
+              queryResultMetrics(): Promise<{ sortPending: boolean }>;
+            }
+          ).queryResultMetrics(),
+        ),
+      { timeout: 120_000 },
+    )
+    .toMatchObject({ sortPending: false });
+}
+
+test('CSV and Parquet follow the committed display order', async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await installControlledPicker(page);
+  await openMidiSample(page);
+
+  await runSql(page, 'select 20000-i as value, i as identity from range(20000) t(i)');
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics().then((m) => m.loadedRows)),
+    )
+    .toBeGreaterThan(0);
+  await sortByHeader(page, 'Sort value ascending');
+
+  await beginDownload(page, 'csv', false);
+  await expect(page.locator('.results-download-status')).toContainText('File saved.');
+  const csv = await readPickedBytes(page);
+  const cells = (line: string): string[] =>
+    line
+      .trim()
+      .split(',')
+      .map((cell) => cell.replace(/^"|"$/gu, ''));
+  const text = new TextDecoder().decode(Uint8Array.from(csv.slice(3)));
+  const rows = text.trim().split('\n');
+  expect(cells(rows[0]!)).toEqual(['value', 'identity']);
+  // The file reproduces the order on screen, not the order the query produced.
+  expect(rows).toHaveLength(20_001);
+  expect(cells(rows[1]!)).toEqual(['1', '19999']);
+  expect(cells(rows[2]!)).toEqual(['2', '19998']);
+  expect(cells(rows.at(-1)!)).toEqual(['20000', '0']);
+
+  await page.getByRole('button', { name: 'Dismiss' }).click();
+  await beginDownload(page, 'parquet', true);
+  await expect(page.locator('.results-download-status')).toContainText('File saved.');
+  const parquet = await readPickedBytes(page);
+  const exported = await page.evaluate(
+    (bytes) =>
+      (window.__BYTEQL_E2E__ as unknown as DownloadHarness).readExportArtifact({
+        format: 'parquet',
+        bytes,
+      }),
+    parquet,
+  );
+  expect(exported.columns).toEqual(['value', 'identity']);
+  // The private ordering column never reaches the file.
+  expect(exported.columns).not.toContain('__byteql_export_ordinal');
+  expect(exported.rows).toHaveLength(20_000);
+  expect(exported.rows[0]).toEqual(['1', '19999']);
+  expect(exported.rows.at(-1)).toEqual(['20000', '0']);
+  expect(exported).toMatchObject({ externalAccess: false, configurationLocked: true });
+
+  // Clearing the sort puts the query's own order back into the file.
+  await page.getByRole('button', { name: 'Dismiss' }).click();
+  await page.getByRole('button', { name: 'Clear sort', exact: true }).click();
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics().then((m) => m.orderRevision)),
+    )
+    .toBe(2);
+  await beginDownload(page, 'csv', false);
+  await expect(page.locator('.results-download-status')).toContainText('File saved.');
+  const original = new TextDecoder().decode(Uint8Array.from((await readPickedBytes(page)).slice(3)));
+  const originalRows = original.trim().split('\n');
+  expect(cells(originalRows[1]!)).toEqual(['20000', '0']);
+  expect(cells(originalRows.at(-1)!)).toEqual(['1', '19999']);
+
+  await testInfo.attach('sorted-download-head.txt', {
+    body: rows.slice(0, 4).join('\n'),
+    contentType: 'text/plain',
+  });
+});
+
+test('a retained download from the previous order is released when the order changes', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, 'showSaveFilePicker');
+  });
+  await openMidiSample(page);
+  await runSql(page, 'select 3000-i as value from range(3000) t(i)');
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics().then((m) => m.loadedRows)),
+    )
+    .toBeGreaterThan(0);
+
+  await page.getByRole('button', { name: 'Download results', exact: true }).click();
+  await page.getByRole('button', { name: 'Download', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Close download options' }).click();
+  await sortByHeader(page, 'Sort value ascending');
+
+  // The prepared file described the previous order, so it is no longer offered.
+  await page.getByRole('button', { name: 'Download results', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.exportFiles())).toEqual([]);
+});

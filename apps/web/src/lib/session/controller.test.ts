@@ -2416,7 +2416,8 @@ describe('SessionController', () => {
       await inFlight;
       await sorting;
 
-      // Anything requested while the sort owned the result is dropped, not queued behind it.
+      // Once the sorted view is on display, reads go to it rather than back to the base. Demand
+      // suppression DURING the sort is covered by the pending-sort test below.
       const readsBefore = base.readCalls.length;
       await controller.loadResultWindow(0);
       expect(base.readCalls.length).toBe(readsBefore);
@@ -2506,6 +2507,29 @@ describe('SessionController', () => {
       vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
       await controller.sortResults({ columnIndex: 0, direction: 'asc' });
       expect(controller.getState().result).toMatchObject({ orderRevision: 1 });
+    });
+
+    it('publishes the next query result after an order has been committed', async () => {
+      const { controller } = await sortableController();
+      await controller.drainQueryResult();
+      vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
+      await controller.sortResults({ columnIndex: 0, direction: 'asc' });
+      expect(controller.getState().result).toMatchObject({ orderRevision: 1 });
+
+      const replacement = new FakeQuerySession();
+      replacement.nextPages = [page(0, 0, [7])];
+      replacement.completeAfterPage = true;
+      vi.mocked(database.startQuery).mockImplementationOnce(async () => {
+        querySessions.push(replacement);
+        return replacement;
+      });
+      await controller.runQuery('select 7 as other');
+
+      // A committed order belongs to the result that committed it; the next query starts over in
+      // its own query order rather than being fenced out by the previous result's revision.
+      expect(controller.getState().result).toMatchObject({ orderRevision: 0, sort: null });
+      expect(controller.getState().result!.loadedRows).toBe(1);
+      expect(Array.from(controller.getState().result!.window.getChildAt(0)!)).toEqual([7]);
     });
 
     it('refuses to sort a result left visible after a failed query', async () => {

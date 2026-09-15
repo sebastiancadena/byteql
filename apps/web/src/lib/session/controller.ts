@@ -52,7 +52,7 @@ import {
 } from './state.js';
 import { readResultWindow } from './result-view.js';
 import { resultSortDisabledReason } from './result-sort-availability.js';
-import { resultSortInteractionBlocked, sameResultSchema } from './result-sort.js';
+import { hasActiveDownload, resultSortInteractionBlocked, sameResultSchema } from './result-sort.js';
 import { TIER_THRESHOLD_BYTES, chooseTier } from './tiering.js';
 
 export interface SessionControllerOptions {
@@ -76,6 +76,14 @@ export interface QueryResultDiagnostics {
   readonly windowRows: number;
   readonly sendCount: number;
   readonly decodedBytes: number;
+  /** Committed order changes so far, and the order currently on display. */
+  readonly orderRevision: number;
+  readonly sort: ResultSort | null;
+  readonly sortPending: boolean;
+  /** Views derived from the base that the controller still holds; the base itself is not one. */
+  readonly derivedViewCount: number;
+  /** Decoded-cache bytes per live store. The base and the display may be the same object. */
+  readonly viewCaches: readonly { kind: 'base' | 'display'; decodedBytes: number }[];
 }
 
 const disposedError = (): Error => new Error('The session controller is disposed.');
@@ -290,7 +298,14 @@ export class SessionController {
 
   queryResultDiagnostics(): QueryResultDiagnostics {
     const result = this.state.result;
-    const status = this.activeQuery?.status();
+    const base = this.activeQuery;
+    const display = this.activeResultView;
+    const status = base?.status();
+    // Counted by object identity: before any sort the base IS the display, and reporting it twice
+    // would double the cache figures a memory check reads.
+    const views = new Set<QueryResultView>();
+    if (base) views.add(base);
+    if (display) views.add(display);
     return {
       loadedRows: result?.loadedRows ?? 0,
       complete: result?.complete ?? false,
@@ -298,6 +313,14 @@ export class SessionController {
       windowRows: result?.window.numRows ?? 0,
       sendCount: status?.sendCount ?? 0,
       decodedBytes: status?.decodedBytes ?? 0,
+      orderRevision: result?.orderRevision ?? 0,
+      sort: result?.sort ?? null,
+      sortPending: this.activeSort !== null,
+      derivedViewCount: display && display !== base ? 1 : 0,
+      viewCaches: [...views].map((view) => ({
+        kind: view === base ? ('base' as const) : ('display' as const),
+        decodedBytes: view.status().decodedBytes,
+      })),
     };
   }
 
@@ -401,7 +424,9 @@ export class SessionController {
 
   private sortBlockedReason(): string {
     if (!this.state.resultIsCurrent) return 'Run the query again before sorting its results.';
-    if (this.state.download !== null) return 'Finish or cancel the download before sorting.';
+    // The same predicate the blocking check uses: a prepared-but-unsaved file does not block a
+    // sort, so it must not be reported as the reason one was refused.
+    if (hasActiveDownload(this.state)) return 'Finish or cancel the download before sorting.';
     if (this.activeSort !== null) return 'A sort is already running.';
     return 'The results cannot be sorted right now.';
   }
@@ -506,9 +531,7 @@ export class SessionController {
         phase: 'loading',
         rows: base.status().loadedRows,
         totalRows: base.status().complete ? base.status().loadedRows : null,
-        message: base.status().complete
-          ? `Loading remaining rows… ${base.status().loadedRows.toLocaleString()} loaded`
-          : `Loading remaining rows… ${base.status().loadedRows.toLocaleString()} loaded`,
+        message: `Loading remaining rows… ${base.status().loadedRows.toLocaleString()} loaded`,
         requestedSort: this.state.sorting?.requestedSort ?? null,
       });
     }
@@ -1606,12 +1629,16 @@ export class SessionController {
     const revision = existing?.orderRevision ?? 0;
     const read = await readResultWindow(view, anchorRow);
     // Fence the VIEW and the committed order, not just the query: a window read from the order
-    // that was on display when this started must not be published over a newer one.
+    // that was on display when this started must not be published over a newer one. The revision
+    // is only comparable within one generation — a result from an OLDER query says nothing about
+    // the order of the one being published now.
+    const displayed = this.state.result;
+    const revisionMoved = displayed?.generation === generation && displayed.orderRevision !== revision;
     if (
       !this.isCurrentQuery(this.sessionGeneration, generation) ||
       this.activeQuery !== active ||
       this.activeResultView !== view ||
-      (this.state.result?.orderRevision ?? revision) !== revision
+      revisionMoved
     ) {
       return null;
     }

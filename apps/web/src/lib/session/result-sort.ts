@@ -22,7 +22,7 @@ export function nextResultSort(current: ResultSort | null, columnIndex: number):
 }
 
 /** Names a field for a control label, adding its position only when the name is ambiguous. */
-const fieldLabel = (schema: Schema, columnIndex: number): string => {
+export const fieldLabel = (schema: Schema, columnIndex: number): string => {
   const field = schema.fields[columnIndex];
   if (!field) return `column ${columnIndex + 1}`;
   const duplicated = schema.fields.filter((other) => other.name === field.name).length > 1;
@@ -57,15 +57,18 @@ export function isResultSorting(state: SessionState): boolean {
   return state.sorting !== null && state.sorting.phase !== 'failed';
 }
 
-/** Download phases that still own the result and must finish before it is reordered. */
-const ACTIVE_DOWNLOAD_PHASES = new Set([
-  'picking',
-  'loading',
-  'encoding',
-  'saving',
-  'cancelling',
-  'ready-to-save',
-]);
+/**
+ * Download phases that still own the result and must finish before it is reordered.
+ *
+ * A prepared-but-unsaved file is deliberately absent: it describes the previous order, so a new
+ * sort releases it rather than waiting for the reader to deal with it first.
+ */
+const ACTIVE_DOWNLOAD_PHASES = new Set(['picking', 'loading', 'encoding', 'saving', 'cancelling']);
+
+/** Whether a download still owns the result, as opposed to having left a file behind. */
+export function hasActiveDownload(state: SessionState): boolean {
+  return state.download !== null && ACTIVE_DOWNLOAD_PHASES.has(state.download.phase);
+}
 
 /**
  * Whether sort controls must ignore activation right now, for reasons that have nothing to do with
@@ -76,5 +79,5 @@ const ACTIVE_DOWNLOAD_PHASES = new Set([
 export function resultSortInteractionBlocked(state: SessionState): boolean {
   if (!state.resultIsCurrent || state.phase !== 'ready') return true;
   if (isResultSorting(state)) return true;
-  return state.download !== null && ACTIVE_DOWNLOAD_PHASES.has(state.download.phase);
+  return hasActiveDownload(state);
 }

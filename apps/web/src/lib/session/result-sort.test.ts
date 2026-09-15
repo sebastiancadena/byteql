@@ -149,7 +149,7 @@ describe('resultSortInteractionBlocked', () => {
     ).toBe(true);
   });
 
-  it.each(['picking', 'loading', 'encoding', 'saving', 'cancelling', 'ready-to-save'] as const)(
+  it.each(['picking', 'loading', 'encoding', 'saving', 'cancelling'] as const)(
     'blocks while a download is in the %s phase',
     (phase) => {
       expect(
@@ -162,7 +162,7 @@ describe('resultSortInteractionBlocked', () => {
     },
   );
 
-  it.each(['saved', 'cancelled', 'failed'] as const)(
+  it.each(['ready-to-save', 'saved', 'cancelled', 'failed'] as const)(
     'allows interaction once a download has finished in the %s phase',
     (phase) => {
       expect(

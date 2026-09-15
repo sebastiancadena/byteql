@@ -10,11 +10,7 @@
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
   import type { SampleId } from '../lib/session/samples.js';
   import { resultSortDisabledReason } from '../lib/session/result-sort-availability.js';
-  import {
-    isResultSorting,
-    resultSortInteractionBlocked,
-    sortActionLabel,
-  } from '../lib/session/result-sort.js';
+  import { fieldLabel, isResultSorting, resultSortInteractionBlocked } from '../lib/session/result-sort.js';
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
   import { sqlIdentifier } from '../lib/sql-literal.js';
   import { containFocus } from '../lib/ui/focus.js';
@@ -558,8 +554,13 @@
       ) {
         activeViewerId = null;
       }
+      // Compared against the PREVIOUS session sql, not against the draft: the editor follows the
+      // controller when it changes the SQL (a canned query, a filter, a rerun), and otherwise
+      // leaves a draft alone. Comparing with the draft re-adopted the last-run SQL on every
+      // unrelated publish — and a sort publishes progress continuously.
+      const sqlChanged = next.sql !== session.sql;
       session = next;
-      if (next.sql && next.sql !== draftSql) draftSql = next.sql;
+      if (next.sql && sqlChanged) draftSql = next.sql;
       if (next.phase === 'opening') overviewSource = null;
 
       const overview = next.queries.find((query) => query.id === 'overview');
@@ -604,10 +605,9 @@
    */
   let sortInitiator = $state<number | null>(null);
 
-  const sortCapability = $derived.by(() => {
-    void session.result;
-    return controller.resultSortCapability();
-  });
+  // A constant of the database (its bundle and whether local storage exists), read through a
+  // derivation so the prop itself is tracked rather than captured once.
+  const sortCapability = $derived(controller.resultSortCapability());
   const sortBusy = $derived(isResultSorting(session));
   const sortBlocked = $derived(resultSortInteractionBlocked(session));
   const sortReason = $derived(resultSortDisabledReason(session, sortCapability));
@@ -616,10 +616,7 @@
     const result = session.result;
     if (!result || !committedSort) return 'Query order';
     // The field is named even when it is hidden, so the toolbar always explains the order.
-    const label = sortActionLabel(result.schema, null, committedSort.columnIndex)
-      .replace(/^Sort /u, '')
-      .replace(/ ascending$/u, '')
-      .replace(/,$/u, '');
+    const label = fieldLabel(result.schema, committedSort.columnIndex).replace(/,$/u, '');
     return `Sorted by ${label} ${committedSort.direction === 'asc' ? '\u2191' : '\u2193'}`;
   });
 
@@ -1139,7 +1136,8 @@
                 onloadmore={() => perform(() => controller.loadMoreResults())}
                 onloadwindow={(row) => perform(() => controller.loadResultWindow(row))}
                 onretry={() => perform(() => controller.retryResultPage())}
-                onsort={(next) => requestSort(next, session.result?.sort?.columnIndex ?? null)}
+                onsort={(next) =>
+                  requestSort(next, next?.columnIndex ?? session.result?.sort?.columnIndex ?? null)}
               />
             {/key}
           {:else if intakeBusy}

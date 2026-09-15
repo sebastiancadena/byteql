@@ -1372,13 +1372,31 @@ describe('createBrowserDatabase', () => {
 
     it('refuses to sort when result pages cannot be persisted locally', async () => {
       createQueryPagePersistenceMock.mockResolvedValue(null);
-      sortMocks.writeSortedResult.mockResolvedValue(fakeView());
+      sortMocks.writeSortedResult.mockImplementation(async (dependencies: ResultSortDependencies) =>
+        dependencies.createStore().then(fakeView),
+      );
       const { database, session } = await completeSession();
 
       await expect(database.createSortedView(session, sortOptions())).rejects.toMatchObject({
         code: 'SORT_UNAVAILABLE',
       });
-      expect(sortMocks.writeSortedResult).not.toHaveBeenCalled();
+    });
+
+    it('allocates no result-page storage when the sort fails before it is needed', async () => {
+      const persistence = new FakeQueryPagePersistence();
+      createQueryPagePersistenceMock.mockResolvedValue(persistence);
+      // The writer fails during acquisition, before it ever asks for a store.
+      sortMocks.writeSortedResult.mockRejectedValue(
+        new ResultSortError('SORT_FAILED', 'the connection could not be opened'),
+      );
+      const { database, session } = await completeSession();
+
+      await expect(database.createSortedView(session, sortOptions())).rejects.toMatchObject({
+        code: 'SORT_FAILED',
+      });
+      // Nothing was allocated, so nothing can be left behind in OPFS.
+      expect(createQueryPagePersistenceMock).toHaveBeenCalledTimes(1);
+      expect(persistence.disposeCalls).toBe(0);
     });
 
     it('reports why sorting is unavailable before any result exists', async () => {
