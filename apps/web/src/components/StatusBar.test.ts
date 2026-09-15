@@ -50,6 +50,8 @@ describe('StatusBar progress readout', () => {
       elapsedMs: 12.5,
       pageError: null,
       pageErrorRetryable: false,
+      orderRevision: 0,
+      sort: null,
     };
     const streaming = render(StatusBar, { state: stateWith({ phase: 'ready', result }) });
     expect(within(streaming.container).getByText('1,024 loaded · more available')).toBeTruthy();

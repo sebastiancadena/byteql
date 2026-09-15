@@ -78,6 +78,17 @@ exact source bytes. Product requirements, differentiators, and the projection DS
   pcap (`apps/web/e2e/hex-provenance.spec.ts`). **Phase 1 is complete.** Design:
   `docs/superpowers/specs/2026-07-19-phase1-hex-provenance-ui-design.md`; plan:
   `docs/superpowers/plans/2026-07-19-phase1-hex-provenance-ui.md`.
+- **Result column sorting: shipped.** Click a result column header to reorder **every row of the
+  current execution** (ascending -> descending -> original query order), without re-running the
+  SQL: the rows come from the pages the session already retains, staged as private Parquet shards
+  and ordered by DuckDB on its own connection, then published as a complete immutable
+  `QueryResultView` that the grid, the inspector and both exporters read through one contract.
+  Design: `docs/superpowers/specs/2026-09-14-result-column-sorting-design.md`; plan:
+  `docs/superpowers/plans/2026-09-14-result-column-sorting.md`; measured limits and evidence:
+  `docs/result-column-sorting-compatibility.md`. Two documented limitations: sorting is refused on
+  the `mvp` DuckDB bundle (its `ORDER BY` over `parquet_scan` fails for a full-range signed 16/32-bit
+  key — a runtime defect, measured with the snapshot path removed), and duplicate output column
+  names already fail in the Arrow bridge before any result exists to sort.
 - **Next:** Phase 0's two open manual exit criteria (audible smoke test; unaided external
   reproduction — `docs/phase-0-external-test.md`), then Phase 2 content (forensics pack +
   plugin model, PRD §12).

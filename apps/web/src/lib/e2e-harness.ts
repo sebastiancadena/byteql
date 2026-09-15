@@ -1,13 +1,15 @@
 import {
   probeSpillCapability,
+  probeResultSort,
   probeResultsExport,
   readExportArtifact,
   type ExportProbeReport,
+  type ResultSortProbeReport,
   type ExportArtifactInput,
   type ExportArtifactReadback,
   type ByteqlDatabase,
   type FileStatisticsSummary,
-  type QuerySession,
+  type QueryResultView,
   type SpillProbeReport,
 } from '@byteql/db';
 import type { Table } from 'apache-arrow';
@@ -48,6 +50,7 @@ export interface BrowserE2EControl {
   audioStats(): AudioStats;
   spillProbe: () => Promise<SpillProbeReport>;
   probeResultsExport: (variant: 'mvp' | 'eh', rows: number) => Promise<ExportProbeReport>;
+  probeResultSort: (variant: 'mvp' | 'eh') => Promise<ResultSortProbeReport>;
   /**
    * Plain data spread into `SessionControllerOptions` by App.svelte when it constructs the
    * `SessionController` — e2e-build only. Empty by default so e2e specs exercise the same
@@ -260,6 +263,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       audioStats: () => ({ ...audioStats }),
       spillProbe: () => probeSpillCapability(),
       probeResultsExport,
+      probeResultSort,
       // App.svelte spreads this into `SessionControllerOptions` at controller construction
       // time, on app boot — well before any `page.evaluate()` a spec runs after `page.goto()`
       // could reach it. A spec that needs non-default tiering thresholds must instead set
@@ -308,12 +312,25 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
           windowRows: 0,
           sendCount: 0,
           decodedBytes: 0,
+          orderRevision: 0,
+          sort: null,
+          sortPending: false,
+          derivedViewCount: 0,
+          viewCaches: [],
         };
         return { ...metrics, resultOpfsPaths: await collectOpfsFiles(RESULT_ROOT_NAME) };
       },
       async storedResult() {
-        const result = (queryController as unknown as { activeQuery?: QuerySession } | null)?.activeQuery;
+        // The DISPLAY view, so a readback reflects the committed order rather than the base.
+        const result = (queryController as unknown as { activeResultView?: QueryResultView } | null)
+          ?.activeResultView;
         if (!result) throw new Error('No stored query result is attached.');
+        const rowCap = 20_000;
+        if (result.status().loadedRows > rowCap) {
+          throw new Error(
+            `Refusing to serialize ${result.status().loadedRows} rows; use page metrics instead.`,
+          );
+        }
         const serialized: SerializableResult = {
           columns: result.schema.fields.map((field) => field.name),
           types: result.schema.fields.map((field) => field.type.toString()),

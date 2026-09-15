@@ -137,8 +137,14 @@ describe('writeParquet', () => {
       options,
     }));
     expect(imports.map(({ table }) => table.schema.fields.map((field) => field.name))).toEqual([
-      ['c0', 'c1'],
-      ['c0', 'c1'],
+      ['c0', 'c1', '__byteql_export_ordinal'],
+      ['c0', 'c1', '__byteql_export_ordinal'],
+    ]);
+    // Ordinals follow the DISPLAY start row of each page, not the page index, so a parallel scan
+    // over the shards can still be put back into the order the user is looking at.
+    expect(imports.map(({ table }) => Array.from(table.getChild('__byteql_export_ordinal')!))).toEqual([
+      [0n, 1n],
+      [2n],
     ]);
     expect(imports.map(({ table }) => Array.from(table.getChild('c0')!))).toEqual([[10, 11], [12]]);
     expect(imports.map(({ table }) => Array.from(table.getChild('c1')!))).toEqual([
@@ -161,6 +167,10 @@ describe('writeParquet', () => {
       "parquet_scan(['opfs://byteql-exports/tab/export/shard-1.parquet', 'opfs://byteql-exports/tab/export/shard-3.parquet'])",
     );
     expect(sent[2]!.sql).toContain('SELECT "c0" AS "value", "c1" AS "quoted""name"');
+    // The final scan is explicitly ordered, and the private ordinal is not among the columns the
+    // file ends up carrying.
+    expect(sent[2]!.sql).toContain('ORDER BY "__byteql_export_src"."__byteql_export_ordinal" ASC');
+    expect(sent[2]!.sql.split('FROM parquet_scan')[0]).not.toContain('__byteql_export_ordinal');
     expect(database.registerOPFSFileName.mock.calls.map(([path]) => path)).toEqual([
       'opfs://byteql-exports/tab/export/shard-1.parquet',
       'opfs://byteql-exports/tab/export/shard-3.parquet',
@@ -198,7 +208,87 @@ describe('writeParquet', () => {
         type: field.type.toString(),
         nullable: field.nullable,
       })),
-    ).toEqual([{ name: 'c0', type: 'Utf8', nullable: true }]);
+    ).toEqual([
+      { name: 'c0', type: 'Utf8', nullable: true },
+      { name: '__byteql_export_ordinal', type: 'Uint64', nullable: false },
+    ]);
+  });
+
+  it('orders by display position when pages start late and their indexes are not contiguous', async () => {
+    // A sorted view's pages are contiguous by start row but need not be by index; an export must
+    // follow the start rows.
+    const table = new Table({ value: vectorFromArray([7, 8, 9], new Int32()) });
+    const pages = [
+      { index: 4, startRow: 0, rowCount: 1 },
+      { index: 9, startRow: 1, rowCount: 2 },
+    ];
+    const result = {
+      schema: table.schema,
+      status: () => ({
+        loadedRows: 3,
+        complete: true,
+        elapsedMs: 1,
+        storedBytes: 1,
+        decodedBytes: 1,
+        sendCount: 1,
+      }),
+      pages: () => pages,
+      readPage: async (index: number) => ({
+        ...pages.find((page) => page.index === index)!,
+        table: index === 4 ? table.slice(0, 1) : table.slice(1, 3),
+      }),
+      pinPages: vi.fn(),
+      materialize: vi.fn(),
+      dispose: vi.fn(),
+    } as unknown as QuerySession;
+    const { dependencies, connection, database } = environment();
+
+    await writeParquet(dependencies, result, {
+      columns: [0],
+      signal: new AbortController().signal,
+      onProgress: vi.fn(),
+    });
+
+    const imports = connection.insertArrowFromIPCStream.mock.calls.map(([ipc]) =>
+      Array.from(tableFromIPC(ipc as Uint8Array).getChild('__byteql_export_ordinal')!),
+    );
+    expect(imports).toEqual([[0n], [1n, 2n]]);
+    expect(database.registerOPFSFileName.mock.calls.map(([path]) => path)).toEqual([
+      'opfs://byteql-exports/tab/export/shard-4.parquet',
+      'opfs://byteql-exports/tab/export/shard-9.parquet',
+      'opfs://byteql-exports/tab/export/result.parquet',
+    ]);
+  });
+
+  it('keeps a user column named like the private ordinal separate from it', async () => {
+    const table = new Table({
+      __byteql_export_ordinal: vectorFromArray(['a', 'b'], new Utf8()),
+      value: vectorFromArray([5, 6], new Int32()),
+    });
+    const result = querySession([table]);
+    const { dependencies, connection } = environment();
+
+    await writeParquet(dependencies, result, {
+      columns: [0, 1],
+      signal: new AbortController().signal,
+      onProgress: vi.fn(),
+    });
+
+    const imported = tableFromIPC(connection.insertArrowFromIPCStream.mock.calls[0]![0] as Uint8Array);
+    // The user's column is staged positionally as c0; only the appended ordinal carries the
+    // private name, so nothing collides and nothing is dropped.
+    expect(imported.schema.fields.map((field) => field.name)).toEqual([
+      'c0',
+      'c1',
+      '__byteql_export_ordinal',
+    ]);
+    expect(Array.from(imported.getChild('c0')!)).toEqual(['a', 'b']);
+    expect(Array.from(imported.getChild('__byteql_export_ordinal')!)).toEqual([0n, 1n]);
+    const sent = connection.send.mock.calls.map(([sql]) => String(sql));
+    expect(sent.at(-1)).toContain('"c0" AS "__byteql_export_ordinal"');
+    // The ordering must bind to the scanned shard column, never to the identically named output
+    // alias, or the file would come out in the user column's order instead of the display's.
+    expect(sent.at(-1)).toContain('ORDER BY "__byteql_export_src"."__byteql_export_ordinal" ASC');
   });
 
   it('rejects unsupported selected columns before acquiring export resources', async () => {

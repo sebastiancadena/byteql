@@ -1,6 +1,7 @@
 <script lang="ts">
   /* global Blob, DragEvent, Event, File, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, document, localStorage, window */
 
+  import type { ResultSort, ResultSortCapability } from '@byteql/db';
   import type { Table } from 'apache-arrow';
   import { onMount, tick, untrack } from 'svelte';
 
@@ -8,6 +9,8 @@
   import { createCoverageMemo, provenanceOfRow } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
   import type { SampleId } from '../lib/session/samples.js';
+  import { resultSortDisabledReason } from '../lib/session/result-sort-availability.js';
+  import { fieldLabel, isResultSorting, resultSortInteractionBlocked } from '../lib/session/result-sort.js';
   import { initialSessionState, type SessionState } from '../lib/session/state.js';
   import { sqlIdentifier } from '../lib/sql-literal.js';
   import { containFocus } from '../lib/ui/focus.js';
@@ -55,6 +58,9 @@
     selectResultRow(row: number | null): void;
     selectByteRange(range: { file: string; start: number; end: number } | null): void;
     getSourceBlob(file: string): Blob | null;
+    sortResults(sort: ResultSort | null): Promise<void>;
+    cancelResultSort(): Promise<void>;
+    resultSortCapability(): ResultSortCapability;
   }
 
   interface Props {
@@ -548,8 +554,13 @@
       ) {
         activeViewerId = null;
       }
+      // Compared against the PREVIOUS session sql, not against the draft: the editor follows the
+      // controller when it changes the SQL (a canned query, a filter, a rerun), and otherwise
+      // leaves a draft alone. Comparing with the draft re-adopted the last-run SQL on every
+      // unrelated publish — and a sort publishes progress continuously.
+      const sqlChanged = next.sql !== session.sql;
       session = next;
-      if (next.sql && next.sql !== draftSql) draftSql = next.sql;
+      if (next.sql && sqlChanged) draftSql = next.sql;
       if (next.phase === 'opening') overviewSource = null;
 
       const overview = next.queries.find((query) => query.id === 'overview');
@@ -586,6 +597,59 @@
     void action().catch((error: unknown) => {
       actionError = message(error);
     });
+  }
+
+  /**
+   * The schema index whose control started the pending sort, so focus can return to it. Toolbar
+   * actions have no header of their own; a header action keeps its own button mounted.
+   */
+  let sortInitiator = $state<number | null>(null);
+
+  // A constant of the database (its bundle and whether local storage exists), read through a
+  // derivation so the prop itself is tracked rather than captured once.
+  const sortCapability = $derived(controller.resultSortCapability());
+  const sortBusy = $derived(isResultSorting(session));
+  const sortBlocked = $derived(resultSortInteractionBlocked(session));
+  const sortReason = $derived(resultSortDisabledReason(session, sortCapability));
+  const committedSort = $derived(session.result?.sort ?? null);
+  const orderLabel = $derived.by(() => {
+    const result = session.result;
+    if (!result || !committedSort) return 'Query order';
+    // The field is named even when it is hidden, so the toolbar always explains the order.
+    const label = fieldLabel(result.schema, committedSort.columnIndex).replace(/,$/u, '');
+    return `Sorted by ${label} ${committedSort.direction === 'asc' ? '\u2191' : '\u2193'}`;
+  });
+
+  function requestSort(sort: ResultSort | null, initiator: number | null): void {
+    sortInitiator = initiator;
+    actionError = null;
+    void controller
+      .sortResults(sort)
+      .catch((error: unknown) => {
+        actionError = message(error);
+      })
+      .finally(() => {
+        void restoreSortFocus();
+      });
+  }
+
+  /**
+   * Returns focus to the control that started the sort: its header button if that column is still
+   * visible, otherwise the grid itself.
+   */
+  async function restoreSortFocus(): Promise<void> {
+    const initiator = sortInitiator;
+    sortInitiator = null;
+    if (initiator === null) return;
+    await tick();
+    const header = document.querySelector<HTMLElement>(
+      `.result-sort-button[data-column-index="${initiator}"]`,
+    );
+    if (header) {
+      header.focus();
+      return;
+    }
+    document.querySelector<HTMLElement>('.result-grid .grid-scroll')?.focus();
   }
 
   /** Loading an example query fills the editor and focuses it; it never runs the query. */
@@ -1019,8 +1083,35 @@
                     : `${session.result.loadedRows.toLocaleString()} loaded · more available`}
               </span>
               <span class="result-count tabular">{session.result.elapsedMs.toFixed(1)} ms</span>
+              <span class="result-count result-order">{orderLabel}</span>
+              {#if committedSort !== null}
+                <button
+                  class="button button-secondary"
+                  type="button"
+                  disabled={sortBlocked}
+                  onclick={() => requestSort(null, committedSort.columnIndex)}
+                >
+                  Clear sort
+                </button>
+              {/if}
+              {#if sortBusy}
+                <button
+                  class="button button-secondary"
+                  type="button"
+                  disabled={session.sorting?.phase === 'cancelling'}
+                  onclick={() => perform(() => controller.cancelResultSort())}
+                >
+                  Cancel sort
+                </button>
+              {/if}
             {/if}
             <ResultsDownload {controller} {session} />
+          </div>
+          <div class="result-sort-status">
+            <p role="status" aria-label="Sort progress">{sortBusy ? (session.sorting?.message ?? '') : ''}</p>
+            {#if session.sorting?.phase === 'failed'}
+              <p role="alert" class="result-sort-error">{session.sorting.message}</p>
+            {/if}
           </div>
         </div>
 
@@ -1036,10 +1127,17 @@
                 pageError={session.result.pageError}
                 pageErrorRetryable={session.result.pageErrorRetryable}
                 selectedRow={session.selectedRow}
+                orderRevision={session.result.orderRevision}
+                sort={session.result.sort}
+                {sortBusy}
+                sortInteractionBlocked={sortBlocked}
+                sortDisabledReason={sortReason}
                 onselect={(row) => controller.selectResultRow(row)}
                 onloadmore={() => perform(() => controller.loadMoreResults())}
                 onloadwindow={(row) => perform(() => controller.loadResultWindow(row))}
                 onretry={() => perform(() => controller.retryResultPage())}
+                onsort={(next) =>
+                  requestSort(next, next?.columnIndex ?? session.result?.sort?.columnIndex ?? null)}
               />
             {/key}
           {:else if intakeBusy}

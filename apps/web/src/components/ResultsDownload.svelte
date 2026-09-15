@@ -4,6 +4,7 @@
   import { tick } from 'svelte';
 
   import { selectExportColumns, type ExportFormat, type ExportOptions } from '../lib/export/options.js';
+  import { isResultSorting } from '../lib/session/result-sort.js';
   import type { SessionController } from '../lib/session/controller.js';
   import type { SessionState } from '../lib/session/state.js';
   import Icon from './ui/Icon.svelte';
@@ -65,6 +66,10 @@
   function validationError(format: ExportFormat): string | null {
     const result = session.result;
     if (!result) return 'Run a query before downloading results.';
+    if (!session.resultIsCurrent) return 'Run the query again before downloading results.';
+    // A file is written from the order on display, so it cannot be started while that order is
+    // being replaced.
+    if (isResultSorting(session)) return 'Finish or cancel the sort before downloading results.';
     if (result.pageError) return 'Retry or rerun the query before downloading results.';
     if (format === 'parquet' && !parquetAvailable) {
       return 'Parquet requires OPFS, which is not available in this browser.';

@@ -1,17 +1,26 @@
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm';
-import { RecordBatch, Schema, Table, tableToIPC } from 'apache-arrow';
+import { Table, tableToIPC } from 'apache-arrow';
 
 import { createExportFiles, type ExportFiles } from './export-files.js';
+import { snapshotPage } from './result-snapshot.js';
 import {
   isSupportedParquetType,
   type ParquetArtifact,
   type ParquetExportOptions,
   unsupportedParquetTypeMessage,
 } from './export-types.js';
-import type { QuerySession } from './types.js';
+import type { QueryResultView } from './types.js';
 
 const PAGE_TABLE = '__byteql_export_page';
 const RESULT_FILE = 'result.parquet';
+/** Relation alias for the shard scan, so the ordering reference can be qualified. */
+const SOURCE_ALIAS = '__byteql_export_src';
+/**
+ * Private ordinal recording each row's position in the COMMITTED DISPLAY order. A parallel scan
+ * over the shards is free to return them in any order, so the final COPY orders by this rather
+ * than trusting shard names or scan order. It never appears in the exported file.
+ */
+const EXPORT_ORDINAL_COLUMN = '__byteql_export_ordinal';
 
 export interface ParquetWriterDependencies {
   readonly database: Pick<AsyncDuckDB, 'registerOPFSFileName' | 'dropFile'>;
@@ -22,7 +31,7 @@ export interface ParquetWriterDependencies {
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const quoteString = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
-const selectedFields = (result: QuerySession, columns: readonly number[]) => {
+const selectedFields = (result: QueryResultView, columns: readonly number[]) => {
   if (columns.length === 0) throw new Error('At least one column must be selected for Parquet export.');
   return columns.map((index) => {
     if (!Number.isInteger(index) || index < 0 || index >= result.schema.fields.length) {
@@ -36,15 +45,12 @@ const selectedFields = (result: QuerySession, columns: readonly number[]) => {
   });
 };
 
-const renameSelectedColumns = (table: Table, columns: readonly number[]): Table => {
-  const selected = table.selectAt([...columns]);
-  const fields = selected.schema.fields.map((field, index) => field.clone({ name: `c${index}` }));
-  const schema = new Schema(fields, selected.schema.metadata);
-  return new Table(
-    schema,
-    selected.batches.map((batch) => new RecordBatch(schema, batch.data)),
-  );
-};
+/**
+ * Selects the exported columns, renames them to generated positional aliases so no user column
+ * name reaches a generated statement, and appends the display ordinal.
+ */
+const stageSelectedColumns = (table: Table, columns: readonly number[], startRow: number): Table =>
+  snapshotPage(table.selectAt([...columns]), startRow, EXPORT_ORDINAL_COLUMN);
 
 const combineErrors = (primary: unknown, cleanup: readonly unknown[], message: string): unknown => {
   if (cleanup.length === 0) return primary;
@@ -58,7 +64,7 @@ class ParquetWriter {
     private readonly dependencies: ParquetWriterDependencies,
     private readonly connection: AsyncDuckDBConnection,
     private readonly files: ExportFiles,
-    private readonly result: QuerySession,
+    private readonly result: QueryResultView,
     private readonly options: ParquetExportOptions,
   ) {}
 
@@ -67,12 +73,14 @@ class ParquetWriter {
     const pages = this.result.pages();
     if (pages.length === 0) {
       const empty = new Table(this.result.schema);
-      shards.push(await this.writeShard(empty, this.options.columns, 0));
+      shards.push(await this.writeShard(empty, this.options.columns, 0, 0));
     } else {
       for (const page of pages) {
         this.options.signal.throwIfAborted();
         const stored = await this.result.readPage(page.index);
-        shards.push(await this.writeShard(stored.table, this.options.columns, page.index));
+        // The ordinal comes from the page's position in the DISPLAY, which is what the file must
+        // reproduce — not from the page index, which need not be contiguous.
+        shards.push(await this.writeShard(stored.table, this.options.columns, page.index, page.startRow));
         this.options.onProgress(page.startRow + page.rowCount);
       }
     }
@@ -83,9 +91,14 @@ class ParquetWriter {
       .map((field, index) => `${quoteIdentifier(`c${index}`)} AS ${quoteIdentifier(field.name)}`)
       .join(', ');
     const paths = shards.map(quoteString).join(', ');
+    // The projection names only the user's columns, so the private ordinal orders the rows and
+    // then disappears. The ordering reference is QUALIFIED: a bare one binds to a SELECT-list
+    // alias first, so a user column named like the ordinal would otherwise silently order the
+    // file by that column instead of by display position.
     await this.runStatement(
-      `COPY (SELECT ${projection} FROM parquet_scan([${paths}])) TO ${quoteString(output)} ` +
-        '(FORMAT PARQUET, COMPRESSION SNAPPY)',
+      `COPY (SELECT ${projection} FROM parquet_scan([${paths}]) AS ${quoteIdentifier(SOURCE_ALIAS)} ` +
+        `ORDER BY ${quoteIdentifier(SOURCE_ALIAS)}.${quoteIdentifier(EXPORT_ORDINAL_COLUMN)} ASC) ` +
+        `TO ${quoteString(output)} (FORMAT PARQUET, COMPRESSION SNAPPY)`,
     );
 
     const cleanupErrors = await this.releaseHandles();
@@ -111,9 +124,14 @@ class ParquetWriter {
     throw combineErrors(primary, cleanupErrors, 'Parquet export failed and cleanup was incomplete.');
   }
 
-  private async writeShard(table: Table, columns: readonly number[], index: number): Promise<string> {
+  private async writeShard(
+    table: Table,
+    columns: readonly number[],
+    index: number,
+    startRow: number,
+  ): Promise<string> {
     this.options.signal.throwIfAborted();
-    const selected = renameSelectedColumns(table, columns);
+    const selected = stageSelectedColumns(table, columns, startRow);
     const copy = tableToIPC(selected, 'stream').slice();
     await this.connection.insertArrowFromIPCStream(copy, { name: PAGE_TABLE, create: true });
     const path = await this.register(`shard-${index}.parquet`);
@@ -203,7 +221,7 @@ class ParquetWriter {
 
 export async function writeParquet(
   dependencies: ParquetWriterDependencies,
-  result: QuerySession,
+  result: QueryResultView,
   options: ParquetExportOptions,
 ): Promise<ParquetArtifact> {
   selectedFields(result, options.columns);

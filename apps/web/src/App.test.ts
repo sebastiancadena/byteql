@@ -33,6 +33,8 @@ const { database, databaseDispose, initialize, dispose, createBrowserDatabase, S
             fatalError: null,
             byteSelection: null,
             download: null,
+            sorting: null,
+            resultIsCurrent: false,
           });
           return () => undefined;
         },

@@ -20,6 +20,18 @@ const duckdbMocks = vi.hoisted(() => {
     cancelSent: vi.fn(),
     close: vi.fn(),
   };
+  /**
+   * A DISTINCT connection handed to everything that connects after the database's own. A mock
+   * returning one object for both would hide exactly the ownership and cancellation defects these
+   * tests exist to catch.
+   */
+  const sortConnection = {
+    query: vi.fn(),
+    send: vi.fn(),
+    insertArrowFromIPCStream: vi.fn(),
+    cancelSent: vi.fn(),
+    close: vi.fn(),
+  };
   const database = {
     instantiate: vi.fn(),
     connect: vi.fn(),
@@ -31,6 +43,7 @@ const duckdbMocks = vi.hoisted(() => {
 
   return {
     connection,
+    sortConnection,
     database,
     selectBundle: vi.fn(),
     AsyncDuckDB: vi.fn(),
@@ -40,6 +53,10 @@ const duckdbMocks = vi.hoisted(() => {
 
 const exportMocks = vi.hoisted(() => ({
   writeParquet: vi.fn(),
+}));
+
+const sortMocks = vi.hoisted(() => ({
+  writeSortedResult: vi.fn(),
 }));
 
 vi.mock('@duckdb/duckdb-wasm', () => ({
@@ -62,6 +79,12 @@ vi.mock('./export-parquet.js', () => ({
   writeParquet: exportMocks.writeParquet,
 }));
 
+// The writer's own behaviour is covered by sort-result.test.ts; these tests are about the
+// database's registration and family-lifetime rules around it.
+vi.mock('./sort-result.js', () => ({
+  writeSortedResult: sortMocks.writeSortedResult,
+}));
+
 // Real spillPath/isQuotaError logic is exercised as-is; only deleteSpillGeneration and
 // deleteSpillChunks are spied on so tests can assert OPFS cleanup without touching real OPFS APIs.
 vi.mock('./spill-files.js', async (importOriginal) => {
@@ -82,6 +105,9 @@ vi.mock('./query-pages.js', async (importOriginal) => {
 });
 
 import { createBrowserDatabase } from './browser.js';
+import { ResultSortError, type ResultSortOptions } from './result-sort.js';
+import type { ResultSortDependencies } from './sort-result.js';
+import type { QueryResultView } from './types.js';
 import { createOpfsQueryPagePersistence, QueryPageStore, type QueryPagePersistence } from './query-pages.js';
 import { deleteSpillChunks, deleteSpillGeneration } from './spill-files.js';
 
@@ -236,7 +262,6 @@ describe('createBrowserDatabase', () => {
     });
     duckdbMocks.AsyncDuckDB.mockReturnValue(duckdbMocks.database);
     duckdbMocks.database.instantiate.mockResolvedValue(null);
-    duckdbMocks.database.connect.mockResolvedValue(duckdbMocks.connection);
     duckdbMocks.database.terminate.mockResolvedValue(undefined);
     duckdbMocks.database.registerOPFSFileName.mockResolvedValue(undefined);
     duckdbMocks.database.collectFileStatistics.mockResolvedValue(undefined);
@@ -264,12 +289,26 @@ describe('createBrowserDatabase', () => {
     duckdbMocks.connection.insertArrowFromIPCStream._insertedCopies = insertedDataCopies;
     duckdbMocks.connection.cancelSent.mockResolvedValue(true);
     duckdbMocks.connection.close.mockResolvedValue(undefined);
+    duckdbMocks.sortConnection.query.mockResolvedValue({} as Table);
+    duckdbMocks.sortConnection.send.mockResolvedValue(batchReader([resultTable()]));
+    duckdbMocks.sortConnection.insertArrowFromIPCStream.mockResolvedValue(undefined);
+    duckdbMocks.sortConnection.cancelSent.mockResolvedValue(true);
+    duckdbMocks.sortConnection.close.mockResolvedValue(undefined);
+    // Reset first: an unconsumed `once` value would otherwise carry into the next test and hand
+    // the sort writer the database's own connection.
+    duckdbMocks.database.connect.mockReset();
+    // The database's own connection comes first; everything that connects later — the sort writer
+    // included — gets the distinct one.
+    duckdbMocks.database.connect
+      .mockResolvedValue(duckdbMocks.sortConnection)
+      .mockResolvedValueOnce(duckdbMocks.connection);
     deleteSpillGenerationMock.mockClear();
     deleteSpillGenerationMock.mockResolvedValue(undefined);
     deleteSpillChunksMock.mockClear();
     deleteSpillChunksMock.mockResolvedValue(undefined);
     createQueryPagePersistenceMock.mockClear();
     createQueryPagePersistenceMock.mockResolvedValue(null);
+    sortMocks.writeSortedResult.mockReset();
     exportMocks.writeParquet.mockReset();
     exportMocks.writeParquet.mockResolvedValue({
       file: new File(['parquet'], 'result.parquet'),
@@ -1243,6 +1282,361 @@ describe('createBrowserDatabase', () => {
     await database.dispose();
     expect(duckdbMocks.connection.close).toHaveBeenCalledOnce();
     expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
+  });
+
+  describe('createSortedView', () => {
+    const sortOptions = (overrides: Partial<ResultSortOptions> = {}): ResultSortOptions => ({
+      sort: { columnIndex: 0, direction: 'asc' },
+      signal: new AbortController().signal,
+      onProgress: vi.fn(),
+      ...overrides,
+    });
+
+    /** A stand-in for the complete view the writer would return. */
+    const fakeView = (): QueryResultView & { disposeCalls: number } => {
+      const view = {
+        disposeCalls: 0,
+        schema: new Table().schema,
+        status: () => ({
+          loadedRows: 2,
+          complete: true,
+          elapsedMs: 1,
+          storedBytes: 1,
+          decodedBytes: 1,
+          sendCount: 1,
+        }),
+        pages: () => [{ index: 0, startRow: 0, rowCount: 2 }],
+        readPage: vi.fn(),
+        pinPages: vi.fn(),
+        materialize: vi.fn(),
+        dispose: vi.fn(async () => {
+          view.disposeCalls += 1;
+        }),
+      };
+      return view as unknown as QueryResultView & { disposeCalls: number };
+    };
+
+    const completeSession = async (sql = 'select value from events') => {
+      duckdbMocks.connection.send.mockResolvedValueOnce(batchReader([duckdbResultTable(0, 2)]));
+      const database = await createBrowserDatabase();
+      const session = await database.startQuery(sql);
+      await session.fetchNext(2);
+      return { database, session };
+    };
+
+    it('sorts the current complete base, leaves it active, and never resends its SQL', async () => {
+      const view = fakeView();
+      sortMocks.writeSortedResult.mockResolvedValue(view);
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession('select volatile_value from events');
+
+      const sorted = await database.createSortedView(session, sortOptions());
+
+      expect(sortMocks.writeSortedResult.mock.calls[0]?.[1]).toBe(session);
+      expect(duckdbMocks.connection.send).toHaveBeenCalledExactlyOnceWith(
+        'select volatile_value from events',
+      );
+      expect(session.status().complete).toBe(true);
+      await expect(session.readPage(0)).resolves.toMatchObject({ rowCount: 2 });
+      expect(sorted).not.toBe(session);
+      expect(sorted.status()).toMatchObject({ complete: true, loadedRows: 2 });
+    });
+
+    it('gives the writer a connection that is not the one owning the original cursor', async () => {
+      sortMocks.writeSortedResult.mockImplementation(async (dependencies: ResultSortDependencies) => {
+        const connection = await dependencies.connect();
+        expect(connection).not.toBe(duckdbMocks.connection);
+        return fakeView();
+      });
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+
+      await database.createSortedView(session, sortOptions());
+      expect(sortMocks.writeSortedResult).toHaveBeenCalledOnce();
+    });
+
+    it('allocates the candidate store from the shared generation allocator', async () => {
+      const persistence = new FakeQueryPagePersistence();
+      createQueryPagePersistenceMock.mockResolvedValue(persistence);
+      sortMocks.writeSortedResult.mockImplementation(async (dependencies: ResultSortDependencies) => {
+        const store = await dependencies.createStore();
+        expect(store).toBeInstanceOf(QueryPageStore);
+        return fakeView();
+      });
+      const { database, session } = await completeSession();
+
+      await database.createSortedView(session, sortOptions());
+      // One generation for the query, the next for the candidate; never the same.
+      expect(createQueryPagePersistenceMock.mock.calls.map(([generation]) => generation)).toEqual([0, 1]);
+    });
+
+    it('refuses to sort when result pages cannot be persisted locally', async () => {
+      createQueryPagePersistenceMock.mockResolvedValue(null);
+      sortMocks.writeSortedResult.mockImplementation(async (dependencies: ResultSortDependencies) =>
+        dependencies.createStore().then(fakeView),
+      );
+      const { database, session } = await completeSession();
+
+      await expect(database.createSortedView(session, sortOptions())).rejects.toMatchObject({
+        code: 'SORT_UNAVAILABLE',
+      });
+    });
+
+    it('allocates no result-page storage when the sort fails before it is needed', async () => {
+      const persistence = new FakeQueryPagePersistence();
+      createQueryPagePersistenceMock.mockResolvedValue(persistence);
+      // The writer fails during acquisition, before it ever asks for a store.
+      sortMocks.writeSortedResult.mockRejectedValue(
+        new ResultSortError('SORT_FAILED', 'the connection could not be opened'),
+      );
+      const { database, session } = await completeSession();
+
+      await expect(database.createSortedView(session, sortOptions())).rejects.toMatchObject({
+        code: 'SORT_FAILED',
+      });
+      // Nothing was allocated, so nothing can be left behind in OPFS.
+      expect(createQueryPagePersistenceMock).toHaveBeenCalledTimes(1);
+      expect(persistence.disposeCalls).toBe(0);
+    });
+
+    it('reports why sorting is unavailable before any result exists', async () => {
+      const database = await createBrowserDatabase({ spillSupported: true });
+      expect(database.resultSortCapability()).toEqual({ supported: true });
+
+      duckdbMocks.selectBundle.mockResolvedValue({
+        mainModule: '/assets/duckdb-mvp.wasm',
+        mainWorker: '/assets/duckdb-browser-mvp.worker.js',
+        pthreadWorker: null,
+      });
+      const legacy = await createBrowserDatabase({ spillSupported: true });
+      expect(legacy.resultSortCapability()).toMatchObject({ supported: false });
+
+      const withoutStorage = await createBrowserDatabase({ spillSupported: false });
+      expect(withoutStorage.resultSortCapability()).toMatchObject({ supported: false });
+    });
+
+    it('refuses to sort on a runtime whose parquet ordering cannot be trusted', async () => {
+      duckdbMocks.selectBundle.mockResolvedValue({
+        mainModule: '/assets/duckdb-mvp.wasm',
+        mainWorker: '/assets/duckdb-browser-mvp.worker.js',
+        pthreadWorker: null,
+      });
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+
+      await expect(database.createSortedView(session, sortOptions())).rejects.toMatchObject({
+        code: 'SORT_UNAVAILABLE',
+      });
+      expect(sortMocks.writeSortedResult).not.toHaveBeenCalled();
+    });
+
+    it('rejects a foreign result and an incomplete base without acquiring anything', async () => {
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      duckdbMocks.connection.send.mockResolvedValue(batchReader([duckdbResultTable(0, 2)]));
+      const database = await createBrowserDatabase();
+      const first = await database.startQuery('select 1');
+      const second = await database.startQuery('select 2');
+      await second.fetchNext(1);
+
+      await expect(database.createSortedView(first, sortOptions())).rejects.toMatchObject({
+        code: 'SORT_FAILED',
+      });
+      await expect(database.createSortedView(second, sortOptions())).rejects.toMatchObject({
+        code: 'SORT_FAILED',
+      });
+      expect(sortMocks.writeSortedResult).not.toHaveBeenCalled();
+    });
+
+    it('allows only one sort at a time', async () => {
+      const gate = deferred<QueryResultView>();
+      sortMocks.writeSortedResult.mockReturnValue(gate.promise);
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+
+      const first = database.createSortedView(session, sortOptions());
+      await expect(database.createSortedView(session, sortOptions())).rejects.toThrow(/already active/iu);
+      gate.resolve(fakeView());
+      await first;
+      // Once the first settles a second sort is accepted again.
+      sortMocks.writeSortedResult.mockResolvedValue(fakeView());
+      await expect(database.createSortedView(session, sortOptions())).resolves.toBeDefined();
+    });
+
+    it('forwards the caller abort to the writer and stops listening once settled', async () => {
+      const controller = new AbortController();
+      let observed: AbortSignal | null = null;
+      sortMocks.writeSortedResult.mockImplementation(
+        async (_dependencies: unknown, _base: unknown, options: ResultSortOptions) => {
+          observed = options.signal;
+          options.signal.throwIfAborted();
+          return fakeView();
+        },
+      );
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+      controller.abort(new DOMException('cancelled', 'AbortError'));
+
+      await expect(
+        database.createSortedView(session, sortOptions({ signal: controller.signal })),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      expect(observed).not.toBe(controller.signal);
+    });
+
+    it('disposes a view that arrives after its family was replaced, and rejects', async () => {
+      const gate = deferred<QueryResultView>();
+      const started = deferred<void>();
+      const view = fakeView();
+      sortMocks.writeSortedResult.mockImplementation(() => {
+        started.resolve();
+        return gate.promise;
+      });
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+
+      const sorting = database.createSortedView(session, sortOptions());
+      // The writer has to be in flight for this to exercise a LATE arrival rather than a request
+      // that was rejected before it ever started.
+      await started.promise;
+      const replacement = database.startQuery('select other from events');
+      gate.resolve(view);
+
+      await expect(sorting).rejects.toMatchObject({ name: 'AbortError' });
+      await replacement;
+      expect(view.disposeCalls).toBe(1);
+    });
+
+    it('aborts a pending sort before a new query takes ownership', async () => {
+      let aborted = false;
+      const started = deferred<void>();
+      sortMocks.writeSortedResult.mockImplementation(
+        (_dependencies: unknown, _base: unknown, options: ResultSortOptions) =>
+          new Promise<QueryResultView>((_resolve, reject) => {
+            started.resolve();
+            options.signal.addEventListener('abort', () => {
+              aborted = true;
+              reject(new DOMException('cancelled', 'AbortError'));
+            });
+          }),
+      );
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+
+      const sorting = database.createSortedView(session, sortOptions());
+      await started.promise;
+      const replacement = database.startQuery('select other from events');
+      await expect(sorting).rejects.toMatchObject({ name: 'AbortError' });
+      await replacement;
+      expect(aborted).toBe(true);
+    });
+
+    it('exports a live derived view, and refuses it once disposed or superseded', async () => {
+      const view = fakeView();
+      sortMocks.writeSortedResult.mockResolvedValue(view);
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+      const sorted = await database.createSortedView(session, sortOptions());
+      const options = { columns: [0], signal: new AbortController().signal, onProgress: vi.fn() };
+
+      await database.exportParquet(sorted, options);
+      expect(exportMocks.writeParquet.mock.calls[0]?.[1]).toBe(sorted);
+
+      await sorted.dispose();
+      await expect(database.exportParquet(sorted, options)).rejects.toThrow(/not current|superseded/iu);
+    });
+
+    it('refuses to export a derived view whose family has been replaced', async () => {
+      const view = fakeView();
+      sortMocks.writeSortedResult.mockResolvedValue(view);
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+      const sorted = await database.createSortedView(session, sortOptions());
+
+      await database.startQuery('select other from events');
+
+      expect(view.disposeCalls).toBe(1);
+      await expect(
+        database.exportParquet(sorted, {
+          columns: [0],
+          signal: new AbortController().signal,
+          onProgress: vi.fn(),
+        }),
+      ).rejects.toThrow(/not current|superseded/iu);
+    });
+
+    it('refuses to export while a sort is pending', async () => {
+      const gate = deferred<QueryResultView>();
+      sortMocks.writeSortedResult.mockReturnValue(gate.promise);
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+
+      const sorting = database.createSortedView(session, sortOptions());
+      await expect(
+        database.exportParquet(session, {
+          columns: [0],
+          signal: new AbortController().signal,
+          onProgress: vi.fn(),
+        }),
+      ).rejects.toThrow(/not current|superseded/iu);
+      gate.resolve(fakeView());
+      await sorting;
+    });
+
+    it('disposes every derived view when the database is disposed', async () => {
+      const view = fakeView();
+      sortMocks.writeSortedResult.mockResolvedValue(view);
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+      await database.createSortedView(session, sortOptions());
+
+      await database.dispose();
+      expect(view.disposeCalls).toBe(1);
+      await expect(database.dispose()).resolves.toBeUndefined();
+    });
+
+    it('unregisters a view only once, however many times it is disposed', async () => {
+      const view = fakeView();
+      sortMocks.writeSortedResult.mockResolvedValue(view);
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+      const sorted = await database.createSortedView(session, sortOptions());
+
+      await Promise.all([sorted.dispose(), sorted.dispose()]);
+      await sorted.dispose();
+      expect(view.disposeCalls).toBe(1);
+    });
+
+    it('retries a queued cleanup when the family is retired, and keeps it until it succeeds', async () => {
+      const retry = vi.fn().mockRejectedValueOnce(new Error('still open')).mockResolvedValue(undefined);
+      sortMocks.writeSortedResult.mockImplementation(async (dependencies: ResultSortDependencies) => {
+        dependencies.onCleanupFailure(retry, new Error('still open'));
+        return fakeView();
+      });
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+      await database.createSortedView(session, sortOptions());
+
+      await database.startQuery('select other from events');
+      expect(retry).toHaveBeenCalledTimes(1);
+      await database.dispose();
+      expect(retry).toHaveBeenCalledTimes(2);
+    });
+
+    it('leaves the base usable when the writer fails', async () => {
+      sortMocks.writeSortedResult.mockRejectedValue(
+        new ResultSortError('SORT_FAILED', 'the rows could not be sorted'),
+      );
+      createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
+      const { database, session } = await completeSession();
+
+      await expect(database.createSortedView(session, sortOptions())).rejects.toMatchObject({
+        code: 'SORT_FAILED',
+      });
+      await expect(session.readPage(0)).resolves.toMatchObject({ rowCount: 2 });
+      expect(session.status().complete).toBe(true);
+      // A failed sort must not block the next one.
+      sortMocks.writeSortedResult.mockResolvedValue(fakeView());
+      await expect(database.createSortedView(session, sortOptions())).resolves.toBeDefined();
+    });
   });
 
   describe('beginIngest', () => {

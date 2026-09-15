@@ -1,6 +1,8 @@
 import type { PackQuery, ParseIssue, ParseResult, TableOverview } from '@byteql/core';
+import type { ResultSort } from '@byteql/db';
 import type { Schema, Table } from 'apache-arrow';
 
+import { sameResultSchema } from './result-sort.js';
 import { RESULT_WINDOW_ROWS } from './result-window.js';
 import type { ExportState } from '../export/operation.js';
 
@@ -37,6 +39,27 @@ export interface PagedResultState {
   readonly elapsedMs: number;
   readonly pageError: string | null;
   readonly pageErrorRetryable: boolean;
+  /**
+   * How many committed order changes this result has published. Starts at 0 and increments only
+   * when a new display order is adopted, so a window read against an older order can be recognised
+   * and discarded even when its row count matches.
+   */
+  readonly orderRevision: number;
+  /** The committed header sort, or null for the original query order. */
+  readonly sort: ResultSort | null;
+}
+
+/** A sort or order-restoration in flight, from the request until it commits, fails or is cancelled. */
+export interface ResultSortingState {
+  readonly requestId: number;
+  readonly queryGeneration: number;
+  readonly fromRevision: number;
+  /** The order being asked for; null means restoring the original query order. */
+  readonly requestedSort: ResultSort | null;
+  readonly phase: 'loading' | 'staging' | 'sorting' | 'storing' | 'cancelling' | 'failed';
+  readonly rows: number;
+  readonly totalRows: number | null;
+  readonly message: string;
 }
 
 export interface SessionState {
@@ -62,6 +85,13 @@ export interface SessionState {
   /** Active hex-pane byte selection: display-name-qualified absolute offsets, end exclusive. */
   byteSelection: { file: string; start: number; end: number } | null;
   download: ExportState | null;
+  sorting: ResultSortingState | null;
+  /**
+   * Whether `result` belongs to the CURRENT query. A previous result stays visible after a query
+   * fails, but it is no longer current: it must not offer sorting or downloads, which would act on
+   * a result family the session has already moved past.
+   */
+  resultIsCurrent: boolean;
 }
 
 export type SessionEvent =
@@ -94,7 +124,22 @@ export type SessionEvent =
   | { type: 'cancelled' }
   | { type: 'failed'; message: string }
   | { type: 'byteRangeSelected'; range: { file: string; start: number; end: number } | null }
-  | { type: 'downloadUpdated'; generation: number; download: ExportState | null };
+  | { type: 'downloadUpdated'; generation: number; download: ExportState | null }
+  | {
+      type: 'resultSortUpdated';
+      queryGeneration: number;
+      requestId: number;
+      sorting: ResultSortingState;
+    }
+  | { type: 'resultSortEnded'; queryGeneration: number; requestId: number }
+  | { type: 'resultUnavailable'; queryGeneration: number }
+  | {
+      type: 'resultOrderCommitted';
+      queryGeneration: number;
+      requestId: number;
+      fromRevision: number;
+      result: PagedResultState;
+    };
 
 export const initialSessionState: SessionState = {
   phase: 'idle',
@@ -113,6 +158,8 @@ export const initialSessionState: SessionState = {
   fatalError: null,
   byteSelection: null,
   download: null,
+  sorting: null,
+  resultIsCurrent: false,
 };
 
 const isValidPagedWindow = (result: PagedResultState): boolean =>
@@ -125,9 +172,20 @@ const isValidPagedWindow = (result: PagedResultState): boolean =>
 
 const isValidPagedUpdate = (current: PagedResultState, next: PagedResultState): boolean =>
   next.generation === current.generation &&
+  // Order identity as well as query identity: a window read under an older order can carry the
+  // right row count and still describe entirely different rows.
+  next.orderRevision === current.orderRevision &&
   next.loadedRows >= current.loadedRows &&
   (!current.complete || next.complete) &&
   isValidPagedWindow(next);
+
+/** Whether a sort event belongs to the operation the session currently has in flight. */
+const isCurrentSortRequest = (state: SessionState, queryGeneration: number, requestId: number): boolean =>
+  state.result !== null &&
+  state.resultIsCurrent &&
+  state.result.generation === queryGeneration &&
+  state.sorting !== null &&
+  state.sorting.requestId === requestId;
 
 export function reduceSession(state: SessionState, event: SessionEvent): SessionState {
   switch (event.type) {
@@ -171,16 +229,20 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         sql: event.sql,
         queryError: null,
         selectedRow: null,
+        sorting: null,
+        resultIsCurrent: false,
       };
     case 'querySucceeded':
       if (!isValidPagedWindow(event.result)) return state;
       return {
         ...state,
         phase: 'ready',
-        result: event.result,
+        result: { ...event.result, orderRevision: 0, sort: null },
         queryError: null,
         selectedRow: null,
         byteSelection: null,
+        sorting: null,
+        resultIsCurrent: true,
       };
     case 'queryWindowUpdated':
       return state.result && isValidPagedUpdate(state.result, event.result)
@@ -199,17 +261,21 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
             },
           };
     case 'queryFailed':
+      // The previous result stays visible, but it is no longer current: acting on it would act on
+      // a family the session has moved past.
       return {
         ...state,
         phase: 'ready',
         queryError: event.message,
         selectedRow: null,
+        sorting: null,
+        resultIsCurrent: false,
       };
     case 'rowSelected':
       return state.result === null ? state : { ...state, selectedRow: event.row };
     case 'cancelled':
       return state.phase === 'querying'
-        ? { ...state, phase: 'ready', queryError: null }
+        ? { ...state, phase: 'ready', queryError: null, sorting: null, resultIsCurrent: false }
         : initialSessionState;
     case 'failed':
       return {
@@ -226,6 +292,8 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         selectedRow: null,
         fatalError: event.message,
         byteSelection: null,
+        sorting: null,
+        resultIsCurrent: false,
       };
     case 'byteRangeSelected':
       return state.source === null ? state : { ...state, byteSelection: event.range };
@@ -233,5 +301,58 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
       if (event.download && event.download.generation !== event.generation) return state;
       if (state.download && state.download.generation !== event.generation) return state;
       return { ...state, download: event.download };
+    case 'resultSortUpdated': {
+      const current = state.result;
+      if (!current || !state.resultIsCurrent || current.generation !== event.queryGeneration) {
+        return state;
+      }
+      if (event.sorting.requestId !== event.requestId) return state;
+      if (event.sorting.fromRevision !== current.orderRevision) return state;
+      // Request ids only move forward. A newer request replaces an older one — including one that
+      // failed — while a delayed start or progress report from an older request is ignored rather
+      // than allowed to revive it.
+      if (state.sorting && event.requestId < state.sorting.requestId) return state;
+      return { ...state, sorting: event.sorting };
+    }
+    case 'resultSortEnded':
+      return isCurrentSortRequest(state, event.queryGeneration, event.requestId)
+        ? { ...state, sorting: null }
+        : state;
+    case 'resultUnavailable':
+      // Generation-fenced: closing an OLD family must not invalidate a newer result.
+      return state.result && state.result.generation === event.queryGeneration
+        ? { ...state, resultIsCurrent: false, sorting: null }
+        : state;
+    case 'resultOrderCommitted': {
+      const current = state.result;
+      if (!current || !isCurrentSortRequest(state, event.queryGeneration, event.requestId)) return state;
+      const next = event.result;
+      const sort = next.sort;
+      if (
+        event.fromRevision !== current.orderRevision ||
+        next.orderRevision !== current.orderRevision + 1 ||
+        next.generation !== current.generation ||
+        !sameResultSchema(next.schema, current.schema) ||
+        !next.complete ||
+        next.loadedRows !== current.loadedRows ||
+        !isValidPagedWindow(next) ||
+        (sort !== null &&
+          (!Number.isSafeInteger(sort.columnIndex) ||
+            sort.columnIndex < 0 ||
+            sort.columnIndex >= current.schema.fields.length ||
+            (sort.direction !== 'asc' && sort.direction !== 'desc')))
+      ) {
+        return state;
+      }
+      // A selected row means a position in the committed display, so a reorder invalidates it and
+      // the byte range it revealed.
+      return {
+        ...state,
+        result: { ...next, pageError: null, pageErrorRetryable: false },
+        selectedRow: null,
+        byteSelection: null,
+        sorting: null,
+      };
+    }
   }
 }

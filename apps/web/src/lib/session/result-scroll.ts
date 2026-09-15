@@ -35,17 +35,19 @@ export function visibleResultRange(
   return { firstVisible, lastVisible };
 }
 
-/** Chooses one edge demand from the virtualizer's local visible range. */
+/**
+ * Chooses one edge demand from the virtualizer's local visible range.
+ *
+ * Forward demand separates two different needs: READING the next stored window, and FETCHING more
+ * rows from an unfinished cursor. A sorted result is complete the moment it exists, so `complete`
+ * no longer implies "nothing follows this window" — the deciding question is whether stored rows
+ * exist past the window's end. The caller routes the demand to the right operation.
+ */
 export function resultDemand(input: DemandInput): ResultDemand {
   if (input.windowStart > 0 && input.firstVisible <= RESULT_EDGE_ROWS) return 'backward';
-  const visibleGlobalTail = input.windowStart + input.lastVisible;
-  if (
-    !input.complete &&
-    input.windowRows > 0 &&
-    visibleGlobalTail >= input.loadedRows - RESULT_EDGE_ROWS - 1
-  ) {
-    return 'forward';
-  }
+  const atWindowTail = input.windowRows > 0 && input.lastVisible >= input.windowRows - RESULT_EDGE_ROWS - 1;
+  const hasLaterStoredRows = input.windowStart + input.windowRows < input.loadedRows;
+  if (atWindowTail && (hasLaterStoredRows || !input.complete)) return 'forward';
   return null;
 }
 
