@@ -40,7 +40,15 @@ import {
 import { deleteSpillChunks, deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 import { defaultParquetWriterDependencies, writeParquet } from './export-parquet.js';
 import type { ParquetArtifact, ParquetExportOptions } from './export-types.js';
-import { ResultSortError, type ResultSortOptions } from './result-sort.js';
+import {
+  ResultSortError,
+  resultSortRuntimeSupported,
+  SORT_UNAVAILABLE_RUNTIME,
+  SORT_UNAVAILABLE_STORAGE,
+  type ResultSortOptions,
+} from './result-sort.js';
+import { createExportFiles } from './export-files.js';
+import { writeSortedResult } from './sort-result.js';
 
 // DuckDB-WASM loads parquet dynamically. ByteQL mirrors both signed platform variants under this
 // same-origin repository; letting LOAD use DuckDB's default would leak a request to
@@ -898,6 +906,12 @@ interface ActiveExportToken {
   promise: Promise<ParquetArtifact>;
 }
 
+interface ActiveSortToken {
+  readonly base: QuerySessionImpl;
+  readonly controller: AbortController;
+  promise: Promise<QueryResultView>;
+}
+
 class BrowserDatabase implements ByteqlDatabase {
   private connection: AsyncDuckDBConnection | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -911,6 +925,14 @@ class BrowserDatabase implements ByteqlDatabase {
   private pendingQuery: PendingQueryToken | null = null;
   private activeQuery: QuerySessionImpl | null = null;
   private activeExport: ActiveExportToken | null = null;
+  private activeSort: ActiveSortToken | null = null;
+  /** Every live derived view, mapped to the base it was derived from. */
+  private readonly derivedViews = new Map<QueryResultView, QuerySessionImpl>();
+  /**
+   * Releases that failed and must be retried before the database can honestly claim the resource
+   * is gone. Retried when a result family is retired and again at teardown.
+   */
+  private readonly cleanupRetries = new Set<() => Promise<void>>();
   private queryGeneration = 0;
   private ingestStarting = false;
   private activeIngest: IngestSessionImpl | null = null;
@@ -977,6 +999,7 @@ class BrowserDatabase implements ByteqlDatabase {
 
     this.ingestStarting = true;
     try {
+      await this.abortActiveSort();
       await this.abortActiveExport();
       if (this.pendingQuery) {
         await this.cancelPendingQuery(this.pendingQuery);
@@ -1029,6 +1052,8 @@ class BrowserDatabase implements ByteqlDatabase {
     if (this.pendingQuery) {
       void this.cancelPendingQuery(this.pendingQuery).catch(() => false);
     }
+    // Aborted BEFORE enqueueing so this never waits behind an uninterruptible queue owner.
+    const sortCleanup = this.abortActiveSort();
     const exportCleanup = this.abortActiveExport();
     const token: PendingQueryToken = {
       cancelRequested: false,
@@ -1040,6 +1065,7 @@ class BrowserDatabase implements ByteqlDatabase {
     this.pendingQuery = token;
 
     const result = this.enqueue(async (connection) => {
+      await sortCleanup;
       await exportCleanup;
       if (token.cancelRequested) throw new Error('Query result session is closed.');
       if (this.activeIngest || this.ingestStarting) {
@@ -1105,6 +1131,7 @@ class BrowserDatabase implements ByteqlDatabase {
     if (this.disposeRequested) {
       return false;
     }
+    await this.abortActiveSort();
     await this.abortActiveExport();
     if (this.pendingQuery) {
       return this.cancelPendingQuery(this.pendingQuery);
@@ -1116,11 +1143,70 @@ class BrowserDatabase implements ByteqlDatabase {
   }
 
   createSortedView(base: QuerySession, options: ResultSortOptions): Promise<QueryResultView> {
-    void base;
-    void options;
-    // Task 4 gives this a writer, a derived-view registry and family lifetime rules. Rejecting
-    // explicitly until then keeps a half-wired database from ever publishing a partial view.
-    return Promise.reject(new ResultSortError('SORT_UNAVAILABLE', 'Column sorting is not available yet.'));
+    if (this.disposeRequested) {
+      return Promise.reject(new Error('ByteQL database has been disposed.'));
+    }
+    if (!resultSortRuntimeSupported(this.bundle.mainModule)) {
+      return Promise.reject(new ResultSortError('SORT_UNAVAILABLE', SORT_UNAVAILABLE_RUNTIME));
+    }
+    if (this.activeSort) {
+      return Promise.reject(new ResultSortError('SORT_FAILED', 'A result sort is already active.'));
+    }
+    try {
+      this.assertSortableBase(base);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+
+    const controller = new AbortController();
+    const forwardAbort = (): void => controller.abort(options.signal.reason);
+    if (options.signal.aborted) forwardAbort();
+    else options.signal.addEventListener('abort', forwardAbort, { once: true });
+
+    const operation = this.enqueue(async () => {
+      controller.signal.throwIfAborted();
+      // Checked again inside the queue: the base can be retired while this call waits its turn.
+      this.assertSortableBase(base);
+      const store = await this.createSortedPageStore();
+      const view = await writeSortedResult(
+        {
+          database: this.database,
+          connect: () => this.database.connect(),
+          createFiles: createExportFiles,
+          createStore: () => Promise.resolve(store),
+          onCleanupFailure: (retry) => this.cleanupRetries.add(retry),
+        },
+        base,
+        { ...options, signal: controller.signal },
+      );
+      if (
+        controller.signal.aborted ||
+        this.disposeRequested ||
+        this.activeSort !== token ||
+        this.activeQuery !== base
+      ) {
+        // The family this view belongs to was replaced while the writer was finishing. Publishing
+        // it now would show rows from a result the app has already moved on from. The abort is
+        // rechecked here rather than trusted to the writer: this boundary must hold even for a
+        // writer that ignores its signal.
+        await view.dispose().catch(() => undefined);
+        throw new DOMException('The result sort was replaced.', 'AbortError');
+      }
+      return this.registerDerivedView(view, base as QuerySessionImpl);
+    });
+
+    const token: ActiveSortToken = {
+      base: base as QuerySessionImpl,
+      controller,
+      promise: operation,
+    };
+    const promise = operation.finally(() => {
+      options.signal.removeEventListener('abort', forwardAbort);
+      if (this.activeSort === token) this.activeSort = null;
+    });
+    token.promise = promise;
+    this.activeSort = token;
+    return promise;
   }
 
   exportParquet(result: QueryResultView, options: ParquetExportOptions): Promise<ParquetArtifact> {
@@ -1211,10 +1297,16 @@ class BrowserDatabase implements ByteqlDatabase {
     const errors: unknown[] = [];
 
     try {
+      await this.abortActiveSort();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       await this.abortActiveExport();
     } catch (error) {
       errors.push(error);
     }
+    errors.push(...(await this.retireDerivedViews(null)));
 
     if (this.pendingQuery) {
       try {
@@ -1278,6 +1370,9 @@ class BrowserDatabase implements ByteqlDatabase {
   private async closeActiveQuery(): Promise<void> {
     await this.abortActiveExport();
     const session = this.activeQuery;
+    // Derived views are retired first: they read pages this base owns, and a view left alive after
+    // its family closes could still be handed to an export.
+    await this.retireDerivedViews(session);
     if (!session) return;
     await session.cancel();
   }
@@ -1298,8 +1393,107 @@ class BrowserDatabase implements ByteqlDatabase {
     await token.promise.catch(() => undefined);
   }
 
-  private assertExportableResult(result: QueryResultView): asserts result is QuerySessionImpl {
-    if (this.activeQuery !== result || this.pendingQuery) {
+  /** The base a sort may derive from: the current, complete, unreplaced result and no other. */
+  private assertSortableBase(base: QuerySession): void {
+    if (this.activeQuery !== base || this.pendingQuery) {
+      throw new ResultSortError(
+        'SORT_FAILED',
+        'Cannot sort a query result that is not current or has been superseded.',
+      );
+    }
+    if (!base.status().complete) {
+      throw new ResultSortError(
+        'SORT_FAILED',
+        'Sorting requires every row of the result to be loaded first.',
+      );
+    }
+  }
+
+  /**
+   * Allocates a page store for a sorted view, from the same monotonically increasing allocator
+   * `startQuery` uses, so a candidate's persistence can never collide with a query's.
+   */
+  private async createSortedPageStore(): Promise<QueryPageStore> {
+    const persistence = await createOpfsQueryPagePersistence(this.queryGeneration++);
+    if (!persistence) {
+      throw new ResultSortError('SORT_UNAVAILABLE', SORT_UNAVAILABLE_STORAGE);
+    }
+    try {
+      return new QueryPageStore({ persistence });
+    } catch (error) {
+      await persistence.dispose().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Wraps a committed view so disposing it also unregisters it, exactly once, and only after its
+   * own cleanup has settled.
+   */
+  private registerDerivedView(view: QueryResultView, base: QuerySessionImpl): QueryResultView {
+    let disposal: Promise<void> | null = null;
+    const registered: QueryResultView = {
+      get schema() {
+        return view.schema;
+      },
+      status: () => view.status(),
+      pages: () => view.pages(),
+      readPage: (index) => view.readPage(index),
+      pinPages: (indexes) => view.pinPages(indexes),
+      materialize: (maxBytes) => view.materialize(maxBytes),
+      dispose: () => {
+        disposal ??= view.dispose().finally(() => {
+          this.derivedViews.delete(registered);
+        });
+        return disposal;
+      },
+    };
+    this.derivedViews.set(registered, base);
+    return registered;
+  }
+
+  /** Aborts any pending sort and joins its settlement. Never enqueues behind the sort itself. */
+  private async abortActiveSort(): Promise<void> {
+    const token = this.activeSort;
+    if (!token) return;
+    if (!token.controller.signal.aborted) {
+      token.controller.abort(new DOMException('The result sort was cancelled.', 'AbortError'));
+    }
+    await token.promise.catch(() => undefined);
+  }
+
+  /** Disposes every view derived from a base that is being retired, then retries queued releases. */
+  private async retireDerivedViews(base: QuerySessionImpl | null): Promise<unknown[]> {
+    const errors: unknown[] = [];
+    for (const [view, owner] of [...this.derivedViews]) {
+      if (base !== null && owner !== base) continue;
+      this.derivedViews.delete(view);
+      try {
+        await view.dispose();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    for (const retry of [...this.cleanupRetries]) {
+      try {
+        await retry();
+        this.cleanupRetries.delete(retry);
+      } catch (error) {
+        // Kept for the next attempt: a resource is never silently declared released.
+        errors.push(error);
+      }
+    }
+    return errors;
+  }
+
+  private assertExportableResult(result: QueryResultView): void {
+    if (this.pendingQuery || this.activeSort) {
+      throw new Error('Cannot export a query result that is not current or has been superseded.');
+    }
+    const derivedFrom = this.derivedViews.get(result);
+    const current =
+      result === this.activeQuery || (derivedFrom !== undefined && derivedFrom === this.activeQuery);
+    if (!current) {
       throw new Error('Cannot export a query result that is not current or has been superseded.');
     }
     if (!result.status().complete) {
