@@ -1,14 +1,16 @@
 import { AsyncDuckDB, VoidLogger, type AsyncDuckDBConnection } from '@duckdb/duckdb-wasm';
-import { Table, tableFromIPC, tableToIPC, type Schema } from 'apache-arrow';
+import { Table, tableFromIPC, type Schema } from 'apache-arrow';
 import { RecordBatchStreamWriter, Table as DuckdbTable } from 'apache-arrow-duckdb';
 
 import { LOCAL_BUNDLES } from './browser.js';
-import { buildResultSortSql, resultSortRuntimeSupported, SORT_ORDINAL_COLUMN } from './result-sort.js';
-import { restoreResultSchema, snapshotPage } from './result-snapshot.js';
+import type { ExportFiles } from './export-files.js';
+import { QueryPageStore } from './query-pages.js';
+import { resultSortRuntimeSupported } from './result-sort.js';
+import { writeSortedResult } from './sort-result.js';
+import type { QuerySession } from './types.js';
 
 const PAGE_ROWS = 8_192;
 const PROBE_ROWS = 20_000;
-const SORT_PAGE_TABLE = '__byteql_sort_page';
 const NULL_KEY = '\u0000null';
 
 export interface ResultSortProbeReport {
@@ -40,7 +42,6 @@ export interface ResultSortProbeReport {
 }
 
 const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
 /** The exact Arrow 17 writer -> IPC -> Arrow 21 reader bridge the query path uses. */
 const convert = async (connection: AsyncDuckDBConnection, sql: string): Promise<Table[]> => {
@@ -132,7 +133,6 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
   const registered = new Set<string>();
   let observer: PerformanceObserver | undefined;
   let primary: AsyncDuckDBConnection | null = null;
-  let sorter: AsyncDuckDBConnection | null = null;
 
   const registerPath = async (name: string): Promise<string> => {
     const path = prefix + name;
@@ -146,8 +146,6 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
   };
   /** Every statement issued on the original result's connection, in order. */
   const primarySends: string[] = [];
-  /** Every ordering statement generated for a snapshot sort. */
-  const sortStatements: string[] = [];
   const originalSend = async (sql: string): Promise<Table[]> => {
     primarySends.push(sql);
     return convert(primary!, sql);
@@ -232,13 +230,73 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
       sentinel.length === afterDenied.length &&
       sentinel.every((byte, index) => byte === afterDenied[index]);
 
-    sorter = await database.connect();
     let lastSortStep = 'none';
+    /** Every connection the production writer opened, so isolation can be checked by identity. */
+    const sortConnections: AsyncDuckDBConnection[] = [];
+
+    /** An ExportFiles over this probe's own owned directory, shaped like the production one. */
+    const probeFiles = async (label: string): Promise<ExportFiles> => {
+      const root = await owned.getDirectoryHandle(label, { create: true });
+      let disposed = false;
+      const assertOpen = (): void => {
+        if (disposed) throw new Error('Probe sort files are disposed.');
+      };
+      return {
+        path(name) {
+          assertOpen();
+          return `${prefix}${label}/${name}`;
+        },
+        async file(name) {
+          assertOpen();
+          return (await root.getFileHandle(name)).getFile();
+        },
+        async createWritable(name) {
+          assertOpen();
+          return (await root.getFileHandle(name, { create: true })).createWritable();
+        },
+        async dispose() {
+          if (disposed) return;
+          disposed = true;
+          await owned.removeEntry(label, { recursive: true });
+        },
+      };
+    };
+
+    /** Presents already-converted Arrow pages as the complete base result the writer consumes. */
+    const baseSession = (pages: readonly Table[], schema: Schema): QuerySession => {
+      const summaries = pages.map((table, index) => ({
+        index,
+        startRow: pages.slice(0, index).reduce((rows, previous) => rows + previous.numRows, 0),
+        rowCount: table.numRows,
+      }));
+      const rejectDemand = (): never => {
+        throw new Error('The probe base must never be asked for more rows.');
+      };
+      return {
+        schema,
+        status: () => ({
+          loadedRows: summaries.reduce((rows, summary) => rows + summary.rowCount, 0),
+          complete: true,
+          elapsedMs: 1,
+          storedBytes: 0,
+          decodedBytes: 0,
+          sendCount: 1,
+        }),
+        pages: () => summaries,
+        readPage: async (index) => ({ ...summaries[index]!, table: pages[index]! }),
+        pinPages: () => undefined,
+        materialize: async () => null,
+        fetchNext: rejectDemand,
+        retryPending: rejectDemand,
+        cancel: rejectDemand,
+        dispose: async () => undefined,
+      };
+    };
 
     /**
-     * Stages Arrow pages as owned Parquet shards through a connection-local TEMP table, then
-     * orders them on the dedicated connection. This mirrors the production ownership sequence, so
-     * a failure here is a real blocked gate rather than probe-only glue.
+     * Sorts through the PRODUCTION writer, so this gate proves the shipped code path rather than
+     * probe-only glue. Only the surrounding resources — files, connection, page store — are
+     * probe-owned.
      */
     const sortPages = async (
       pages: readonly Table[],
@@ -246,99 +304,49 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
       columnIndex: number,
       direction: 'asc' | 'desc',
       label: string,
-      signal?: AbortSignal,
+      signal: AbortSignal = new AbortController().signal,
     ): Promise<Table> => {
-      const shards: string[] = [];
-      const seed = `__byteql_sort_seed_${crypto.randomUUID().replaceAll('-', '')}`;
-      let startRow = 0;
-      let temporaryReady = false;
-      // Names the sub-step in flight so a bundle that cannot surface DuckDB's own message still
-      // attributes the failure.
-      const step = (name: string): void => {
-        lastSortStep = `${label}:${name}`;
-      };
+      lastSortStep = `${label}:start`;
+      const view = await writeSortedResult(
+        {
+          database: {
+            async registerOPFSFileName(path: string) {
+              await database.registerOPFSFileName(path);
+              registered.add(path);
+            },
+            async dropFile(path: string) {
+              await database.dropFile(path);
+              registered.delete(path);
+              return null;
+            },
+          },
+          connect: async () => {
+            const connection = await database.connect();
+            sortConnections.push(connection);
+            return connection;
+          },
+          createFiles: () => probeFiles(label),
+          createStore: async () => new QueryPageStore({ persistence: null }),
+          onCleanupFailure: (_retry, error) => {
+            report.diagnostics.push(`${label} cleanup failed: ${String(error)}`);
+          },
+        },
+        baseSession(pages, schema),
+        {
+          sort: { columnIndex, direction },
+          signal,
+          onProgress: (progress) => {
+            lastSortStep = `${label}:${progress.phase}`;
+          },
+        },
+      );
       try {
-        for (const [index, page] of pages.entries()) {
-          signal?.throwIfAborted();
-          step(`snapshot-${index}`);
-          const staged = snapshotPage(page, startRow, SORT_ORDINAL_COLUMN);
-          startRow += page.numRows;
-          const ipc = tableToIPC(staged, 'stream').slice();
-          if (!temporaryReady) {
-            // Establish the exact column types once from a zero-row insert, move them into a
-            // connection-local TEMP table, then append into that table for every page.
-            step('seed-insert');
-            const empty = tableToIPC(staged.slice(0, 0), 'stream').slice();
-            await sorter!.insertArrowFromIPCStream(empty, { name: seed, create: true });
-            step('create-temp');
-            await sorter!.query(
-              `CREATE TEMP TABLE ${quoteIdentifier(SORT_PAGE_TABLE)} AS ` +
-                `SELECT * FROM ${quoteIdentifier(seed)} WHERE false`,
-            );
-            await sorter!.query(`DROP TABLE ${quoteIdentifier(seed)}`);
-            temporaryReady = true;
-          }
-          step(`append-${index}`);
-          await sorter!.insertArrowFromIPCStream(ipc, { name: SORT_PAGE_TABLE, create: false });
-          step(`copy-${index}`);
-          // Owned before the COPY runs: a failed COPY can still have created the file, and the
-          // cleanup below only removes shards it knows about.
-          const shard = await registerPath(`${label}-shard-${index}.parquet`);
-          shards.push(shard);
-          await sorter!.query(
-            `COPY ${quoteIdentifier(SORT_PAGE_TABLE)} TO ${quote(shard)} ` +
-              '(FORMAT PARQUET, COMPRESSION SNAPPY)',
-          );
-          step(`truncate-${index}`);
-          await sorter!.query(`TRUNCATE ${quoteIdentifier(SORT_PAGE_TABLE)}`);
-        }
-        signal?.throwIfAborted();
-
-        const sql = buildResultSortSql(shards, schema, { columnIndex, direction });
-        sortStatements.push(sql);
-        step('order-by');
-        const reader = await sorter!.send(sql, true);
-        const iterator = reader[Symbol.asyncIterator]();
-        const batches: unknown[] = [];
-        let cancelled: Promise<boolean> | null = null;
-        const abort = (): void => {
-          cancelled ??= sorter!.cancelSent();
-        };
-        /** Joins the cancellation signal, if the abort listener ever raised one. */
-        const joinCancellation = async (): Promise<void> => {
-          if (cancelled) await cancelled.catch(() => false);
-        };
-        signal?.addEventListener('abort', abort, { once: true });
-        try {
-          for (;;) {
-            const next = await iterator.next();
-            if (next.done === true) break;
-            batches.push(next.value);
-            signal?.throwIfAborted();
-          }
-        } finally {
-          signal?.removeEventListener('abort', abort);
-          await joinCancellation();
-          try {
-            await iterator.return?.();
-          } catch {
-            // The reader is already finished or cancelled; cleanup must not mask that.
-          }
-        }
-        step('convert');
-        const writer = RecordBatchStreamWriter.writeAll(new DuckdbTable(reader.schema, batches as never[]));
-        return restoreResultSchema(tableFromIPC(await writer.toUint8Array()), schema);
+        const tables: Table[] = [];
+        for (const summary of view.pages()) tables.push((await view.readPage(summary.index)).table);
+        const [first, ...rest] = tables;
+        return first ? first.concat(...rest) : new Table(schema);
       } finally {
-        for (const shard of shards) await dropPath(shard).catch(() => undefined);
-        for (const shard of shards) {
-          await owned.removeEntry(shard.slice(prefix.length), { recursive: false }).catch(() => undefined);
-        }
-        if (temporaryReady) {
-          await sorter!
-            .query(`DROP TABLE IF EXISTS ${quoteIdentifier(SORT_PAGE_TABLE)}`)
-            .catch(() => undefined);
-        }
-        await sorter!.query(`DROP TABLE IF EXISTS ${quoteIdentifier(seed)}`).catch(() => undefined);
+        await view.dispose().catch(() => undefined);
       }
     };
 
@@ -575,17 +583,28 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
       report.cancellationSettled = true;
       report.diagnostics.push(`cancellation settled: ${String(error)}`);
     }
-    // Nothing the sort does may touch the connection that owns the original cursor. Compared by
-    // exact statement rather than by substring: a user column can legitimately be ALIASED
+    // Nothing the sort does may touch the connection that owns the original cursor. Checked by
+    // object identity rather than by statement text: a user column can legitimately be ALIASED
     // 'parquet_scan(...)', and a textual match would read that alias as a leak.
     report.sortConnectionIsolated =
-      sortStatements.length > 0 && !primarySends.some((sent) => sortStatements.includes(sent));
+      sortConnections.length > 0 && sortConnections.every((connection) => connection !== primary);
 
-    // The dedicated connection must still be usable after a cancelled statement.
-    const usable = await sorter.query('SELECT 6 * 7 AS answer');
-    if (Number(usable.getChild('answer')!.get(0)) !== 42) {
+    // The runtime must still be healthy after a cancelled statement: a fresh sort has to work.
+    try {
+      const recovered = await sortPages(
+        await originalSend('SELECT * FROM (VALUES (2), (1)) t(v)'),
+        (await originalSend('SELECT * FROM (VALUES (2), (1)) t(v)'))[0]!.schema,
+        0,
+        'asc',
+        'after-cancel',
+      );
+      if (recovered.numRows !== 2 || Number(recovered.getChildAt(0)!.get(0)) !== 1) {
+        report.cancellationSettled = false;
+        report.diagnostics.push('cancellation: the runtime was unusable afterwards');
+      }
+    } catch (error) {
       report.cancellationSettled = false;
-      report.diagnostics.push('cancellation: the sorting connection was unusable afterwards');
+      report.diagnostics.push(`cancellation: recovery sort failed: ${String(error)}`);
     }
   } catch (error) {
     report.diagnostics.push(`probe failed: ${String(error)}`);
@@ -595,7 +614,6 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
       await database.dropFile(path).catch(() => undefined);
       registered.delete(path);
     }
-    await sorter?.close().catch(() => undefined);
     await primary?.close().catch(() => undefined);
     await database.terminate().catch(() => undefined);
     worker.terminate();

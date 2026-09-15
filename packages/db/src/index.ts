@@ -21,6 +21,7 @@ export {
 export { restoreResultSchema, snapshotPage } from './result-snapshot.js';
 export { convertDuckdbTable } from './arrow-bridge.js';
 export { StoredResultView } from './stored-result-view.js';
+export { writeSortedResult, type ResultSortDependencies } from './sort-result.js';
 export { probeResultSort, type ResultSortProbeReport } from './sort-probe.js';
 export { probeSpillCapability, type SpillProbeReport } from './spill-probe.js';
 export {
