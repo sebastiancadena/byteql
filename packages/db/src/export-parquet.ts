@@ -8,7 +8,7 @@ import {
   type ParquetExportOptions,
   unsupportedParquetTypeMessage,
 } from './export-types.js';
-import type { QuerySession } from './types.js';
+import type { QueryResultView } from './types.js';
 
 const PAGE_TABLE = '__byteql_export_page';
 const RESULT_FILE = 'result.parquet';
@@ -22,7 +22,7 @@ export interface ParquetWriterDependencies {
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const quoteString = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
-const selectedFields = (result: QuerySession, columns: readonly number[]) => {
+const selectedFields = (result: QueryResultView, columns: readonly number[]) => {
   if (columns.length === 0) throw new Error('At least one column must be selected for Parquet export.');
   return columns.map((index) => {
     if (!Number.isInteger(index) || index < 0 || index >= result.schema.fields.length) {
@@ -58,7 +58,7 @@ class ParquetWriter {
     private readonly dependencies: ParquetWriterDependencies,
     private readonly connection: AsyncDuckDBConnection,
     private readonly files: ExportFiles,
-    private readonly result: QuerySession,
+    private readonly result: QueryResultView,
     private readonly options: ParquetExportOptions,
   ) {}
 
@@ -203,7 +203,7 @@ class ParquetWriter {
 
 export async function writeParquet(
   dependencies: ParquetWriterDependencies,
-  result: QuerySession,
+  result: QueryResultView,
   options: ParquetExportOptions,
 ): Promise<ParquetArtifact> {
   selectedFields(result, options.columns);

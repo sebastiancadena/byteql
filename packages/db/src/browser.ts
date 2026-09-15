@@ -15,13 +15,9 @@ import duckdbMvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.
 import duckdbMvpWasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
 import type { TableSchema } from '@byteql/core';
 import { tableFromIPC, type Schema, type Table } from 'apache-arrow';
-import {
-  RecordBatchStreamWriter,
-  Table as DuckdbTable,
-  type RecordBatch as DuckdbRecordBatch,
-  type Schema as DuckdbSchema,
-} from 'apache-arrow-duckdb';
+import type { RecordBatch as DuckdbRecordBatch, Schema as DuckdbSchema } from 'apache-arrow-duckdb';
 
+import { convertDuckdbTable } from './arrow-bridge.js';
 import type {
   ByteqlDatabase,
   FileStatisticsSummary,
@@ -29,6 +25,7 @@ import type {
   IngestSession,
   QueryPage,
   QueryPageSummary,
+  QueryResultView,
   QuerySession,
   QueryStatus,
   TableSummary,
@@ -43,6 +40,7 @@ import {
 import { deleteSpillChunks, deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 import { defaultParquetWriterDependencies, writeParquet } from './export-parquet.js';
 import type { ParquetArtifact, ParquetExportOptions } from './export-types.js';
+import { ResultSortError, type ResultSortOptions } from './result-sort.js';
 
 // DuckDB-WASM loads parquet dynamically. ByteQL mirrors both signed platform variants under this
 // same-origin repository; letting LOAD use DuckDB's default would leak a request to
@@ -559,14 +557,6 @@ const queryPage = (page: StoredQueryPage): QueryPage => ({
   rowCount: page.rowCount,
   table: page.table,
 });
-
-const convertDuckdbTable = async (
-  schema: DuckdbSchema,
-  batches: readonly DuckdbRecordBatch[],
-): Promise<Table> => {
-  const writer = RecordBatchStreamWriter.writeAll(new DuckdbTable(schema, [...batches]));
-  return tableFromIPC(await writer.toUint8Array());
-};
 
 class QuerySessionImpl implements QuerySession {
   private resultSchema: Schema;
@@ -1125,7 +1115,15 @@ class BrowserDatabase implements ByteqlDatabase {
     return false;
   }
 
-  exportParquet(result: QuerySession, options: ParquetExportOptions): Promise<ParquetArtifact> {
+  createSortedView(base: QuerySession, options: ResultSortOptions): Promise<QueryResultView> {
+    void base;
+    void options;
+    // Task 4 gives this a writer, a derived-view registry and family lifetime rules. Rejecting
+    // explicitly until then keeps a half-wired database from ever publishing a partial view.
+    return Promise.reject(new ResultSortError('SORT_UNAVAILABLE', 'Column sorting is not available yet.'));
+  }
+
+  exportParquet(result: QueryResultView, options: ParquetExportOptions): Promise<ParquetArtifact> {
     if (this.disposeRequested) {
       return Promise.reject(new Error('ByteQL database has been disposed.'));
     }
@@ -1300,7 +1298,7 @@ class BrowserDatabase implements ByteqlDatabase {
     await token.promise.catch(() => undefined);
   }
 
-  private assertExportableResult(result: QuerySession): asserts result is QuerySessionImpl {
+  private assertExportableResult(result: QueryResultView): asserts result is QuerySessionImpl {
     if (this.activeQuery !== result || this.pendingQuery) {
       throw new Error('Cannot export a query result that is not current or has been superseded.');
     }

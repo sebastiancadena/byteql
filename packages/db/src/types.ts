@@ -2,6 +2,7 @@ import type { TableSchema } from '@byteql/core';
 import type { Schema, Table } from 'apache-arrow';
 
 import type { ParquetArtifact, ParquetExportOptions } from './export-types.js';
+import type { ResultSortOptions } from './result-sort.js';
 
 export const QUERY_INITIAL_ROWS = 1_024;
 export const QUERY_PAGE_ROWS = 8_192;
@@ -26,17 +27,29 @@ export interface QueryStatus {
   readonly sendCount: number;
 }
 
-export interface QuerySession {
+/**
+ * Read access to a stored result, with no way to ask for more rows.
+ *
+ * A derived view — the product of a column sort — is complete and immutable the moment it exists,
+ * so it has no cursor to drive. Separating reading from demand lets the grid, the inspector and
+ * the exporters consume the original cursor-backed result and a sorted one through one contract,
+ * while keeping `fetchNext` out of reach of code that must never resume a cursor.
+ */
+export interface QueryResultView {
   readonly schema: Schema;
   status(): QueryStatus;
   pages(): readonly QueryPageSummary[];
-  fetchNext(targetRows?: number): Promise<QueryPage | null>;
-  retryPending(): Promise<QueryPage>;
   readPage(index: number): Promise<QueryPage>;
   pinPages(indexes: readonly number[]): void;
   materialize(maxBytes?: number): Promise<Table | null>;
-  cancel(): Promise<boolean>;
   dispose(): Promise<void>;
+}
+
+/** A result view that still owns a live DuckDB cursor and can be asked for more rows. */
+export interface QuerySession extends QueryResultView {
+  fetchNext(targetRows?: number): Promise<QueryPage | null>;
+  retryPending(): Promise<QueryPage>;
+  cancel(): Promise<boolean>;
 }
 
 export interface TableSummary {
@@ -99,7 +112,15 @@ export interface ByteqlDatabase {
   initialize(): Promise<void>;
   beginIngest(options: IngestOptions): Promise<IngestSession>;
   startQuery(sql: string): Promise<QuerySession>;
-  exportParquet(result: QuerySession, options: ParquetExportOptions): Promise<ParquetArtifact>;
+  /**
+   * Builds a complete, immutable view of `base`'s retained pages in the requested order.
+   *
+   * Accepts only the database's current, complete base result, which it never replaces, disposes
+   * or resumes. The returned view is registered against that base: it stops being exportable once
+   * the base is retired.
+   */
+  createSortedView(base: QuerySession, options: ResultSortOptions): Promise<QueryResultView>;
+  exportParquet(result: QueryResultView, options: ParquetExportOptions): Promise<ParquetArtifact>;
   cancelQuery(): Promise<boolean>;
   listTables(): Promise<readonly string[]>;
   /**

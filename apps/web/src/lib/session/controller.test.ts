@@ -434,6 +434,7 @@ const fakeDatabase = (): {
       return session;
     }),
     exportParquet: vi.fn(),
+    createSortedView: vi.fn(),
     cancelQuery: vi.fn().mockResolvedValue(false),
     listTables: vi.fn().mockResolvedValue([]),
     collectFileStatistics: vi.fn().mockResolvedValue(undefined),
