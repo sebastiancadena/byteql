@@ -12,7 +12,10 @@ vi.mock('@byteql/db', () => ({
   isSupportedParquetType: () => true,
   unsupportedParquetTypeMessage: (column: string, type: unknown) =>
     `Column "${column}" has unsupported Parquet type ${String(type)}; cast it explicitly in SQL.`,
+  resultSortEligibility: () => ({ supported: true }),
 }));
+
+import type { ResultSort, ResultSortCapability } from '@byteql/db';
 
 import { initialSessionState, type PagedResultState, type SessionState } from '../lib/session/state.js';
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
@@ -205,6 +208,11 @@ class FakeController {
     this.publish({ ...this.state, byteSelection: range });
   });
   getSourceBlob = vi.fn((): Blob | null => this.sourceBlob);
+  sortResults = vi.fn(async (sort: ResultSort | null) => {
+    void sort;
+  });
+  cancelResultSort = vi.fn(async () => undefined);
+  resultSortCapability = vi.fn((): ResultSortCapability => ({ supported: true }));
 
   constructor(state: SessionState) {
     this.state = state;
@@ -1808,5 +1816,105 @@ describe('Inspector Workbench', () => {
     );
     expect(screen.queryByRole('button', { name: 'Retry loading rows' })).toBeNull();
     expect(screen.getByText('The cursor stopped.')).toBeTruthy();
+  });
+
+  describe('result column sorting', () => {
+    const sortingState = (
+      overrides: Partial<NonNullable<SessionState['sorting']>> = {},
+    ): NonNullable<SessionState['sorting']> => ({
+      requestId: 1,
+      queryGeneration: 1,
+      fromRevision: 0,
+      requestedSort: { columnIndex: 0, direction: 'asc' },
+      phase: 'sorting',
+      rows: 0,
+      totalRows: 3,
+      message: 'Sorting all 3 rows…',
+      ...overrides,
+    });
+
+    it('reports query order and asks the controller to sort from a header', async () => {
+      const controller = new FakeController(readyState());
+      render(Workbench, { controller });
+
+      expect(screen.getByText('Query order')).toBeTruthy();
+      await fireEvent.click(screen.getByRole('button', { name: /^Sort record_id ascending$/u }));
+      expect(controller.sortResults).toHaveBeenCalledWith({ columnIndex: 0, direction: 'asc' });
+    });
+
+    it('names the committed order and clears it from the toolbar', async () => {
+      const state = readyState();
+      const controller = new FakeController({
+        ...state,
+        result: { ...state.result!, orderRevision: 1, sort: { columnIndex: 0, direction: 'asc' } },
+      });
+      render(Workbench, { controller });
+
+      expect(screen.getByText('Sorted by record_id ↑')).toBeTruthy();
+      await fireEvent.click(screen.getByRole('button', { name: 'Clear sort' }));
+      expect(controller.sortResults).toHaveBeenCalledWith(null);
+    });
+
+    it('keeps naming a hidden active column so the order is always explained', () => {
+      const state = readyState();
+      const controller = new FakeController({
+        ...state,
+        result: { ...state.result!, orderRevision: 1, sort: { columnIndex: 4, direction: 'desc' } },
+      });
+      render(Workbench, { controller });
+
+      expect(screen.getByText('Sorted by _src_start ↓')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Clear sort' })).toBeTruthy();
+    });
+
+    it('announces progress politely and offers to cancel while sorting', async () => {
+      const state = readyState();
+      const controller = new FakeController({ ...state, sorting: sortingState() });
+      render(Workbench, { controller });
+
+      const status = screen.getByRole('status', { name: 'Sort progress' });
+      expect(status.textContent).toContain('Sorting all 3 rows…');
+      await fireEvent.click(screen.getByRole('button', { name: 'Cancel sort' }));
+      expect(controller.cancelResultSort).toHaveBeenCalled();
+    });
+
+    it('raises a failed sort as an alert without disturbing the visible order', () => {
+      const state = readyState();
+      const controller = new FakeController({
+        ...state,
+        sorting: sortingState({ phase: 'failed', message: 'Local storage is full.' }),
+      });
+      render(Workbench, { controller });
+
+      expect(screen.getByRole('alert').textContent).toContain('Local storage is full.');
+      expect(screen.getByText('Query order')).toBeTruthy();
+    });
+
+    it('leaves the editor draft and the running query alone when sorting', async () => {
+      const controller = new FakeController(readyState());
+      render(Workbench, { controller });
+      const editor = screen.getByRole('textbox', { name: 'SQL query' });
+
+      await fireEvent.click(screen.getByRole('button', { name: /^Sort record_id ascending$/u }));
+
+      expect(controller.runQuery).not.toHaveBeenCalled();
+      expect(editor.textContent).toContain('select * from records');
+    });
+
+    it('does not remount the grid when only the committed order changes', async () => {
+      const state = readyState();
+      const controller = new FakeController(state);
+      const { container } = render(Workbench, { controller });
+      const grid = container.querySelector('[role="grid"]');
+
+      controller.publish({
+        ...state,
+        result: { ...state.result!, orderRevision: 1, sort: { columnIndex: 0, direction: 'asc' } },
+      });
+      await tick();
+
+      // The grid is keyed on the QUERY generation: a reorder is the same result, seen differently.
+      expect(container.querySelector('[role="grid"]')).toBe(grid);
+    });
   });
 });

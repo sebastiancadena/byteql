@@ -1,4 +1,4 @@
-import { resultSortEligibility, type ResultSort, type ResultSortCapability } from '@byteql/db';
+import type { ResultSort } from '@byteql/db';
 import type { Schema } from 'apache-arrow';
 
 import type { SessionState } from './state.js';
@@ -36,6 +36,22 @@ export function sortActionLabel(schema: Schema, current: ResultSort | null, colu
   return `Sort ${fieldLabel(schema, columnIndex)} ${next.direction === 'asc' ? 'ascending' : 'descending'}`;
 }
 
+/**
+ * Whether two schemas describe the same result.
+ *
+ * Compared structurally rather than by object identity: a cursor-backed result replaces its schema
+ * object as pages arrive, so identity would report a change where none happened, while a real
+ * change of field count, name, position or type is what actually matters.
+ */
+export function sameResultSchema(left: Schema, right: Schema): boolean {
+  if (left === right) return true;
+  if (left.fields.length !== right.fields.length) return false;
+  return left.fields.every((field, index) => {
+    const other = right.fields[index]!;
+    return field.name === other.name && field.type.toString() === other.type.toString();
+  });
+}
+
 /** Whether a sort is genuinely in flight. A failed operation is over, not running. */
 export function isResultSorting(state: SessionState): boolean {
   return state.sorting !== null && state.sorting.phase !== 'failed';
@@ -61,26 +77,4 @@ export function resultSortInteractionBlocked(state: SessionState): boolean {
   if (!state.resultIsCurrent || state.phase !== 'ready') return true;
   if (isResultSorting(state)) return true;
   return state.download !== null && ACTIVE_DOWNLOAD_PHASES.has(state.download.phase);
-}
-
-/**
- * Why a NEW sort cannot be started, or null when one can. Restoring the original order bypasses
- * these — it needs no storage, no ordering and no supported types, only the retained base — but it
- * still respects `resultSortInteractionBlocked`.
- */
-export function resultSortDisabledReason(
-  state: SessionState,
-  capability: ResultSortCapability,
-): string | null {
-  const result = state.result;
-  if (!result) return 'Run a query before sorting its results.';
-  if (result.pageError) {
-    return 'Load the remaining rows before sorting: sorting reorders the whole result.';
-  }
-  if (!capability.supported) return capability.reason;
-  if (result.complete && result.loadedRows <= 1) {
-    return 'There is nothing to sort: the result has one row or fewer.';
-  }
-  const eligibility = resultSortEligibility(result.schema);
-  return eligibility.supported ? null : eligibility.reason;
 }

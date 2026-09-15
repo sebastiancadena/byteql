@@ -51,7 +51,8 @@ import {
   type SourceFile,
 } from './state.js';
 import { readResultWindow } from './result-view.js';
-import { resultSortDisabledReason, resultSortInteractionBlocked } from './result-sort.js';
+import { resultSortDisabledReason } from './result-sort-availability.js';
+import { resultSortInteractionBlocked, sameResultSchema } from './result-sort.js';
 import { TIER_THRESHOLD_BYTES, chooseTier } from './tiering.js';
 
 export interface SessionControllerOptions {
@@ -439,7 +440,7 @@ export class SessionController {
       if (
         !current ||
         !first.complete ||
-        first.schema !== current.schema ||
+        !sameResultSchema(first.schema, current.schema) ||
         first.loadedRows !== current.loadedRows
       ) {
         throw new Error('The sorted result did not match the query result.');

@@ -2,6 +2,7 @@ import type { PackQuery, ParseIssue, ParseResult, TableOverview } from '@byteql/
 import type { ResultSort } from '@byteql/db';
 import type { Schema, Table } from 'apache-arrow';
 
+import { sameResultSchema } from './result-sort.js';
 import { RESULT_WINDOW_ROWS } from './result-window.js';
 import type { ExportState } from '../export/operation.js';
 
@@ -331,7 +332,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         event.fromRevision !== current.orderRevision ||
         next.orderRevision !== current.orderRevision + 1 ||
         next.generation !== current.generation ||
-        next.schema !== current.schema ||
+        !sameResultSchema(next.schema, current.schema) ||
         !next.complete ||
         next.loadedRows !== current.loadedRows ||
         !isValidPagedWindow(next) ||

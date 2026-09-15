@@ -1,6 +1,7 @@
 <script lang="ts">
   /* global HTMLDivElement, HTMLElement, KeyboardEvent */
 
+  import type { ResultSort } from '@byteql/db';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import type { Table } from 'apache-arrow';
   import { untrack } from 'svelte';
@@ -11,6 +12,7 @@
     scrollCompensation,
     visibleResultRange,
   } from '../lib/session/result-scroll.js';
+  import { nextResultSort, sortActionLabel } from '../lib/session/result-sort.js';
 
   interface Props {
     table: Table;
@@ -22,10 +24,17 @@
     pageErrorRetryable: boolean;
     selectedRow?: number | null;
     hiddenPrefix?: string;
+    /** Bumped only when a new display order is committed; drives the in-place reset below. */
+    orderRevision?: number;
+    sort?: ResultSort | null;
+    sortBusy?: boolean;
+    sortInteractionBlocked?: boolean;
+    sortDisabledReason?: string | null;
     onselect: (globalRow: number) => void;
     onloadmore: () => void;
     onloadwindow: (globalRow: number) => void;
     onretry: () => void;
+    onsort?: (sort: ResultSort | null) => void;
   }
 
   let {
@@ -38,10 +47,16 @@
     pageErrorRetryable,
     selectedRow = null,
     hiddenPrefix = '_',
+    orderRevision = 0,
+    sort = null,
+    sortBusy = false,
+    sortInteractionBlocked = false,
+    sortDisabledReason = null,
     onselect,
     onloadmore,
     onloadwindow,
     onretry,
+    onsort = () => undefined,
   }: Props = $props();
   let scrollElement = $state<HTMLDivElement | null>(null);
   let tailSentinel = $state<HTMLDivElement | null>(null);
@@ -59,6 +74,11 @@
    */
   let rebaseTop: number | null = null;
   let hasPreviousWindowStart = false;
+  /**
+   * The revision this grid has already reset for. Shared with the scroll-compensation effect so an
+   * order change never relies on which effect Svelte happens to run first.
+   */
+  let lastSeenRevision = untrack(() => orderRevision);
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: untrack(() => table.numRows),
     getScrollElement: () => scrollElement,
@@ -67,11 +87,17 @@
     initialRect: { width: 960, height: 360 },
   });
 
+  // `index` is the ORIGINAL schema position and survives hidden-field filtering: sorting and the
+  // aria column indexes both address columns by it, and duplicate names make it the only safe key.
   const columns = $derived(
     table.schema.fields
       .map((field, index) => ({ field, index }))
       .filter(({ field }) => showHidden || !field.name.startsWith(hiddenPrefix)),
   );
+  const sortHelpId = 'result-sort-help';
+  const sortUnavailable = $derived(sortDisabledReason !== null);
+  const headerBlocked = (index: number): boolean =>
+    sortInteractionBlocked || (nextResultSort(sort, index) !== null && sortUnavailable);
   const hiddenCount = $derived(
     table.schema.fields.filter((field) => field.name.startsWith(hiddenPrefix)).length,
   );
@@ -93,9 +119,51 @@
     untrack(() => $virtualizer.setOptions({ count, getScrollElement: () => element }));
   });
 
+  /**
+   * An order change replaces every row in place. The grid keeps its DOM, its mounted children and
+   * its horizontal scroll, but everything that describes a position in the previous order — the
+   * demand guard, the rebase anchor, the vertical offset — has to go.
+   */
+  $effect(() => {
+    const revision = orderRevision;
+    const element = scrollElement;
+    if (revision === lastSeenRevision) return;
+    lastSeenRevision = revision;
+    if (demandFrame !== null) globalThis.cancelAnimationFrame(demandFrame);
+    if (rebaseFrame !== null) globalThis.cancelAnimationFrame(rebaseFrame);
+    demandFrame = null;
+    rebaseFrame = null;
+    demandGuard = null;
+    rebaseTop = null;
+    demandSuppressed = true;
+    previousWindowStart = untrack(() => windowStart);
+    hasPreviousWindowStart = true;
+    const scrollLeft = element?.scrollLeft ?? 0;
+    untrack(() => {
+      $virtualizer.setOptions({ count: table.numRows, getScrollElement: () => element });
+      $virtualizer.scrollToOffset(0);
+    });
+    if (element) {
+      element.scrollTop = 0;
+      // Horizontal position is about which COLUMNS the reader is looking at, which a reorder does
+      // not change.
+      element.scrollLeft = scrollLeft;
+    }
+    globalThis.requestAnimationFrame(() => {
+      demandSuppressed = false;
+      scheduleDemandInspection();
+    });
+  });
+
   $effect(() => {
     const nextStart = windowStart;
     const element = scrollElement;
+    // The order-change effect above owns this transition; ordinary compensation would drag the
+    // viewport toward a row position that no longer means anything.
+    if (orderRevision !== lastSeenRevision) {
+      previousWindowStart = nextStart;
+      return;
+    }
     if (!hasPreviousWindowStart) {
       previousWindowStart = nextStart;
       hasPreviousWindowStart = true;
@@ -128,7 +196,7 @@
     const items = $virtualizer.getVirtualItems();
     const first = items[0];
     const last = items.at(-1);
-    if (!first || !last || loadingMore || pageError || demandSuppressed) return;
+    if (!first || !last || loadingMore || pageError || demandSuppressed || sortBusy) return;
     const physicalRange =
       scrollElement && scrollElement.clientHeight > 0
         ? visibleResultRange(scrollElement.scrollTop, scrollElement.clientHeight, table.numRows)
@@ -156,8 +224,13 @@
     const key = `${direction}:${windowStart + firstVisible}:${windowStart + lastVisible}`;
     if (demandGuard === key) return;
     demandGuard = key;
-    if (direction === 'forward') onloadmore();
-    else onloadwindow(windowStart - 1);
+    if (direction === 'forward') {
+      // Reading the next STORED window and fetching more cursor rows are different requests. A
+      // sorted result is complete from the moment it exists, yet most of it is still ahead.
+      const nextStoredRow = windowStart + table.numRows;
+      if (nextStoredRow < loadedRows) onloadwindow(nextStoredRow);
+      else if (!complete) onloadmore();
+    } else onloadwindow(windowStart - 1);
   }
 
   function inspectAfterScroll(): void {
@@ -191,7 +264,18 @@
 
   $effect(() => {
     const sentinel = tailSentinel;
-    if (!sentinel || complete || loadingMore || pageError || !globalThis.IntersectionObserver) return;
+    const atLoadedTail = windowStart + table.numRows >= loadedRows;
+    // A complete result whose window stops short of the loaded rows still has somewhere to go.
+    if (
+      !sentinel ||
+      (complete && atLoadedTail) ||
+      loadingMore ||
+      pageError ||
+      sortBusy ||
+      !globalThis.IntersectionObserver
+    ) {
+      return;
+    }
     const observer = new globalThis.IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) inspectDemand();
     });
@@ -218,6 +302,7 @@
   }
 
   function selectFromKeyboard(event: KeyboardEvent, localRow: number): void {
+    if (sortBusy) return;
     let next = localRow;
     if (event.key === 'ArrowDown') next = Math.min(table.numRows - 1, localRow + 1);
     else if (event.key === 'ArrowUp') next = Math.max(0, localRow - 1);
@@ -239,19 +324,47 @@
   aria-label="Query results"
   aria-rowcount={complete ? loadedRows + 1 : -1}
   aria-colcount={table.schema.fields.length}
-  aria-busy={loadingMore}
+  aria-busy={loadingMore || sortBusy}
 >
   <div class="grid-scroll" bind:this={scrollElement} onscroll={inspectAfterScroll}>
     <div class="grid-header" role="row" style:grid-template-columns={gridColumns}>
-      {#each columns as { field, index } (field.name)}
+      {#each columns as { field, index } (index)}
+        {@const active = sort?.columnIndex === index}
+        {@const blocked = headerBlocked(index)}
         <div
           role="columnheader"
           aria-colindex={index + 1}
+          aria-sort={active ? (sort!.direction === 'asc' ? 'ascending' : 'descending') : undefined}
           title={field.type.toString()}
           class:cell-numeric={numeric(field.type.toString())}
         >
-          <span>{field.name}</span>
-          <small>{field.type.toString()}</small>
+          <button
+            type="button"
+            class="result-sort-button"
+            data-column-index={index}
+            aria-label={sortActionLabel(table.schema, sort, index)}
+            aria-describedby={sortHelpId}
+            aria-disabled={blocked}
+            onclick={() => {
+              if (headerBlocked(index)) return;
+              onsort(nextResultSort(sort, index));
+            }}
+          >
+            <span>{field.name}</span>
+            <small>{field.type.toString()}</small>
+            <svg
+              width="12"
+              height="16"
+              viewBox="0 0 12 16"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              {#if !active || sort!.direction === 'asc'}<path d="M2 6 L6 2 L10 6" />{/if}
+              {#if !active || sort!.direction === 'desc'}<path d="M2 10 L6 14 L10 10" />{/if}
+            </svg>
+          </button>
         </div>
       {/each}
       {#if hiddenCount > 0}
@@ -280,10 +393,12 @@
           data-row-index={globalRow}
           style:grid-template-columns={gridColumns}
           style:transform={`translateY(${virtualRow.start}px)`}
-          onclick={() => onselect(globalRow)}
+          onclick={() => {
+            if (!sortBusy) onselect(globalRow);
+          }}
           onkeydown={(event) => selectFromKeyboard(event, virtualRow.index)}
         >
-          {#each columns as { field, index } (field.name)}
+          {#each columns as { field, index } (index)}
             {@const value = valueAt(virtualRow.index, index)}
             <div
               role="gridcell"
@@ -303,6 +418,11 @@
       <p class="grid-empty">No rows returned. Adjust the query and run again.</p>
     {/if}
 
+    <p id={sortHelpId} class="visually-hidden">
+      Activating a column header sorts every row of this result: ascending, then descending, then the original
+      query order.{sortDisabledReason ? ` ${sortDisabledReason}` : ''}
+    </p>
+
     <div bind:this={tailSentinel} class="result-sentinel" role="status">
       {#if pageError}
         <span>{pageError}</span>
@@ -312,6 +432,8 @@
       {:else if loadingMore}
         <span class="activity-spinner" aria-hidden="true"></span>
         <span>Loading more rows</span>
+      {:else if windowStart + table.numRows < loadedRows}
+        <span>More stored rows</span>
       {:else if complete}
         <span>End of result · {loadedRows.toLocaleString()} rows</span>
       {:else}

@@ -819,13 +819,87 @@
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-2);
+
+  /* The padding belongs to the button inside, so the whole header cell is the hit area rather
+     than a smaller target inset within it. */
+  padding: 0;
   border-right: 1px solid var(--color-border);
   color: var(--color-text);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   font-weight: 600;
   line-height: var(--leading-xs);
+}
+
+.result-sort-button {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2);
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.result-sort-button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The arrows carry the direction on their own, so the indicator does not depend on colour. */
+.result-sort-button svg {
+  flex: 0 0 12px;
+  align-self: center;
+  opacity: 0.45;
+}
+
+.result-sort-button:hover svg,
+[aria-sort] .result-sort-button svg {
+  opacity: 1;
+}
+
+.result-sort-button[aria-disabled='true'] {
+  color: var(--color-text-subtle);
+  cursor: default;
+}
+
+.result-sort-button[aria-disabled='true'] svg {
+  opacity: 0.25;
+}
+
+.result-sort-button:focus-visible {
+  outline: 2px solid currentcolor;
+  outline-offset: -2px;
+}
+
+/* Wraps rather than growing the toolbar, so the panel coordinator keeps measuring one height. */
+.result-sort-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: 0;
+  color: var(--color-text-subtle);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.result-sort-status p:empty {
+  display: none;
+}
+
+.result-sort-error {
+  color: var(--color-danger, var(--color-text));
+}
+
+.result-order {
+  white-space: nowrap;
 }
 
 .grid-header small {
