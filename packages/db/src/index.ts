@@ -13,6 +13,7 @@ export {
   ResultSortError,
   SORT_ORDINAL_COLUMN,
   type ResultSort,
+  type ResultSortCapability,
   type ResultSortEligibility,
   type ResultSortErrorCode,
   type ResultSortOptions,

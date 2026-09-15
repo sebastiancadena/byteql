@@ -1220,6 +1220,8 @@ export class SessionController {
       elapsedMs: status.elapsedMs,
       pageError: existing?.pageError ?? null,
       pageErrorRetryable: existing?.pageErrorRetryable ?? false,
+      orderRevision: existing?.orderRevision ?? 0,
+      sort: existing?.sort ?? null,
     };
   }
 

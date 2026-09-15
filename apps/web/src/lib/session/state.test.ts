@@ -2,7 +2,7 @@ import type { PackQuery, ParseIssue, TableOverview } from '@byteql/core';
 import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { initialSessionState, reduceSession, type PagedResultState } from './state.js';
+import { initialSessionState, reduceSession, type PagedResultState, type SessionState } from './state.js';
 import type { ExportState } from '../export/operation.js';
 
 const tables: readonly TableOverview[] = [{ name: 'events', rowCount: 1, columns: [] }];
@@ -38,6 +38,8 @@ const pagedResult: PagedResultState = {
   elapsedMs: 7,
   pageError: null,
   pageErrorRetryable: false,
+  orderRevision: 0,
+  sort: null,
 };
 
 describe('reduceSession', () => {
@@ -472,5 +474,194 @@ describe('byteRangeSelected', () => {
       source: { files: [{ name: 'b', size: 1 }], totalSize: 1 },
     });
     expect(state.byteSelection).toBeNull();
+  });
+});
+
+describe('committed result order', () => {
+  const complete = { ...pagedResult, complete: true, loadedRows: 1 } satisfies PagedResultState;
+
+  /** A session with a committed result at revision 2 and a sort request in flight. */
+  const sorting = (
+    overrides: Partial<PagedResultState> = {},
+    request: Partial<NonNullable<SessionState['sorting']>> = {},
+  ): SessionState => {
+    let state = reduceSession(initialSessionState, { type: 'queryStarted', sql: 'select 1' });
+    state = reduceSession(state, {
+      type: 'querySucceeded',
+      result: { ...complete, ...overrides },
+    });
+    state = reduceSession(state, { type: 'rowSelected', row: 0 });
+    state = {
+      ...state,
+      result: { ...state.result!, orderRevision: 2 },
+      byteSelection: { file: 'a.pcap', start: 0, end: 1 },
+    };
+    return reduceSession(state, {
+      type: 'resultSortUpdated',
+      queryGeneration: state.result!.generation,
+      requestId: 4,
+      sorting: {
+        requestId: 4,
+        queryGeneration: state.result!.generation,
+        fromRevision: 2,
+        requestedSort: { columnIndex: 0, direction: 'asc' },
+        phase: 'staging',
+        rows: 0,
+        totalRows: 1,
+        message: 'Preparing sort…',
+        ...request,
+      },
+    });
+  };
+
+  it('starts a new result in original query order and marks it current', () => {
+    const state = reduceSession(initialSessionState, { type: 'querySucceeded', result: complete });
+    expect(state.result).toMatchObject({ orderRevision: 0, sort: null });
+    expect(state.resultIsCurrent).toBe(true);
+    expect(state.sorting).toBeNull();
+  });
+
+  it('rejects a window read against a superseded order even when its counts match', () => {
+    const current = sorting();
+    const stale = { ...current.result!, orderRevision: 1 };
+    expect(reduceSession(current, { type: 'queryWindowUpdated', result: stale })).toBe(current);
+  });
+
+  it('commits the next revision, clearing the selected row and its byte range', () => {
+    const current = sorting();
+    const committed = reduceSession(current, {
+      type: 'resultOrderCommitted',
+      queryGeneration: current.result!.generation,
+      requestId: current.sorting!.requestId,
+      fromRevision: 2,
+      result: {
+        ...current.result!,
+        orderRevision: 3,
+        sort: { columnIndex: 0, direction: 'asc' },
+        windowStart: 0,
+        complete: true,
+        loadingMore: false,
+      },
+    });
+    expect(committed.selectedRow).toBeNull();
+    expect(committed.byteSelection).toBeNull();
+    expect(committed.result!.orderRevision).toBe(3);
+    expect(committed.result!.sort).toEqual({ columnIndex: 0, direction: 'asc' });
+    expect(committed.sorting).toBeNull();
+  });
+
+  it.each([
+    ['a revision that skips one', { orderRevision: 4 }],
+    ['a revision that stands still', { orderRevision: 2 }],
+    ['a result that is not complete', { orderRevision: 3, complete: false }],
+    ['a row count that changed', { orderRevision: 3, loadedRows: 2 }],
+    [
+      'a column index outside the schema',
+      { orderRevision: 3, sort: { columnIndex: 9, direction: 'asc' as const } },
+    ],
+    ['an unknown direction', { orderRevision: 3, sort: { columnIndex: 0, direction: 'sideways' as 'asc' } }],
+  ])('refuses to commit %s', (_label, overrides) => {
+    const current = sorting();
+    expect(
+      reduceSession(current, {
+        type: 'resultOrderCommitted',
+        queryGeneration: current.result!.generation,
+        requestId: current.sorting!.requestId,
+        fromRevision: 2,
+        result: { ...current.result!, ...overrides },
+      }),
+    ).toBe(current);
+  });
+
+  it('refuses a commit for a request that is not the one in flight', () => {
+    const current = sorting();
+    expect(
+      reduceSession(current, {
+        type: 'resultOrderCommitted',
+        queryGeneration: current.result!.generation,
+        requestId: 3,
+        fromRevision: 2,
+        result: { ...current.result!, orderRevision: 3 },
+      }),
+    ).toBe(current);
+  });
+
+  it('ignores a delayed start or progress report from an older request', () => {
+    const current = sorting();
+    const stale = reduceSession(current, {
+      type: 'resultSortUpdated',
+      queryGeneration: current.result!.generation,
+      requestId: 3,
+      sorting: { ...current.sorting!, requestId: 3, phase: 'loading', message: 'stale' },
+    });
+    expect(stale.sorting!.requestId).toBe(4);
+    expect(stale.sorting!.message).toBe('Preparing sort…');
+  });
+
+  it('lets a newer request replace one that failed', () => {
+    const failed = sorting({}, { phase: 'failed', message: 'could not sort' });
+    const replaced = reduceSession(failed, {
+      type: 'resultSortUpdated',
+      queryGeneration: failed.result!.generation,
+      requestId: 5,
+      sorting: { ...failed.sorting!, requestId: 5, phase: 'staging', message: 'Preparing sort…' },
+    });
+    expect(replaced.sorting).toMatchObject({ requestId: 5, phase: 'staging' });
+  });
+
+  it('ends only the operation that is actually in flight', () => {
+    const current = sorting();
+    expect(
+      reduceSession(current, {
+        type: 'resultSortEnded',
+        queryGeneration: current.result!.generation,
+        requestId: 3,
+      }).sorting,
+    ).not.toBeNull();
+    expect(
+      reduceSession(current, {
+        type: 'resultSortEnded',
+        queryGeneration: current.result!.generation,
+        requestId: 4,
+      }).sorting,
+    ).toBeNull();
+  });
+
+  it('keeps a previous result visible after a failed query, but no longer current', () => {
+    let state = reduceSession(initialSessionState, { type: 'querySucceeded', result: complete });
+    state = reduceSession(state, { type: 'queryStarted', sql: 'select bad' });
+    state = reduceSession(state, { type: 'queryFailed', message: 'syntax error' });
+    expect(state.result).not.toBeNull();
+    expect(state.resultIsCurrent).toBe(false);
+    expect(state.sorting).toBeNull();
+  });
+
+  it('marks the displayed family unavailable, and ignores a closure aimed at an older one', () => {
+    const current = sorting();
+    expect(
+      reduceSession(current, {
+        type: 'resultUnavailable',
+        queryGeneration: current.result!.generation,
+      }),
+    ).toMatchObject({ resultIsCurrent: false, sorting: null });
+    expect(reduceSession(current, { type: 'resultUnavailable', queryGeneration: 999 })).toBe(current);
+  });
+
+  it('clears a pending sort whenever the session moves on', () => {
+    const current = sorting();
+    for (const event of [
+      { type: 'queryStarted', sql: 'select 2' },
+      { type: 'cancelled' },
+      { type: 'failed', message: 'boom' },
+      { type: 'querySucceeded', result: complete },
+    ] as const) {
+      expect(reduceSession(current, event).sorting).toBeNull();
+    }
+    expect(
+      reduceSession(current, {
+        type: 'opening',
+        source: { files: [{ name: 'b', size: 1 }], totalSize: 1 },
+      }).sorting,
+    ).toBeNull();
   });
 });

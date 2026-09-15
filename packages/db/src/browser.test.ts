@@ -1381,6 +1381,22 @@ describe('createBrowserDatabase', () => {
       expect(sortMocks.writeSortedResult).not.toHaveBeenCalled();
     });
 
+    it('reports why sorting is unavailable before any result exists', async () => {
+      const database = await createBrowserDatabase({ spillSupported: true });
+      expect(database.resultSortCapability()).toEqual({ supported: true });
+
+      duckdbMocks.selectBundle.mockResolvedValue({
+        mainModule: '/assets/duckdb-mvp.wasm',
+        mainWorker: '/assets/duckdb-browser-mvp.worker.js',
+        pthreadWorker: null,
+      });
+      const legacy = await createBrowserDatabase({ spillSupported: true });
+      expect(legacy.resultSortCapability()).toMatchObject({ supported: false });
+
+      const withoutStorage = await createBrowserDatabase({ spillSupported: false });
+      expect(withoutStorage.resultSortCapability()).toMatchObject({ supported: false });
+    });
+
     it('refuses to sort on a runtime whose parquet ordering cannot be trusted', async () => {
       duckdbMocks.selectBundle.mockResolvedValue({
         mainModule: '/assets/duckdb-mvp.wasm',

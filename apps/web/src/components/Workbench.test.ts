@@ -125,6 +125,8 @@ const pagedResult = (
   elapsedMs: 4.2,
   pageError: null,
   pageErrorRetryable: false,
+  orderRevision: 0,
+  sort: null,
   ...overrides,
 });
 
@@ -170,6 +172,8 @@ const readyState = (): SessionState => ({
   fatalError: null,
   byteSelection: null,
   download: null,
+  sorting: null,
+  resultIsCurrent: true,
 });
 
 class FakeController {

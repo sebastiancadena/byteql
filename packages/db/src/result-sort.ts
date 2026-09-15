@@ -50,6 +50,10 @@ export const SORT_UNAVAILABLE_RUNTIME =
  */
 export const resultSortRuntimeSupported = (mainModule: string): boolean => !mainModule.includes('mvp');
 
+/** Whether this browser and runtime can sort results at all, with the reason when they cannot. */
+export type ResultSortCapability =
+  { readonly supported: true } | { readonly supported: false; readonly reason: string };
+
 export type ResultSortEligibility =
   { readonly supported: true } | { readonly supported: false; readonly reason: string };
 

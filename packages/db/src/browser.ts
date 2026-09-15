@@ -45,6 +45,7 @@ import {
   resultSortRuntimeSupported,
   SORT_UNAVAILABLE_RUNTIME,
   SORT_UNAVAILABLE_STORAGE,
+  type ResultSortCapability,
   type ResultSortOptions,
 } from './result-sort.js';
 import { createExportFiles } from './export-files.js';
@@ -1140,6 +1141,17 @@ class BrowserDatabase implements ByteqlDatabase {
       return this.activeQuery.cancel();
     }
     return false;
+  }
+
+  resultSortCapability(): ResultSortCapability {
+    if (!resultSortRuntimeSupported(this.bundle.mainModule)) {
+      return { supported: false, reason: SORT_UNAVAILABLE_RUNTIME };
+    }
+    // The same origin-private file system the spill tier needs also holds snapshot shards.
+    if (!this.spillSupported) {
+      return { supported: false, reason: SORT_UNAVAILABLE_STORAGE };
+    }
+    return { supported: true };
   }
 
   createSortedView(base: QuerySession, options: ResultSortOptions): Promise<QueryResultView> {

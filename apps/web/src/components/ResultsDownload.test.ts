@@ -33,6 +33,8 @@ const resultState = (overrides: Partial<NonNullable<SessionState['result']>> = {
   elapsedMs: 1,
   pageError: null,
   pageErrorRetryable: false,
+  orderRevision: 0,
+  sort: null,
   ...overrides,
 });
 

@@ -2,7 +2,7 @@ import type { TableSchema } from '@byteql/core';
 import type { Schema, Table } from 'apache-arrow';
 
 import type { ParquetArtifact, ParquetExportOptions } from './export-types.js';
-import type { ResultSortOptions } from './result-sort.js';
+import type { ResultSortCapability, ResultSortOptions } from './result-sort.js';
 
 export const QUERY_INITIAL_ROWS = 1_024;
 export const QUERY_PAGE_ROWS = 8_192;
@@ -120,6 +120,12 @@ export interface ByteqlDatabase {
    * the base is retired.
    */
   createSortedView(base: QuerySession, options: ResultSortOptions): Promise<QueryResultView>;
+  /**
+   * Whether sorting is possible here at all, independently of any particular result: it needs
+   * local storage for snapshot shards and a runtime whose ordering can be trusted. Reported up
+   * front so the UI can explain itself rather than offering an action that always fails.
+   */
+  resultSortCapability(): ResultSortCapability;
   exportParquet(result: QueryResultView, options: ParquetExportOptions): Promise<ParquetArtifact>;
   cancelQuery(): Promise<boolean>;
   listTables(): Promise<readonly string[]>;

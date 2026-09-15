@@ -435,6 +435,7 @@ const fakeDatabase = (): {
     }),
     exportParquet: vi.fn(),
     createSortedView: vi.fn(),
+    resultSortCapability: vi.fn(() => ({ supported: true as const })),
     cancelQuery: vi.fn().mockResolvedValue(false),
     listTables: vi.fn().mockResolvedValue([]),
     collectFileStatistics: vi.fn().mockResolvedValue(undefined),
