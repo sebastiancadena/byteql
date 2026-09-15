@@ -2,6 +2,10 @@ import type { TableSchema } from '@byteql/core';
 import { Table } from 'apache-arrow';
 import {
   Int32 as DuckdbInt32,
+  Field as DuckdbField,
+  Schema as DuckdbSchema,
+  Struct as DuckdbStruct,
+  makeData as duckdbMakeData,
   RecordBatch as DuckdbRecordBatch,
   RecordBatchStreamWriter as DuckdbRecordBatchStreamWriter,
   Table as DuckdbTable,
@@ -105,6 +109,7 @@ vi.mock('./query-pages.js', async (importOriginal) => {
 });
 
 import { createBrowserDatabase } from './browser.js';
+import { resultColumnLabel } from './result-columns.js';
 import { ResultSortError, type ResultSortOptions } from './result-sort.js';
 import type { ResultSortDependencies } from './sort-result.js';
 import type { QueryResultView } from './types.js';
@@ -168,6 +173,43 @@ const batchReader = (tables: readonly DuckdbTable[]) => {
     },
   };
 };
+
+function rawDuplicateResult(start: number, rows: number) {
+  const schema = new DuckdbSchema([
+    new DuckdbField('dup', new DuckdbInt32(), true),
+    new DuckdbField('dup', new DuckdbUtf8(), true),
+  ]);
+  const children = [
+    duckdbVectorFromArray(
+      Array.from({ length: rows }, (_, i) => start + i),
+      new DuckdbInt32(),
+    ).data[0]!,
+    duckdbVectorFromArray(
+      Array.from({ length: rows }, (_, i) => `v${start + i}`),
+      new DuckdbUtf8(),
+    ).data[0]!,
+  ];
+  return {
+    schema,
+    batch: new DuckdbRecordBatch(
+      schema,
+      duckdbMakeData({ type: new DuckdbStruct(schema.fields), length: rows, children }),
+    ),
+  };
+}
+
+function rawResultReader(schema: DuckdbSchema, batches: readonly DuckdbRecordBatch[]) {
+  let index = 0;
+  const iterator = {
+    next: vi.fn(async () =>
+      index < batches.length
+        ? { done: false as const, value: batches[index++]! }
+        : { done: true as const, value: undefined },
+    ),
+    return: vi.fn(async () => ({ done: true as const, value: undefined })),
+  };
+  return { schema, iterator, [Symbol.asyncIterator]: () => iterator };
+}
 
 class FakeQueryPagePersistence implements QueryPagePersistence {
   readonly files = new Map<number, Uint8Array>();
@@ -431,11 +473,136 @@ describe('createBrowserDatabase', () => {
 
     const second = await session.fetchNext(8_192);
     expect(second).toMatchObject({ index: 1, startRow: 1_024, rowCount: 376 });
-    expect(Array.from(second!.table.getChild('value')!.toArray())).toEqual(
+    expect(Array.from(second!.table.getChildAt(0)!.toArray())).toEqual(
       Array.from({ length: 376 }, (_, index) => index + 1_024),
     );
     expect(session.status()).toMatchObject({ loadedRows: 1_400, complete: true, sendCount: 1 });
     expect(duckdbMocks.connection.send).toHaveBeenCalledExactlyOnceWith('select * from events');
+  });
+
+  it.each([[2_501], [1_024, 0, 1_477]])(
+    'normalizes mixed duplicate batches before the initial split and lookahead: %j',
+    async (...lengths: number[]) => {
+      let start = 0;
+      const results = lengths.map((length) => {
+        const result = rawDuplicateResult(start, length);
+        start += length;
+        return result;
+      });
+      const reader = rawResultReader(
+        results[0]!.schema,
+        results.map((result) => result.batch),
+      );
+      duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+      const database = await createBrowserDatabase();
+      const session = await database.startQuery('select mixed duplicates');
+      const first = await session.fetchNext(1_024);
+      const second = await session.fetchNext(8_192);
+      expect([first!.rowCount, second!.rowCount]).toEqual([1_024, 1_477]);
+      for (const page of [first!, second!]) {
+        expect(
+          page.table.schema.fields.map((field) => [field.name, resultColumnLabel(field), String(field.type)]),
+        ).toEqual([
+          ['c0', 'dup', 'Int32'],
+          ['c1', 'dup', 'Utf8'],
+        ]);
+        expect(Array.from(page.table.getChildAt(0)!)).toEqual(
+          Array.from({ length: page.rowCount }, (_, i) => page.startRow + i),
+        );
+        expect(Array.from(page.table.getChildAt(1)!)).toEqual(
+          Array.from({ length: page.rowCount }, (_, i) => `v${page.startRow + i}`),
+        );
+      }
+      expect(session.status()).toMatchObject({ loadedRows: 2_501, complete: true, sendCount: 1 });
+      expect(duckdbMocks.connection.send).toHaveBeenCalledExactlyOnceWith('select mixed duplicates');
+      await session.dispose();
+    },
+  );
+
+  it.each([false, true])(
+    'keeps empty mixed duplicate schema with a provisional cursor: %s',
+    async (provisional) => {
+      const result = rawDuplicateResult(0, 0);
+      const reader = rawResultReader(provisional ? new DuckdbSchema() : result.schema, [result.batch]);
+      duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+      const database = await createBrowserDatabase();
+      const session = await database.startQuery('select mixed duplicates where false');
+      await expect(session.fetchNext()).resolves.toBeNull();
+      expect(
+        session.schema.fields.map((field) => [field.name, resultColumnLabel(field), String(field.type)]),
+      ).toEqual([
+        ['c0', 'dup', 'Int32'],
+        ['c1', 'dup', 'Utf8'],
+      ]);
+      expect(session.status()).toMatchObject({ loadedRows: 0, complete: true, sendCount: 1 });
+      expect(session.pages()).toEqual([]);
+      await session.dispose();
+    },
+  );
+
+  it('cancels a normalized duplicate remainder without publishing it or resending SQL', async () => {
+    const result = rawDuplicateResult(0, 2_000);
+    const reader = rawResultReader(result.schema, [result.batch]);
+    const persistence = new FakeQueryPagePersistence();
+    createQueryPagePersistenceMock.mockResolvedValueOnce(persistence);
+    duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select duplicate remainder');
+    expect((await session.fetchNext(1_024))!.table.getChildAt(1)!.get(1_023)).toBe('v1023');
+    await session.cancel();
+    await expect(session.fetchNext()).rejects.toThrow('closed');
+    expect(reader.iterator.next).toHaveBeenCalledOnce();
+    expect(reader.iterator.return).toHaveBeenCalledOnce();
+    expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
+    expect(duckdbMocks.connection.send).toHaveBeenCalledOnce();
+    expect(persistence.disposeCalls).toBe(1);
+    await session.dispose();
+  });
+
+  it.each(['count', 'type'])(
+    'terminalizes a raw cursor schema %s mismatch without publishing or rerunning',
+    async (mismatch) => {
+      const result = rawDuplicateResult(0, 1);
+      const source =
+        mismatch === 'count'
+          ? new DuckdbSchema([result.schema.fields[0]!])
+          : new DuckdbSchema([new DuckdbField('dup', new DuckdbUtf8(), true), result.schema.fields[1]!]);
+      const reader = rawResultReader(source, [result.batch]);
+      duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+      const database = await createBrowserDatabase();
+      const session = await database.startQuery('select malformed result');
+      await expect(session.fetchNext()).rejects.toThrow(/column count|type.*column 0/i);
+      await expect(session.fetchNext()).rejects.toThrow('terminal failure');
+      expect(session.pages()).toEqual([]);
+      expect(session.status()).toMatchObject({ loadedRows: 0, complete: false });
+      expect(reader.iterator.return).toHaveBeenCalledOnce();
+      expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
+      expect(duckdbMocks.connection.send).toHaveBeenCalledOnce();
+      await session.dispose();
+    },
+  );
+
+  it('rejects changed positional types during lookahead even when the reader updates its schema', async () => {
+    const first = rawDuplicateResult(0, 1_024);
+    const second = new DuckdbTable({
+      dup: duckdbVectorFromArray([42], new DuckdbInt32()),
+      other: duckdbVectorFromArray([43], new DuckdbInt32()),
+    });
+    const reader = rawResultReader(first.schema, [first.batch, second.batches[0]!]);
+    const next = reader.iterator.next.getMockImplementation()!;
+    reader.iterator.next.mockImplementation(async () => {
+      const result = await next();
+      if (!result.done && result.value === second.batches[0]) reader.schema = second.schema;
+      return result;
+    });
+    duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select changing types');
+    await expect(session.fetchNext(1_024)).rejects.toThrow('Result schema changed');
+    expect(session.pages()).toEqual([]);
+    expect(reader.iterator.return).toHaveBeenCalledOnce();
+    expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
+    await session.dispose();
   });
 
   it('detects EOF immediately when 1,024 rows exactly fill the initial page', async () => {
@@ -475,10 +642,9 @@ describe('createBrowserDatabase', () => {
     const [first, second] = await Promise.all([session.fetchNext(2), session.fetchNext(2)]);
 
     expect([first!.startRow, second!.startRow]).toEqual([0, 2]);
-    expect([
-      ...first!.table.getChild('value')!.toArray(),
-      ...second!.table.getChild('value')!.toArray(),
-    ]).toEqual([0, 1, 2, 3]);
+    expect([...first!.table.getChildAt(0)!.toArray(), ...second!.table.getChildAt(0)!.toArray()]).toEqual([
+      0, 1, 2, 3,
+    ]);
     expect(duckdbMocks.connection.send).toHaveBeenCalledOnce();
   });
 
@@ -505,7 +671,8 @@ describe('createBrowserDatabase', () => {
 
     expect(session.schema.fields).toEqual([]);
     await expect(session.fetchNext()).resolves.toBeNull();
-    expect(session.schema.fields.map(({ name, type }) => [name, type.toString()])).toEqual([
+    expect(session.schema.fields.map((field) => field.name)).toEqual(['c0']);
+    expect(session.schema.fields.map((field) => [resultColumnLabel(field), field.type.toString()])).toEqual([
       ['value', 'Int32'],
     ]);
     expect(session.pages()).toEqual([]);
@@ -541,7 +708,8 @@ describe('createBrowserDatabase', () => {
 
     expect(session.schema.fields).toEqual([]);
     await expect(session.fetchNext(2)).resolves.toMatchObject({ rowCount: 2 });
-    expect(session.schema.fields.map(({ name, type }) => [name, type.toString()])).toEqual([
+    expect(session.schema.fields.map((field) => field.name)).toEqual(['c0']);
+    expect(session.schema.fields.map((field) => [resultColumnLabel(field), field.type.toString()])).toEqual([
       ['value', 'Int32'],
     ]);
   });
@@ -714,7 +882,7 @@ describe('createBrowserDatabase', () => {
 
     const page = await session.retryPending();
     expect(page).toMatchObject({ index: 0, startRow: 0, rowCount: 2 });
-    expect(Array.from(page.table.getChild('value')!.toArray())).toEqual([10, 11]);
+    expect(Array.from(page.table.getChildAt(0)!.toArray())).toEqual([10, 11]);
     expect(session.pages()).toEqual([{ index: 0, startRow: 0, rowCount: 2 }]);
     expect(session.status()).toMatchObject({ loadedRows: 2, complete: true, elapsedMs: 6.25 });
     expect(persistence.writes).toEqual([0, 0]);
@@ -746,7 +914,7 @@ describe('createBrowserDatabase', () => {
     await expect(session.fetchNext()).rejects.toThrow('cursor exploded');
 
     expect(session.status()).toMatchObject({ loadedRows: 2, complete: false });
-    expect(Array.from((await session.readPage(0)).table.getChild('value')!.toArray())).toEqual([40, 41]);
+    expect(Array.from((await session.readPage(0)).table.getChildAt(0)!.toArray())).toEqual([40, 41]);
     await expect(session.fetchNext()).rejects.toThrow('terminal failure');
     await expect(session.retryPending()).rejects.toThrow('terminal failure');
     expect(iterator.pulls).toBe(2);
@@ -845,9 +1013,9 @@ describe('createBrowserDatabase', () => {
     expect(await session.materialize()).toBeNull();
     await session.fetchNext(2);
     session.pinPages([1]);
-    expect(Array.from((await session.readPage(0)).table.getChild('value')!.toArray())).toEqual([0, 1]);
+    expect(Array.from((await session.readPage(0)).table.getChildAt(0)!.toArray())).toEqual([0, 1]);
     expect(await session.materialize(0)).toBeNull();
-    expect(Array.from((await session.materialize())!.getChild('value')!.toArray())).toEqual([0, 1, 2]);
+    expect(Array.from((await session.materialize())!.getChildAt(0)!.toArray())).toEqual([0, 1, 2]);
   });
 
   it('cancels and closes the active cursor before a replacement query', async () => {
@@ -976,7 +1144,7 @@ describe('createBrowserDatabase', () => {
     const page = await second.fetchNext(2);
 
     expect(page).toMatchObject({ index: 0, startRow: 0, rowCount: 1 });
-    expect(Array.from(page!.table.getChild('value')!.toArray())).toEqual([100]);
+    expect(Array.from(page!.table.getChildAt(0)!.toArray())).toEqual([100]);
     expect(second.status()).toMatchObject({ loadedRows: 1, complete: true });
   });
 
@@ -999,7 +1167,7 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.connection.cancelSent).toHaveBeenCalledOnce();
     expect(persistence.disposeCalls).toBe(1);
     const replacement = await database.startQuery('select 5');
-    expect((await replacement.fetchNext(2))!.table.getChild('value')!.get(0)).toBe(5);
+    expect((await replacement.fetchNext(2))!.table.getChildAt(0)!.get(0)).toBe(5);
   });
 
   it('discards a session acquired while database disposal waits for query startup', async () => {

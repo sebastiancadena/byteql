@@ -1,10 +1,12 @@
 import {
   probeSpillCapability,
   probeResultSort,
+  probeResultColumns,
   probeResultsExport,
   readExportArtifact,
   type ExportProbeReport,
   type ResultSortProbeReport,
+  type ResultColumnsProbeReport,
   type ExportArtifactInput,
   type ExportArtifactReadback,
   type ByteqlDatabase,
@@ -51,6 +53,7 @@ export interface BrowserE2EControl {
   spillProbe: () => Promise<SpillProbeReport>;
   probeResultsExport: (variant: 'mvp' | 'eh', rows: number) => Promise<ExportProbeReport>;
   probeResultSort: (variant: 'mvp' | 'eh') => Promise<ResultSortProbeReport>;
+  probeResultColumns: (variant: 'mvp' | 'eh') => Promise<ResultColumnsProbeReport>;
   /**
    * Plain data spread into `SessionControllerOptions` by App.svelte when it constructs the
    * `SessionController` — e2e-build only. Empty by default so e2e specs exercise the same
@@ -264,6 +267,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       spillProbe: () => probeSpillCapability(),
       probeResultsExport,
       probeResultSort,
+      probeResultColumns,
       // App.svelte spreads this into `SessionControllerOptions` at controller construction
       // time, on app boot — well before any `page.evaluate()` a spec runs after `page.goto()`
       // could reach it. A spec that needs non-default tiering thresholds must instead set

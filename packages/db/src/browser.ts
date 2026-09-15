@@ -15,9 +15,19 @@ import duckdbMvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.
 import duckdbMvpWasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
 import type { TableSchema } from '@byteql/core';
 import { tableFromIPC, type Schema, type Table } from 'apache-arrow';
-import type { RecordBatch as DuckdbRecordBatch, Schema as DuckdbSchema } from 'apache-arrow-duckdb';
+import {
+  util as duckdbUtil,
+  type RecordBatch as DuckdbRecordBatch,
+  type Schema as DuckdbSchema,
+} from 'apache-arrow-duckdb';
 
 import { convertDuckdbTable } from './arrow-bridge.js';
+import {
+  normalizeDuckdbResultBatch,
+  normalizeDuckdbResultSchema,
+  sameDuckdbResultType,
+} from './result-arrow.js';
+import { RESULT_LABEL_METADATA_KEY } from './result-columns.js';
 import type {
   ByteqlDatabase,
   FileStatisticsSummary,
@@ -592,6 +602,7 @@ class QuerySessionImpl implements QuerySession {
     private readonly onDisposed: () => void,
     private readonly sendCount: () => number,
     schema: Schema,
+    private normalizedSchema: DuckdbSchema,
   ) {
     this.resultSchema = schema;
     this.elapsedMs = performance.now() - startedAt;
@@ -610,7 +621,8 @@ class QuerySessionImpl implements QuerySession {
     onDisposed: () => void,
     sendCount: () => number,
   ): Promise<QuerySessionImpl> {
-    const schemaTable = await convertDuckdbTable(readSchema(), []);
+    const normalizedSchema = normalizeDuckdbResultSchema(readSchema());
+    const schemaTable = await convertDuckdbTable(normalizedSchema, []);
     return new QuerySessionImpl(
       readSchema,
       iterator,
@@ -620,6 +632,7 @@ class QuerySessionImpl implements QuerySession {
       onDisposed,
       sendCount,
       schemaTable.schema,
+      normalizedSchema,
     );
   }
 
@@ -666,7 +679,7 @@ class QuerySessionImpl implements QuerySession {
               eof = true;
               break;
             }
-            batch = next.value;
+            batch = this.normalizeBatch(next.value);
           }
 
           if (batch.numRows === 0) {
@@ -702,24 +715,25 @@ class QuerySessionImpl implements QuerySession {
               eof = true;
               break;
             }
-            if (next.value.numRows === 0) continue;
-            this.remainder = next.value;
+            const batch = this.normalizeBatch(next.value);
+            if (batch.numRows === 0) continue;
+            this.remainder = batch;
             break;
           }
         }
 
         if (rowCount === 0) {
           if (eof) {
-            const eofSchema = (await convertDuckdbTable(this.readSchema(), [])).schema;
-            if (eofSchema.fields.length > 0 || this.resultSchema.fields.length === 0) {
-              this.resultSchema = eofSchema;
+            if (this.normalizedSchema.fields.length === 0) {
+              this.normalizedSchema = normalizeDuckdbResultSchema(this.readSchema());
             }
+            this.resultSchema = (await convertDuckdbTable(this.normalizedSchema, [])).schema;
             this.finish();
           }
           return null;
         }
 
-        const table = await convertDuckdbTable(this.readSchema(), batches);
+        const table = await convertDuckdbTable(this.normalizedSchema, batches);
         this.resultSchema = table.schema;
         this.assertDemandOpen();
         const stored = await this.store.put(this.summaries.length, this.loadedRows, table);
@@ -738,6 +752,25 @@ class QuerySessionImpl implements QuerySession {
         throw error;
       }
     });
+  }
+
+  /** Normalize only newly received batches; stored remainders already have positional names. */
+  private normalizeBatch(raw: DuckdbRecordBatch): DuckdbRecordBatch {
+    const batch = normalizeDuckdbResultBatch(raw, this.readSchema());
+    if (
+      this.normalizedSchema.fields.length > 0 &&
+      (!duckdbUtil.compareSchemas(this.normalizedSchema, batch.schema) ||
+        this.normalizedSchema.fields.some(
+          (field, index) =>
+            !sameDuckdbResultType(field.type, batch.schema.fields[index]!.type) ||
+            field.metadata.get(RESULT_LABEL_METADATA_KEY) !==
+              batch.schema.fields[index]!.metadata.get(RESULT_LABEL_METADATA_KEY),
+        ))
+    ) {
+      throw new Error('Result schema changed between cursor batches.');
+    }
+    this.normalizedSchema = batch.schema;
+    return batch;
   }
 
   retryPending(): Promise<QueryPage> {

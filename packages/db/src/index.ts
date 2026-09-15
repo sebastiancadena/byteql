@@ -62,3 +62,4 @@ export type {
   TableSummary,
 } from './types.js';
 export { QUERY_INITIAL_ROWS, QUERY_PAGE_ROWS } from './types.js';
+export { probeResultColumns, type ResultColumnsProbeReport } from './result-columns-probe.js';
