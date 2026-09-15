@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./result-columns": {
+      "types": "./dist/result-columns.d.ts",
+      "default": "./dist/result-columns.js"
     }
   },
   "scripts": {

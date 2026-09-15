@@ -20,6 +20,13 @@ export {
   type ResultSortProgress,
 } from './result-sort.js';
 export { restoreResultSchema, snapshotPage } from './result-snapshot.js';
+export {
+  parquetColumnNames,
+  RESULT_LABEL_METADATA_KEY,
+  resultColumnIndex,
+  resultColumnLabel,
+  type ParquetColumnName,
+} from './result-columns.js';
 export { convertDuckdbTable } from './arrow-bridge.js';
 export { StoredResultView } from './stored-result-view.js';
 export { writeSortedResult, type ResultSortDependencies } from './sort-result.js';
