@@ -78,31 +78,74 @@ On `mvp`, DuckDB errors surface as `ReferenceError: _setThrew is not defined` ra
 message. That masking is pre-existing and unrelated — the passing Parquet export probe records the
 identical string today.
 
-## Limitation: duplicate output column names (pre-existing, not sort-specific)
+## Duplicate output column names
 
-A query whose result has two columns of the same name — `select 10 as dup, 'ten' as dup` — **already
-fails on `main`**, before this feature, with:
+Design record:
+[Duplicate result-column correctness](superpowers/specs/2026-09-15-duplicate-result-columns-design.md).
+
+### The failure this replaced
+
+A query whose result had two columns of the same name — `select 10 as dup, 'ten' as dup` — **failed
+outright** when the sorting work was measured on 2026-09-14, with:
 
 ```text
 Cannot destructure property 'length' of '(intermediate value)(intermediate value)(intermediate value)' as it is undefined.
 ```
 
 Cause: Arrow's `Schema.assign` matches fields **by name**, and every `RecordBatch` construction —
-including the IPC reader and writer — routes through it. A duplicate-named schema therefore has its
+including the IPC reader and writer — routes through it. A duplicate-named schema therefore had its
 declared types collapsed onto the last duplicate's type, and the Arrow 17 → 21 bridge in
-`convertDuckdbTable` then rejects the mismatched batch. Child vectors keep their true types
-throughout; only the declared field type is wrong.
+`convertDuckdbTable` then rejected the mismatched batch. Child vectors kept their true types
+throughout; only the declared field type was wrong.
 
-Consequences for sorting:
+### Measured behavior now
 
-- No duplicate-named result can reach the sort path, because no such result exists to sort. The
-  probe's fixtures therefore cover hostile and quote-bearing aliases but not duplicate ones.
+Every top-level result column is given a unique physical Arrow name (`c0`, `c1`, …) at the query
+cursor, carrying its SQL label in field metadata (`byteql:result-label:v1`). Arrow operations see
+unique names; everything a user reads goes through the label helper.
+
+Re-measure with:
+
+```bash
+pnpm --filter @byteql/web test:e2e -- e2e/result-columns-probe.spec.ts e2e/duplicate-result-columns.spec.ts
+```
+
+Measured on 2026-09-16, in the environment above:
+
+- The independent runtime probe (`packages/db/src/result-columns-probe.ts`) passes on **both**
+  pinned bundles: mixed-type and same-type duplicates, an empty duplicate result, sliced pages, an
+  IPC round trip, and exact values. Artifacts: `result-columns-{mvp,eh}.json`.
+- A full browser workflow over
+  `select i::integer as dup, ('row-' || (20000 - i))::varchar as dup, random() as token from range(20001)`:
+  - Both headers read `dup`, distinguished for assistive technology by position
+    (`dup, column 1, Int32` and `dup, column 2, Utf8`); the Inspector lists both labels with their
+    own values.
+  - 20,001 complete rows; a later window of 16,384 rows covering rows 3,618–20,001; the user's SQL
+    sent **once** across four sorts, one restore, and six downloaded files.
+  - Each duplicate sorts on its own position in both directions and restores the execution order;
+    every exported row matches the captured original execution, including the volatile `token`
+    column, which is captured once and never re-executed.
+  - CSV repeats the header exactly — `"dup","dup","token"` after the BOM, read from the file's own
+    bytes — and Parquet exports `dup`, `dup_2`, `token`, previewing that mapping in the download
+    popover before the download starts.
+- Case-only collisions and duplicated hidden columns are separated the same way (`Dup`, `dup_2`,
+  `_dup`, `_dup_2`), and an empty duplicate-labelled result keeps both positions, their types and
+  their file names.
+
+Sorting-specific consequences that still hold:
+
 - `snapshotPage` takes each staged column's type from its **child vector**, never from the declared
-  field, so it is correct by construction if the bridge is ever fixed.
+  field.
 - Sorting addresses columns by original schema index, and the grid keys columns by index rather
-  than name, so duplicate names remain valid at the UI layer.
+  than name, so duplicate labels remain valid at the UI layer.
 
-Fixing the bridge is out of scope for this feature and would need its own design record.
+### Still unavailable with duplicate labels
+
+- Byte provenance is refused when `_src_file`, `_src_start` or `_src_end` appears more than once:
+  the Inspector says the provenance is ambiguous and keeps the values rather than guessing which
+  pair to trust. Viewers that need a named column are withheld for the same reason.
+- Sorting is still refused entirely on the `mvp` bundle (see the section above). Reading,
+  inspecting and exporting duplicate labels are unaffected there.
 
 ## Observed performance
 
@@ -127,7 +170,9 @@ derived view, no leftover scratch files.
 These are not automated and have not been performed:
 
 - Screen-reader acceptance (announcements, `aria-sort`, button naming) with a real screen reader.
-- Touch acceptance on a real touch browser.
+  This includes the positional naming duplicate labels rely on (`dup, column 1,`): the automated
+  suite asserts those accessible names, which is not the same as hearing them announced.
+- Touch acceptance on a real touch browser, including activating a duplicate column's header.
 - Light/dark and narrow/wide visual review by eye. The automated suite covers keyboard-only
   operation, focus placement, one `aria-sort` at a time, hidden active columns and preserved
   horizontal scroll, but not appearance.

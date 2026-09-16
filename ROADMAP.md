@@ -13,15 +13,23 @@ ByteQL's core promise: query real files and trace answers back to their bytes.
 
 ## Priorities
 
-### 1. Fix duplicate result-column names
+### 1. Fix duplicate result-column names — done (2026-09-16)
 
-Valid SQL such as `select 10 as dup, 'ten' as dup` has a documented Arrow bridge failure.
+Valid SQL such as `select 10 as dup, 'ten' as dup` had a documented Arrow bridge failure.
 
-- Preserve columns by position through querying, inspection, sorting, and export.
-- Include the inspector: it currently keys rendered fields by name.
-- Verify duplicate names with different types and values across the full result workflow.
+- Columns are preserved by position through querying, inspection, sorting, and export.
+- The inspector reads labels and values by position instead of keying fields by name.
+- Duplicate labels with different types and values are verified across the full result workflow in
+  a real browser, including a 20,001-row result, both sort directions per duplicate, CSV header
+  bytes, and Parquet's unique export names.
 
-Evidence: [Result column sorting compatibility](docs/result-column-sorting-compatibility.md).
+Byte provenance stays unavailable when a result repeats a provenance column, and sorting stays
+unavailable on the pinned `mvp` bundle; real screen-reader and touch acceptance are still pending.
+
+Evidence:
+[Duplicate output column names](docs/result-column-sorting-compatibility.md#duplicate-output-column-names).
+Design:
+[Duplicate result-column correctness](docs/superpowers/specs/2026-09-15-duplicate-result-columns-design.md).
 
 ### 2. Make reassembled-message provenance explicit
 
@@ -89,7 +97,7 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
 ## Supporting work
 
 - **Close manual acceptance gaps.** Unaided use and audible playback remain pending;
-  sorting also lacks real screen-reader and touch acceptance. See
+  sorting and duplicate-label headers also lack real screen-reader and touch acceptance. See
   [Phase 0 external test](docs/phase-0-external-test.md) and
   [sorting manual checks](docs/result-column-sorting-compatibility.md#outstanding-manual-checks).
 - **Add Firefox/WebKit acceptance coverage.** The current
@@ -100,7 +108,7 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
 
 ## Next development cycle
 
-1. Duplicate-column correctness.
+1. Duplicate-column correctness. **Done, 2026-09-16.**
 2. Truthful multi-range provenance.
 3. Pcapng intake.
 
