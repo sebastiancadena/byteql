@@ -1,6 +1,7 @@
 import { DataType, type Schema } from 'apache-arrow';
 
 import { isSupportedParquetType } from './export-types.js';
+import { resultColumnLabel } from './result-columns.js';
 
 /**
  * Private ordinal carried alongside every snapshot page. It records each row's position in the
@@ -87,7 +88,7 @@ export function resultSortEligibility(schema: Schema): ResultSortEligibility {
     return {
       supported: false,
       reason:
-        `Column sorting is unavailable: column ${index + 1} “${field.name}” has ` +
+        `Column sorting is unavailable: column ${index + 1} “${resultColumnLabel(field)}” has ` +
         `unsupported type ${field.type.toString()}. Cast it in SQL and run again.`,
     };
   }

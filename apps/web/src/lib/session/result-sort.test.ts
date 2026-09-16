@@ -1,4 +1,5 @@
 import { Field, Int32, Schema, Table, Utf8 } from 'apache-arrow';
+import { RESULT_LABEL_METADATA_KEY } from '@byteql/db/result-columns';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,6 +7,7 @@ import {
   nextResultSort,
   resultSortInteractionBlocked,
   sortActionLabel,
+  sameResultSchema,
 } from './result-sort.js';
 import { initialSessionState, type PagedResultState, type SessionState } from './state.js';
 
@@ -66,10 +68,35 @@ describe('sortActionLabel', () => {
     expect(sortActionLabel(schema, { columnIndex: 0, direction: 'desc' }, 1)).toBe('Sort note ascending');
   });
 
-  it('distinguishes duplicate names by schema position', () => {
-    const duplicates = new Schema([new Field('dup', new Int32(), true), new Field('dup', new Utf8(), true)]);
+  it('distinguishes repeated SQL labels by schema position', () => {
+    const duplicates = new Schema([
+      new Field('c0', new Int32(), true, new Map([[RESULT_LABEL_METADATA_KEY, 'dup']])),
+      new Field('c1', new Utf8(), true, new Map([[RESULT_LABEL_METADATA_KEY, 'dup']])),
+    ]);
     expect(sortActionLabel(duplicates, null, 0)).toBe('Sort dup, column 1, ascending');
     expect(sortActionLabel(duplicates, null, 1)).toBe('Sort dup, column 2, ascending');
+  });
+
+  it('uses a positional accessible fallback for an empty SQL label', () => {
+    const empty = new Schema([
+      new Field('c0', new Int32(), true, new Map([[RESULT_LABEL_METADATA_KEY, '']])),
+    ]);
+    expect(sortActionLabel(empty, null, 0)).toBe('Sort column 1 ascending');
+  });
+});
+
+describe('sameResultSchema', () => {
+  it('detects changed SQL labels even when physical fields and types match', () => {
+    const left = new Schema([
+      new Field('c0', new Int32(), true, new Map([[RESULT_LABEL_METADATA_KEY, 'first']])),
+      new Field('c1', new Utf8(), true, new Map([[RESULT_LABEL_METADATA_KEY, 'second']])),
+    ]);
+    const right = new Schema([
+      new Field('c0', new Int32(), true, new Map([[RESULT_LABEL_METADATA_KEY, 'other']])),
+      new Field('c1', new Utf8(), true, new Map([[RESULT_LABEL_METADATA_KEY, 'second']])),
+    ]);
+
+    expect(sameResultSchema(left, right)).toBe(false);
   });
 });
 

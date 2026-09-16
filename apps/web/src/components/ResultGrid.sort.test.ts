@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
-import { Field, Int32, RecordBatch, Schema, Table, Utf8, tableFromArrays } from 'apache-arrow';
+import { Field, Int32, RecordBatch, Schema, Table, tableFromArrays } from 'apache-arrow';
+import { RESULT_LABEL_METADATA_KEY } from '@byteql/db/result-columns';
 import { readable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,11 +22,17 @@ vi.mock('@tanstack/svelte-virtual', () => ({
 }));
 
 import ResultGrid from './ResultGrid.svelte';
+import { emptyLabelResultTable, mixedDuplicateResultTable } from './result-columns.test-support.js';
 
-const table = tableFromArrays({
-  value: Int32Array.from([30, 10, 20]),
-  _src_start: Int32Array.from([0, 4, 8]),
+const rawTable = tableFromArrays({
+  c0: Int32Array.from([30, 10, 20]),
+  c1: Int32Array.from([0, 4, 8]),
 });
+const resultSchema = new Schema([
+  new Field('c0', new Int32(), true, new Map([[RESULT_LABEL_METADATA_KEY, 'value']])),
+  new Field('c1', new Int32(), true, new Map([[RESULT_LABEL_METADATA_KEY, '_src_start']])),
+]);
+const table = new Table(resultSchema, [new RecordBatch(resultSchema, rawTable.batches[0]!.data)]);
 
 const props = (overrides: Record<string, unknown> = {}) => ({
   table,
@@ -132,19 +139,30 @@ describe('ResultGrid sort controls', () => {
     expect(onsort).toHaveBeenCalledWith({ columnIndex: 1, direction: 'desc' });
   });
 
-  it('addresses duplicate column names by position', async () => {
+  it('renders repeated SQL labels and addresses their mixed-type columns by position', async () => {
     const onsort = vi.fn();
-    const schema = new Schema([new Field('dup', new Int32(), true), new Field('dup', new Utf8(), true)]);
-    const built = new Table({
-      a: tableFromArrays({ a: Int32Array.from([1, 2]) }).getChildAt(0)!,
-      b: tableFromArrays({ b: ['x', 'y'] }).getChildAt(0)!,
-    });
-    const batch = new RecordBatch(schema, built.batches[0]!.data);
-    const duplicates = new Table(batch.schema, [batch]);
+    const duplicates = mixedDuplicateResultTable();
 
-    const { getByRole } = render(ResultGrid, props({ table: duplicates, loadedRows: 2, onsort }));
+    const { getAllByRole, getByRole, getByText } = render(
+      ResultGrid,
+      props({ table: duplicates, loadedRows: 1, onsort }),
+    );
+    expect(getAllByRole('columnheader', { name: /dup/u })).toHaveLength(2);
+    expect(getByText('10')).toBeTruthy();
+    expect(getByText('ten', { selector: '[data-row-index="0"] [role="gridcell"]' })).toBeTruthy();
+    expect(getByRole('button', { name: 'Sort dup, column 1, ascending' })).toBeTruthy();
     await fireEvent.click(getByRole('button', { name: 'Sort dup, column 2, ascending' }));
     expect(onsort).toHaveBeenCalledWith({ columnIndex: 1, direction: 'asc' });
+  });
+
+  it('keeps an empty SQL header empty while giving its sort action a positional name', () => {
+    const { container, getByRole } = render(
+      ResultGrid,
+      props({ table: emptyLabelResultTable(), loadedRows: 1 }),
+    );
+
+    expect(getByRole('button', { name: 'Sort column 1 ascending' })).toBeTruthy();
+    expect(container.querySelector('.result-sort-button span')?.textContent).toBe('');
   });
 
   it('refuses activation while the grid is blocked, and says why it is unavailable', async () => {

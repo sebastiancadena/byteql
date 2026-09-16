@@ -1,4 +1,5 @@
 import type { ResultSort } from '@byteql/db';
+import { resultColumnLabel } from '@byteql/db/result-columns';
 import type { Schema } from 'apache-arrow';
 
 import type { SessionState } from './state.js';
@@ -21,12 +22,14 @@ export function nextResultSort(current: ResultSort | null, columnIndex: number):
   return current.direction === 'asc' ? { columnIndex, direction: 'desc' } : null;
 }
 
-/** Names a field for a control label, adding its position only when the name is ambiguous. */
+/** Names a field for a control label, adding its position only when the SQL label is ambiguous. */
 export const fieldLabel = (schema: Schema, columnIndex: number): string => {
   const field = schema.fields[columnIndex];
   if (!field) return `column ${columnIndex + 1}`;
-  const duplicated = schema.fields.filter((other) => other.name === field.name).length > 1;
-  return duplicated ? `${field.name}, column ${columnIndex + 1},` : field.name;
+  const label = resultColumnLabel(field);
+  if (label === '') return `column ${columnIndex + 1}`;
+  const duplicated = schema.fields.filter((other) => resultColumnLabel(other) === label).length > 1;
+  return duplicated ? `${label}, column ${columnIndex + 1},` : label;
 };
 
 /** Describes what activating a header will DO, not what it currently shows. */
@@ -48,7 +51,11 @@ export function sameResultSchema(left: Schema, right: Schema): boolean {
   if (left.fields.length !== right.fields.length) return false;
   return left.fields.every((field, index) => {
     const other = right.fields[index]!;
-    return field.name === other.name && field.type.toString() === other.type.toString();
+    return (
+      field.name === other.name &&
+      resultColumnLabel(field) === resultColumnLabel(other) &&
+      field.type.toString() === other.type.toString()
+    );
   });
 }
 

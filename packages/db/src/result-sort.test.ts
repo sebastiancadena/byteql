@@ -1,6 +1,7 @@
 import { Field, Int64, List, Schema, TimeUnit, Timestamp, Utf8 } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
+import { RESULT_LABEL_METADATA_KEY } from './result-columns.js';
 import {
   buildResultSortSql,
   resultSortEligibility,
@@ -110,6 +111,24 @@ describe('resultSortEligibility', () => {
       'Column sorting is unavailable: column 3 “details” has unsupported type ' +
         'List<Int64>. Cast it in SQL and run again.',
     );
+  });
+
+  it('names an unsupported field by its SQL label instead of its physical result name', () => {
+    const schema = schemaOf(
+      new Field(
+        'c0',
+        new List(new Field('item', new Int64(), true)),
+        true,
+        new Map([[RESULT_LABEL_METADATA_KEY, 'details']]),
+      ),
+    );
+
+    expect(resultSortEligibility(schema)).toEqual({
+      supported: false,
+      reason:
+        'Column sorting is unavailable: column 1 “details” has unsupported type ' +
+        'List<Int64>. Cast it in SQL and run again.',
+    });
   });
 
   it('rejects a timestamp carrying a timezone even though Parquet export allows it', () => {

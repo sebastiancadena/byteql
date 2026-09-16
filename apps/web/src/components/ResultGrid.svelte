@@ -2,6 +2,7 @@
   /* global HTMLDivElement, HTMLElement, KeyboardEvent */
 
   import type { ResultSort } from '@byteql/db';
+  import { resultColumnLabel } from '@byteql/db/result-columns';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import type { Table } from 'apache-arrow';
   import { untrack } from 'svelte';
@@ -92,14 +93,14 @@
   const columns = $derived(
     table.schema.fields
       .map((field, index) => ({ field, index }))
-      .filter(({ field }) => showHidden || !field.name.startsWith(hiddenPrefix)),
+      .filter(({ field }) => showHidden || !resultColumnLabel(field).startsWith(hiddenPrefix)),
   );
   const sortHelpId = 'result-sort-help';
   const sortUnavailable = $derived(sortDisabledReason !== null);
   const headerBlocked = (index: number): boolean =>
     sortInteractionBlocked || (nextResultSort(sort, index) !== null && sortUnavailable);
   const hiddenCount = $derived(
-    table.schema.fields.filter((field) => field.name.startsWith(hiddenPrefix)).length,
+    table.schema.fields.filter((field) => resultColumnLabel(field).startsWith(hiddenPrefix)).length,
   );
   const gridColumns = $derived(`repeat(${Math.max(1, columns.length)}, minmax(9rem, 1fr))`);
 
@@ -337,7 +338,7 @@
           aria-sort={active ? (sort!.direction === 'asc' ? 'ascending' : 'descending') : undefined}
           title={field.type.toString()}
           class:cell-numeric={numeric(field.type.toString())}
-          aria-label={`${field.name} ${field.type.toString()}`}
+          aria-label={`${resultColumnLabel(field)} ${field.type.toString()}`}
         >
           <!-- The header is named explicitly because its only child is a button whose own label
                describes the sort ACTION. Without this the column a cell belongs to would be
@@ -354,7 +355,7 @@
               onsort(nextResultSort(sort, index));
             }}
           >
-            <span>{field.name}</span>
+            <span>{resultColumnLabel(field)}</span>
             <small>{field.type.toString()}</small>
             <svg
               width="12"
