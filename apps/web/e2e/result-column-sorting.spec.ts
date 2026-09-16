@@ -144,8 +144,15 @@ test('sorts the rows a LIMIT selected without choosing different ones', async ({
   await openMidiSample(page);
   await runQuery(page, 'select i, random() as r from range(20000) t(i) limit 1100 offset 5');
   await expect.poll(async () => (await metrics(page)).loadedRows, { timeout: 60_000 }).toBeGreaterThan(0);
-  await page.evaluate(() => window.__byteqlE2E.drainQueryResult());
-  await expect.poll(async () => (await metrics(page)).loadedRows, { timeout: 60_000 }).toBe(1_100);
+  await expect
+    .poll(
+      async () => {
+        await page.evaluate(() => window.__byteqlE2E.drainQueryResult());
+        return (await metrics(page)).loadedRows;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe(1_100);
   const before = await storedRows(page);
   const captured = new Map(before.rows.map((row) => [String(row[0]), String(row[1])]));
   expect(captured.size).toBe(1_100);
