@@ -22,7 +22,11 @@ vi.mock('@tanstack/svelte-virtual', () => ({
 }));
 
 import ResultGrid from './ResultGrid.svelte';
-import { emptyLabelResultTable, mixedDuplicateResultTable } from './result-columns.test-support.js';
+import {
+  emptyLabelResultTable,
+  mixedDuplicateResultTable,
+  sameTypeDuplicateResultTable,
+} from './result-columns.test-support.js';
 
 const rawTable = tableFromArrays({
   c0: Int32Array.from([30, 10, 20]),
@@ -162,7 +166,15 @@ describe('ResultGrid sort controls', () => {
     );
 
     expect(getByRole('button', { name: 'Sort column 1 ascending' })).toBeTruthy();
+    expect(getByRole('columnheader', { name: 'column 1 Int32' })).toBeTruthy();
     expect(container.querySelector('.result-sort-button span')?.textContent).toBe('');
+  });
+
+  it('gives repeated same-type SQL labels distinct positional columnheader names', () => {
+    const { getByRole } = render(ResultGrid, props({ table: sameTypeDuplicateResultTable(), loadedRows: 1 }));
+
+    expect(getByRole('columnheader', { name: 'dup, column 1, Int32' })).toBeTruthy();
+    expect(getByRole('columnheader', { name: 'dup, column 2, Int32' })).toBeTruthy();
   });
 
   it('refuses activation while the grid is blocked, and says why it is unavailable', async () => {

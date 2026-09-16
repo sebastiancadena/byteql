@@ -13,7 +13,7 @@
     scrollCompensation,
     visibleResultRange,
   } from '../lib/session/result-scroll.js';
-  import { nextResultSort, sortActionLabel } from '../lib/session/result-sort.js';
+  import { fieldLabel, nextResultSort, sortActionLabel } from '../lib/session/result-sort.js';
 
   interface Props {
     table: Table;
@@ -338,7 +338,7 @@
           aria-sort={active ? (sort!.direction === 'asc' ? 'ascending' : 'descending') : undefined}
           title={field.type.toString()}
           class:cell-numeric={numeric(field.type.toString())}
-          aria-label={`${resultColumnLabel(field)} ${field.type.toString()}`}
+          aria-label={`${fieldLabel(table.schema, index)} ${field.type.toString()}`}
         >
           <!-- The header is named explicitly because its only child is a button whose own label
                describes the sort ACTION. Without this the column a cell belongs to would be
