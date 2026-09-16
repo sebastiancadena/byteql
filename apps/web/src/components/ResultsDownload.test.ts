@@ -332,21 +332,40 @@ describe('ResultsDownload', () => {
     });
 
     it('stays empty while validation fails even though the labels would collide', async () => {
-      // OPFS is left unavailable, so Parquet validation fails before the preview can be built.
+      // Parquet must be selected while it is still genuinely enabled (OPFS available), otherwise
+      // user-event's selectOptions silently no-ops on a disabled <option> and never dispatches a
+      // change event, leaving options.format untouched and the assertions passing for the wrong
+      // reason. Only after Parquet is confirmed selected does the session flip resultIsCurrent to
+      // false, so validation fails while Parquet stays the active format.
+      enableOpfs();
       const user = userEvent.setup();
+      const controller = controllerDouble();
       const duplicateSchema = new Schema([
         new Field('Value', new Int32(), true),
         new Field('value', new Int32(), true),
       ]);
-      render(ResultsDownload, {
-        controller: controllerDouble(),
+      const view = render(ResultsDownload, {
+        controller,
         session: sessionState({ result: resultState({ schema: duplicateSchema }) }),
       });
 
       await user.click(screen.getByRole('button', { name: 'Download results' }));
       const dialog = screen.getByRole('dialog', { name: 'Download results' });
-      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+      const format = within(dialog).getByRole('combobox', { name: 'Format' }) as HTMLSelectElement;
+      await user.selectOptions(format, 'parquet');
+      expect(format.value).toBe('parquet');
+      expect(previewRows(dialog)).toEqual([['2', 'value', 'value_2']]);
 
+      await view.rerender({
+        controller,
+        session: sessionState({
+          result: resultState({ schema: duplicateSchema }),
+          resultIsCurrent: false,
+        }),
+      });
+
+      // Guard: the state this test names is only reached if the format is still Parquet.
+      expect(format.value).toBe('parquet');
       expect(screen.queryByRole('heading', { name: 'Parquet column names' })).toBeNull();
       expect(previewRows(dialog)).toEqual([]);
     });
