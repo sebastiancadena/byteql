@@ -18,7 +18,7 @@ import { tableFromIPC, type Schema, type Table } from 'apache-arrow';
 import {
   util as duckdbUtil,
   type RecordBatch as DuckdbRecordBatch,
-  type Schema as DuckdbSchema,
+  Schema as DuckdbSchema,
 } from 'apache-arrow-duckdb';
 
 import { convertDuckdbTable } from './arrow-bridge.js';
@@ -1128,8 +1128,11 @@ class BrowserDatabase implements ByteqlDatabase {
         cursorStarted = true;
         iterator = reader[Symbol.asyncIterator]();
         if (token.cancelRequested) throw new Error('Query result session is closed.');
+        // The pinned reader's schema is absent until its first pull, despite its declared type.
+        // Supply a provisional shape while continuing to read the actual schema as it arrives.
+        const provisionalSchema = new DuckdbSchema();
         session = await QuerySessionImpl.create(
-          () => reader.schema,
+          () => reader.schema ?? provisionalSchema,
           iterator,
           store,
           startedAt,

@@ -198,7 +198,7 @@ function rawDuplicateResult(start: number, rows: number) {
   };
 }
 
-function rawResultReader(schema: DuckdbSchema, batches: readonly DuckdbRecordBatch[]) {
+function rawResultReader(schema: DuckdbSchema | undefined, batches: readonly DuckdbRecordBatch[]) {
   let index = 0;
   const iterator = {
     next: vi.fn(async () =>
@@ -519,11 +519,13 @@ describe('createBrowserDatabase', () => {
     },
   );
 
-  it.each([false, true])(
-    'keeps empty mixed duplicate schema with a provisional cursor: %s',
-    async (provisional) => {
+  it.each(['known', 'empty', 'absent'] as const)(
+    'keeps empty mixed duplicate schema with an initially %s cursor schema',
+    async (availability) => {
       const result = rawDuplicateResult(0, 0);
-      const reader = rawResultReader(provisional ? new DuckdbSchema() : result.schema, [result.batch]);
+      const schema =
+        availability === 'known' ? result.schema : availability === 'empty' ? new DuckdbSchema() : undefined;
+      const reader = rawResultReader(schema, [result.batch]);
       duckdbMocks.connection.send.mockResolvedValueOnce(reader);
       const database = await createBrowserDatabase();
       const session = await database.startQuery('select mixed duplicates where false');
@@ -679,39 +681,87 @@ describe('createBrowserDatabase', () => {
     expect(session.status()).toMatchObject({ loadedRows: 0, complete: true, storedBytes: 0 });
   });
 
-  it('publishes a schema that DuckDB reveals lazily with the first result batch', async () => {
-    const table = duckdbResultTable(0, 2);
-    let readerSchema = new DuckdbTable({}).schema;
-    const batches = [...table.batches];
-    const reader = {
-      get schema() {
-        return readerSchema;
-      },
-      [Symbol.asyncIterator]() {
-        let index = 0;
-        return {
-          async next() {
-            // The real streaming reader replaces its initially empty schema when the stream
-            // header is consumed. QuerySession must read that replacement rather than retain
-            // the earlier empty schema object.
-            readerSchema = table.schema;
-            return index < batches.length
-              ? { done: false as const, value: batches[index++]! }
-              : { done: true as const, value: undefined };
-          },
-        };
-      },
-    };
+  it.each(['empty', 'absent'] as const)(
+    'publishes a schema that starts %s and arrives with the first result batch',
+    async (availability) => {
+      const table = duckdbResultTable(0, 2);
+      let readerSchema: DuckdbSchema | undefined = availability === 'empty' ? new DuckdbSchema() : undefined;
+      const batches = [...table.batches];
+      const reader = {
+        get schema() {
+          return readerSchema;
+        },
+        [Symbol.asyncIterator]() {
+          let index = 0;
+          return {
+            async next() {
+              // DuckDB may not expose any schema until it consumes the stream header.
+              // QuerySession must adopt that schema rather than retain its provisional shape.
+              readerSchema = table.schema;
+              return index < batches.length
+                ? { done: false as const, value: batches[index++]! }
+                : { done: true as const, value: undefined };
+            },
+          };
+        },
+      };
+      duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+      const database = await createBrowserDatabase();
+      const session = await database.startQuery('select value from events');
+
+      expect(session.schema.fields).toEqual([]);
+      await expect(session.fetchNext(2)).resolves.toMatchObject({ rowCount: 2 });
+      expect(session.schema.fields.map((field) => field.name)).toEqual(['c0']);
+      expect(session.schema.fields.map((field) => [resultColumnLabel(field), field.type.toString()])).toEqual(
+        [['value', 'Int32']],
+      );
+    },
+  );
+
+  it('uses mixed duplicate batch types when the reader schema remains absent, including EOF lookahead', async () => {
+    const result = rawDuplicateResult(10, 2);
+    const reader = rawResultReader(undefined, [result.batch]);
     duckdbMocks.connection.send.mockResolvedValueOnce(reader);
     const database = await createBrowserDatabase();
-    const session = await database.startQuery('select value from events');
-
+    const session = await database.startQuery('select mixed with no cursor schema');
     expect(session.schema.fields).toEqual([]);
-    await expect(session.fetchNext(2)).resolves.toMatchObject({ rowCount: 2 });
-    expect(session.schema.fields.map((field) => field.name)).toEqual(['c0']);
-    expect(session.schema.fields.map((field) => [resultColumnLabel(field), field.type.toString()])).toEqual([
-      ['value', 'Int32'],
+    const first = await session.fetchNext(1);
+    const second = await session.fetchNext(1);
+    expect(
+      session.schema.fields.map((field) => [field.name, resultColumnLabel(field), String(field.type)]),
+    ).toEqual([
+      ['c0', 'dup', 'Int32'],
+      ['c1', 'dup', 'Utf8'],
     ]);
+    expect([first!.table.getChildAt(0)!.get(0), first!.table.getChildAt(1)!.get(0)]).toEqual([10, 'v10']);
+    expect([second!.table.getChildAt(0)!.get(0), second!.table.getChildAt(1)!.get(0)]).toEqual([11, 'v11']);
+    expect(session.status()).toMatchObject({ loadedRows: 2, complete: true, sendCount: 1 });
+    expect(duckdbMocks.connection.send).toHaveBeenCalledOnce();
+    await session.dispose();
+  });
+
+  it('adopts a schema first revealed at EOF when no record batch is supplied', async () => {
+    const result = rawDuplicateResult(0, 0);
+    const reader = rawResultReader(undefined, []);
+    reader.iterator.next.mockImplementation(async () => {
+      reader.schema = result.schema;
+      return { done: true as const, value: undefined };
+    });
+    duckdbMocks.connection.send.mockResolvedValueOnce(reader);
+    const database = await createBrowserDatabase();
+    const session = await database.startQuery('select mixed where false without a placeholder');
+    expect(session.schema.fields).toEqual([]);
+    await expect(session.fetchNext()).resolves.toBeNull();
+    expect(
+      session.schema.fields.map((field) => [field.name, resultColumnLabel(field), String(field.type)]),
+    ).toEqual([
+      ['c0', 'dup', 'Int32'],
+      ['c1', 'dup', 'Utf8'],
+    ]);
+    expect(session.pages()).toEqual([]);
+    expect(session.status()).toMatchObject({ loadedRows: 0, complete: true, sendCount: 1 });
+    expect(duckdbMocks.connection.send).toHaveBeenCalledOnce();
+    await session.dispose();
   });
 
   it('exports only the current complete stored result without starting another SQL query', async () => {
