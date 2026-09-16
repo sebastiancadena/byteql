@@ -18,7 +18,6 @@ import {
   LargeUtf8,
   List,
   Null,
-  RecordBatch,
   Schema,
   Table,
   TimeMicrosecond,
@@ -40,8 +39,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { writeParquet } from './export-parquet.js';
 import { isSupportedParquetType } from './export-types.js';
-import { parquetColumnNames, RESULT_LABEL_METADATA_KEY } from './result-columns.js';
+import { parquetColumnNames } from './result-columns.js';
 import type { QuerySession } from './types.js';
+import { withResultLabels } from '../test-support/result-columns.js';
 
 const asyncReader = () => ({
   async *[Symbol.asyncIterator]() {
@@ -78,25 +78,6 @@ const querySession = (tables: readonly Table[], schema = tables[0]?.schema ?? ne
     cancel: vi.fn(),
     dispose: vi.fn(),
   };
-};
-
-const withResultLabels = (source: Table, labels: readonly string[]): Table => {
-  if (source.schema.fields.length !== labels.length) throw new Error('Result labels must match columns.');
-  const schema = new Schema(
-    source.schema.fields.map(
-      (field, index) =>
-        new Field(
-          field.name,
-          field.type,
-          field.nullable,
-          new Map([...field.metadata, [RESULT_LABEL_METADATA_KEY, labels[index]!]]),
-        ),
-    ),
-  );
-  return new Table(
-    schema,
-    source.batches.map((batch) => new RecordBatch(schema, batch.data)),
-  );
 };
 
 const parquetOptions = (

@@ -47,6 +47,9 @@
     const result = session.result;
     if (!result || options.format !== 'parquet' || selectedError !== null) return [];
     try {
+      // Defensive only: the selectedError !== null guard above already rules out the inputs that
+      // could make selectExportColumns throw, and parquetColumnNames cannot throw on a selection
+      // that function produced. Kept in case that invariant ever weakens.
       const selected = selectExportColumns(result.schema, options);
       return parquetColumnNames(result.schema, selected).filter((column) => column.label !== column.name);
     } catch {

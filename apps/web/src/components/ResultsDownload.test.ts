@@ -18,7 +18,7 @@ import {
   emptyLabelResultTable,
   mixedDuplicateResultTable,
   withResultLabels,
-} from './result-columns.test-support.js';
+} from '../test-support/result-columns.js';
 
 const table = tableFromArrays({
   value: [1],
@@ -304,7 +304,7 @@ describe('ResultsDownload', () => {
       expect(previewRows(dialog)).toEqual([['1', '(empty)', 'column_1']]);
     });
 
-    it('renders no mapping for unique labels, and none at all while CSV is selected', async () => {
+    it('renders no mapping for unique labels while Parquet is selected', async () => {
       enableOpfs();
       const user = userEvent.setup();
       render(ResultsDownload, {
@@ -316,8 +316,10 @@ describe('ResultsDownload', () => {
       const dialog = screen.getByRole('dialog', { name: 'Download results' });
       await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
       expect(screen.queryByRole('heading', { name: 'Parquet column names' })).toBeNull();
-      cleanup();
+    });
 
+    it('renders no mapping for duplicate labels while CSV is selected', async () => {
+      const user = userEvent.setup();
       const duplicate = mixedDuplicateResultTable();
       render(ResultsDownload, {
         controller: controllerDouble(),

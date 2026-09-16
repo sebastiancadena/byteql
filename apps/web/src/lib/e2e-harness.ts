@@ -4,7 +4,6 @@ import {
   probeResultColumns,
   probeResultsExport,
   readExportArtifact,
-  resultColumnLabel,
   type ExportProbeReport,
   type ResultSortProbeReport,
   type ResultColumnsProbeReport,
@@ -15,6 +14,7 @@ import {
   type QueryResultView,
   type SpillProbeReport,
 } from '@byteql/db';
+import { resultColumnLabel } from '@byteql/db/result-columns';
 import type { Table } from 'apache-arrow';
 
 import {

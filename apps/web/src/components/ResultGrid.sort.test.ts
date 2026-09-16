@@ -26,7 +26,7 @@ import {
   emptyLabelResultTable,
   mixedDuplicateResultTable,
   sameTypeDuplicateResultTable,
-} from './result-columns.test-support.js';
+} from '../test-support/result-columns.js';
 
 const rawTable = tableFromArrays({
   c0: Int32Array.from([30, 10, 20]),

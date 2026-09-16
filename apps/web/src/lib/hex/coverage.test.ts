@@ -1,7 +1,7 @@
 import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { withResultLabels } from '../../components/result-columns.test-support.js';
+import { withResultLabels } from '../../test-support/result-columns.js';
 import { buildCoverage, COVERAGE_ROW_CAP, createCoverageMemo, provenanceOfRow } from './coverage.js';
 
 const FILE = 'capture.pcap';

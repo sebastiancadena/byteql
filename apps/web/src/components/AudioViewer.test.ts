@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
 import AudioViewer from './AudioViewer.svelte';
-import { withResultLabels } from './result-columns.test-support.js';
+import { withResultLabels } from '../test-support/result-columns.js';
 
 function fakeEngine() {
   let position = 0;

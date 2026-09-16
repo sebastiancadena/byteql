@@ -27,7 +27,7 @@ import {
   vectorFromArray,
 } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
-import { withResultLabels } from '../../components/result-columns.test-support';
+import { withResultLabels } from '../../test-support/result-columns';
 import { csvChunks } from './csv';
 
 const decode = (chunks: Iterable<Uint8Array>): string =>

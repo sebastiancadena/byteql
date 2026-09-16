@@ -17,7 +17,7 @@ import {
   tableFromArrays,
 } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
-import { withResultLabels } from '../../components/result-columns.test-support';
+import { withResultLabels } from '../../test-support/result-columns';
 import { exportFilename, selectExportColumns } from './options';
 
 const schema = (...fields: Array<[string, Field['type']]>) =>

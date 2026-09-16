@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 
-import { expect, test, type Download, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
-import { openMidiSample, runSql } from './support/app.js';
+import { beginDownload, metrics, openMidiSample, runSql, saveDownload, sortBy } from './support/app.js';
 
 interface SerializableResult {
   /** SQL labels, which valid SQL may repeat: every value is read by POSITION, never by name. */
@@ -49,14 +49,6 @@ interface DownloadHarness {
     externalAccess: boolean;
     configurationLocked: boolean;
   }>;
-}
-
-async function saveDownload(download: Download, testInfo: TestInfo, name: string): Promise<string> {
-  expect(await download.failure()).toBeNull();
-  const path = testInfo.outputPath(name);
-  await download.saveAs(path);
-  await testInfo.attach(name, { path });
-  return path;
 }
 
 async function readArtifact(
@@ -175,22 +167,6 @@ async function readPickedBytes(page: Page, path?: string): Promise<number[]> {
   }, path);
 }
 
-async function beginDownload(page: Page, format: 'csv' | 'parquet', includeProvenance = true): Promise<void> {
-  const dialog = page.getByRole('dialog', { name: 'Download results' });
-  if (!(await dialog.isVisible())) {
-    await page.getByRole('button', { name: 'Download results', exact: true }).click();
-  }
-  await expect(page.getByLabel('Format').locator(`option[value="${format}"]`)).toBeEnabled();
-  await page.getByLabel('Format').selectOption(format);
-  const provenance = page.getByRole('checkbox', {
-    name: 'Include hidden columns and byte provenance',
-  });
-  if ((await provenance.isChecked()) !== includeProvenance) await provenance.click();
-  const button = page.getByRole('button', { name: 'Download', exact: true });
-  await expect(button).toBeEnabled();
-  await button.click();
-}
-
 test('fallback CSV saves every stored volatile value without rerunning SQL', async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   await page.addInitScript(() => {
@@ -224,7 +200,7 @@ test('fallback CSV saves every stored volatile value without rerunning SQL', asy
     configurationLocked: true,
   });
   expect(exported.rows).toEqual(stored.rows);
-  expect((await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).sendCount).toBe(1);
+  expect((await metrics(page)).sendCount).toBe(1);
 });
 
 test('direct picker CSV preserves a scrolled result after an unexecuted SQL edit', async ({ page }) => {
@@ -619,36 +595,14 @@ test('two tabs retain separate fallback artifacts and clean up only their own fi
   await expect.poll(() => other.evaluate(() => window.__BYTEQL_E2E__!.exportFiles())).toEqual([]);
 });
 
-/** Waits for a sort started from a header to commit. */
-async function sortByHeader(page: Page, label: string): Promise<void> {
-  await page.getByRole('button', { name: label, exact: true }).click();
-  await expect
-    .poll(
-      async () =>
-        page.evaluate(() =>
-          (
-            window.__BYTEQL_E2E__ as unknown as DownloadHarness & {
-              queryResultMetrics(): Promise<{ sortPending: boolean }>;
-            }
-          ).queryResultMetrics(),
-        ),
-      { timeout: 120_000 },
-    )
-    .toMatchObject({ sortPending: false });
-}
-
 test('CSV and Parquet follow the committed display order', async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   await installControlledPicker(page);
   await openMidiSample(page);
 
   await runSql(page, 'select 20000-i as value, i as identity from range(20000) t(i)');
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics().then((m) => m.loadedRows)),
-    )
-    .toBeGreaterThan(0);
-  await sortByHeader(page, 'Sort value ascending');
+  await expect.poll(async () => metrics(page).then((m) => m.loadedRows)).toBeGreaterThan(0);
+  await sortBy(page, 'Sort value ascending');
 
   await beginDownload(page, 'csv', false);
   await expect(page.locator('.results-download-status')).toContainText('File saved.');
@@ -690,11 +644,7 @@ test('CSV and Parquet follow the committed display order', async ({ page }, test
   // Clearing the sort puts the query's own order back into the file.
   await page.getByRole('button', { name: 'Dismiss' }).click();
   await page.getByRole('button', { name: 'Clear sort', exact: true }).click();
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics().then((m) => m.orderRevision)),
-    )
-    .toBe(2);
+  await expect.poll(async () => metrics(page).then((m) => m.orderRevision)).toBe(2);
   await beginDownload(page, 'csv', false);
   await expect(page.locator('.results-download-status')).toContainText('File saved.');
   const original = new TextDecoder().decode(Uint8Array.from((await readPickedBytes(page)).slice(3)));
@@ -715,18 +665,14 @@ test('a retained download from the previous order is released when the order cha
   });
   await openMidiSample(page);
   await runSql(page, 'select 3000-i as value from range(3000) t(i)');
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics().then((m) => m.loadedRows)),
-    )
-    .toBeGreaterThan(0);
+  await expect.poll(async () => metrics(page).then((m) => m.loadedRows)).toBeGreaterThan(0);
 
   await page.getByRole('button', { name: 'Download results', exact: true }).click();
   await page.getByRole('button', { name: 'Download', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Close download options' }).click();
-  await sortByHeader(page, 'Sort value ascending');
+  await sortBy(page, 'Sort value ascending');
 
   // The prepared file described the previous order, so it is no longer offered.
   await page.getByRole('button', { name: 'Download results', exact: true }).click();

@@ -18,3 +18,23 @@ export const duplicateResultTable = (integers: readonly number[], strings: reado
     built.batches.map((batch) => new RecordBatch(schema, batch.data)),
   );
 };
+
+/** Reassigns each column's SQL label metadata, keeping the physical field names and types. */
+export const withResultLabels = (source: Table, labels: readonly string[]): Table => {
+  if (source.schema.fields.length !== labels.length) throw new Error('Result labels must match columns.');
+  const schema = new Schema(
+    source.schema.fields.map(
+      (field, index) =>
+        new Field(
+          field.name,
+          field.type,
+          field.nullable,
+          new Map([...field.metadata, [RESULT_LABEL_METADATA_KEY, labels[index]!]]),
+        ),
+    ),
+  );
+  return new Table(
+    schema,
+    source.batches.map((batch) => new RecordBatch(schema, batch.data)),
+  );
+};

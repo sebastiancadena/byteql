@@ -5,7 +5,16 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
 
 import type { BrowserE2EControl, SerializableResult } from '../src/lib/e2e-harness.js';
 
-import { openMidiSample, runSql } from './support/app.js';
+import {
+  beginDownload,
+  expectRows,
+  metrics,
+  openDownloadOptions,
+  openMidiSample,
+  runSql,
+  saveDownload,
+  sortBy,
+} from './support/app.js';
 
 type ExportFormat = 'csv' | 'parquet';
 
@@ -46,31 +55,11 @@ const CSV_READER_COLUMNS = [
   { name: 'read_position_3', type: 'DOUBLE' },
 ];
 
-const metrics = (page: Page) => page.evaluate(() => window.__byteqlE2E.queryResultMetrics());
-
 const storedResult = (page: Page): Promise<SerializableResult> =>
   page.evaluate(() => (window.__byteqlE2E as unknown as BrowserE2EControl).storedResult());
 
 const rowCells = (page: Page, row: number) =>
   page.getByRole('row', { name: `Row ${row}`, exact: true }).getByRole('gridcell');
-
-const sortBy = async (page: Page, name: string): Promise<void> => {
-  await page.getByRole('button', { name, exact: true }).click();
-  await expect.poll(async () => (await metrics(page)).sortPending, { timeout: 120_000 }).toBe(false);
-};
-
-/** Drains the cursor and asserts the complete row count, which the toolbar only shows partially. */
-const expectRows = async (page: Page, rows: number): Promise<void> => {
-  await expect
-    .poll(
-      async () => {
-        await page.evaluate(() => window.__byteqlE2E.drainQueryResult());
-        return (await metrics(page)).loadedRows;
-      },
-      { timeout: 120_000 },
-    )
-    .toBe(rows);
-};
 
 /** Wheels the sole result scroller until the named row is rendered by the virtualizer. */
 async function scrollToRow(page: Page, row: number, direction: 1 | -1 = 1): Promise<void> {
@@ -90,15 +79,6 @@ async function scrollToRow(page: Page, row: number, direction: 1 | -1 = 1): Prom
   throw new Error(`Row ${row} never became visible by scrolling.`);
 }
 
-/** Opens the options popover only when it is closed: its opener is a toggle. */
-async function openDownloadOptions(page: Page): Promise<void> {
-  const dialog = page.getByRole('dialog', { name: 'Download results' });
-  if (!(await dialog.isVisible())) {
-    await page.getByRole('button', { name: 'Download results', exact: true }).click();
-  }
-  await expect(dialog).toBeVisible();
-}
-
 /**
  * Runs one download through the app's own popover and returns the bytes the browser actually
  * saved, attached to the test as evidence.
@@ -110,25 +90,12 @@ async function downloadResults(
   name: string,
   includeProvenance = true,
 ): Promise<Uint8Array> {
-  await openDownloadOptions(page);
-  await expect(page.getByLabel('Format').locator(`option[value="${format}"]`)).toBeEnabled();
-  await page.getByLabel('Format').selectOption(format);
-  const provenance = page.getByRole('checkbox', {
-    name: 'Include hidden columns and byte provenance',
-  });
-  if ((await provenance.isChecked()) !== includeProvenance) await provenance.click();
-  const start = page.getByRole('button', { name: 'Download', exact: true });
-  await expect(start).toBeEnabled();
-  await start.click();
+  await beginDownload(page, format, includeProvenance);
 
   await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
   const pending = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save file', exact: true }).click();
-  const download = await pending;
-  expect(await download.failure()).toBeNull();
-  const path = testInfo.outputPath(name);
-  await download.saveAs(path);
-  await testInfo.attach(name, { path });
+  const path = await saveDownload(await pending, testInfo, name);
 
   // Dismiss releases the prepared file; closing the popover then hands the results area back —
   // it overlays the grid while open and would intercept a later scroll.

@@ -9,7 +9,7 @@ import {
   emptyLabelResultTable,
   mixedDuplicateResultTable,
   withResultLabels,
-} from './result-columns.test-support.js';
+} from '../test-support/result-columns.js';
 
 function ambiguousProvenanceTable(duplicateLabel: '_src_file' | '_src_start' | '_src_end') {
   const duplicateValue =

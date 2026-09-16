@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 
-import { expect, type Page } from '@playwright/test';
+import { expect, type Download, type Page, type TestInfo } from '@playwright/test';
 
 import type { SpillProbeReport } from '@byteql/db';
 
@@ -116,4 +116,69 @@ export async function openAudioViewer(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Open in…' }).click();
   await page.getByRole('menuitem', { name: 'Audio playback' }).click();
   await expect(page.getByRole('heading', { name: 'Audio playback' })).toBeVisible();
+}
+
+export const metrics = (page: Page) => page.evaluate(() => window.__byteqlE2E.queryResultMetrics());
+
+/** Clicks a sort control by its accessible name and waits for the sort to commit. */
+export const sortBy = async (page: Page, name: string): Promise<void> => {
+  await page.getByRole('button', { name, exact: true }).click();
+  await expect.poll(async () => (await metrics(page)).sortPending, { timeout: 120_000 }).toBe(false);
+};
+
+/**
+ * Drains the cursor and asserts the complete row count, which the toolbar only shows partially.
+ * Draining inside the poll covers both streaming and the moment just after a new query is started,
+ * when the previous result is briefly still the one on display.
+ */
+export const expectRows = async (
+  page: Page,
+  rows: number,
+  options: { timeout?: number } = {},
+): Promise<void> => {
+  await expect
+    .poll(
+      async () => {
+        await page.evaluate(() => window.__byteqlE2E.drainQueryResult());
+        return (await metrics(page)).loadedRows;
+      },
+      { timeout: options.timeout ?? 120_000 },
+    )
+    .toBe(rows);
+};
+
+/** Opens the download options popover only when it is closed: its opener is a toggle. */
+export async function openDownloadOptions(page: Page): Promise<void> {
+  const dialog = page.getByRole('dialog', { name: 'Download results' });
+  if (!(await dialog.isVisible())) {
+    await page.getByRole('button', { name: 'Download results', exact: true }).click();
+  }
+  await expect(dialog).toBeVisible();
+}
+
+/** Configures format and provenance in the open download popover, then starts the export. */
+export async function beginDownload(
+  page: Page,
+  format: 'csv' | 'parquet',
+  includeProvenance = true,
+): Promise<void> {
+  await openDownloadOptions(page);
+  await expect(page.getByLabel('Format').locator(`option[value="${format}"]`)).toBeEnabled();
+  await page.getByLabel('Format').selectOption(format);
+  const provenance = page.getByRole('checkbox', {
+    name: 'Include hidden columns and byte provenance',
+  });
+  if ((await provenance.isChecked()) !== includeProvenance) await provenance.click();
+  const button = page.getByRole('button', { name: 'Download', exact: true });
+  await expect(button).toBeEnabled();
+  await button.click();
+}
+
+/** Saves a completed Playwright download and attaches it to the test as evidence. */
+export async function saveDownload(download: Download, testInfo: TestInfo, name: string): Promise<string> {
+  expect(await download.failure()).toBeNull();
+  const path = testInfo.outputPath(name);
+  await download.saveAs(path);
+  await testInfo.attach(name, { path });
+  return path;
 }

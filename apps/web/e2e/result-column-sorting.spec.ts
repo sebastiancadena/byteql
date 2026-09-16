@@ -1,8 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-import { openMidiSample } from './support/app.js';
-
-const metrics = (page: Page) => page.evaluate(() => window.__byteqlE2E.queryResultMetrics());
+import { expectRows as expectRowsWithTimeout, metrics, openMidiSample, sortBy } from './support/app.js';
 
 const storedRows = (page: Page) => page.evaluate(() => window.__byteqlE2E.storedResult());
 
@@ -26,24 +24,8 @@ const firstCell = (page: Page) =>
 
 /** Drains the cursor, then asserts the complete row count. The toolbar shows a partial count
  * while a result is still streaming, so waiting on its text is a race. */
-const expectRows = async (page: Page, rows: number): Promise<void> => {
-  // Draining inside the poll covers both streaming and the moment just after a new query is
-  // started, when the previous result is briefly still the one on display.
-  await expect
-    .poll(
-      async () => {
-        await page.evaluate(() => window.__byteqlE2E.drainQueryResult());
-        return (await metrics(page)).loadedRows;
-      },
-      { timeout: 60_000 },
-    )
-    .toBe(rows);
-};
-
-const sortBy = async (page: Page, label: string): Promise<void> => {
-  await page.getByRole('button', { name: label, exact: true }).click();
-  await expect.poll(async () => (await metrics(page)).sortPending, { timeout: 120_000 }).toBe(false);
-};
+const expectRows = (page: Page, rows: number): Promise<void> =>
+  expectRowsWithTimeout(page, rows, { timeout: 60_000 });
 
 test('sorts all result rows and restores the original execution order', async ({ page }) => {
   test.setTimeout(120_000);

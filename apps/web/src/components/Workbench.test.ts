@@ -21,7 +21,7 @@ import { initialSessionState, type PagedResultState, type SessionState } from '.
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
 import ResultGrid from './ResultGrid.svelte';
 import Workbench from './Workbench.svelte';
-import { withResultLabels } from './result-columns.test-support.js';
+import { withResultLabels } from '../test-support/result-columns.js';
 
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);

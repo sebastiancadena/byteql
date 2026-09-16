@@ -1,7 +1,7 @@
 import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { withResultLabels } from '../../components/result-columns.test-support.js';
+import { withResultLabels } from '../../test-support/result-columns.js';
 import { compatibleTableViewers, compatibleViewers, type FormatViewerMetadata } from './registry.js';
 
 const enabled: FormatViewerMetadata = {
