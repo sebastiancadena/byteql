@@ -4,6 +4,7 @@ import {
   probeResultColumns,
   probeResultsExport,
   readExportArtifact,
+  resultColumnLabel,
   type ExportProbeReport,
   type ResultSortProbeReport,
   type ResultColumnsProbeReport,
@@ -41,7 +42,13 @@ export interface ReadStats {
 }
 
 export interface SerializableResult {
+  /**
+   * The SQL labels the user sees, in schema order. Valid SQL can repeat a label, so this array
+   * can contain duplicates and is NOT a key: read every value by POSITION.
+   */
   columns: string[];
+  /** The unique physical Arrow field names (`c0`, `c1`, …) the same positions carry internally. */
+  physicalColumns: string[];
   types: string[];
   rows: Array<Array<string | number | boolean | null>>;
 }
@@ -121,13 +128,11 @@ const normalizeValue = (value: unknown): string | number | boolean | null => {
   return String(value);
 };
 
-const serializeTable = (table: Table): SerializableResult => ({
-  columns: table.schema.fields.map((field) => field.name),
-  types: table.schema.fields.map((field) => field.type.toString()),
-  rows: Array.from({ length: table.numRows }, (_, row) =>
+/** Rows only, addressed by column POSITION — the schema is described once by the caller. */
+const serializeRows = (table: Table): SerializableResult['rows'] =>
+  Array.from({ length: table.numRows }, (_, row) =>
     table.schema.fields.map((_field, column) => normalizeValue(table.getChildAt(column)?.get(row))),
-  ),
-});
+  );
 
 async function walkSpillFiles(dir: FileSystemDirectoryHandle, prefix: string): Promise<string[]> {
   const out: string[] = [];
@@ -336,12 +341,13 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
           );
         }
         const serialized: SerializableResult = {
-          columns: result.schema.fields.map((field) => field.name),
+          columns: result.schema.fields.map(resultColumnLabel),
+          physicalColumns: result.schema.fields.map((field) => field.name),
           types: result.schema.fields.map((field) => field.type.toString()),
           rows: [],
         };
         for (const summary of result.pages()) {
-          serialized.rows.push(...serializeTable((await result.readPage(summary.index)).table).rows);
+          serialized.rows.push(...serializeRows((await result.readPage(summary.index)).table));
         }
         return serialized;
       },

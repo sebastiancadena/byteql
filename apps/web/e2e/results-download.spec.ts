@@ -5,7 +5,10 @@ import { expect, test, type Download, type Page, type TestInfo } from '@playwrig
 import { openMidiSample, runSql } from './support/app.js';
 
 interface SerializableResult {
+  /** SQL labels, which valid SQL may repeat: every value is read by POSITION, never by name. */
   columns: string[];
+  /** The unique physical Arrow field names (`c0`, `c1`, …) behind those labels. */
+  physicalColumns: string[];
   types: string[];
   rows: Array<Array<string | number | boolean | null>>;
 }
@@ -38,7 +41,14 @@ interface DownloadHarness {
     format: 'csv' | 'parquet';
     bytes: number[];
     csvColumns?: CsvColumn[];
-  }): Promise<SerializableResult & { externalAccess: boolean; configurationLocked: boolean }>;
+  }): Promise<{
+    // The independent reader names columns itself, so it reports no physical result names.
+    columns: string[];
+    types: string[];
+    rows: SerializableResult['rows'];
+    externalAccess: boolean;
+    configurationLocked: boolean;
+  }>;
 }
 
 async function saveDownload(download: Download, testInfo: TestInfo, name: string): Promise<string> {
@@ -346,7 +356,12 @@ for (const format of ['csv', 'parquet'] as const) {
     const storedEmpty = await page.evaluate(() =>
       (window.__BYTEQL_E2E__ as unknown as DownloadHarness).storedResult(),
     );
-    expect(storedEmpty).toEqual({ columns: ['id', 'note'], types: ['Int32', 'Utf8'], rows: [] });
+    expect(storedEmpty).toEqual({
+      columns: ['id', 'note'],
+      physicalColumns: ['c0', 'c1'],
+      types: ['Int32', 'Utf8'],
+      rows: [],
+    });
     await beginDownload(page, format);
     await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
     let pending = page.waitForEvent('download');
@@ -501,6 +516,78 @@ for (const format of ['csv', 'parquet'] as const) {
     await expect(readPickedBytes(page, afterCancel.files[4])).rejects.toThrow();
   });
 }
+
+test('duplicate labels survive a replaced, quota-failed and cancelled download lifecycle', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await installControlledPicker(page);
+  await openMidiSample(page);
+  await runSql(page, "select 1::integer as dup, 'first'::varchar as dup");
+  await expect(page.getByRole('gridcell', { name: 'first', exact: true })).toBeVisible();
+
+  // A replacement query while the file is still being written releases that destination.
+  await setPickerMode(page, 'delay');
+  await beginDownload(page, 'csv');
+  await expect.poll(async () => (await pickerState(page)).writeAttempts).toBeGreaterThan(0);
+  const replaced = (await pickerState(page)).files[0]!;
+  await runSql(page, "select 2::integer as dup, 'second'::varchar as dup, 3::integer as dup");
+  await setPickerMode(page, 'ok');
+  await expect(page.getByRole('gridcell', { name: 'second', exact: true })).toBeVisible();
+  await expect.poll(async () => (await pickerState(page)).aborts).toBe(1);
+  await expect(readPickedBytes(page, replaced)).rejects.toThrow();
+
+  // The replacing result keeps its own labels, positions and types.
+  for (const [index, type] of ['Int32', 'Utf8', 'Int32'].entries()) {
+    await expect(
+      page.getByRole('columnheader', { name: `dup, column ${index + 1}, ${type}`, exact: true }),
+    ).toBeVisible();
+  }
+  const stored = await page.evaluate(() =>
+    (window.__BYTEQL_E2E__ as unknown as DownloadHarness).storedResult(),
+  );
+  expect(stored).toEqual({
+    columns: ['dup', 'dup', 'dup'],
+    physicalColumns: ['c0', 'c1', 'c2'],
+    types: ['Int32', 'Utf8', 'Int32'],
+    rows: [[2, 'second', 3]],
+  });
+
+  // A quota failure leaves no partial file behind and does not disturb the result.
+  await setPickerMode(page, 'quota');
+  await beginDownload(page, 'csv');
+  await expect(page.getByRole('alert')).toContainText('quota');
+  const afterQuota = await pickerState(page);
+  expect(afterQuota).toMatchObject({ closes: 0, aborts: 2 });
+  await expect(readPickedBytes(page, afterQuota.files[1]!)).rejects.toThrow();
+
+  // Cancelling mid-write behaves the same way.
+  await page.getByRole('button', { name: 'Dismiss' }).click();
+  await setPickerMode(page, 'delay');
+  await beginDownload(page, 'csv');
+  await expect
+    .poll(async () => (await pickerState(page)).writeAttempts)
+    .toBeGreaterThan(afterQuota.writeAttempts);
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await setPickerMode(page, 'ok');
+  await expect(page.locator('.results-download-status')).toContainText('Download cancelled.');
+  const afterCancel = await pickerState(page);
+  expect(afterCancel).toMatchObject({ closes: 0, aborts: 3 });
+  await expect(readPickedBytes(page, afterCancel.files[2]!)).rejects.toThrow();
+
+  // The result is still exportable, and the file still carries all three labels.
+  await page.getByRole('button', { name: 'Dismiss' }).click();
+  await beginDownload(page, 'csv');
+  await expect(page.locator('.results-download-status')).toContainText('File saved.');
+  const saved = await readPickedBytes(page);
+  expectCsvHeader(saved, '"dup","dup","dup"\r\n');
+  expect(new TextDecoder().decode(Uint8Array.from(saved.slice(3)))).toBe(
+    '"dup","dup","dup"\r\n2,"second",3\r\n',
+  );
+  expect(await pickerState(page)).toMatchObject({ closes: 1, aborts: 3 });
+  await page.getByRole('button', { name: 'Dismiss' }).click();
+  await expect.poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.exportFiles())).toEqual([]);
+});
 
 test('two tabs retain separate fallback artifacts and clean up only their own file', async ({
   context,

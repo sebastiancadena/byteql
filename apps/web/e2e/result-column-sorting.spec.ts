@@ -90,6 +90,55 @@ test('orders nulls last and keeps ties in original query order', async ({ page }
   expect(await ids()).toEqual([0, 1, 2, 3, 4]);
 });
 
+test('sorts each duplicate label by position, with nulls last and ties in query order', async ({ page }) => {
+  test.setTimeout(120_000);
+  await openMidiSample(page);
+  await runQuery(
+    page,
+    'select i::integer as id, ' +
+      'case when i in (1, 4) then null else (i % 2)::integer end as dup, ' +
+      "('t' || (i % 3))::varchar as dup " +
+      'from range(5) t(i)',
+  );
+  await expectRows(page, 5);
+  const ids = async (): Promise<number[]> => (await storedRows(page)).rows.map((row) => Number(row[0]));
+
+  const labelled = await storedRows(page);
+  // Both duplicates keep their own position, physical identity and type.
+  expect(labelled.columns).toEqual(['id', 'dup', 'dup']);
+  expect(labelled.physicalColumns).toEqual(['c0', 'c1', 'c2']);
+  expect(labelled.types).toEqual(['Int32', 'Int32', 'Utf8']);
+
+  await sortBy(page, 'Sort dup, column 2, ascending');
+  await expect(header(page, 1)).toHaveAttribute('aria-sort', 'ascending');
+  expect(await ids()).toEqual([0, 2, 3, 1, 4]);
+  await sortBy(page, 'Sort dup, column 2, descending');
+  expect(await ids()).toEqual([3, 0, 2, 1, 4]);
+
+  // The second duplicate sorts on its own values, not the first one's.
+  await sortBy(page, 'Sort dup, column 3, ascending');
+  await expect(header(page, 2)).toHaveAttribute('aria-sort', 'ascending');
+  await expect(page.locator('[role="columnheader"][aria-sort]')).toHaveCount(1);
+  expect(await ids()).toEqual([0, 3, 1, 4, 2]);
+  await sortBy(page, 'Sort dup, column 3, descending');
+  expect(await ids()).toEqual([2, 1, 4, 0, 3]);
+
+  await page.getByRole('button', { name: 'Restore query order', exact: true }).click();
+  await expect.poll(async () => (await metrics(page)).orderRevision).toBe(5);
+  expect(await ids()).toEqual([0, 1, 2, 3, 4]);
+  expect((await storedRows(page)).columns).toEqual(['id', 'dup', 'dup']);
+
+  // A replacement query releases the sorting resources and names its own columns.
+  await runQuery(page, "select 9::integer as other, 'nine'::varchar as other");
+  await expectRows(page, 1);
+  const replaced = await metrics(page);
+  expect(replaced).toMatchObject({ orderRevision: 0, sort: null, derivedViewCount: 0, sendCount: 1 });
+  await expect(page.locator('[role="columnheader"][aria-sort]')).toHaveCount(0);
+  await expect(page.getByRole('columnheader', { name: 'other, column 2, Utf8', exact: true })).toBeVisible();
+  expect((await storedRows(page)).columns).toEqual(['other', 'other']);
+  expect(await page.evaluate(() => window.__byteqlE2E.exportFiles())).toEqual([]);
+});
+
 test('sorts the rows a LIMIT selected without choosing different ones', async ({ page }) => {
   test.setTimeout(120_000);
   await openMidiSample(page);
