@@ -2690,6 +2690,52 @@ describe('SessionController', () => {
       expect(controller.getState().download).toBeNull();
     });
 
+    it('cannot publish or save a Parquet artifact built from names captured before a later sort', async () => {
+      prepareDestination.mockImplementationOnce(async () => {
+        const destination = new FakeDestination();
+        destination.commitResult = 'ready-to-save';
+        destinations.push(destination);
+        return destination;
+      });
+      const disposeArtifact = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(database.exportParquet).mockResolvedValueOnce({
+        file: new File([Uint8Array.of(1, 2, 3)], 'result.parquet'),
+        dispose: disposeArtifact,
+      });
+      parquetColumnNamesMock.mockReturnValueOnce([
+        { columnIndex: 0, label: 'value', name: 'captured_before_sort' },
+      ]);
+      const { controller } = await sortableController();
+      await controller.drainQueryResult();
+
+      await controller.downloadResults({ format: 'parquet', includeProvenance: true });
+      expect(controller.getState().download).toMatchObject({ phase: 'ready-to-save' });
+      expect(database.exportParquet).toHaveBeenCalledOnce();
+      expect(database.exportParquet).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ columnNames: ['captured_before_sort'] }),
+      );
+
+      // The sort commits a new order after the Parquet bytes were already written from the
+      // captured names above; any later capture must not be attributed to the finished export.
+      parquetColumnNamesMock.mockReturnValue([
+        { columnIndex: 0, label: 'value', name: 'captured_after_sort' },
+      ]);
+      vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
+      await controller.sortResults({ columnIndex: 0, direction: 'asc' });
+
+      // The stale, ready-to-save artifact must not still be offered for saving...
+      expect(controller.getState().download).toBeNull();
+      controller.saveResultsDownload();
+      expect(destinations.at(-1)!.saves).toBe(0);
+      // ...and no further export was ever attempted, stale or otherwise.
+      expect(database.exportParquet).toHaveBeenCalledOnce();
+      expect(database.exportParquet).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ columnNames: ['captured_after_sort'] }),
+      );
+    });
+
     it.each([
       ['a replacement query', (controller: SessionController) => controller.runQuery('select 2')],
       ['a file open', (controller: SessionController) => controller.openFile(midiFile('next.mid', 2))],
