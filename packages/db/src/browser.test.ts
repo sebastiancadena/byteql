@@ -1,5 +1,5 @@
 import type { TableSchema } from '@byteql/core';
-import { Table } from 'apache-arrow';
+import { Table, tableFromArrays } from 'apache-arrow';
 import {
   Int32 as DuckdbInt32,
   Field as DuckdbField,
@@ -109,7 +109,7 @@ vi.mock('./query-pages.js', async (importOriginal) => {
 });
 
 import { createBrowserDatabase } from './browser.js';
-import { resultColumnLabel } from './result-columns.js';
+import { parquetColumnNames, resultColumnLabel } from './result-columns.js';
 import { ResultSortError, type ResultSortOptions } from './result-sort.js';
 import type { ResultSortDependencies } from './sort-result.js';
 import type { QueryResultView } from './types.js';
@@ -173,6 +173,13 @@ const batchReader = (tables: readonly DuckdbTable[]) => {
     },
   };
 };
+
+const parquetOptions = (result: QueryResultView, columns: readonly number[] = [0]) => ({
+  columns,
+  columnNames: parquetColumnNames(result.schema, columns).map(({ name }) => name),
+  signal: new AbortController().signal,
+  onProgress: vi.fn(),
+});
 
 function rawDuplicateResult(start: number, rows: number) {
   const schema = new DuckdbSchema([
@@ -769,11 +776,7 @@ describe('createBrowserDatabase', () => {
     const database = await createBrowserDatabase();
     const session = await database.startQuery('select volatile_value from events');
     await session.fetchNext(2);
-    const options = {
-      columns: [0],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    };
+    const options = parquetOptions(session);
 
     await database.exportParquet(session, options);
 
@@ -789,11 +792,7 @@ describe('createBrowserDatabase', () => {
       .mockResolvedValueOnce(batchReader([duckdbResultTable(10, 1)]));
     const database = await createBrowserDatabase();
     const incomplete = await database.startQuery('select incomplete');
-    const options = {
-      columns: [0],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    };
+    const options = parquetOptions(incomplete);
 
     await expect(database.exportParquet(incomplete, options)).rejects.toThrow(/complete/i);
     await incomplete.fetchNext(2);
@@ -809,11 +808,7 @@ describe('createBrowserDatabase', () => {
     const session = await database.startQuery('select current');
     await session.fetchNext(1);
 
-    const exporting = database.exportParquet(session, {
-      columns: [0],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    });
+    const exporting = database.exportParquet(session, parquetOptions(session));
     const replacement = database.startQuery('select replacement');
 
     await expect(exporting).rejects.toThrow(/cancelled/i);
@@ -842,11 +837,7 @@ describe('createBrowserDatabase', () => {
     const database = await createBrowserDatabase();
     const session = await database.startQuery('select current');
     await session.fetchNext(1);
-    const exporting = database.exportParquet(session, {
-      columns: [0],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    });
+    const exporting = database.exportParquet(session, parquetOptions(session));
     await exportStarted.promise;
 
     const replacement = database.startQuery('select replacement');
@@ -874,11 +865,7 @@ describe('createBrowserDatabase', () => {
     const database = await createBrowserDatabase();
     const session = await database.startQuery('select current');
     await session.fetchNext(1);
-    const exporting = database.exportParquet(session, {
-      columns: [0],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    });
+    const exporting = database.exportParquet(session, parquetOptions(session));
     await exportStarted.promise;
 
     await expect(database.cancelQuery()).resolves.toBe(true);
@@ -903,11 +890,7 @@ describe('createBrowserDatabase', () => {
     const database = await createBrowserDatabase();
     const session = await database.startQuery('select current');
     await session.fetchNext(1);
-    const exporting = database.exportParquet(session, {
-      columns: [0],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    });
+    const exporting = database.exportParquet(session, parquetOptions(session));
     await exportStarted.promise;
 
     const disposal = database.dispose();
@@ -1514,7 +1497,7 @@ describe('createBrowserDatabase', () => {
     const fakeView = (): QueryResultView & { disposeCalls: number } => {
       const view = {
         disposeCalls: 0,
-        schema: new Table().schema,
+        schema: tableFromArrays({ value: Int32Array.from([0]) }).schema,
         status: () => ({
           loadedRows: 2,
           complete: true,
@@ -1753,7 +1736,7 @@ describe('createBrowserDatabase', () => {
       createQueryPagePersistenceMock.mockResolvedValue(new FakeQueryPagePersistence());
       const { database, session } = await completeSession();
       const sorted = await database.createSortedView(session, sortOptions());
-      const options = { columns: [0], signal: new AbortController().signal, onProgress: vi.fn() };
+      const options = parquetOptions(sorted);
 
       await database.exportParquet(sorted, options);
       expect(exportMocks.writeParquet.mock.calls[0]?.[1]).toBe(sorted);
@@ -1772,13 +1755,9 @@ describe('createBrowserDatabase', () => {
       await database.startQuery('select other from events');
 
       expect(view.disposeCalls).toBe(1);
-      await expect(
-        database.exportParquet(sorted, {
-          columns: [0],
-          signal: new AbortController().signal,
-          onProgress: vi.fn(),
-        }),
-      ).rejects.toThrow(/not current|superseded/iu);
+      await expect(database.exportParquet(sorted, parquetOptions(sorted))).rejects.toThrow(
+        /not current|superseded/iu,
+      );
     });
 
     it('refuses to export while a sort is pending', async () => {
@@ -1788,13 +1767,9 @@ describe('createBrowserDatabase', () => {
       const { database, session } = await completeSession();
 
       const sorting = database.createSortedView(session, sortOptions());
-      await expect(
-        database.exportParquet(session, {
-          columns: [0],
-          signal: new AbortController().signal,
-          onProgress: vi.fn(),
-        }),
-      ).rejects.toThrow(/not current|superseded/iu);
+      await expect(database.exportParquet(session, parquetOptions(session))).rejects.toThrow(
+        /not current|superseded/iu,
+      );
       gate.resolve(fakeView());
       await sorting;
     });

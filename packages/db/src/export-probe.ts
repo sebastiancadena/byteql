@@ -14,6 +14,7 @@ import { LOCAL_BUNDLES } from './browser.js';
 import type { ExportFiles } from './export-files.js';
 import { writeParquet } from './export-parquet.js';
 import type { ParquetArtifact } from './export-types.js';
+import { parquetColumnNames } from './result-columns.js';
 import type { QuerySession } from './types.js';
 
 export interface ExportProbeReport {
@@ -521,6 +522,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
         sequenceResult,
         {
           columns: [0, 1],
+          columnNames: parquetColumnNames(sequenceResult.schema, [0, 1]).map(({ name }) => name),
           signal: new AbortController().signal,
           onProgress: () => undefined,
         },
@@ -582,6 +584,10 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       const typedResult = querySession([typedTable], typedTable.schema);
       const productionTypes = await writeParquet(productionDependencies('production-types'), typedResult, {
         columns: typedTable.schema.fields.map((_, index) => index),
+        columnNames: parquetColumnNames(
+          typedResult.schema,
+          typedTable.schema.fields.map((_, index) => index),
+        ).map(({ name }) => name),
         signal: new AbortController().signal,
         onProgress: () => undefined,
       });
@@ -611,6 +617,10 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       const emptyResult = querySession([], emptyTable.schema);
       const productionEmpty = await writeParquet(productionDependencies('production-empty'), emptyResult, {
         columns: emptyTable.schema.fields.map((_, index) => index),
+        columnNames: parquetColumnNames(
+          emptyResult.schema,
+          emptyTable.schema.fields.map((_, index) => index),
+        ).map(({ name }) => name),
         signal: new AbortController().signal,
         onProgress: () => undefined,
       });

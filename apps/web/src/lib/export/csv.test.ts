@@ -17,6 +17,8 @@ import {
   Struct,
   Table,
   tableFromArrays,
+  tableFromIPC,
+  tableToIPC,
   TimeMicrosecond,
   TimestampMicrosecond,
   TimestampNanosecond,
@@ -25,6 +27,7 @@ import {
   vectorFromArray,
 } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
+import { withResultLabels } from '../../components/result-columns.test-support';
 import { csvChunks } from './csv';
 
 const decode = (chunks: Iterable<Uint8Array>): string =>
@@ -173,6 +176,32 @@ describe('csvChunks', () => {
     const table = new Table(schema, [batch]);
 
     expect(decode(csvChunks(table, [0, 1], true))).toBe('\uFEFF"value","value"\r\n1,2\r\n');
+  });
+
+  it('uses logical result labels exactly after an IPC round-trip', () => {
+    const source = tableFromArrays({
+      c0: Int32Array.from([10]),
+      c1: ['ten'],
+      c2: ['quoted'],
+      c3: ['empty'],
+      c4: ['\uFEFFbom'],
+    });
+    const table = tableFromIPC(
+      tableToIPC(withResultLabels(source, ['dup', 'dup', 'name,"quoted"', '', 'label']), 'stream'),
+    );
+
+    expect(decode(csvChunks(table, [0, 1, 2, 3, 4], true))).toBe(
+      '\uFEFF"dup","dup","name,""quoted""","","label"\r\n' + '10,"ten","quoted","empty","\uFEFFbom"\r\n',
+    );
+  });
+
+  it('uses logical labels for an empty mixed-type result', () => {
+    const source = new Table(
+      new Schema([new Field('c0', new Int32(), true), new Field('c1', new Utf8(), true)]),
+    );
+    const table = tableFromIPC(tableToIPC(withResultLabels(source, ['dup', 'dup']), 'stream'));
+
+    expect(decode(csvChunks(table, [0, 1], true))).toBe('\uFEFF"dup","dup"\r\n');
   });
 
   it('emits the BOM and header exactly once across concatenated pages', () => {

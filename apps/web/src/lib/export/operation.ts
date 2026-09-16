@@ -38,6 +38,7 @@ export interface ExportOperation {
   readonly result: QueryResultView;
   /** The committed order at the moment the download was requested. */
   readonly orderRevision: number;
+  readonly parquetColumnNames: readonly string[] | null;
   readonly abortController: AbortController;
   destination: ExportDestination | null;
   destinationAbort: Promise<void> | null;

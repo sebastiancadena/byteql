@@ -1,4 +1,5 @@
 import { isSupportedParquetType, unsupportedParquetTypeMessage } from '@byteql/db';
+import { resultColumnLabel } from '@byteql/db/result-columns';
 import { DataType, type Schema } from 'apache-arrow';
 
 export type ExportFormat = 'csv' | 'parquet';
@@ -11,7 +12,7 @@ export type ExportOptions = {
 export function selectExportColumns(schema: Schema, options: ExportOptions): number[] {
   const columns = schema.fields
     .map((field, index) => ({ field, index }))
-    .filter(({ field }) => options.includeProvenance || !field.name.startsWith('_'));
+    .filter(({ field }) => options.includeProvenance || !resultColumnLabel(field).startsWith('_'));
 
   if (columns.length === 0) {
     throw new Error('At least one column must be selected for export.');
@@ -22,25 +23,12 @@ export function selectExportColumns(schema: Schema, options: ExportOptions): num
       options.format === 'parquet' ? isSupportedParquetType(field.type) : isSupportedCsvScalar(field.type);
     if (!supported) {
       if (options.format === 'parquet') {
-        throw new Error(unsupportedParquetTypeMessage(field.name, field.type));
+        throw new Error(unsupportedParquetTypeMessage(resultColumnLabel(field), field.type));
       }
       throw new Error(
-        `Column "${field.name}" has unsupported type ${field.type}; cast it explicitly in SQL before exporting.`,
+        `Column "${resultColumnLabel(field)}" has unsupported type ${field.type}; ` +
+          'cast it explicitly in SQL before exporting.',
       );
-    }
-  }
-
-  if (options.format === 'parquet') {
-    const names = new Map<string, string>();
-    for (const { field } of columns) {
-      const comparable = duckDbIdentifierKey(field.name);
-      const previous = names.get(comparable);
-      if (previous !== undefined) {
-        throw new Error(
-          `Parquet cannot export duplicate column name "${field.name}" (also "${previous}"); alias one in SQL.`,
-        );
-      }
-      names.set(comparable, field.name);
     }
   }
 
@@ -82,10 +70,6 @@ function isSupportedCsvScalar(type: DataType): boolean {
     DataType.isTime(type) ||
     DataType.isTimestamp(type)
   );
-}
-
-function duckDbIdentifierKey(name: string): string {
-  return name.replace(/[A-Z]/g, (character) => character.toLowerCase());
 }
 
 function isPathInvalid(character: string): boolean {

@@ -18,6 +18,7 @@ import {
   LargeUtf8,
   List,
   Null,
+  RecordBatch,
   Schema,
   Table,
   TimeMicrosecond,
@@ -39,6 +40,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { writeParquet } from './export-parquet.js';
 import { isSupportedParquetType } from './export-types.js';
+import { parquetColumnNames, RESULT_LABEL_METADATA_KEY } from './result-columns.js';
 import type { QuerySession } from './types.js';
 
 const asyncReader = () => ({
@@ -77,6 +79,36 @@ const querySession = (tables: readonly Table[], schema = tables[0]?.schema ?? ne
     dispose: vi.fn(),
   };
 };
+
+const withResultLabels = (source: Table, labels: readonly string[]): Table => {
+  if (source.schema.fields.length !== labels.length) throw new Error('Result labels must match columns.');
+  const schema = new Schema(
+    source.schema.fields.map(
+      (field, index) =>
+        new Field(
+          field.name,
+          field.type,
+          field.nullable,
+          new Map([...field.metadata, [RESULT_LABEL_METADATA_KEY, labels[index]!]]),
+        ),
+    ),
+  );
+  return new Table(
+    schema,
+    source.batches.map((batch) => new RecordBatch(schema, batch.data)),
+  );
+};
+
+const parquetOptions = (
+  result: QuerySession,
+  columns: readonly number[],
+  overrides: Partial<{ signal: AbortSignal; onProgress(rows: number): void }> = {},
+) => ({
+  columns,
+  columnNames: parquetColumnNames(result.schema, columns).map(({ name }) => name),
+  signal: overrides.signal ?? new AbortController().signal,
+  onProgress: overrides.onProgress ?? vi.fn(),
+});
 
 const environment = () => {
   const files = {
@@ -124,11 +156,11 @@ describe('writeParquet', () => {
     const { dependencies, connection, database, files } = environment();
     const progress = vi.fn();
 
-    const artifact = await writeParquet(dependencies, result, {
-      columns: [2, 1],
-      signal: new AbortController().signal,
-      onProgress: progress,
-    });
+    const artifact = await writeParquet(
+      dependencies,
+      result,
+      parquetOptions(result, [2, 1], { onProgress: progress }),
+    );
 
     expect(result.readPage).toHaveBeenCalledTimes(2);
     expect(result.fetchNext).not.toHaveBeenCalled();
@@ -193,11 +225,7 @@ describe('writeParquet', () => {
     const result = querySession([], schema);
     const { dependencies, connection } = environment();
 
-    await writeParquet(dependencies, result, {
-      columns: [1],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    });
+    await writeParquet(dependencies, result, parquetOptions(result, [1]));
 
     expect(connection.insertArrowFromIPCStream).toHaveBeenCalledOnce();
     const imported = tableFromIPC(connection.insertArrowFromIPCStream.mock.calls[0]![0] as Uint8Array);
@@ -243,11 +271,7 @@ describe('writeParquet', () => {
     } as unknown as QuerySession;
     const { dependencies, connection, database } = environment();
 
-    await writeParquet(dependencies, result, {
-      columns: [0],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    });
+    await writeParquet(dependencies, result, parquetOptions(result, [0]));
 
     const imports = connection.insertArrowFromIPCStream.mock.calls.map(([ipc]) =>
       Array.from(tableFromIPC(ipc as Uint8Array).getChild('__byteql_export_ordinal')!),
@@ -268,11 +292,7 @@ describe('writeParquet', () => {
     const result = querySession([table]);
     const { dependencies, connection } = environment();
 
-    await writeParquet(dependencies, result, {
-      columns: [0, 1],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    });
+    await writeParquet(dependencies, result, parquetOptions(result, [0, 1]));
 
     const imported = tableFromIPC(connection.insertArrowFromIPCStream.mock.calls[0]![0] as Uint8Array);
     // The user's column is staged positionally as c0; only the appended ordinal carries the
@@ -291,18 +311,77 @@ describe('writeParquet', () => {
     expect(sent.at(-1)).toContain('ORDER BY "__byteql_export_src"."__byteql_export_ordinal" ASC');
   });
 
+  it('writes the validated deterministic names for collisions, quotes, empty labels, and the ordinal name', async () => {
+    const table = withResultLabels(
+      new Table({
+        c0: vectorFromArray([1], new Int32()),
+        c1: vectorFromArray([2], new Int32()),
+        c2: vectorFromArray([3], new Int32()),
+        c3: vectorFromArray([4], new Int32()),
+        c4: vectorFromArray([5], new Int32()),
+        c5: vectorFromArray([6], new Int32()),
+      }),
+      ['dup', 'DUP', 'dup_2', 'quoted"name', '__byteql_export_ordinal', ''],
+    );
+    const result = querySession([table]);
+    const { dependencies, connection } = environment();
+    const options = parquetOptions(result, [0, 1, 2, 3, 4, 5]);
+
+    expect(options.columnNames).toEqual([
+      'dup',
+      'DUP_3',
+      'dup_2',
+      'quoted"name',
+      '__byteql_export_ordinal',
+      'column_6',
+    ]);
+    await writeParquet(dependencies, result, options);
+
+    expect(String(connection.send.mock.calls.at(-1)?.[0])).toContain(
+      'SELECT "c0" AS "dup", "c1" AS "DUP_3", "c2" AS "dup_2", ' +
+        '"c3" AS "quoted""name", "c4" AS "__byteql_export_ordinal", "c5" AS "column_6"',
+    );
+  });
+
+  it.each([
+    ['a length mismatch', ['dup']],
+    ['reordered names', ['dup_3', 'dup', 'dup_2']],
+    ['duplicate names', ['dup', 'dup', 'dup_2']],
+    ['stale names', ['dup', 'dup_2', 'dup_3']],
+  ])('rejects %s before allocating export resources', async (_case, columnNames) => {
+    const table = withResultLabels(
+      new Table({
+        c0: vectorFromArray([1], new Int32()),
+        c1: vectorFromArray([2], new Int32()),
+        c2: vectorFromArray([3], new Int32()),
+      }),
+      ['dup', 'dup', 'dup_2'],
+    );
+    const result = querySession([table]);
+    const { dependencies, connection, database } = environment();
+
+    await expect(
+      writeParquet(dependencies, result, {
+        columns: [0, 1, 2],
+        columnNames,
+        signal: new AbortController().signal,
+        onProgress: vi.fn(),
+      }),
+    ).rejects.toThrow('Parquet column names no longer match the selected result.');
+    expect(dependencies.createFiles).not.toHaveBeenCalled();
+    expect(dependencies.connect).not.toHaveBeenCalled();
+    expect(connection.send).not.toHaveBeenCalled();
+    expect(database.registerOPFSFileName).not.toHaveBeenCalled();
+  });
+
   it('rejects unsupported selected columns before acquiring export resources', async () => {
     const schema = new Schema([new Field('events', new List(new Field('item', new Int32(), true)), true)]);
     const result = querySession([], schema);
     const { dependencies } = environment();
 
-    await expect(
-      writeParquet(dependencies, result, {
-        columns: [0],
-        signal: new AbortController().signal,
-        onProgress: vi.fn(),
-      }),
-    ).rejects.toThrow(/events.*unsupported.*cast/i);
+    await expect(writeParquet(dependencies, result, parquetOptions(result, [0]))).rejects.toThrow(
+      /events.*unsupported.*cast/i,
+    );
     expect(dependencies.createFiles).not.toHaveBeenCalled();
     expect(dependencies.connect).not.toHaveBeenCalled();
   });
@@ -312,13 +391,9 @@ describe('writeParquet', () => {
     const result = querySession([], schema);
     const { dependencies } = environment();
 
-    await expect(
-      writeParquet(dependencies, result, {
-        columns: [0],
-        signal: new AbortController().signal,
-        onProgress: vi.fn(),
-      }),
-    ).rejects.toThrow(/observed_at.*TIMESTAMP or TIMESTAMP_NS/i);
+    await expect(writeParquet(dependencies, result, parquetOptions(result, [0]))).rejects.toThrow(
+      /observed_at.*TIMESTAMP or TIMESTAMP_NS/i,
+    );
     expect(dependencies.createFiles).not.toHaveBeenCalled();
   });
 
@@ -330,11 +405,9 @@ describe('writeParquet', () => {
     connection.send.mockRejectedValueOnce(copyFailure);
     files.dispose.mockRejectedValueOnce(cleanupFailure);
 
-    const failure = await writeParquet(dependencies, result, {
-      columns: [0],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    }).catch((error: unknown) => error);
+    const failure = await writeParquet(dependencies, result, parquetOptions(result, [0])).catch(
+      (error: unknown) => error,
+    );
 
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors).toEqual([copyFailure, cleanupFailure]);
@@ -351,11 +424,9 @@ describe('writeParquet', () => {
     connection.send.mockRejectedValueOnce(copyFailure);
     connection.query.mockRejectedValueOnce(dropFailure);
 
-    const failure = await writeParquet(dependencies, result, {
-      columns: [0],
-      signal: new AbortController().signal,
-      onProgress: vi.fn(),
-    }).catch((error: unknown) => error);
+    const failure = await writeParquet(dependencies, result, parquetOptions(result, [0])).catch(
+      (error: unknown) => error,
+    );
 
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors).toEqual([copyFailure, dropFailure]);
@@ -378,11 +449,11 @@ describe('writeParquet', () => {
       return true;
     });
 
-    const exportPromise = writeParquet(dependencies, result, {
-      columns: [0],
-      signal: controller.signal,
-      onProgress: vi.fn(),
-    });
+    const exportPromise = writeParquet(
+      dependencies,
+      result,
+      parquetOptions(result, [0], { signal: controller.signal }),
+    );
     await vi.waitFor(() => expect(connection.send).toHaveBeenCalledOnce());
     controller.abort();
     await expect(exportPromise).rejects.toMatchObject({ name: 'AbortError' });
@@ -408,11 +479,11 @@ describe('writeParquet', () => {
         }),
     );
 
-    const exporting = writeParquet(dependencies, result, {
-      columns: [0],
-      signal: controller.signal,
-      onProgress: vi.fn(),
-    });
+    const exporting = writeParquet(
+      dependencies,
+      result,
+      parquetOptions(result, [0], { signal: controller.signal }),
+    );
     await vi.waitFor(() => expect(files.file).toHaveBeenCalledOnce());
     controller.abort();
     resolveFile(new File(['complete'], 'result.parquet'));

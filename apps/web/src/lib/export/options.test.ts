@@ -10,11 +10,14 @@ import {
   List,
   Null,
   Schema,
+  Table,
   TimeSecond,
   TimestampMillisecond,
   Utf8,
+  tableFromArrays,
 } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
+import { withResultLabels } from '../../components/result-columns.test-support';
 import { exportFilename, selectExportColumns } from './options';
 
 const schema = (...fields: Array<[string, Field['type']]>) =>
@@ -48,12 +51,32 @@ describe('selectExportColumns', () => {
     );
   });
 
-  it('preserves duplicate CSV names but rejects Parquet names equal under DuckDB rules', () => {
-    const resultSchema = schema(['Value', new Int32()], ['value', new Int32()]);
+  it('selects duplicate logical labels for both export formats', () => {
+    const resultSchema = withResultLabels(
+      tableFromArrays({ c0: Int32Array.from([1]), c1: Int32Array.from([2]) }),
+      ['Value', 'value'],
+    ).schema;
 
     expect(selectExportColumns(resultSchema, { format: 'csv', includeProvenance: true })).toEqual([0, 1]);
-    expect(() => selectExportColumns(resultSchema, { format: 'parquet', includeProvenance: true })).toThrow(
-      /duplicate.*value.*alias/i,
+    expect(selectExportColumns(resultSchema, { format: 'parquet', includeProvenance: true })).toEqual([0, 1]);
+  });
+
+  it('filters hidden columns and reports unsupported types by logical label', () => {
+    const hidden = withResultLabels(tableFromArrays({ c0: Int32Array.from([1]), c1: Int32Array.from([2]) }), [
+      'visible',
+      '_src_start',
+    ]).schema;
+    const unsupported = withResultLabels(
+      new Table(schema(['c0', new List(new Field('item', new Int32(), true))])),
+      ['events'],
+    ).schema;
+
+    expect(selectExportColumns(hidden, { format: 'csv', includeProvenance: false })).toEqual([0]);
+    expect(() => selectExportColumns(unsupported, { format: 'parquet', includeProvenance: true })).toThrow(
+      /events.*cast/i,
+    );
+    expect(() => selectExportColumns(unsupported, { format: 'csv', includeProvenance: true })).toThrow(
+      /events.*cast/i,
     );
   });
 

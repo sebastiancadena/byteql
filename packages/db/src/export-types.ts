@@ -2,6 +2,7 @@ import { DataType, DateUnit, Precision, TimeUnit } from 'apache-arrow';
 
 export interface ParquetExportOptions {
   readonly columns: readonly number[];
+  readonly columnNames: readonly string[];
   readonly signal: AbortSignal;
   onProgress(rows: number): void;
 }

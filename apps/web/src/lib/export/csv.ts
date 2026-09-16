@@ -1,4 +1,5 @@
 import { DataType, DateUnit, TimeUnit, type Data, type Table, Vector } from 'apache-arrow';
+import { resultColumnLabel } from '@byteql/db/result-columns';
 
 const MAX_CHUNK_BYTES = 64 * 1024;
 const TEXT_BLOCK_CODE_UNITS = 16 * 1024;
@@ -26,7 +27,7 @@ export function* csvChunks(
         yield '\uFEFF';
         for (let column = 0; column < fields.length; column += 1) {
           if (column > 0) yield ',';
-          yield* quotedText(fields[column]!.name);
+          yield* quotedText(resultColumnLabel(fields[column]!));
         }
         yield '\r\n';
       }

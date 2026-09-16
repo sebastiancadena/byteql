@@ -51,12 +51,14 @@ const {
   queryInitialRows,
   queryPageRows,
   queryResultMemoryBytes,
+  parquetColumnNamesMock,
 } = vi.hoisted(() => ({
   sweepQueryPageOrphansMock: vi.fn().mockResolvedValue(undefined),
   sweepSpillOrphansMock: vi.fn().mockResolvedValue(undefined),
   queryInitialRows: 1_024,
   queryPageRows: 8_192,
   queryResultMemoryBytes: 64 * 1024 * 1024,
+  parquetColumnNamesMock: vi.fn(),
 }));
 vi.mock('@byteql/db', () => ({
   QUERY_INITIAL_ROWS: queryInitialRows,
@@ -70,6 +72,10 @@ vi.mock('@byteql/db', () => ({
   // The real policy is exercised in the db package and in result-sort.test.ts; here every schema
   // is eligible so these tests are about the controller's coordination, not its type rules.
   resultSortEligibility: () => ({ supported: true }),
+}));
+vi.mock('@byteql/db/result-columns', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@byteql/db/result-columns')>()),
+  parquetColumnNames: parquetColumnNamesMock,
 }));
 
 interface Deferred<T> {
@@ -510,6 +516,13 @@ describe('SessionController', () => {
 
   beforeEach(() => {
     sweepSpillOrphansMock.mockClear();
+    parquetColumnNamesMock.mockReset().mockImplementation((schema, columns: readonly number[]) =>
+      columns.map((columnIndex) => ({
+        columnIndex,
+        label: schema.fields[columnIndex]!.name,
+        name: schema.fields[columnIndex]!.name,
+      })),
+    );
     parser = new FakeParser();
     ({ database, sessions, querySessions } = fakeDatabase());
     stopViewer = vi.fn<() => void>();
@@ -799,6 +812,64 @@ describe('SessionController', () => {
     expect(destinations[0]!.chunks).toEqual([Uint8Array.of(1, 2, 3)]);
     expect(disposeArtifact).toHaveBeenCalledOnce();
     expect(controller.getState().download).toMatchObject({ phase: 'saved', bytes: 3 });
+  });
+
+  it('captures and copies Parquet column names before destination acquisition awaits', async () => {
+    const query = new FakeQuerySession();
+    query.completeAfterPage = true;
+    vi.mocked(database.startQuery).mockImplementationOnce(async () => {
+      querySessions.push(query);
+      return query;
+    });
+    const picker = deferred<ExportDestination>();
+    prepareDestination.mockReturnValueOnce(picker.promise);
+    const disposeArtifact = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(database.exportParquet).mockResolvedValueOnce({
+      file: new File([Uint8Array.of(1)], 'result.parquet'),
+      dispose: disposeArtifact,
+    });
+    const captured = { columnIndex: 0, label: 'dup', name: 'dup_2' };
+    parquetColumnNamesMock.mockReturnValueOnce([captured]);
+    const controller = await readyController();
+    await controller.runQuery('select value from events');
+
+    const download = controller.downloadResults({ format: 'parquet', includeProvenance: true });
+
+    expect(parquetColumnNamesMock).toHaveBeenCalledOnce();
+    expect(parquetColumnNamesMock.mock.invocationCallOrder[0]).toBeLessThan(
+      prepareDestination.mock.invocationCallOrder[0]!,
+    );
+    captured.name = 'mutated-after-capture';
+    parquetColumnNamesMock.mockReturnValue([{ columnIndex: 0, label: 'later', name: 'later' }]);
+    picker.resolve(new FakeDestination());
+    await download;
+
+    expect(database.exportParquet).toHaveBeenCalledWith(
+      query,
+      expect.objectContaining({ columns: [0], columnNames: ['dup_2'] }),
+    );
+    expect(parquetColumnNamesMock).toHaveBeenCalledOnce();
+    expect(disposeArtifact).toHaveBeenCalledOnce();
+  });
+
+  it('does not publish captured Parquet names after a replacement query takes ownership', async () => {
+    const controller = await readyController();
+    await controller.runQuery('select * from events');
+    const picker = deferred<ExportDestination>();
+    prepareDestination.mockReturnValueOnce(picker.promise);
+    parquetColumnNamesMock.mockReturnValueOnce([{ columnIndex: 0, label: 'dup', name: 'dup_2' }]);
+
+    const download = controller.downloadResults({ format: 'parquet', includeProvenance: true });
+    const replacement = controller.runQuery('select replacement');
+    await flush();
+    const lateDestination = new FakeDestination();
+    picker.resolve(lateDestination);
+    await Promise.all([download, replacement]);
+
+    expect(database.exportParquet).not.toHaveBeenCalled();
+    expect(lateDestination.aborts).toBe(1);
+    expect(lateDestination.disposals).toBe(1);
+    expect(lateDestination.commits).toBe(0);
   });
 
   it('retains a fallback destination for synchronous Save until dismissal', async () => {
@@ -2555,6 +2626,8 @@ describe('SessionController', () => {
       await expect(controller.sortResults({ columnIndex: 0, direction: 'asc' })).rejects.toThrow(
         /download/iu,
       );
+      expect(database.createSortedView).not.toHaveBeenCalled();
+      expect(destinations[0]?.commits ?? 0).toBe(0);
       await controller.cancelResultsDownload();
       await download.catch(() => undefined);
     });

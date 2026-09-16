@@ -13,6 +13,7 @@ import {
   type ResultSortCapability,
   type ResultSortProgress,
 } from '@byteql/db';
+import { parquetColumnNames } from '@byteql/db/result-columns';
 import { Table } from 'apache-arrow';
 
 import {
@@ -683,6 +684,7 @@ export class SessionController {
     const base = this.activeQuery;
     const view = this.activeResultView;
     let columns: number[];
+    let capturedNames: string[] | null;
     try {
       if (!resultState || !base || !view || resultState.generation !== this.queryGeneration) {
         throw new Error('Run a query before downloading results.');
@@ -697,6 +699,10 @@ export class SessionController {
         throw new Error('Retry or rerun the query before downloading results.');
       }
       columns = selectExportColumns(resultState.schema, options);
+      capturedNames =
+        options.format === 'parquet'
+          ? parquetColumnNames(resultState.schema, columns).map(({ name }) => name)
+          : null;
     } catch (error) {
       return this.publishDownloadValidationFailure(error);
     }
@@ -717,6 +723,7 @@ export class SessionController {
       // user was looking at when they asked for it.
       result: view,
       orderRevision: resultState.orderRevision,
+      parquetColumnNames: capturedNames === null ? null : [...capturedNames],
       abortController,
       destination: null,
       destinationAbort: null,
@@ -1231,8 +1238,12 @@ export class SessionController {
           }
         }
       } else {
+        if (operation.parquetColumnNames === null) {
+          throw new Error('Parquet column names were not captured for this export.');
+        }
         const artifact = await this.database.exportParquet(operation.result, {
           columns,
+          columnNames: operation.parquetColumnNames,
           signal: operation.abortController.signal,
           onProgress: (rows) => {
             this.updateDownload(operation, { phase: 'encoding', rows });

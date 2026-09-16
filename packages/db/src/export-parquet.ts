@@ -3,6 +3,7 @@ import { Table, tableToIPC } from 'apache-arrow';
 
 import { createExportFiles, type ExportFiles } from './export-files.js';
 import { snapshotPage } from './result-snapshot.js';
+import { parquetColumnNames, resultColumnLabel } from './result-columns.js';
 import {
   isSupportedParquetType,
   type ParquetArtifact,
@@ -39,7 +40,7 @@ const selectedFields = (result: QueryResultView, columns: readonly number[]) => 
     }
     const field = result.schema.fields[index]!;
     if (!isSupportedParquetType(field.type)) {
-      throw new Error(unsupportedParquetTypeMessage(field.name, field.type));
+      throw new Error(unsupportedParquetTypeMessage(resultColumnLabel(field), field.type));
     }
     return field;
   });
@@ -87,8 +88,8 @@ class ParquetWriter {
 
     this.options.signal.throwIfAborted();
     const output = await this.register(RESULT_FILE);
-    const projection = selectedFields(this.result, this.options.columns)
-      .map((field, index) => `${quoteIdentifier(`c${index}`)} AS ${quoteIdentifier(field.name)}`)
+    const projection = this.options.columnNames
+      .map((name, index) => `${quoteIdentifier(`c${index}`)} AS ${quoteIdentifier(name)}`)
       .join(', ');
     const paths = shards.map(quoteString).join(', ');
     // The projection names only the user's columns, so the private ordinal orders the rows and
@@ -225,6 +226,13 @@ export async function writeParquet(
   options: ParquetExportOptions,
 ): Promise<ParquetArtifact> {
   selectedFields(result, options.columns);
+  const expectedNames = parquetColumnNames(result.schema, options.columns).map(({ name }) => name);
+  if (
+    options.columnNames.length !== expectedNames.length ||
+    expectedNames.some((name, index) => name !== options.columnNames[index])
+  ) {
+    throw new Error('Parquet column names no longer match the selected result.');
+  }
   options.signal.throwIfAborted();
   const files = await dependencies.createFiles();
   let connection: AsyncDuckDBConnection;
