@@ -115,7 +115,7 @@ Measured on 2026-09-16, in the environment above:
 - The independent runtime probe (`packages/db/src/result-columns-probe.ts`) passes on **both**
   pinned bundles: mixed-type and same-type duplicates, an empty duplicate result, sliced pages, an
   IPC round trip, and exact values. Artifacts: `result-columns-{mvp,eh}.json`.
-- A full browser workflow over
+- A full browser workflow — under Playwright's Chromium, which selects the `eh` bundle — over
   `select i::integer as dup, ('row-' || (20000 - i))::varchar as dup, random() as token from range(20001)`:
   - Both headers read `dup`, distinguished for assistive technology by position
     (`dup, column 1, Int32` and `dup, column 2, Utf8`); the Inspector lists both labels with their
@@ -128,7 +128,8 @@ Measured on 2026-09-16, in the environment above:
   - CSV repeats the header exactly — `"dup","dup","token"` after the BOM, read from the file's own
     bytes — and Parquet exports `dup`, `dup_2`, `token`, previewing that mapping in the download
     popover before the download starts.
-- Case-only collisions and duplicated hidden columns are separated the same way (`Dup`, `dup_2`,
+- In that same `eh` browser workflow, case-only collisions and duplicated hidden columns are
+  separated the same way (`Dup`, `dup_2`,
   `_dup`, `_dup_2`), and an empty duplicate-labelled result keeps both positions, their types and
   their file names.
 
@@ -144,8 +145,12 @@ Sorting-specific consequences that still hold:
 - Byte provenance is refused when `_src_file`, `_src_start` or `_src_end` appears more than once:
   the Inspector says the provenance is ambiguous and keeps the values rather than guessing which
   pair to trust. Viewers that need a named column are withheld for the same reason.
-- Sorting is still refused entirely on the `mvp` bundle (see the section above). Reading,
-  inspecting and exporting duplicate labels are unaffected there.
+- Sorting is still refused entirely on the `mvp` bundle (see the section above). On that bundle
+  only **reading** duplicate labels is measured — the runtime probe's duplicate-label checks pass on
+  `mvp` as well as on `eh`. Inspection and export of duplicate labels were measured on `eh` alone:
+  the browser workflow runs under Playwright's Chromium, and `packages/db/src/export-probe.ts`
+  carries no duplicate-label fixture. Their behaviour on `mvp` is therefore unverified here, not
+  known to be equivalent.
 
 ## Observed performance
 
