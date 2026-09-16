@@ -67,6 +67,11 @@ for (const variant of ['mvp', 'eh'] as const) {
         schemaPreserved: true,
         tiesStable: true,
         nullsLast: true,
+        duplicateColumns: {
+          firstSorted: true,
+          secondSorted: true,
+          schemaPreserved: true,
+        },
         cancellationSettled: true,
         resourcesReleased: true,
         runtimeOrderBy: { inMemory: true, parquet: true },

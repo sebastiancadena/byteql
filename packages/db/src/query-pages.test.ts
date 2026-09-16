@@ -1,4 +1,14 @@
-import { tableFromArrays, tableToIPC } from 'apache-arrow';
+import {
+  Field,
+  Int32,
+  RecordBatch,
+  Schema,
+  Table,
+  Utf8,
+  tableFromArrays,
+  tableToIPC,
+  vectorFromArray,
+} from 'apache-arrow';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -7,6 +17,23 @@ import {
   type QueryPagePersistence,
   sweepQueryPageOrphans,
 } from './query-pages.js';
+import { RESULT_LABEL_METADATA_KEY, resultColumnLabel } from './result-columns.js';
+
+const duplicateLabelTable = (integers: readonly number[], strings: readonly string[]): Table => {
+  const built = new Table({
+    c0: vectorFromArray(Int32Array.from(integers)),
+    c1: vectorFromArray(strings, new Utf8()),
+  });
+  const label = new Map([[RESULT_LABEL_METADATA_KEY, 'dup']]);
+  const schema = new Schema([
+    new Field('c0', new Int32(), true, label),
+    new Field('c1', new Utf8(), true, label),
+  ]);
+  return new Table(
+    schema,
+    built.batches.map((batch) => new RecordBatch(schema, batch.data)),
+  );
+};
 
 class FakePersistence implements QueryPagePersistence {
   readonly files = new Map<number, Uint8Array>();
@@ -169,6 +196,30 @@ describe('QueryPageStore', () => {
     expect(page.startRow).toBe(0);
     expect(Array.from(page.table.getChild('value')!.toArray())).toEqual([10, 11]);
     expect(persistence.reads).toContain(0);
+  });
+
+  it('retains positional duplicate labels and types through eviction, reload and materialization', async () => {
+    const persistence = new FakePersistence();
+    const first = duplicateLabelTable([10, 11], ['ten', 'eleven']);
+    const second = duplicateLabelTable([12], ['twelve']);
+    const store = new QueryPageStore({ persistence, memoryLimitBytes: 0 });
+    await store.put(0, 0, first);
+    await store.put(1, 2, second);
+
+    const reloaded = (await store.get(0)).table;
+    expect(persistence.reads).toContain(0);
+    expect(reloaded.schema.fields.map((field) => field.name)).toEqual(['c0', 'c1']);
+    expect(reloaded.schema.fields.map(resultColumnLabel)).toEqual(['dup', 'dup']);
+    expect(reloaded.schema.fields.map((field) => field.type.toString())).toEqual(['Int32', 'Utf8']);
+    expect(reloaded.getChildAt(0)!.get(0)).toBe(10);
+    expect(reloaded.getChildAt(1)!.get(0)).toBe('ten');
+
+    store.markComplete();
+    const materialized = await store.materialize(Number.MAX_SAFE_INTEGER);
+    expect(materialized!.schema.fields.map((field) => field.name)).toEqual(['c0', 'c1']);
+    expect(materialized!.schema.fields.map(resultColumnLabel)).toEqual(['dup', 'dup']);
+    expect([...materialized!.getChildAt(0)!]).toEqual([10, 11, 12]);
+    expect([...materialized!.getChildAt(1)!]).toEqual(['ten', 'eleven', 'twelve']);
   });
 
   it('keeps pinned decoded pages while evicting an unpinned page over the cache budget', async () => {

@@ -1,10 +1,12 @@
 import { AsyncDuckDB, VoidLogger, type AsyncDuckDBConnection } from '@duckdb/duckdb-wasm';
 import { Table, tableFromIPC, type Schema } from 'apache-arrow';
-import { RecordBatchStreamWriter, Table as DuckdbTable } from 'apache-arrow-duckdb';
+import { RecordBatchStreamWriter, Schema as DuckdbSchema, Table as DuckdbTable } from 'apache-arrow-duckdb';
 
 import { LOCAL_BUNDLES } from './browser.js';
 import type { ExportFiles } from './export-files.js';
 import { QueryPageStore } from './query-pages.js';
+import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from './result-arrow.js';
+import { resultColumnLabel } from './result-columns.js';
 import { resultSortRuntimeSupported } from './result-sort.js';
 import { writeSortedResult } from './sort-result.js';
 import type { QuerySession } from './types.js';
@@ -26,6 +28,11 @@ export interface ResultSortProbeReport {
   schemaPreserved: boolean;
   tiesStable: boolean;
   nullsLast: boolean;
+  duplicateColumns: {
+    firstSorted: boolean;
+    secondSorted: boolean;
+    schemaPreserved: boolean;
+  };
   cancellationSettled: boolean;
   resourcesReleased: boolean;
   externalAccessDenied: boolean;
@@ -48,23 +55,30 @@ const convert = async (connection: AsyncDuckDBConnection, sql: string): Promise<
   const reader = await connection.send(sql);
   const iterator = reader[Symbol.asyncIterator]();
   const pages: Table[] = [];
+  let schema: DuckdbSchema | null = null;
   let batches: unknown[] = [];
   const flush = async (): Promise<void> => {
-    const writer = RecordBatchStreamWriter.writeAll(new DuckdbTable(reader.schema, batches as never[]));
+    const writer = RecordBatchStreamWriter.writeAll(new DuckdbTable(schema!, batches as never[]));
     pages.push(tableFromIPC(await writer.toUint8Array()));
     batches = [];
   };
   for (;;) {
     const next = await iterator.next();
     if (next.done === true) break;
-    batches.push(next.value);
+    const batch = normalizeDuckdbResultBatch(next.value, reader.schema);
+    schema = batch.schema;
+    batches.push(batch);
     const staged = batches.reduce<number>(
       (total, batch) => total + (batch as { numRows: number }).numRows,
       0,
     );
     if (staged >= PAGE_ROWS) await flush();
   }
-  if (batches.length > 0 || pages.length === 0) await flush();
+  if (batches.length > 0) await flush();
+  if (pages.length === 0) {
+    schema = normalizeDuckdbResultSchema(reader.schema);
+    await flush();
+  }
   return pages;
 };
 
@@ -104,6 +118,7 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     schemaPreserved: false,
     tiesStable: false,
     nullsLast: false,
+    duplicateColumns: { firstSorted: false, secondSorted: false, schemaPreserved: false },
     cancellationSettled: false,
     resourcesReleased: false,
     externalAccessDenied: false,
@@ -370,9 +385,9 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     const originalPayloadById = new Map<number, string>();
     const originalKeyById = new Map<number, string>();
     for (const page of pages) {
-      const ids = page.getChild('id')!;
+      const ids = page.getChildAt(0)!;
       const keys = columnKeys(page, 1);
-      const payloads = page.getChild('payload')!;
+      const payloads = page.getChildAt(2)!;
       for (let row = 0; row < page.numRows; row++) {
         const id = Number(ids.get(row));
         originalIds.push(id);
@@ -386,9 +401,9 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     // The whole point of retaining pages: the sorted view must come from them, never from a
     // second execution of the user's SQL.
     report.originalSendCount = primarySends.filter((sent) => sent === mainSql).length;
-    const sortedIds = sorted.getChild('id')!;
+    const sortedIds = sorted.getChildAt(0)!;
     const sortedKeys = columnKeys(sorted, 1);
-    const sortedPayloads = sorted.getChild('payload')!;
+    const sortedPayloads = sorted.getChildAt(2)!;
 
     let valuesPreserved = sorted.numRows === report.rowCount;
     let tiesStable = true;
@@ -424,11 +439,35 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
       sorted.schema.fields.every(
         (field, index) =>
           field.name === schema.fields[index]!.name &&
+          resultColumnLabel(field) === resultColumnLabel(schema.fields[index]!) &&
           field.type.toString() === schema.fields[index]!.type.toString(),
       );
     report.diagnostics.push(
       `main: rows=${sorted.numRows} descending=${String(descending)} ties=${String(tiesStable)}`,
     );
+
+    if (report.bundleSupportsSorting) {
+      const duplicateSql =
+        "SELECT 20::INTEGER AS dup, 'alpha'::VARCHAR AS dup " +
+        "UNION ALL SELECT 10, 'zulu' UNION ALL SELECT 30, 'mike'";
+      const duplicatePages = await originalSend(duplicateSql);
+      const duplicateSchema = duplicatePages[0]!.schema;
+      const first = await sortPages(duplicatePages, duplicateSchema, 0, 'asc', 'duplicate-first');
+      const second = await sortPages(duplicatePages, duplicateSchema, 1, 'asc', 'duplicate-second');
+      const schemaPreserved = (table: Table): boolean =>
+        table.schema.fields.map((field) => field.name).join(',') === 'c0,c1' &&
+        table.schema.fields.map(resultColumnLabel).join(',') === 'dup,dup' &&
+        table.schema.fields.map((field) => field.type.toString()).join(',') === 'Int32,Utf8';
+      report.duplicateColumns = {
+        firstSorted:
+          columnKeys(first, 0).join(',') === 'n10,n20,n30' &&
+          columnKeys(first, 1).join(',') === 'szulu,salpha,smike',
+        secondSorted:
+          columnKeys(second, 0).join(',') === 'n20,n30,n10' &&
+          columnKeys(second, 1).join(',') === 'salpha,smike,szulu',
+        schemaPreserved: schemaPreserved(first) && schemaPreserved(second),
+      };
+    }
 
     // --- Typed fixtures: every value family the eligibility policy admits. ---
     const fixtures: Array<{ name: string; sql: string; columnIndex: number }> = [
@@ -525,6 +564,7 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
         const typesPreserved = after.schema.fields.every(
           (field, index) =>
             field.name === fixtureSchema.fields[index]!.name &&
+            resultColumnLabel(field) === resultColumnLabel(fixtureSchema.fields[index]!) &&
             field.type.toString() === fixtureSchema.fields[index]!.type.toString(),
         );
         report.typedFixtures[fixture.name] =

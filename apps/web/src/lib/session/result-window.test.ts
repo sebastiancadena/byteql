@@ -1,5 +1,15 @@
 import type { QueryPage, QueryPageSummary } from '@byteql/db';
-import { tableFromArrays } from 'apache-arrow';
+import { RESULT_LABEL_METADATA_KEY, resultColumnLabel } from '@byteql/db/result-columns';
+import {
+  Field,
+  Int32,
+  RecordBatch,
+  Schema,
+  Table,
+  Utf8,
+  tableFromArrays,
+  vectorFromArray,
+} from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
 import { RESULT_WINDOW_ROWS, assembleResultWindow, pageIndexesForWindow } from './result-window.js';
@@ -10,6 +20,31 @@ const page = (index: number, startRow: number, values: readonly number[]): Query
   rowCount: values.length,
   table: tableFromArrays({ value: Int32Array.from(values) }),
 });
+
+const duplicateLabelPage = (index: number, startRow: number, rowCount: number): QueryPage => {
+  const integers = Array.from({ length: rowCount }, (_, offset) => startRow + offset);
+  const built = new Table({
+    c0: vectorFromArray(Int32Array.from(integers)),
+    c1: vectorFromArray(
+      integers.map((value) => `row-${value}`),
+      new Utf8(),
+    ),
+  });
+  const label = new Map([[RESULT_LABEL_METADATA_KEY, 'dup']]);
+  const schema = new Schema([
+    new Field('c0', new Int32(), true, label),
+    new Field('c1', new Utf8(), true, label),
+  ]);
+  return {
+    index,
+    startRow,
+    rowCount,
+    table: new Table(
+      schema,
+      built.batches.map((batch) => new RecordBatch(schema, batch.data)),
+    ),
+  };
+};
 
 const pageSummaries = (counts: readonly number[]): QueryPageSummary[] => {
   let startRow = 0;
@@ -105,5 +140,27 @@ describe('assembleResultWindow', () => {
     expect(window.table.schema.fields.map((field) => field.name)).toEqual(['value', 'label']);
     expect(window.table.getChild('value')!.toArray()).toEqual(Int32Array.from([1, 2]));
     expect(window.table.getChild('label')!.toArray()).toEqual(['one', 'two']);
+  });
+
+  it('retains duplicate labels across page slices, concatenation and rows beyond 16,384', () => {
+    const pages = [
+      duplicateLabelPage(0, 0, 8_192),
+      duplicateLabelPage(1, 8_192, 8_192),
+      duplicateLabelPage(2, 16_384, 8_192),
+    ];
+    const spanning = assembleResultWindow(pages, { startRow: 8_191, rowCount: 2 });
+    const later = assembleResultWindow(pages, { startRow: 16_384, rowCount: 2 });
+
+    expect(spanning.startRow).toBe(8_191);
+    expect(spanning.table.schema.fields.map((field) => field.name)).toEqual(['c0', 'c1']);
+    expect(spanning.table.schema.fields.map(resultColumnLabel)).toEqual(['dup', 'dup']);
+    expect([...spanning.table.getChildAt(0)!]).toEqual([8_191, 8_192]);
+    expect([...spanning.table.getChildAt(1)!]).toEqual(['row-8191', 'row-8192']);
+
+    expect(later.startRow).toBe(16_384);
+    expect(later.table.schema.fields.map(resultColumnLabel)).toEqual(['dup', 'dup']);
+    expect(later.table.schema.fields.map((field) => field.type.toString())).toEqual(['Int32', 'Utf8']);
+    expect([...later.table.getChildAt(0)!]).toEqual([16_384, 16_385]);
+    expect([...later.table.getChildAt(1)!]).toEqual(['row-16384', 'row-16385']);
   });
 });

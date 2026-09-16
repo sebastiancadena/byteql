@@ -1,11 +1,37 @@
-import { Field, Int32, Schema, Table, tableFromArrays } from 'apache-arrow';
+import {
+  Field,
+  Int32,
+  RecordBatch,
+  Schema,
+  Table,
+  Utf8,
+  tableFromArrays,
+  vectorFromArray,
+} from 'apache-arrow';
 import { describe, expect, it, vi } from 'vitest';
 
 import { QueryPageStore } from './query-pages.js';
+import { RESULT_LABEL_METADATA_KEY, resultColumnLabel } from './result-columns.js';
 import { StoredResultView } from './stored-result-view.js';
 import type { QueryPageSummary, QueryResultView } from './types.js';
 
 const pageTable = (values: number[]): Table => tableFromArrays({ value: Int32Array.from(values) });
+
+const duplicateLabelTable = (integers: readonly number[], strings: readonly string[]): Table => {
+  const built = new Table({
+    c0: vectorFromArray(Int32Array.from(integers)),
+    c1: vectorFromArray(strings, new Utf8()),
+  });
+  const label = new Map([[RESULT_LABEL_METADATA_KEY, 'dup']]);
+  const schema = new Schema([
+    new Field('c0', new Int32(), true, label),
+    new Field('c1', new Utf8(), true, label),
+  ]);
+  return new Table(
+    schema,
+    built.batches.map((batch) => new RecordBatch(schema, batch.data)),
+  );
+};
 
 const completeView = async (values: number[]): Promise<QueryResultView> => {
   const table = pageTable(values);
@@ -138,6 +164,36 @@ describe('StoredResultView', () => {
     const table = await view.materialize();
     expect(Array.from(table!.getChildAt(0)!)).toEqual([1, 2, 3, 4]);
     expect(await view.materialize(1)).toBeNull();
+  });
+
+  it('retains duplicate logical labels while reading and materializing stored pages', async () => {
+    const first = duplicateLabelTable([10, 20], ['ten', 'twenty']);
+    const second = duplicateLabelTable([30], ['thirty']);
+    const store = new QueryPageStore({ persistence: null });
+    await store.put(0, 0, first);
+    await store.put(1, 2, second);
+    store.markComplete();
+    const view = new StoredResultView(
+      first.schema,
+      store,
+      [
+        { index: 0, startRow: 0, rowCount: 2 },
+        { index: 1, startRow: 2, rowCount: 1 },
+      ],
+      { elapsedMs: 1, sendCount: 1 },
+      () => {},
+    );
+
+    const stored = (await view.readPage(1)).table;
+    expect(stored.schema.fields.map((field) => field.name)).toEqual(['c0', 'c1']);
+    expect(stored.schema.fields.map(resultColumnLabel)).toEqual(['dup', 'dup']);
+    expect(stored.getChildAt(0)!.get(0)).toBe(30);
+    expect(stored.getChildAt(1)!.get(0)).toBe('thirty');
+
+    const materialized = await view.materialize();
+    expect(materialized!.schema.fields.map(resultColumnLabel)).toEqual(['dup', 'dup']);
+    expect([...materialized!.getChildAt(0)!]).toEqual([10, 20, 30]);
+    expect([...materialized!.getChildAt(1)!]).toEqual(['ten', 'twenty', 'thirty']);
   });
 
   it('pins pages through to the store', async () => {
