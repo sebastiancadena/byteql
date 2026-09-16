@@ -14,6 +14,11 @@ vi.mock('@byteql/db', () => ({
 import type { SessionController } from '../lib/session/controller.js';
 import { initialSessionState, type SessionState } from '../lib/session/state.js';
 import ResultsDownload from './ResultsDownload.svelte';
+import {
+  emptyLabelResultTable,
+  mixedDuplicateResultTable,
+  withResultLabels,
+} from './result-columns.test-support.js';
 
 const table = tableFromArrays({
   value: [1],
@@ -73,6 +78,20 @@ const enableOpfs = (): void => {
     platform: 'Linux',
     storage: { getDirectory: vi.fn() },
   });
+};
+
+/** Reads the Parquet preview table's data rows (header row excluded) as [column, label, name]. */
+const previewRows = (dialog: HTMLElement): (string | null)[][] => {
+  const table = within(dialog).queryByRole('table', { name: 'Parquet column names' });
+  if (!table) return [];
+  return within(table)
+    .getAllByRole('row')
+    .slice(1)
+    .map((row) =>
+      within(row)
+        .getAllByRole('cell')
+        .map((cell) => cell.textContent),
+    );
 };
 
 describe('ResultsDownload', () => {
@@ -199,7 +218,7 @@ describe('ResultsDownload', () => {
     expect(within(dialog).getByText(/at least one column must be selected/i)).toBeTruthy();
   });
 
-  it('disables Parquet for duplicate names and exposes SQL alias guidance', async () => {
+  it('keeps Parquet enabled for case-colliding labels and previews the renamed file column', async () => {
     enableOpfs();
     const user = userEvent.setup();
     const duplicateSchema = new Schema([
@@ -214,12 +233,210 @@ describe('ResultsDownload', () => {
     await user.click(screen.getByRole('button', { name: 'Download results' }));
     const dialog = screen.getByRole('dialog', { name: 'Download results' });
     expect((within(dialog).getByRole('option', { name: 'Parquet' }) as HTMLOptionElement).disabled).toBe(
-      true,
+      false,
     );
-    const explanation = within(dialog).getByText(/parquet.*duplicate.*alias.*sql/i);
-    const format = within(dialog).getByRole('combobox', { name: 'Format' });
-    expect(explanation.id).toBe('results-download-parquet-disabled-reason');
-    expect(format.getAttribute('aria-describedby')?.split(/\s+/u)).toContain(explanation.id);
+
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+
+    expect(within(dialog).getByRole('heading', { name: 'Parquet column names' })).toBeTruthy();
+    expect(previewRows(dialog)).toEqual([['2', 'value', 'value_2']]);
+  });
+
+  describe('Parquet column preview', () => {
+    it('shows a row only for the label the allocator actually renames', async () => {
+      enableOpfs();
+      const user = userEvent.setup();
+      const duplicate = mixedDuplicateResultTable();
+      render(ResultsDownload, {
+        controller: controllerDouble(),
+        session: sessionState({
+          result: resultState({ schema: duplicate.schema, window: duplicate, completeTable: duplicate }),
+        }),
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Download results' }));
+      const dialog = screen.getByRole('dialog', { name: 'Download results' });
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+
+      expect(previewRows(dialog)).toEqual([['2', 'dup', 'dup_2']]);
+    });
+
+    it('jumps past a suffix already reserved by another selected label', async () => {
+      enableOpfs();
+      const user = userEvent.setup();
+      const suffixed = withResultLabels(
+        tableFromArrays({
+          c0: Int32Array.from([1]),
+          c1: Int32Array.from([2]),
+          c2: Int32Array.from([3]),
+        }),
+        ['dup', 'dup', 'dup_2'],
+      );
+      render(ResultsDownload, {
+        controller: controllerDouble(),
+        session: sessionState({
+          result: resultState({ schema: suffixed.schema, window: suffixed, completeTable: suffixed }),
+        }),
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Download results' }));
+      const dialog = screen.getByRole('dialog', { name: 'Download results' });
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+
+      expect(previewRows(dialog)).toEqual([['2', 'dup', 'dup_3']]);
+    });
+
+    it('shows the positional fallback name for an empty SQL label', async () => {
+      enableOpfs();
+      const user = userEvent.setup();
+      const empty = emptyLabelResultTable();
+      render(ResultsDownload, {
+        controller: controllerDouble(),
+        session: sessionState({
+          result: resultState({ schema: empty.schema, window: empty, completeTable: empty }),
+        }),
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Download results' }));
+      const dialog = screen.getByRole('dialog', { name: 'Download results' });
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+
+      expect(previewRows(dialog)).toEqual([['1', '(empty)', 'column_1']]);
+    });
+
+    it('renders no mapping for unique labels, and none at all while CSV is selected', async () => {
+      enableOpfs();
+      const user = userEvent.setup();
+      render(ResultsDownload, {
+        controller: controllerDouble(),
+        session: sessionState({ result: resultState() }),
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Download results' }));
+      const dialog = screen.getByRole('dialog', { name: 'Download results' });
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+      expect(screen.queryByRole('heading', { name: 'Parquet column names' })).toBeNull();
+      cleanup();
+
+      const duplicate = mixedDuplicateResultTable();
+      render(ResultsDownload, {
+        controller: controllerDouble(),
+        session: sessionState({
+          result: resultState({ schema: duplicate.schema, window: duplicate, completeTable: duplicate }),
+        }),
+      });
+      await user.click(screen.getByRole('button', { name: 'Download results' }));
+      expect(screen.getByRole('dialog', { name: 'Download results' })).toBeTruthy();
+      // CSV is the default format: duplicate labels exist, but the preview is Parquet-only.
+      expect(screen.queryByRole('heading', { name: 'Parquet column names' })).toBeNull();
+    });
+
+    it('stays empty while validation fails even though the labels would collide', async () => {
+      // OPFS is left unavailable, so Parquet validation fails before the preview can be built.
+      const user = userEvent.setup();
+      const duplicateSchema = new Schema([
+        new Field('Value', new Int32(), true),
+        new Field('value', new Int32(), true),
+      ]);
+      render(ResultsDownload, {
+        controller: controllerDouble(),
+        session: sessionState({ result: resultState({ schema: duplicateSchema }) }),
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Download results' }));
+      const dialog = screen.getByRole('dialog', { name: 'Download results' });
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+
+      expect(screen.queryByRole('heading', { name: 'Parquet column names' })).toBeNull();
+      expect(previewRows(dialog)).toEqual([]);
+    });
+
+    it('changes consistently when hidden columns are toggled', async () => {
+      enableOpfs();
+      const user = userEvent.setup();
+      const hidden = withResultLabels(
+        tableFromArrays({
+          c0: Int32Array.from([1]),
+          c1: Int32Array.from([2]),
+          c2: Int32Array.from([3]),
+        }),
+        ['name', '_meta', '_meta'],
+      );
+      render(ResultsDownload, {
+        controller: controllerDouble(),
+        session: sessionState({
+          result: resultState({ schema: hidden.schema, window: hidden, completeTable: hidden }),
+        }),
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Download results' }));
+      const dialog = screen.getByRole('dialog', { name: 'Download results' });
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+
+      expect(previewRows(dialog)).toEqual([['3', '_meta', '_meta_2']]);
+
+      const provenance = within(dialog).getByRole('checkbox', {
+        name: /include hidden columns and byte provenance/i,
+      });
+      await user.click(provenance);
+      expect(screen.queryByRole('heading', { name: 'Parquet column names' })).toBeNull();
+
+      await user.click(provenance);
+      expect(previewRows(dialog)).toEqual([['3', '_meta', '_meta_2']]);
+    });
+
+    it('renders an untrusted label as inert text in both the label and file name cells', async () => {
+      enableOpfs();
+      const user = userEvent.setup();
+      const label = '<img src=x onerror="alert(1)">';
+      const untrusted = withResultLabels(tableFromArrays({ c0: ['a'], c1: ['b'] }), [label, label]);
+      render(ResultsDownload, {
+        controller: controllerDouble(),
+        session: sessionState({
+          result: resultState({ schema: untrusted.schema, window: untrusted, completeTable: untrusted }),
+        }),
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Download results' }));
+      const dialog = screen.getByRole('dialog', { name: 'Download results' });
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+
+      expect(previewRows(dialog)).toEqual([['2', label, `${label}_2`]]);
+      expect(dialog.querySelector('img')).toBeNull();
+    });
+
+    it('describes the Download button by the preview and still triggers exactly one download by keyboard', async () => {
+      enableOpfs();
+      const user = userEvent.setup();
+      const duplicate = mixedDuplicateResultTable();
+      const controller = controllerDouble();
+      render(ResultsDownload, {
+        controller,
+        session: sessionState({
+          result: resultState({ schema: duplicate.schema, window: duplicate, completeTable: duplicate }),
+        }),
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Download results' }));
+      const dialog = screen.getByRole('dialog', { name: 'Download results' });
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Format' }), 'parquet');
+
+      const heading = within(dialog).getByRole('heading', { name: 'Parquet column names' });
+      const previewRegion = heading.parentElement as HTMLElement;
+      const downloadButton = within(dialog).getByRole('button', { name: 'Download' });
+      expect(downloadButton.getAttribute('aria-describedby')?.split(/\s+/u)).toContain(previewRegion.id);
+
+      const provenance = within(dialog).getByRole('checkbox', {
+        name: /include hidden columns and byte provenance/i,
+      });
+      provenance.focus();
+      await user.tab();
+      expect(document.activeElement).toBe(downloadButton);
+      await user.keyboard('{Enter}');
+
+      expect(controller.downloadResults).toHaveBeenCalledOnce();
+      expect(controller.downloadResults).toHaveBeenCalledWith({ format: 'parquet', includeProvenance: true });
+    });
   });
 
   it('disables Parquet when OPFS is unavailable and explains the browser requirement', async () => {

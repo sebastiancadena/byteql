@@ -7,6 +7,7 @@
   import { isResultSorting } from '../lib/session/result-sort.js';
   import type { SessionController } from '../lib/session/controller.js';
   import type { SessionState } from '../lib/session/state.js';
+  import { parquetColumnNames, type ParquetColumnName } from '@byteql/db/result-columns';
   import Icon from './ui/Icon.svelte';
 
   type DownloadController = Pick<
@@ -26,6 +27,8 @@
   let boundaryError = $state<string | null>(null);
   let options = $state<ExportOptions>({ format: 'csv', includeProvenance: true });
 
+  const PARQUET_PREVIEW_ID = 'results-download-parquet-preview';
+
   const parquetAvailable = $derived(
     typeof navigator !== 'undefined' && typeof navigator.storage?.getDirectory === 'function',
   );
@@ -38,6 +41,26 @@
     if (!alternative || !selectedError) return alternative;
     return alternative.replace(/^CSV: /u, '') === selectedError.replace(/^CSV: /u, '') ? null : alternative;
   });
+  // Mirrors what the controller captures in downloadResults: same schema, same selection, same
+  // allocator, so the preview can never drift from the file the click actually produces.
+  const parquetColumnPreview = $derived.by<readonly ParquetColumnName[]>(() => {
+    const result = session.result;
+    if (!result || options.format !== 'parquet' || selectedError !== null) return [];
+    try {
+      const selected = selectExportColumns(result.schema, options);
+      return parquetColumnNames(result.schema, selected).filter((column) => column.label !== column.name);
+    } catch {
+      return [];
+    }
+  });
+  const downloadDescribedBy = $derived(
+    [
+      selectedError ? disabledReasonId(options.format) : null,
+      parquetColumnPreview.length > 0 ? PARQUET_PREVIEW_ID : null,
+    ]
+      .filter((id): id is string => id !== null)
+      .join(' ') || undefined,
+  );
   const download = $derived(session.download);
   const active = $derived(
     download !== null && ['picking', 'loading', 'encoding', 'saving'].includes(download.phase),
@@ -257,11 +280,35 @@
           </p>
         {/if}
 
+        {#if parquetColumnPreview.length > 0}
+          <div id={PARQUET_PREVIEW_ID} class="results-download-preview">
+            <h4 id="results-download-parquet-preview-heading">Parquet column names</h4>
+            <table aria-labelledby="results-download-parquet-preview-heading">
+              <thead>
+                <tr>
+                  <th scope="col">Column</th>
+                  <th scope="col">SQL label</th>
+                  <th scope="col">File name</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each parquetColumnPreview as column (column.columnIndex)}
+                  <tr>
+                    <td>{column.columnIndex + 1}</td>
+                    <td>{column.label || '(empty)'}</td>
+                    <td>{column.name}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+
         <button
           class="button button-primary"
           type="button"
           disabled={selectedError !== null}
-          aria-describedby={selectedError ? disabledReasonId(options.format) : undefined}
+          aria-describedby={downloadDescribedBy}
           onclick={startDownload}>Download</button
         >
       {/if}
@@ -356,6 +403,31 @@
   .results-download-status span {
     display: block;
     color: var(--color-text-muted);
+  }
+
+  .results-download-preview h4 {
+    margin: 0 0 var(--space-1);
+    font-size: var(--text-md);
+    font-weight: 600;
+    line-height: var(--leading-md);
+  }
+
+  .results-download-preview table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+
+  .results-download-preview th,
+  .results-download-preview td {
+    padding: var(--space-1) var(--space-2) var(--space-1) 0;
+    text-align: left;
+    word-break: break-word;
+  }
+
+  .results-download-preview th {
+    color: var(--color-text-muted);
+    font-weight: 600;
   }
 
   .results-download-error {
