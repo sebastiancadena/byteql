@@ -185,6 +185,8 @@
   const hintText = $derived.by(() => {
     if (coverageReason === 'no-provenance')
       return 'No byte provenance in this result — browse a table to link bytes to rows.';
+    if (coverageReason === 'ambiguous-provenance')
+      return 'Byte provenance is ambiguous because source columns are repeated.';
     if (coverageReason === 'too-large') return 'Result too large to index — shading and reveal are off.';
     return '';
   });

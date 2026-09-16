@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
 import AudioViewer from './AudioViewer.svelte';
+import { withResultLabels } from './result-columns.test-support.js';
 
 function fakeEngine() {
   let position = 0;
@@ -88,6 +89,55 @@ describe('AudioViewer', () => {
       ]),
     );
   });
+
+  it('reads all audio inputs by logical label and physical position', async () => {
+    const table = withResultLabels(
+      tableFromArrays({
+        c0: [0.5],
+        c1: [60],
+        c2: [100],
+        c3: ['note_on'],
+        c4: [4],
+        c5: [48],
+      }),
+      ['seconds', 'note', 'velocity', 'kind', 'channel', 'program'],
+    );
+    const engine = fakeEngine();
+
+    render(AudioViewer, { table, engineFactory: () => engine, onclose: vi.fn() });
+
+    await vi.waitFor(() =>
+      expect(engine.load).toHaveBeenCalledWith([
+        { seconds: 0.5, note: 60, velocity: 100, kind: 'note_on', channel: 4, program: 48 },
+      ]),
+    );
+  });
+
+  it.each(['note', 'program'] as const)(
+    'does not schedule rows with an ambiguous %s label',
+    async (label) => {
+      const labels = ['seconds', 'note', 'velocity', 'kind', 'channel', 'program', label];
+      const table = withResultLabels(
+        tableFromArrays({
+          c0: [0.5],
+          c1: [60],
+          c2: [100],
+          c3: ['note_on'],
+          c4: [4],
+          c5: [48],
+          c6: [label === 'note' ? 72 : 35],
+        }),
+        labels,
+      );
+      const engine = fakeEngine();
+
+      render(AudioViewer, { table, engineFactory: () => engine, onclose: vi.fn() });
+
+      await vi.waitFor(() => expect(engine.load).toHaveBeenCalledWith([]));
+      expect(screen.getByText('0 scheduled rows')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Play' }).hasAttribute('disabled')).toBe(true);
+    },
+  );
 
   it('nulls an out-of-range program without discarding the row', async () => {
     const table = tableFromArrays({

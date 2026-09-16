@@ -21,6 +21,7 @@ import { initialSessionState, type PagedResultState, type SessionState } from '.
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
 import ResultGrid from './ResultGrid.svelte';
 import Workbench from './Workbench.svelte';
+import { withResultLabels } from './result-columns.test-support.js';
 
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
@@ -112,6 +113,17 @@ const audioResult = tableFromArrays({
   kind: ['note_on', 'note_off'],
   channel: [0, 0],
 });
+
+const canonicalAudioResult = withResultLabels(
+  tableFromArrays({
+    c0: [0.5, 1.25],
+    c1: [60, 60],
+    c2: [64, 0],
+    c3: ['note_on', 'note_off'],
+    c4: [0, 0],
+  }),
+  ['seconds', 'note', 'velocity', 'kind', 'channel'],
+);
 
 const pagedResult = (
   window: PagedResultState['window'],
@@ -1253,6 +1265,19 @@ describe('Inspector Workbench', () => {
     });
     render(Workbench, { controller: oversized });
     expect(screen.queryByRole('button', { name: 'Open in…' })).toBeNull();
+  });
+
+  it('describes canonical result fields to viewers by logical label', () => {
+    const controller = new FakeController({
+      ...readyState(),
+      result: pagedResult(canonicalAudioResult, { complete: false, completeTable: null }),
+    });
+
+    render(Workbench, { controller });
+
+    expect(textOf(screen.getByRole('status', { name: 'Format capability notice' }))).toBe(
+      'Finish and narrow the result to use this viewer.',
+    );
   });
 
   it('shows the notice for any disabled pack capability, not only audio', () => {

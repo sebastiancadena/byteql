@@ -2,6 +2,7 @@
   /* global Blob, DragEvent, Event, File, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, document, localStorage, window */
 
   import type { ResultSort, ResultSortCapability } from '@byteql/db';
+  import { resultColumnLabel } from '@byteql/db/result-columns';
   import type { Table } from 'apache-arrow';
   import { onMount, tick, untrack } from 'svelte';
 
@@ -183,7 +184,10 @@
   const schemaViewers = $derived.by((): ViewerCapability[] => {
     if (!session.result || !session.capabilities) return [];
     return compatibleViewers(
-      session.result.schema.fields.map((field) => ({ name: field.name, type: field.type.toString() })),
+      session.result.schema.fields.map((field) => ({
+        name: resultColumnLabel(field),
+        type: field.type.toString(),
+      })),
       session.capabilities,
     );
   });

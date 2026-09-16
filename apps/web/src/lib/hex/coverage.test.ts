@@ -1,6 +1,7 @@
 import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
+import { withResultLabels } from '../../components/result-columns.test-support.js';
 import { buildCoverage, COVERAGE_ROW_CAP, createCoverageMemo, provenanceOfRow } from './coverage.js';
 
 const FILE = 'capture.pcap';
@@ -30,6 +31,27 @@ function tableWithoutSrcFile(rows: Array<[number, number]>) {
   });
 }
 
+function canonicalProvenanceTable(duplicateLabel?: '_src_file' | '_src_start' | '_src_end') {
+  const duplicateValue =
+    duplicateLabel === '_src_file'
+      ? ['other.pcap']
+      : duplicateLabel === '_src_start'
+        ? BigUint64Array.from([12n])
+        : BigUint64Array.from([24n]);
+  return withResultLabels(
+    tableFromArrays({
+      c0: Int32Array.from([7]),
+      c1: ['left'],
+      c2: ['right'],
+      c3: [FILE],
+      c4: BigUint64Array.from([12n]),
+      c5: BigUint64Array.from([24n]),
+      ...(duplicateLabel ? { c6: duplicateValue } : {}),
+    }),
+    ['id', 'dup', 'dup', '_src_file', '_src_start', '_src_end', ...(duplicateLabel ? [duplicateLabel] : [])],
+  );
+}
+
 describe('buildCoverage', () => {
   it('reports no-provenance when the columns are absent', () => {
     const table = tableFromArrays({ n: Int32Array.from([1, 2]) });
@@ -51,6 +73,23 @@ describe('buildCoverage', () => {
     expect(coverage.index!.rowsAt(6)).toEqual([1]); // only b.pcap's row covers offset 6
     expect(coverage.index!.rowsAt(1)).toEqual([1]); // a.pcap's [0,4) row is excluded from this view
   });
+
+  it('uses unique logical source labels while ignoring unrelated repeated labels', () => {
+    const table = canonicalProvenanceTable();
+
+    expect(provenanceOfRow(table, 0)).toEqual({ file: FILE, start: 12, end: 24 });
+    expect(buildCoverage(table, FILE).index?.rowsAt(16)).toEqual([0]);
+  });
+
+  it.each(['_src_file', '_src_start', '_src_end'] as const)(
+    'refuses ambiguous %s source labels',
+    (duplicateLabel) => {
+      const table = canonicalProvenanceTable(duplicateLabel);
+
+      expect(provenanceOfRow(table, 0)).toBeNull();
+      expect(buildCoverage(table, FILE)).toEqual({ index: null, reason: 'ambiguous-provenance' });
+    },
+  );
 
   it('adds the render-window start to returned coverage row indexes', () => {
     const coverage = buildCoverage(

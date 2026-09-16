@@ -1,6 +1,7 @@
 import { tableFromArrays } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
+import { withResultLabels } from '../../components/result-columns.test-support.js';
 import { compatibleTableViewers, compatibleViewers, type FormatViewerMetadata } from './registry.js';
 
 const enabled: FormatViewerMetadata = {
@@ -65,6 +66,25 @@ describe('compatibleViewers', () => {
     ).toEqual(['audio']);
   });
 
+  it('refuses a repeated required audio label', () => {
+    expect(compatibleViewers([...columns, { name: 'note', type: 'Int16' }], enabled)).toEqual([]);
+  });
+
+  it.each(['channel', 'program'] as const)('refuses a repeated optional %s label', (label) => {
+    expect(
+      compatibleViewers([...columns, { name: label, type: 'Int8' }, { name: label, type: 'Int16' }], enabled),
+    ).toEqual([]);
+  });
+
+  it('allows unrelated repeated labels', () => {
+    expect(
+      compatibleViewers(
+        [...columns, { name: 'dup', type: 'Int32' }, { name: 'dup', type: 'Utf8' }],
+        enabled,
+      ).map(({ id }) => id),
+    ).toEqual(['audio']);
+  });
+
   it('refuses viewer compatibility without a complete materialized table', () => {
     expect(compatibleTableViewers(null, enabled)).toEqual([]);
 
@@ -74,6 +94,20 @@ describe('compatibleViewers', () => {
       velocity: Uint8Array.from([100]),
       kind: ['note_on'],
     });
+    expect(compatibleTableViewers(table, enabled).map(({ id }) => id)).toEqual(['audio']);
+  });
+
+  it('matches logical labels on a canonical result table', () => {
+    const table = withResultLabels(
+      tableFromArrays({
+        c0: Float64Array.from([0]),
+        c1: Int32Array.from([60]),
+        c2: Uint8Array.from([100]),
+        c3: ['note_on'],
+      }),
+      ['seconds', 'note', 'velocity', 'kind'],
+    );
+
     expect(compatibleTableViewers(table, enabled).map(({ id }) => id)).toEqual(['audio']);
   });
 });

@@ -529,6 +529,14 @@ describe('HexPane chrome markup', () => {
     expect(chrome.querySelector('.hex-body')).toBeNull();
     expect(container.querySelector('.hex-pane > .hex-body')).not.toBeNull();
   });
+
+  it('explains when repeated source columns make provenance ambiguous', () => {
+    const { container } = renderPane({ coverageReason: 'ambiguous-provenance' });
+
+    expect(container.querySelector('[data-hex-hint]')?.textContent).toContain(
+      'Byte provenance is ambiguous because source columns are repeated.',
+    );
+  });
 });
 
 describe('HexPane vertical scrollbar track', () => {

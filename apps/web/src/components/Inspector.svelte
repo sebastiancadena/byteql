@@ -42,6 +42,15 @@
   }: Props = $props();
 
   const provenanceNames = new Set(['_src_start', '_src_end']);
+  const requiredProvenanceNames = ['_src_file', '_src_start', '_src_end'] as const;
+
+  const ambiguousProvenance = $derived.by(() => {
+    if (!table) return false;
+    const labels = table.schema.fields.map(resultColumnLabel);
+    return requiredProvenanceNames.some(
+      (required) => labels.filter((label) => label === required).length > 1,
+    );
+  });
 
   const provenanceRange = $derived(
     table && selectedRow !== null ? provenanceOfRow(table, selectedRow) : null,
@@ -103,7 +112,7 @@
       <h3 id="values-heading" class="visually-hidden">Field values</h3>
       <dl class="value-list">
         {#each table.schema.fields as field, columnIndex (columnIndex)}
-          {#if !provenanceNames.has(field.name)}
+          {#if !provenanceNames.has(resultColumnLabel(field))}
             {@const value = valueAt(columnIndex)}
             <div>
               <dt>{resultColumnLabel(field)}</dt>
@@ -133,9 +142,12 @@
       {:else if provenanceRange}
         <p class="muted-copy">Source bytes are unavailable for this row.</p>
       {:else}
+        {#if ambiguousProvenance}
+          <p class="muted-copy">Byte provenance is ambiguous because source columns are repeated.</p>
+        {/if}
         <dl>
           {#each table.schema.fields as field, columnIndex (columnIndex)}
-            {#if provenanceNames.has(field.name)}
+            {#if provenanceNames.has(resultColumnLabel(field))}
               <div>
                 <dt>{resultColumnLabel(field)}</dt>
                 <dd>{formatValue(valueAt(columnIndex))}</dd>

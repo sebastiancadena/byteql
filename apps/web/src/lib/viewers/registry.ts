@@ -1,4 +1,5 @@
 import type { FormatCapability } from '@byteql/core';
+import { resultColumnLabel } from '@byteql/db/result-columns';
 import type { Table } from 'apache-arrow';
 import type { Component } from 'svelte';
 
@@ -31,6 +32,10 @@ const audioCapability: ViewerCapability = {
   label: 'Audio playback',
   accepts(columns, capability) {
     if (!capability?.enabled) return false;
+    const counts = new Map<string, number>();
+    for (const column of columns) counts.set(column.name, (counts.get(column.name) ?? 0) + 1);
+    if (['seconds', 'note', 'velocity', 'kind'].some((name) => counts.get(name) !== 1)) return false;
+    if (['channel', 'program'].some((name) => (counts.get(name) ?? 0) > 1)) return false;
     const byName = new Map(columns.map((column) => [column.name, column.type]));
     return (
       numericType.test(byName.get('seconds') ?? '') &&
@@ -63,7 +68,10 @@ export function compatibleTableViewers(
 ): ViewerCapability[] {
   if (!completeTable) return [];
   return compatibleViewers(
-    completeTable.schema.fields.map((field) => ({ name: field.name, type: field.type.toString() })),
+    completeTable.schema.fields.map((field) => ({
+      name: resultColumnLabel(field),
+      type: field.type.toString(),
+    })),
     formatMetadata,
   );
 }

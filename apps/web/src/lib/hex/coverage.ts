@@ -1,4 +1,5 @@
-import type { Table } from 'apache-arrow';
+import { resultColumnIndex, resultColumnLabel } from '@byteql/db/result-columns';
+import type { Table, Vector } from 'apache-arrow';
 
 export const COVERAGE_ROW_CAP = 2_000_000;
 
@@ -16,7 +17,7 @@ export interface CoverageIndex {
   spansIn(start: number, end: number): ByteSpan[];
 }
 
-export type CoverageReason = 'ok' | 'no-provenance' | 'too-large';
+export type CoverageReason = 'ok' | 'no-provenance' | 'ambiguous-provenance' | 'too-large';
 
 export interface CoverageResult {
   index: CoverageIndex | null;
@@ -28,14 +29,48 @@ const toRange = (start: unknown, end: unknown): { start: number; end: number } |
   return { start: Number(start), end: Number(end) };
 };
 
+type ProvenanceColumnsResult =
+  | {
+      columns: readonly [file: Vector, start: Vector, end: Vector];
+      reason: null;
+    }
+  | {
+      columns: null;
+      reason: 'no-provenance' | 'ambiguous-provenance';
+    };
+
+function provenanceColumns(table: Table): ProvenanceColumnsResult {
+  const labels = table.schema.fields.map(resultColumnLabel);
+  if (
+    ['_src_file', '_src_start', '_src_end'].some(
+      (required) => labels.filter((label) => label === required).length > 1,
+    )
+  ) {
+    return { columns: null, reason: 'ambiguous-provenance' };
+  }
+
+  const fileIndex = resultColumnIndex(table.schema, '_src_file');
+  const startIndex = resultColumnIndex(table.schema, '_src_start');
+  const endIndex = resultColumnIndex(table.schema, '_src_end');
+  if (fileIndex === null || startIndex === null || endIndex === null) {
+    return { columns: null, reason: 'no-provenance' };
+  }
+  const fileColumn = table.getChildAt(fileIndex);
+  const startColumn = table.getChildAt(startIndex);
+  const endColumn = table.getChildAt(endIndex);
+  if (!fileColumn || !startColumn || !endColumn) {
+    return { columns: null, reason: 'no-provenance' };
+  }
+  return { columns: [fileColumn, startColumn, endColumn], reason: null };
+}
+
 export function provenanceOfRow(
   table: Table,
   row: number,
 ): { file: string; start: number; end: number } | null {
-  const fileColumn = table.getChild('_src_file');
-  const startColumn = table.getChild('_src_start');
-  const endColumn = table.getChild('_src_end');
-  if (!fileColumn || !startColumn || !endColumn) return null;
+  const resolved = provenanceColumns(table);
+  if (!resolved.columns) return null;
+  const [fileColumn, startColumn, endColumn] = resolved.columns;
   const file = fileColumn.get(row);
   const range = toRange(startColumn.get(row), endColumn.get(row));
   if (typeof file !== 'string' || !range) return null;
@@ -55,10 +90,9 @@ function upperBound(starts: Float64Array, count: number, probe: number): number 
 }
 
 export function buildCoverage(table: Table, file: string, rowOffset = 0): CoverageResult {
-  const fileColumn = table.getChild('_src_file');
-  const startColumn = table.getChild('_src_start');
-  const endColumn = table.getChild('_src_end');
-  if (!fileColumn || !startColumn || !endColumn) return { index: null, reason: 'no-provenance' };
+  const resolved = provenanceColumns(table);
+  if (!resolved.columns) return { index: null, reason: resolved.reason };
+  const [fileColumn, startColumn, endColumn] = resolved.columns;
   if (table.numRows > COVERAGE_ROW_CAP) return { index: null, reason: 'too-large' };
 
   const capacity = table.numRows;

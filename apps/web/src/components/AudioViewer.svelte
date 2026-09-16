@@ -1,6 +1,7 @@
 <script lang="ts">
   /* global Event, HTMLInputElement */
 
+  import { resultColumnIndex, resultColumnLabel } from '@byteql/db/result-columns';
   import type { Table } from 'apache-arrow';
   import { onDestroy, untrack } from 'svelte';
 
@@ -56,12 +57,25 @@
     invalidRows: number;
     duration: number;
   } {
-    const secondsColumn = value.getChild('seconds');
-    const noteColumn = value.getChild('note');
-    const velocityColumn = value.getChild('velocity');
-    const kindColumn = value.getChild('kind');
-    const channelColumn = value.getChild('channel');
-    const programColumn = value.getChild('program');
+    const labels = value.schema.fields.map(resultColumnLabel);
+    if (
+      ['seconds', 'note', 'velocity', 'kind', 'channel', 'program'].some(
+        (consumed) => labels.filter((label) => label === consumed).length > 1,
+      )
+    ) {
+      return { rows: [], invalidRows: value.numRows, duration: 0 };
+    }
+
+    const column = (label: string) => {
+      const index = resultColumnIndex(value.schema, label);
+      return index === null ? null : value.getChildAt(index);
+    };
+    const secondsColumn = column('seconds');
+    const noteColumn = column('note');
+    const velocityColumn = column('velocity');
+    const kindColumn = column('kind');
+    const channelColumn = column('channel');
+    const programColumn = column('program');
     const valid: AudioRow[] = [];
     let invalid = 0;
 
