@@ -110,7 +110,9 @@ Re-measure with:
 pnpm --filter @byteql/web test:e2e -- e2e/result-columns-probe.spec.ts e2e/duplicate-result-columns.spec.ts
 ```
 
-Measured on 2026-09-16, in the environment above:
+Measured on 2026-09-16, in the environment above (runtime, Parquet extension, Arrow versions and
+hardening are unchanged since then; the Date row records the earlier sorting measurement, not this
+one):
 
 - The independent runtime probe (`packages/db/src/result-columns-probe.ts`) passes on **both**
   pinned bundles: mixed-type and same-type duplicates, an empty duplicate result, sliced pages, an
