@@ -525,10 +525,8 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
         columnIndex: 3,
       },
       {
-        // SQL-looking and quote-bearing aliases must never reach a generated statement. Duplicate
-        // aliases are deliberately absent: Arrow matches schema fields by name when a RecordBatch
-        // is built, so a duplicate-named DuckDB result already fails in the Arrow bridge before any
-        // result exists to sort. See docs/result-column-sorting-compatibility.md.
+        // SQL-looking and quote-bearing aliases must never reach a generated statement. These
+        // aliases are unique; duplicate aliases are exercised above after cursor normalization.
         name: 'hostile-aliases',
         sql:
           'SELECT 1 AS ord, 10 AS "x""; DROP TABLE events; --", ' +

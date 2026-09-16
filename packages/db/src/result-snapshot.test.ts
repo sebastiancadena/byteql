@@ -20,29 +20,14 @@ import {
 } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
+import { duplicateResultTable } from '../test-support/result-columns.js';
 import { SORT_ORDINAL_COLUMN } from './result-sort.js';
-import { RESULT_LABEL_METADATA_KEY, resultColumnLabel } from './result-columns.js';
+import { resultColumnLabel } from './result-columns.js';
 import { restoreResultSchema, snapshotPage } from './result-snapshot.js';
 
 const ordinalsOf = (table: Table): bigint[] => [
   ...(table.getChild(SORT_ORDINAL_COLUMN)!.toArray() as BigUint64Array),
 ];
-
-const duplicateLabelTable = (): Table => {
-  const built = new Table({
-    c0: vectorFromArray(Int32Array.from([10, 20])),
-    c1: vectorFromArray(['ten', 'twenty'], new Utf8()),
-  });
-  const label = new Map([[RESULT_LABEL_METADATA_KEY, 'dup']]);
-  const schema = new Schema([
-    new Field('c0', new Int32(), true, label),
-    new Field('c1', new Utf8(), true, label),
-  ]);
-  return new Table(
-    schema,
-    built.batches.map((batch) => new RecordBatch(schema, batch.data)),
-  );
-};
 
 describe('snapshotPage', () => {
   it('renames every field positionally and appends an exact Uint64 ordinal', () => {
@@ -152,7 +137,7 @@ describe('restoreResultSchema', () => {
   });
 
   it('restores the canonical physical schema and duplicate labels after snapshot staging', () => {
-    const original = duplicateLabelTable();
+    const original = duplicateResultTable([10, 20], ['ten', 'twenty']);
     const snapshot = snapshotPage(original, 0, SORT_ORDINAL_COLUMN).select(['c0', 'c1']);
     const restored = restoreResultSchema(snapshot, original.schema);
 

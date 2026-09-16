@@ -2,7 +2,6 @@ import {
   Field,
   Int32,
   List,
-  RecordBatch,
   Schema,
   Table,
   Utf8,
@@ -13,8 +12,9 @@ import {
 import { Table as DuckdbTable, tableFromIPC as duckdbTableFromIPC } from 'apache-arrow-duckdb';
 import { describe, expect, it, vi } from 'vitest';
 
+import { duplicateResultTable } from '../test-support/result-columns.js';
 import { QueryPageStore } from './query-pages.js';
-import { RESULT_LABEL_METADATA_KEY, resultColumnLabel } from './result-columns.js';
+import { resultColumnLabel } from './result-columns.js';
 import { ResultSortError, SORT_ORDINAL_COLUMN, type ResultSortProgress } from './result-sort.js';
 import { writeSortedResult, type ResultSortDependencies } from './sort-result.js';
 import { QUERY_PAGE_ROWS, type QueryPage, type QuerySession } from './types.js';
@@ -24,22 +24,6 @@ const page = (values: number[], labels?: string[]): Table =>
     value: vectorFromArray(Int32Array.from(values)),
     label: vectorFromArray(labels ?? values.map((value) => `v${value}`), new Utf8()),
   });
-
-const duplicateLabelPage = (integers: readonly number[], strings: readonly string[]): Table => {
-  const built = new Table({
-    c0: vectorFromArray(Int32Array.from(integers)),
-    c1: vectorFromArray(strings, new Utf8()),
-  });
-  const label = new Map([[RESULT_LABEL_METADATA_KEY, 'dup']]);
-  const schema = new Schema([
-    new Field('c0', new Int32(), true, label),
-    new Field('c1', new Utf8(), true, label),
-  ]);
-  return new Table(
-    schema,
-    built.batches.map((batch) => new RecordBatch(schema, batch.data)),
-  );
-};
 
 interface FakeBase extends QuerySession {
   readonly reads: number[];
@@ -287,9 +271,9 @@ describe('writeSortedResult', () => {
   });
 
   it('sorts a duplicate label by physical position and restores both logical labels', async () => {
-    const base = fakeBase([duplicateLabelPage([20, 10, 30], ['alpha', 'zulu', 'mike'])]);
+    const base = fakeBase([duplicateResultTable([20, 10, 30], ['alpha', 'zulu', 'mike'])]);
     const environments = environment({
-      output: [duplicateLabelPage([20, 30, 10], ['alpha', 'mike', 'zulu'])],
+      output: [duplicateResultTable([20, 30, 10], ['alpha', 'mike', 'zulu'])],
     });
     const { options } = sortOptions({ sort: { columnIndex: 1, direction: 'asc' } });
     const view = await writeSortedResult(environments.dependencies, base, options);

@@ -1,37 +1,13 @@
-import {
-  Field,
-  Int32,
-  RecordBatch,
-  Schema,
-  Table,
-  Utf8,
-  tableFromArrays,
-  vectorFromArray,
-} from 'apache-arrow';
+import { Field, Int32, Schema, Table, tableFromArrays } from 'apache-arrow';
 import { describe, expect, it, vi } from 'vitest';
 
+import { duplicateResultTable } from '../test-support/result-columns.js';
 import { QueryPageStore } from './query-pages.js';
-import { RESULT_LABEL_METADATA_KEY, resultColumnLabel } from './result-columns.js';
+import { resultColumnLabel } from './result-columns.js';
 import { StoredResultView } from './stored-result-view.js';
 import type { QueryPageSummary, QueryResultView } from './types.js';
 
 const pageTable = (values: number[]): Table => tableFromArrays({ value: Int32Array.from(values) });
-
-const duplicateLabelTable = (integers: readonly number[], strings: readonly string[]): Table => {
-  const built = new Table({
-    c0: vectorFromArray(Int32Array.from(integers)),
-    c1: vectorFromArray(strings, new Utf8()),
-  });
-  const label = new Map([[RESULT_LABEL_METADATA_KEY, 'dup']]);
-  const schema = new Schema([
-    new Field('c0', new Int32(), true, label),
-    new Field('c1', new Utf8(), true, label),
-  ]);
-  return new Table(
-    schema,
-    built.batches.map((batch) => new RecordBatch(schema, batch.data)),
-  );
-};
 
 const completeView = async (values: number[]): Promise<QueryResultView> => {
   const table = pageTable(values);
@@ -167,8 +143,8 @@ describe('StoredResultView', () => {
   });
 
   it('retains duplicate logical labels while reading and materializing stored pages', async () => {
-    const first = duplicateLabelTable([10, 20], ['ten', 'twenty']);
-    const second = duplicateLabelTable([30], ['thirty']);
+    const first = duplicateResultTable([10, 20], ['ten', 'twenty']);
+    const second = duplicateResultTable([30], ['thirty']);
     const store = new QueryPageStore({ persistence: null });
     await store.put(0, 0, first);
     await store.put(1, 2, second);
