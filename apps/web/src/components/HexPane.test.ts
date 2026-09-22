@@ -21,6 +21,7 @@ const paneLayout = columnLayout(paneMetrics);
 function fixedCoverage(record: { start: number; end: number }): CoverageIndex {
   return {
     rowCount: 1,
+    intervalCount: 1,
     rowsAt: () => [],
     rangeAt: () => record,
     spansIn: () => [],

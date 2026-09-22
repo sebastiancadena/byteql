@@ -1,8 +1,8 @@
-import { tableFromArrays } from 'apache-arrow';
+import { Field, List, Struct, Table, Uint64, tableFromArrays, vectorFromArray } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
 import { withResultLabels } from '../../test-support/result-columns.js';
-import { buildCoverage, COVERAGE_ROW_CAP, createCoverageMemo, provenanceOfRow } from './coverage.js';
+import { buildCoverage, COVERAGE_INTERVAL_CAP, createCoverageMemo, provenanceOfRow } from './coverage.js';
 
 const FILE = 'capture.pcap';
 
@@ -77,7 +77,12 @@ describe('buildCoverage', () => {
   it('uses unique logical source labels while ignoring unrelated repeated labels', () => {
     const table = canonicalProvenanceTable();
 
-    expect(provenanceOfRow(table, 0)).toEqual({ file: FILE, start: 12, end: 24 });
+    expect(provenanceOfRow(table, 0)).toEqual({
+      file: FILE,
+      start: 12,
+      end: 24,
+      ranges: [{ start: 12, end: 24 }],
+    });
     expect(buildCoverage(table, FILE).index?.rowsAt(16)).toEqual([0]);
   });
 
@@ -149,8 +154,9 @@ describe('buildCoverage', () => {
   });
 
   it('declines to index past the cap', () => {
-    expect(COVERAGE_ROW_CAP).toBe(2_000_000);
-    // Cap check is on numRows alone — no need to materialize 2M rows here; verified by contract.
+    expect(COVERAGE_INTERVAL_CAP).toBe(2_000_000);
+    // Exact rows contribute one interval each, so a row-count-over-cap table is a valid
+    // interval-count-over-cap fixture — no need to materialize ranged pieces here.
   });
 });
 
@@ -228,7 +234,12 @@ describe('provenanceOfRow', () => {
       [0, 100],
       [20, 100],
     ]);
-    expect(provenanceOfRow(table, 1)).toEqual({ file: FILE, start: 20, end: 100 });
+    expect(provenanceOfRow(table, 1)).toEqual({
+      file: FILE,
+      start: 20,
+      end: 100,
+      ranges: [{ start: 20, end: 100 }],
+    });
   });
 
   it('returns null without provenance columns or on null slots', () => {
@@ -237,7 +248,125 @@ describe('provenanceOfRow', () => {
 
   it('provenanceOfRow returns the file-qualified range and null without _src_file', () => {
     const table = provenanceTable([[0, 4]], 'a.pcap');
-    expect(provenanceOfRow(table, 0)).toEqual({ file: 'a.pcap', start: 0, end: 4 });
+    expect(provenanceOfRow(table, 0)).toEqual({
+      file: 'a.pcap',
+      start: 0,
+      end: 4,
+      ranges: [{ start: 0, end: 4 }],
+    });
     expect(provenanceOfRow(tableWithoutSrcFile([[0, 4]]), 0)).toBeNull();
+  });
+});
+
+const RANGES_TYPE = new List(
+  new Field(
+    'item',
+    new Struct([new Field('start', new Uint64(), true), new Field('end', new Uint64(), true)]),
+    true,
+  ),
+);
+
+function rangesTable(
+  rows: Array<{ start: number; end: number; ranges: Array<[number, number]> | null; file?: string }>,
+) {
+  const base = tableFromArrays({
+    id: Int32Array.from(rows.map((_, i) => i)),
+    _src_file: rows.map((row) => row.file ?? FILE),
+    _src_start: BigUint64Array.from(rows.map((row) => BigInt(row.start))),
+    _src_end: BigUint64Array.from(rows.map((row) => BigInt(row.end))),
+  });
+  const ranges = vectorFromArray(
+    rows.map((row) => row.ranges?.map(([s, e]) => ({ start: BigInt(s), end: BigInt(e) })) ?? null),
+    RANGES_TYPE,
+  );
+  return base.assign(new Table({ _src_ranges: ranges }));
+}
+
+describe('source ranges', () => {
+  // Row 0: message with pieces [10,20) and [50,60), bounding [10,60).
+  // Row 1: an unrelated packet [30,45) sitting inside the gap.
+  const table = rangesTable([
+    {
+      start: 10,
+      end: 60,
+      ranges: [
+        [10, 20],
+        [50, 60],
+      ],
+    },
+    { start: 30, end: 45, ranges: null },
+  ]);
+
+  it('returns every piece from provenanceOfRow, and a single piece for exact rows', () => {
+    expect(provenanceOfRow(table, 0)).toEqual({
+      file: FILE,
+      start: 10,
+      end: 60,
+      ranges: [
+        { start: 10, end: 20 },
+        { start: 50, end: 60 },
+      ],
+    });
+    expect(provenanceOfRow(table, 1)!.ranges).toEqual([{ start: 30, end: 45 }]);
+  });
+
+  it('does not match the message on a gap byte', () => {
+    const { index } = buildCoverage(table, FILE);
+    expect(index!.rowsAt(35)).toEqual([1]);
+    expect(index!.rowsAt(25)).toEqual([]);
+    expect(index!.rowsAt(55)).toEqual([0]);
+  });
+
+  it('returns the covering piece from rangeAt', () => {
+    const { index } = buildCoverage(table, FILE);
+    expect(index!.rangeAt(52)).toEqual({ start: 50, end: 60 });
+  });
+
+  it("shades a message's pieces with the same alternation", () => {
+    const { index } = buildCoverage(table, FILE);
+    const spans = index!.spansIn(0, 100);
+    const messageSpans = spans.filter((span) => span.start === 10 || span.start === 50);
+    expect(new Set(messageSpans.map((span) => span.alt)).size).toBe(1);
+    expect(index!.intervalCount).toBe(3);
+  });
+
+  it("indexes pieces only for the row's own file", () => {
+    const multi = rangesTable([
+      {
+        start: 10,
+        end: 60,
+        ranges: [
+          [10, 20],
+          [50, 60],
+        ],
+        file: 'a.pcap',
+      },
+      { start: 10, end: 60, ranges: null, file: 'b.pcap' },
+    ]);
+    expect(buildCoverage(multi, 'b.pcap').index!.rowsAt(30)).toEqual([1]);
+    expect(buildCoverage(multi, 'a.pcap').index!.rowsAt(30)).toEqual([]);
+  });
+
+  it('treats a result without _src_ranges as single-range', () => {
+    const plain = provenanceTable([[10, 60]]);
+    expect(provenanceOfRow(plain, 0)!.ranges).toEqual([{ start: 10, end: 60 }]);
+    expect(buildCoverage(plain, FILE).index!.rowsAt(30)).toEqual([0]);
+  });
+
+  it('ignores a same-named column of another type', () => {
+    const impostor = provenanceTable([[10, 60]]).assign(tableFromArrays({ _src_ranges: ['10-20;50-60'] }));
+    expect(provenanceOfRow(impostor, 0)!.ranges).toEqual([{ start: 10, end: 60 }]);
+  });
+
+  it('reports ambiguity when _src_ranges is repeated', () => {
+    const doubled = withResultLabels(table.assign(new Table({ dup: table.getChild('_src_ranges')! })), [
+      'id',
+      '_src_file',
+      '_src_start',
+      '_src_end',
+      '_src_ranges',
+      '_src_ranges',
+    ]);
+    expect(buildCoverage(doubled, FILE).reason).toBe('ambiguous-provenance');
   });
 });

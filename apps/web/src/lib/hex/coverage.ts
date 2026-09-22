@@ -1,7 +1,7 @@
-import { resultColumnIndex, resultColumnLabel } from '@byteql/db/result-columns';
+import { isSourceRangesType, resultColumnIndex, resultColumnLabel } from '@byteql/db/result-columns';
 import type { Table, Vector } from 'apache-arrow';
 
-export const COVERAGE_ROW_CAP = 2_000_000;
+export const COVERAGE_INTERVAL_CAP = 2_000_000;
 
 export interface ByteSpan {
   start: number;
@@ -11,6 +11,7 @@ export interface ByteSpan {
 
 export interface CoverageIndex {
   rowCount: number;
+  intervalCount: number;
   rowsAt(offset: number): number[];
   /** Smallest UNCLIPPED interval covering `offset` (ties: later start), or null. */
   rangeAt(offset: number): { start: number; end: number } | null;
@@ -31,7 +32,7 @@ const toRange = (start: unknown, end: unknown): { start: number; end: number } |
 
 type ProvenanceColumnsResult =
   | {
-      columns: readonly [file: Vector, start: Vector, end: Vector];
+      columns: readonly [file: Vector, start: Vector, end: Vector, ranges: Vector | null];
       reason: null;
     }
   | {
@@ -42,7 +43,7 @@ type ProvenanceColumnsResult =
 function provenanceColumns(table: Table): ProvenanceColumnsResult {
   const labels = table.schema.fields.map(resultColumnLabel);
   if (
-    ['_src_file', '_src_start', '_src_end'].some(
+    ['_src_file', '_src_start', '_src_end', '_src_ranges'].some(
       (required) => labels.filter((label) => label === required).length > 1,
     )
   ) {
@@ -61,20 +62,39 @@ function provenanceColumns(table: Table): ProvenanceColumnsResult {
   if (!fileColumn || !startColumn || !endColumn) {
     return { columns: null, reason: 'no-provenance' };
   }
-  return { columns: [fileColumn, startColumn, endColumn], reason: null };
+
+  const rangesIndex = resultColumnIndex(table.schema, '_src_ranges');
+  const rangesField = rangesIndex === null ? null : table.schema.fields[rangesIndex];
+  const rangesColumn =
+    rangesField && isSourceRangesType(rangesField.type) ? (table.getChildAt(rangesIndex!) ?? null) : null;
+
+  return { columns: [fileColumn, startColumn, endColumn, rangesColumn], reason: null };
 }
 
-export function provenanceOfRow(
-  table: Table,
-  row: number,
-): { file: string; start: number; end: number } | null {
+type Piece = { start: number; end: number };
+
+/** A row's exact pieces: the `_src_ranges` list when present, else its single range. */
+function piecesOf(ranges: Vector | null, row: number, fallback: Piece): Piece[] {
+  const value = ranges?.get(row) as Iterable<{ start: bigint; end: bigint }> | null | undefined;
+  if (!value) return [fallback];
+  return Array.from(value, (piece) => ({ start: Number(piece.start), end: Number(piece.end) }));
+}
+
+export interface RowProvenance {
+  file: string;
+  start: number;
+  end: number;
+  ranges: readonly Piece[];
+}
+
+export function provenanceOfRow(table: Table, row: number): RowProvenance | null {
   const resolved = provenanceColumns(table);
   if (!resolved.columns) return null;
-  const [fileColumn, startColumn, endColumn] = resolved.columns;
+  const [fileColumn, startColumn, endColumn, rangesColumn] = resolved.columns;
   const file = fileColumn.get(row);
   const range = toRange(startColumn.get(row), endColumn.get(row));
   if (typeof file !== 'string' || !range) return null;
-  return { file, ...range };
+  return { file, ...range, ranges: piecesOf(rangesColumn, row, range) };
 }
 
 /** First index in `starts[0..count)` whose value is > probe. */
@@ -92,22 +112,50 @@ function upperBound(starts: Float64Array, count: number, probe: number): number 
 export function buildCoverage(table: Table, file: string, rowOffset = 0): CoverageResult {
   const resolved = provenanceColumns(table);
   if (!resolved.columns) return { index: null, reason: resolved.reason };
-  const [fileColumn, startColumn, endColumn] = resolved.columns;
-  if (table.numRows > COVERAGE_ROW_CAP) return { index: null, reason: 'too-large' };
+  const [fileColumn, startColumn, endColumn, rangesColumn] = resolved.columns;
 
-  const capacity = table.numRows;
-  const rawStarts = new Float64Array(capacity);
-  const rawEnds = new Float64Array(capacity);
-  const rawRows = new Float64Array(capacity);
+  let capacity = table.numRows;
+  let rawStarts = new Float64Array(capacity);
+  let rawEnds = new Float64Array(capacity);
+  let rawRows = new Float64Array(capacity);
+  let rawOrdinal = new Float64Array(capacity);
+
+  const grow = (): void => {
+    capacity = capacity === 0 ? 1 : capacity * 2;
+    const nextStarts = new Float64Array(capacity);
+    const nextEnds = new Float64Array(capacity);
+    const nextRows = new Float64Array(capacity);
+    const nextOrdinal = new Float64Array(capacity);
+    nextStarts.set(rawStarts);
+    nextEnds.set(rawEnds);
+    nextRows.set(rawRows);
+    nextOrdinal.set(rawOrdinal);
+    rawStarts = nextStarts;
+    rawEnds = nextEnds;
+    rawRows = nextRows;
+    rawOrdinal = nextOrdinal;
+  };
+
   let count = 0;
-  for (let row = 0; row < capacity; row += 1) {
+  let rowCount = 0;
+  for (let row = 0; row < table.numRows; row += 1) {
     if (fileColumn.get(row) !== file) continue;
     const range = toRange(startColumn.get(row), endColumn.get(row));
-    if (!range || range.end <= range.start) continue;
-    rawStarts[count] = range.start;
-    rawEnds[count] = range.end;
-    rawRows[count] = row + rowOffset;
-    count += 1;
+    if (!range) continue;
+    const pieces = piecesOf(rangesColumn, row, range);
+    let indexedThisRow = false;
+    for (const piece of pieces) {
+      if (piece.end <= piece.start) continue;
+      if (count >= capacity) grow();
+      rawStarts[count] = piece.start;
+      rawEnds[count] = piece.end;
+      rawRows[count] = row + rowOffset;
+      rawOrdinal[count] = rowCount;
+      count += 1;
+      indexedThisRow = true;
+      if (count > COVERAGE_INTERVAL_CAP) return { index: null, reason: 'too-large' };
+    }
+    if (indexedThisRow) rowCount += 1;
   }
 
   const order = Array.from({ length: count }, (_, i) => i).sort((a, b) => {
@@ -117,17 +165,20 @@ export function buildCoverage(table: Table, file: string, rowOffset = 0): Covera
   const starts = new Float64Array(count);
   const ends = new Float64Array(count);
   const rows = new Float64Array(count);
+  const ordinals = new Float64Array(count);
   const maxEndPrefix = new Float64Array(count);
   order.forEach((source, i) => {
     starts[i] = rawStarts[source] as number;
     ends[i] = rawEnds[source] as number;
     rows[i] = rawRows[source] as number;
+    ordinals[i] = rawOrdinal[source] as number;
     maxEndPrefix[i] =
       i === 0 ? (ends[i] as number) : Math.max(maxEndPrefix[i - 1] as number, ends[i] as number);
   });
 
   const index: CoverageIndex = {
-    rowCount: count,
+    rowCount,
+    intervalCount: count,
     rowsAt(offset) {
       const matches: number[] = [];
       for (let i = upperBound(starts, count, offset) - 1; i >= 0; i -= 1) {
@@ -167,7 +218,7 @@ export function buildCoverage(table: Table, file: string, rowOffset = 0): Covera
           spans.push({
             start: Math.max(starts[i] as number, start),
             end: Math.min(ends[i] as number, end),
-            alt: (i & 1) === 1,
+            alt: ((ordinals[i] as number) & 1) === 1,
           });
         }
       }
