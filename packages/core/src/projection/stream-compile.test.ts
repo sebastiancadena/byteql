@@ -87,6 +87,7 @@ describe('projection stream compilation', () => {
     expect(compiled.rootTables.map((t) => t.name)).toEqual(['records']); // flows + msgs excluded
     const msgs = compiled.tables.find((t) => t.name === 'msgs')!;
     expect(msgs.streamFed).toBe(true);
+    expect(msgs.boundedProvenance).toBe(true);
     expect(Object.keys(tableOutputTypes(msgs))).toEqual([
       'msg_id',
       'record_id',
@@ -94,6 +95,7 @@ describe('projection stream compilation', () => {
       'text',
       '_src_start',
       '_src_end',
+      '_src_ranges',
     ]);
     expect(Object.keys(streamSegmentsOutputTypes('chunk_id'))).toEqual([
       'segment_id',
@@ -310,6 +312,11 @@ streams:`,
     // A deeper dissect entry chained off the message parser feeds back into `chunks`, the
     // very table that feeds byte_stream: chunks -> byte_stream -> msg_parser -> chunk_parser
     // -> chunks closes a cycle that only exists once stream/message edges are in the graph.
+    // This exact shape is also, unavoidably, a stream fed (transitively, through its own
+    // messages) from a table reachable from one of those messages — the bounded-provenance
+    // check added for reserved `_src_ranges` marking now reports that more specific violation
+    // before the generic cycle detector ever runs; there is no way to close a cycle back
+    // through a stream's own feed table without also tripping it.
     const yaml = validYaml.replace(
       'streams:\n',
       `  - from: msg_parser
@@ -319,7 +326,7 @@ streams:`,
 streams:
 `,
     );
-    expectCode(yaml, 'PROJECTION_DISSECT_CYCLE');
+    expect(() => compile(yaml)).toThrow(/bounded provenance/);
   });
 
   it('rule 12: message when rejects context references; stream offset allows them', () => {
@@ -331,5 +338,67 @@ streams:
 
     const offsetYaml = validYaml.replace('offset: _.seq', 'offset: _parent');
     expect(() => compile(offsetYaml)).not.toThrow();
+  });
+});
+
+describe('bounded provenance marking', () => {
+  const compileYaml = (source: string) =>
+    compileProjection(parseProjectionSpec(source), registry, streamRegistries);
+  const table = (compiled: ReturnType<typeof compileYaml>, name: string) =>
+    compiled.tables.find((candidate) => candidate.name === name)!;
+
+  it('marks message-fed and flow tables only, and appends _src_ranges last', () => {
+    const compiled = compileYaml(validYaml);
+    expect(table(compiled, 'msgs').boundedProvenance).toBe(true);
+    expect(table(compiled, 'flows').boundedProvenance).toBe(true);
+    expect(table(compiled, 'records').boundedProvenance).toBe(false);
+    expect(table(compiled, 'chunks').boundedProvenance).toBe(false);
+    const keys = Object.keys(tableOutputTypes(table(compiled, 'msgs')));
+    expect(keys.slice(-3)).toEqual(['_src_start', '_src_end', '_src_ranges']);
+    expect(tableOutputTypes(table(compiled, 'msgs'))._src_ranges).toBe('src_ranges');
+    expect('_src_ranges' in tableOutputTypes(table(compiled, 'records'))).toBe(false);
+  });
+
+  it('marks tables reachable by a deeper dissect from a message parser or message table', () => {
+    const deeper = validYaml.replace(
+      'dissect:',
+      `  - name: words
+    rows: $.word
+    key: word_id
+    parent_key: { table: records, column: record_id }
+    columns:
+      w: { expr: '_.w', type: utf8 }
+dissect:
+  - from: msg_parser
+    payload: _.message.body
+    chain:
+      - { when: 'true', parser: word_parser, table: words }`,
+    );
+    const compiled = compileProjection(
+      parseProjectionSpec(deeper),
+      new Map([...registry, ['word_parser', () => ({ root: { word: { w: 'x' } } })]]),
+      streamRegistries,
+    );
+    expect(table(compiled, 'words').boundedProvenance).toBe(true);
+  });
+
+  it('rejects a declared _src_ranges column', () => {
+    const bad = validYaml.replace(
+      "text: { expr: '_.text', type: utf8 }",
+      "_src_ranges: { expr: '_.text', type: utf8 }",
+    );
+    expect(() => compileYaml(bad)).toThrow(ProjectionCompileError);
+  });
+
+  it('rejects a stream fed from a bounded-provenance table', () => {
+    const bad = validYaml.replace(
+      'streams:',
+      `  - from: msgs
+    payload: _.body
+    chain:
+      - { when: 'true', stream: byte_stream }
+streams:`,
+    );
+    expect(() => compileYaml(bad)).toThrow(/bounded provenance/);
   });
 });

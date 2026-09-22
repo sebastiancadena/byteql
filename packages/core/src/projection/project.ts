@@ -55,6 +55,10 @@ interface CompiledProjectionTable {
   // Fed by a stream `messages` link (see spec v0.3's streams:) rather than a plain dissect
   // chain link — tableOutputTypes injects a synthetic `stream_id` column for these.
   readonly streamFed: boolean;
+  // Rows may carry a bounding span: stream-fed message tables, stream flow tables, and every
+  // table a dissect chain reaches from a message parser or message table. tableOutputTypes
+  // appends the engine-owned `_src_ranges` column for these.
+  readonly boundedProvenance: boolean;
 }
 
 export interface CompiledStreamMessageLink {
@@ -107,7 +111,7 @@ export interface ProjectedTable {
   readonly rowCount: number;
 }
 
-const reservedOutputNames = new Set(['_src_start', '_src_end', '_src_file']);
+const reservedOutputNames = new Set(['_src_start', '_src_end', '_src_ranges', '_src_file']);
 
 const compileAtPath = (source: string, path: string): CompiledExpression => {
   try {
@@ -213,6 +217,39 @@ export const compileProjection = (
       stream.messages.flatMap((message) => (message.table !== undefined ? [message.table] : [])),
     ),
   );
+  // Bounded-provenance pre-scan: a row has exact (not merely bounding-span) provenance when it
+  // originates from a reassembled stream message, or from anything a dissect chain reaches
+  // starting from a message parser id or message table — plus the stream's own flow table.
+  // Computed from the raw spec (parser ids and table names share one namespace here) before
+  // tables are compiled, for the same reason as streamFedNames above.
+  const boundedProvenanceNames = (() => {
+    const streams = spec.streams ?? [];
+    const reached = new Set<string>();
+    const queue: string[] = [];
+    const visit = (name: string | undefined) => {
+      if (name === undefined || reached.has(name)) return;
+      reached.add(name);
+      queue.push(name);
+    };
+    for (const stream of streams) {
+      for (const message of stream.messages) {
+        visit(message.parser);
+        visit(message.table);
+      }
+    }
+    while (queue.length > 0) {
+      const from = queue.shift()!;
+      for (const entry of spec.dissect ?? []) {
+        if (entry.from !== from) continue;
+        for (const link of entry.chain) {
+          visit(link.parser);
+          visit(link.table);
+        }
+      }
+    }
+    for (const stream of streams) reached.add(stream.table);
+    return reached;
+  })();
   const tables = spec.tables.map((table, tableIndex): CompiledProjectionTable => {
     const tablePath = `tables.${tableIndex}`;
     const streamFed = streamFedNames.has(table.name);
@@ -295,6 +332,7 @@ export const compileProjection = (
       columns: Object.freeze(columns),
       parentKey: validateParentKey(table, tablePath, specTableByName),
       streamFed,
+      boundedProvenance: boundedProvenanceNames.has(table.name),
     });
   });
 
@@ -500,6 +538,16 @@ export const compileProjection = (
             `stream link ${JSON.stringify(link.stream)} must be rooted at a declared table, not parser ${JSON.stringify(entry.from)}`,
           );
         }
+        // A stream must not be fed from a table whose own rows already carry bounded
+        // provenance (a reassembled message table or a flow table) — reassembling a stream
+        // from already-reassembled bytes has no coherent source byte range to report.
+        if (boundedProvenanceNames.has(entry.from)) {
+          throw new ProjectionCompileError(
+            'PROJECTION_STREAM_INVALID',
+            `${linkPath}.stream`,
+            `stream ${JSON.stringify(link.stream)} cannot be fed from ${JSON.stringify(entry.from)}: its rows have bounded provenance`,
+          );
+        }
         // Rule 3: every entry feeding a stream must agree on the feed table.
         if (stream.feedTable === null) {
           stream.feedTable = entry.from;
@@ -654,9 +702,23 @@ export const compileProjection = (
   // to chain `from: <table>` instead of `from: <parser>` — chains fired from emitRow extend
   // keysByTable with that table's own key before dispatching, so that table (and its ancestors)
   // are genuinely reachable.
+  // `tableAncestors`/`streamAncestors` extend the fixpoint through table-to-table and
+  // stream/message edges: a table's own ancestors accumulate onto whatever it feeds (mirroring
+  // rule 9's tableAvail below), and a stream thread its feeding entry's ancestors onto each of
+  // its message parser ids. This last hop matters because a message-rooted deeper dissect
+  // (`from: <message parser id>`) fires at runtime with the SAME keysByTable the stream
+  // contribution captured (see contributeToStream's `keysByTable` / the message drain loop's
+  // `completingKeys`), so whatever ancestors were reachable at the feed table are equally
+  // reachable from one of the stream's own message parsers.
   const ancestorsByParser = new Map<string, Set<string>>();
+  const tableAncestors = new Map<string, Set<string>>();
+  const streamAncestors = new Map<string, Set<string>>();
   const ancestorsOfEntry = (entry: CompiledDissect): ReadonlySet<string> => {
-    if (tableByName.has(entry.from)) return new Set([entry.from]);
+    if (tableByName.has(entry.from)) {
+      const own = new Set([entry.from]);
+      for (const ancestor of tableAncestors.get(entry.from) ?? []) own.add(ancestor);
+      return own;
+    }
     return ancestorsByParser.get(entry.from) ?? new Set();
   };
   let changed = true;
@@ -665,12 +727,36 @@ export const compileProjection = (
     for (const entry of dissects) {
       const entryAncestors = ancestorsOfEntry(entry);
       for (const link of entry.chain) {
-        if (link.parserId === null) continue; // stream links have no parser id; unrelated to this fixpoint
-        const existing = ancestorsByParser.get(link.parserId) ?? new Set<string>();
+        if (link.parserId !== null) {
+          const existing = ancestorsByParser.get(link.parserId) ?? new Set<string>();
+          const before = existing.size;
+          for (const ancestor of entryAncestors) existing.add(ancestor);
+          if (existing.size !== before) changed = true;
+          ancestorsByParser.set(link.parserId, existing);
+          if (link.table) {
+            const existingTable = tableAncestors.get(link.table.name) ?? new Set<string>();
+            const beforeTable = existingTable.size;
+            for (const ancestor of entryAncestors) existingTable.add(ancestor);
+            if (existingTable.size !== beforeTable) changed = true;
+            tableAncestors.set(link.table.name, existingTable);
+          }
+        } else if (link.stream) {
+          const existing = streamAncestors.get(link.stream.name) ?? new Set<string>();
+          const before = existing.size;
+          for (const ancestor of entryAncestors) existing.add(ancestor);
+          if (existing.size !== before) changed = true;
+          streamAncestors.set(link.stream.name, existing);
+        }
+      }
+    }
+    for (const stream of streamByName.values()) {
+      const streamValues = streamAncestors.get(stream.name) ?? new Set<string>();
+      for (const message of stream.messages) {
+        const existing = ancestorsByParser.get(message.parserId) ?? new Set<string>();
         const before = existing.size;
-        for (const ancestor of entryAncestors) existing.add(ancestor);
+        for (const value of streamValues) existing.add(value);
         if (existing.size !== before) changed = true;
-        ancestorsByParser.set(link.parserId, existing);
+        ancestorsByParser.set(message.parserId, existing);
       }
     }
   }
@@ -1044,6 +1130,7 @@ export const tableOutputTypes = (table: CompiledProjectionTable): Record<string,
   }
   types._src_start = 'uint64';
   types._src_end = 'uint64';
+  if (table.boundedProvenance) types._src_ranges = 'src_ranges';
   return types;
 };
 
