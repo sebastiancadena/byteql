@@ -1,5 +1,7 @@
 import { DataType, DateUnit, Precision, TimeUnit } from 'apache-arrow';
 
+import { isSourceRangesType } from './result-columns.js';
+
 export interface ParquetExportOptions {
   readonly columns: readonly number[];
   readonly columnNames: readonly string[];
@@ -26,7 +28,8 @@ export const isSupportedParquetType = (type: DataType): boolean =>
   DataType.isBinary(type) ||
   (DataType.isDate(type) && type.unit === DateUnit.DAY) ||
   (DataType.isTime(type) && type.unit === TimeUnit.MICROSECOND) ||
-  (DataType.isTimestamp(type) && (type.unit === TimeUnit.MICROSECOND || type.unit === TimeUnit.NANOSECOND));
+  (DataType.isTimestamp(type) && (type.unit === TimeUnit.MICROSECOND || type.unit === TimeUnit.NANOSECOND)) ||
+  isSourceRangesType(type);
 
 const parquetCastTarget = (type: DataType): string => {
   if (DataType.isTimestamp(type)) return 'TIMESTAMP or TIMESTAMP_NS';

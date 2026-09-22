@@ -572,9 +572,10 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
         TIME '01:02:03.123456' time_us,
         TIMESTAMP '2026-09-04 01:02:03.123456' ts_us,
         TIMESTAMP_NS '2026-09-04 01:02:03.123456789' ts_ns,
-        TIMESTAMPTZ '2026-09-04 01:02:03.123456+00' ts_tz
+        TIMESTAMPTZ '2026-09-04 01:02:03.123456+00' ts_tz,
+        [{'start': 1::UBIGINT, 'end': 2::UBIGINT}, {'start': 5::UBIGINT, 'end': 18446744073709551615::UBIGINT}] src_ranges
         UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
-        NULL,NULL,''::BLOB,NULL,NULL,NULL,NULL,NULL`);
+        NULL,NULL,''::BLOB,NULL,NULL,NULL,NULL,NULL,NULL`);
       const original = await conn.query('SELECT * FROM __typed_original');
       const typedIpc = tableToIPC(
         tableFromIPC(await RecordBatchStreamWriter.writeAll(original).toUint8Array()),

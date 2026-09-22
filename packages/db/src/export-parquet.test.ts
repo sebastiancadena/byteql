@@ -19,6 +19,7 @@ import {
   List,
   Null,
   Schema,
+  Struct,
   Table,
   TimeMicrosecond,
   TimeNanosecond,
@@ -518,5 +519,17 @@ describe('isSupportedParquetType', () => {
     ];
 
     expect(unsupported.every((type) => !isSupportedParquetType(type))).toBe(true);
+  });
+
+  it('admits the source ranges shape for Parquet export', () => {
+    const type = new List(
+      new Field(
+        'item',
+        new Struct([new Field('start', new Uint64(), true), new Field('end', new Uint64(), true)]),
+        true,
+      ),
+    );
+    expect(isSupportedParquetType(type)).toBe(true);
+    expect(isSupportedParquetType(new List(new Field('item', new Uint64(), true)))).toBe(false);
   });
 });

@@ -12,6 +12,7 @@ import {
   SORT_ORDINAL_COLUMN,
   type ResultSortOptions,
 } from './result-sort.js';
+import { resultSortKeyRefusal } from './result-columns.js';
 import { restoreResultSchema, snapshotPage } from './result-snapshot.js';
 import { isQuotaError } from './spill-files.js';
 import { StoredResultView } from './stored-result-view.js';
@@ -131,6 +132,11 @@ class SortedResultWriter {
     // Rejects an out-of-range index or an unknown direction before any work begins; the generated
     // statement itself is built again later against the real shard paths.
     buildResultSortSql(['opfs://placeholder'], this.base.schema, this.options.sort);
+    const keyField = this.base.schema.fields[this.options.sort.columnIndex];
+    const refusal = keyField ? resultSortKeyRefusal(keyField) : null;
+    if (refusal) {
+      throw new ResultSortError('SORT_UNSUPPORTED_TYPE', refusal);
+    }
   }
 
   private async acquire(): Promise<void> {

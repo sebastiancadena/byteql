@@ -67,6 +67,10 @@ const convert = async (connection: AsyncDuckDBConnection, sql: string): Promise<
     if (next.done === true) break;
     const batch = normalizeDuckdbResultBatch(next.value, reader.schema);
     schema = batch.schema;
+    // Mirror the production reader (browser.ts): Arrow represents a schema-only stream with an
+    // internal zero-row placeholder batch. Handing that batch's own (possibly List-typed) buffers
+    // straight to the Arrow 17 writer crashes on assembly; only its schema is authoritative here.
+    if (batch.numRows === 0) continue;
     batches.push(batch);
     const staged = batches.reduce<number>(
       (total, batch) => total + (batch as { numRows: number }).numRows,
@@ -76,7 +80,9 @@ const convert = async (connection: AsyncDuckDBConnection, sql: string): Promise<
   }
   if (batches.length > 0) await flush();
   if (pages.length === 0) {
-    schema = normalizeDuckdbResultSchema(reader.schema);
+    // A skipped zero-row placeholder batch already gave us a normalized schema; only the case
+    // where no batch was ever seen falls back to the cursor's own (unnormalized) schema.
+    schema ??= normalizeDuckdbResultSchema(reader.schema);
     await flush();
   }
   return pages;
@@ -538,6 +544,25 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
         name: 'boolean',
         sql: 'SELECT * FROM (VALUES (1, true), (2, false), (3, NULL)) t(ord, flag)',
         columnIndex: 1,
+      },
+      {
+        // The one admitted nested shape: exact source byte ranges as a passenger column.
+        name: 'source-ranges',
+        sql:
+          'SELECT * FROM (VALUES ' +
+          "(2, [{'start': 10::UBIGINT, 'end': 20::UBIGINT}, {'start': 90::UBIGINT, 'end': 18446744073709551615::UBIGINT}]), " +
+          '(1, NULL::STRUCT("start" UBIGINT, "end" UBIGINT)[])) t(ord, _src_ranges)',
+        columnIndex: 0,
+      },
+      {
+        // Same shape, zero rows: the snapshot-staging path must not choke on an empty page whose
+        // schema still carries the List<Struct> ranges column (see result-snapshot.test.ts).
+        name: 'source-ranges-empty',
+        sql:
+          'SELECT * FROM (VALUES ' +
+          "(2, [{'start': 10::UBIGINT, 'end': 20::UBIGINT}]), " +
+          '(1, NULL::STRUCT("start" UBIGINT, "end" UBIGINT)[])) t(ord, _src_ranges) WHERE false',
+        columnIndex: 0,
       },
     ];
 

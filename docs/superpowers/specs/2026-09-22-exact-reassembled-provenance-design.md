@@ -209,4 +209,79 @@ nullable.
 
 ## Implementation notes
 
-To be filled during implementation (probe outcomes, measured costs, discoveries).
+**2026-09-22 — Task 2 (DuckDB support for the ranges shape): SHIPPED, after a blocking defect
+found and fixed during the Step 9 gate.**
+
+- `isSourceRangesType` (structural: `List<Struct<start: Uint64, end: Uint64>>`, exact field order,
+  names and widths) and `resultSortKeyRefusal` land in `packages/db/src/result-columns.ts`,
+  re-exported from both `@byteql/db` and the light `@byteql/db/result-columns` subpath.
+  `isSupportedParquetType` (`export-types.ts`) and, through it, `isSupportedSortType`
+  (`result-sort.ts`) admit the shape; `sort-result.ts`'s `validate()` now also throws
+  `SORT_UNSUPPORTED_TYPE` with `"Byte ranges can't be sorted."` when the chosen sort KEY is a
+  ranges column, closing the path a programmatic request could otherwise use to bypass the
+  disabled header. DDL: `browser.ts`'s `ARROW_TYPE_TO_DUCKDB_TYPE.src_ranges` maps to
+  `STRUCT("start" UBIGINT, "end" UBIGINT)[]`. All unit tests green
+  (`pnpm --filter @byteql/db test -- --run`, 276/276).
+- Runtime gate, `result-sort-probe.spec.ts` (real pinned DuckDB-WASM, both bundles): **PASS**.
+  `typedFixtures['source-ranges']` is `true` on both `mvp` and `eh` (mvp's pre-existing
+  `integer-widths` failure is the documented, unrelated full-range-signed-key limitation).
+  The ranges column sorts as a passenger; sorting it as the key is refused.
+- `apps/web/e2e/source-ranges-sql.spec.ts` (new): **PASS** after two idiom fixes — the plain
+  `lambda p: …` syntax parses and evaluates correctly (no `p -> …` fallback needed), quoting the
+  reserved word `"end"` works; the assertion needed `expectRows(page, 1)` before reading the
+  single result cell because the sample's own auto-run "Table overview" query transiently
+  populates the same results grid with unrelated rows that also contain the digits being matched
+  (an existing `runSql` race, not specific to this feature).
+- `results-export-probe.spec.ts`: **FAILS on both `eh` and `mvp`** — this is the Step-9 gate
+  condition ("if the `eh` bundle fails any new check, STOP and report BLOCKED"). Root cause,
+  isolated outside DuckDB/the browser entirely (reproduced with plain `apache-arrow@21.1.0` in
+  Node): `packages/db/src/result-snapshot.ts`'s `snapshotPage` reconstructs a table via
+  `new Table(Record<string, Vector>)` then a schema `relabel`. When one of the columns is a
+  **zero-row** `List<Struct<…>>` vector, this reconstruction produces a list vector whose
+  `valueOffsets`/data buffer is not what `apache-arrow`'s `VectorAssembler.assembleListVector`
+  expects, and `tableToIPC` throws `TypeError: Cannot read properties of undefined (reading
+  'slice')`. A table with the *same* schema and **non-zero** rows serializes fine through the
+  identical code path — the defect is specific to the zero-row case. `snapshotPage` is shared by
+  `export-parquet.ts`'s `stageSelectedColumns` (hit here, via `ParquetWriter.write()`'s
+  `pages.length === 0` branch exporting an empty result) and by `sort-result.ts`'s
+  `appendStagingPage` (same crash risk for any zero-row snapshot page during sorting, latent but
+  unexercised by the current fixtures). Net effect: **any query result with zero rows whose
+  schema carries a `_src_ranges` column will currently crash Parquet export**, in production, not
+  just in the probe. `report.parquetTypes` for the typed round-trip (non-empty) case was
+  confirmed correct before the crash: `[..., 'TIMESTAMP WITH TIME ZONE', 'STRUCT("start" UBIGINT,
+  "end" UBIGINT)[]']`, and `exactTypes: true` — the DDL string and the non-empty round trip are
+  both proven; only the zero-row path is broken.
+- **Ruling: fix it inside Task 2** — `snapshotPage` is a shared helper and the fix is local; the
+  spec requires sorting and Parquet export to work with `_src_ranges`. Fixed in
+  `packages/db/src/result-snapshot.ts`: when `table.numRows === 0`, any child whose type is
+  `DataType.isList` is rebuilt with `vectorFromArray([], child.type)` before entering the
+  `Record<string, Vector>` reconstruction — a freshly built empty vector carries proper
+  offsets/children, unlike the one handed back by a zero-batch `Table`. RED/GREEN unit evidence:
+  a new `result-snapshot.test.ts` case builds a zero-BATCH table (`new Table(schema)`, matching
+  exactly what `export-parquet.ts`'s empty-result branch constructs) with a `v: Int32` plus
+  `r: List<Struct<start,end>>` column, calls `snapshotPage`, and asserts `tableToIPC` doesn't
+  throw and the list type survives — it reproduced the exact reported `TypeError` before the fix
+  and passes after. Full `@byteql/db` suite green (277/277) after the fix.
+- A second, distinct manifestation surfaced adding a `source-ranges-empty` (`WHERE false`) fixture
+  to `sort-probe.ts`'s runtime coverage: DuckDB's own Arrow stream emits a zero-row *placeholder*
+  batch even for a `WHERE false` query, and hands its raw List-typed buffers straight to the Arrow
+  17 writer crashes the same way (`assembleListVector`). This is **not** a production gap — the
+  real query path (`browser.ts` lines ~686–691, ~726–731) already discards a zero-row batch and
+  uses only its schema via `convertDuckdbTable(schema, [])` (proven safe directly), and
+  `sort-result.ts` never slices a zero-row chunk into `convertDuckdbTable` either. It was the
+  e2e probe's own `convert()` helper (`sort-probe.ts`) that didn't mirror that defensive skip.
+  Fixed there to match production: skip a batch when `batch.numRows === 0` (keeping its schema),
+  and use that already-normalized schema instead of re-reading the cursor's `reader.schema` when
+  falling back for an all-zero-row result (the cursor's own schema getter was empty/stale by the
+  time every batch had been skipped).
+- Gate re-run after both fixes: `result-sort-probe.spec.ts` PASS on both bundles —
+  `typedFixtures` now includes `source-ranges: true` and `source-ranges-empty: true` on `eh` (and
+  incidentally on `mvp` too, gated only via the pre-existing `integer-widths` exception).
+  `results-export-probe.spec.ts` PASS on both bundles, all 8 sub-tests (`Parquet scalar families`
+  × 2, `Parquet export gate` × 3 row counts × 2 bundles) — confirmed `parquetTypes` ends
+  `[..., 'TIMESTAMP WITH TIME ZONE', 'STRUCT("start" UBIGINT, "end" UBIGINT)[]']` with
+  `exactTypes: true`, `emptySchema: true`, `cancellationPreservesResult: true`.
+  `source-ranges-sql.spec.ts` PASS — lambda syntax `lambda p: …` confirmed (no `p -> …` fallback
+  needed). 11/11 gate tests green. Committed on `feature/exact-reassembled-provenance`:
+  `fix(db): rebuild empty list columns when snapshotting zero-row pages`, then
+  `feat(db): admit source byte ranges through ingest, sorting, and Parquet export`.

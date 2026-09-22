@@ -1,7 +1,7 @@
-import { Field, Int64, List, Schema, TimeUnit, Timestamp, Utf8 } from 'apache-arrow';
+import { Field, Int64, List, Schema, Struct, TimeUnit, Timestamp, Uint64, Utf8 } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { RESULT_LABEL_METADATA_KEY } from './result-columns.js';
+import { RESULT_LABEL_METADATA_KEY, resultSortKeyRefusal } from './result-columns.js';
 import {
   buildResultSortSql,
   resultSortEligibility,
@@ -158,5 +158,29 @@ describe('resultSortRuntimeSupported', () => {
   it('accepts the exception-handling bundle every current browser selects', () => {
     expect(resultSortRuntimeSupported('/assets/duckdb-eh.wasm')).toBe(true);
     expect(resultSortRuntimeSupported('https://app.example/duckdb-eh-abc123.wasm.gz')).toBe(true);
+  });
+});
+
+const rangesField = new Field(
+  '_src_ranges',
+  new List(
+    new Field(
+      'item',
+      new Struct([new Field('start', new Uint64(), true), new Field('end', new Uint64(), true)]),
+      true,
+    ),
+  ),
+  true,
+);
+
+describe('source ranges in sorting', () => {
+  it('admits a ranges column as a passenger', () => {
+    expect(resultSortEligibility(new Schema([new Field('n', new Uint64()), rangesField]))).toEqual({
+      supported: true,
+    });
+  });
+  it('refuses a ranges column as the sort key', () => {
+    expect(resultSortKeyRefusal(rangesField)).toBe("Byte ranges can't be sorted.");
+    expect(resultSortKeyRefusal(new Field('n', new Uint64()))).toBeNull();
   });
 });

@@ -44,6 +44,7 @@ for (const variant of ['mvp', 'eh'] as const) {
       'TIMESTAMP',
       'TIMESTAMP_NS',
       'TIMESTAMP WITH TIME ZONE',
+      'STRUCT("start" UBIGINT, "end" UBIGINT)[]',
     ]);
     expect(report.requestsAfterReady).toEqual([]);
   });

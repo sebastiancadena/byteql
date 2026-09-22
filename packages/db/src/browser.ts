@@ -173,6 +173,7 @@ const ARROW_TYPE_TO_DUCKDB_TYPE: Readonly<Record<string, string>> = {
   utf8: 'VARCHAR',
   binary: 'BLOB',
   timestamp_us: 'TIMESTAMP',
+  src_ranges: 'STRUCT("start" UBIGINT, "end" UBIGINT)[]',
 };
 
 const duckdbColumnType = (type: string): string => {

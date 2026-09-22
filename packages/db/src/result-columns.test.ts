@@ -1,8 +1,9 @@
-import { Field, Int32, Schema } from 'apache-arrow';
+import { Field, Int32, Int64, List, Schema, Struct, Uint32, Uint64, Utf8 } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
 import {
   RESULT_LABEL_METADATA_KEY,
+  isSourceRangesType,
   parquetColumnNames,
   resultColumnIndex,
   resultColumnLabel,
@@ -128,5 +129,32 @@ describe('parquetColumnNames', () => {
     const schema = schemaOf(['first', 'second', 'third']);
 
     expect(() => parquetColumnNames(schema, columns)).toThrow();
+  });
+});
+
+const piece = (startType = new Uint64(), endType = new Uint64(), names = ['start', 'end']) =>
+  new Struct([new Field(names[0]!, startType, true), new Field(names[1]!, endType, true)]);
+const listOf = (item: Struct) => new List(new Field('item', item, true));
+
+describe('isSourceRangesType', () => {
+  it('accepts List<Struct<start: Uint64, end: Uint64>>', () => {
+    expect(isSourceRangesType(listOf(piece()))).toBe(true);
+  });
+  it('rejects wrong field names, order, widths, signedness, and non-list types', () => {
+    expect(isSourceRangesType(listOf(piece(undefined, undefined, ['end', 'start'])))).toBe(false);
+    expect(isSourceRangesType(listOf(piece(undefined, undefined, ['s', 'e'])))).toBe(false);
+    expect(isSourceRangesType(listOf(piece(new Uint32(), new Uint64())))).toBe(false);
+    expect(isSourceRangesType(listOf(piece(new Int64(), new Int64())))).toBe(false);
+    expect(isSourceRangesType(new List(new Field('item', new Utf8(), true)))).toBe(false);
+    expect(isSourceRangesType(piece())).toBe(false);
+    expect(isSourceRangesType(new Uint64())).toBe(false);
+  });
+  it('rejects a struct with an extra field', () => {
+    const three = new Struct([
+      new Field('start', new Uint64(), true),
+      new Field('end', new Uint64(), true),
+      new Field('x', new Uint64(), true),
+    ]);
+    expect(isSourceRangesType(listOf(three))).toBe(false);
   });
 });

@@ -21,10 +21,12 @@ export {
 } from './result-sort.js';
 export { restoreResultSchema, snapshotPage } from './result-snapshot.js';
 export {
+  isSourceRangesType,
   parquetColumnNames,
   RESULT_LABEL_METADATA_KEY,
   resultColumnIndex,
   resultColumnLabel,
+  resultSortKeyRefusal,
   type ParquetColumnName,
 } from './result-columns.js';
 export { convertDuckdbTable } from './arrow-bridge.js';

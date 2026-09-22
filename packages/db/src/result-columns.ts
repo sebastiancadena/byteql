@@ -1,4 +1,4 @@
-import type { Field, Schema } from 'apache-arrow';
+import { DataType, type Field, type Schema } from 'apache-arrow';
 
 export const RESULT_LABEL_METADATA_KEY = 'byteql:result-label:v1';
 
@@ -55,4 +55,24 @@ export function parquetColumnNames(schema: Schema, columns: readonly number[]): 
     used.add(key(name));
     return { columnIndex, label, name };
   });
+}
+
+const isUint64 = (type: DataType): boolean => DataType.isInt(type) && !type.isSigned && type.bitWidth === 64;
+
+/**
+ * The one nested shape ByteQL admits: exact source byte ranges, `List<Struct<start, end>>` with
+ * both fields unsigned 64-bit, in that order. Structural, not name-based, so an aliased column
+ * still qualifies; general nested types stay unsupported everywhere.
+ */
+export const isSourceRangesType = (type: DataType): boolean => {
+  if (!DataType.isList(type)) return false;
+  const item = type.children[0]?.type;
+  if (!item || !DataType.isStruct(item) || item.children.length !== 2) return false;
+  const [start, end] = item.children;
+  return start!.name === 'start' && end!.name === 'end' && isUint64(start!.type) && isUint64(end!.type);
+};
+
+/** Why `field` cannot be the sort key even when the result as a whole is sortable, or null. */
+export function resultSortKeyRefusal(field: Field): string | null {
+  return isSourceRangesType(field.type) ? "Byte ranges can't be sorted." : null;
 }
