@@ -427,3 +427,125 @@ describe('ProjectionSession drain with streams', () => {
     expect(finished.find((t) => t.name === 'msgs')!.arrow.numRows).toBe(0);
   });
 });
+
+const ranges = (value: unknown) =>
+  value === null
+    ? null
+    : Array.from(value as Iterable<{ start: bigint; end: bigint }>, (p) => [p.start, p.end]);
+
+describe('exact source ranges', () => {
+  it('gives a multi-chunk message its exact pieces and keeps the span', () => {
+    // Message [4, a, b, c, d]: chunk 0 payload file [2, 5), chunk 1 payload file [102, 104).
+    const { finished } = project([chunk(7, 0, [4, 97, 98]), chunk(7, 3, [99, 100])]);
+    const msgs = table(finished, 'msgs');
+    expect(ranges(msgs.arrow.getChild('_src_ranges')!.get(0))).toEqual([
+      [2n, 5n],
+      [102n, 104n],
+    ]);
+    expect(msgs.arrow.getChild('_src_start')!.get(0)).toBe(2n);
+    expect(msgs.arrow.getChild('_src_end')!.get(0)).toBe(104n);
+  });
+
+  it('leaves a single-chunk message null', () => {
+    const { finished } = project([chunk(7, 0, [2, 65, 66])]);
+    expect(table(finished, 'msgs').arrow.getChild('_src_ranges')!.get(0)).toBeNull();
+  });
+
+  it('clips pieces to the message, as the existing span test does', () => {
+    // Same geometry as 'computes exact provenance spans per message': message 1 is file [2, 4)
+    // (single piece → null); message 2 is file [4, 5) + [102, 104).
+    const { finished } = project([chunk(7, 0, [1, 65, 2]), chunk(7, 3, [66, 67])]);
+    const column = table(finished, 'msgs').arrow.getChild('_src_ranges')!;
+    expect(column.get(0)).toBeNull();
+    expect(ranges(column.get(1))).toEqual([
+      [4n, 5n],
+      [102n, 104n],
+    ]);
+  });
+
+  it('orders pieces by file offset for an out-of-order capture', () => {
+    // Stream bytes 3.. arrive first (record 0, file [2, 4)); bytes 0..2 arrive second (record 1,
+    // file [102, 105)). File order puts the stream-later piece first.
+    const { finished } = project([chunk(7, 3, [99, 100]), chunk(7, 0, [4, 97, 98])]);
+    expect(ranges(table(finished, 'msgs').arrow.getChild('_src_ranges')!.get(0))).toEqual([
+      [2n, 4n],
+      [102n, 105n],
+    ]);
+  });
+
+  it('gives a flow row every accepted contribution, excluding duplicates', () => {
+    const { finished } = project([
+      chunk(7, 0, [4, 97, 98]),
+      chunk(7, 0, [4, 97, 98]), // exact duplicate: dropped, never recorded
+      chunk(7, 3, [99, 100]),
+    ]);
+    expect(ranges(table(finished, 'flows').arrow.getChild('_src_ranges')!.get(0))).toEqual([
+      [2n, 5n],
+      [202n, 204n],
+    ]);
+  });
+
+  it('leaves a rejected-first-contribution flow null with its fallback span', () => {
+    const big70 = Array.from({ length: 70 }, (_, i) => i % 251);
+    const { finished } = project([chunk(7, 0, big70)]);
+    const flows = table(finished, 'flows');
+    expect(flows.arrow.getChild('_src_ranges')!.get(0)).toBeNull();
+    expect(flows.arrow.getChild('_src_start')!.get(0)).toBe(2n);
+  });
+
+  it('gives deeper dissect rows their message provenance', () => {
+    const deeperYaml = yaml
+      .replace(
+        '  - name: msgs',
+        `  - name: words
+    rows: $.word
+    key: word_id
+    parent_key: { table: records, column: record_id }
+    columns:
+      w: { expr: '_.w', type: utf8 }
+  - name: msgs`,
+      )
+      .replace(
+        'streams:',
+        `  - from: msg_parser
+    payload: _.message.body
+    chain:
+      - { when: 'true', parser: word_parser, table: words }
+streams:`,
+      );
+    const deeperRegistry: ParserRegistry = new Map([
+      ...registry,
+      [
+        'msg_parser',
+        (bytes: Uint8Array) => ({
+          root: {
+            message: {
+              text: new TextDecoder().decode(bytes.subarray(1)),
+              body: { bytes: bytes.subarray(1), start: 1 },
+            },
+          },
+        }),
+      ],
+      ['word_parser', () => ({ root: { word: { w: 'x' } }, resolve: () => ({ start: 1, end: 2 }) })],
+    ]);
+    const compiled = compileProjection(parseProjectionSpec(deeperYaml), deeperRegistry, streamRegistries);
+    const session = createProjectionSession(compiled, { issues: new IssueCollector() });
+    session.project(
+      {
+        records: [chunk(7, 0, [4, 97, 98]), chunk(7, 3, [99, 100])].map((bytes, index) => ({
+          n: index,
+          body: { bytes, start: index * 100 },
+        })),
+      },
+      { resolve: () => ({ start: 0, end: 4 }) },
+    );
+    const words = table(session.finish(), 'words');
+    expect(words.rowCount).toBe(1);
+    expect(words.arrow.getChild('_src_start')!.get(0)).toBe(2n);
+    expect(words.arrow.getChild('_src_end')!.get(0)).toBe(104n);
+    expect(ranges(words.arrow.getChild('_src_ranges')!.get(0))).toEqual([
+      [2n, 5n],
+      [102n, 104n],
+    ]);
+  });
+});

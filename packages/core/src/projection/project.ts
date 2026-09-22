@@ -17,8 +17,14 @@ import {
 import type { IssueCollector } from '../issues.js';
 import type { ParsedRecord, ParserRegistry, RecordParser } from './parsers.js';
 import type { ArrowTypeName, ProjectionSpec, TableSpec } from './spec.js';
-import { StreamAssembler } from './streams.js';
-import type { StreamFramer, StreamKeyExtractor, StreamKeyResult, StreamRegistries } from './streams.js';
+import { StreamAssembler, normalizeRanges } from './streams.js';
+import type {
+  StreamFramer,
+  StreamKeyExtractor,
+  StreamKeyResult,
+  StreamRegistries,
+  SourcePiece,
+} from './streams.js';
 import { buildMatcher, walkMatcher } from './walk.js';
 
 export interface SourceRange {
@@ -987,6 +993,21 @@ export interface StreamSegmentRecord {
   readonly feedKeyValue: bigint | null;
 }
 
+// The exact provenance a stream message's rows inherit — computed once, in
+// emitStreamMessage, and threaded through every row projected beneath that message (its own
+// `messages[].table` row and any deeper dissect fired from the parsed message tree alike).
+// `ranges` is already in column form (bigint pairs), so it can be assigned to `_src_ranges`
+// without another pass through normalizeRanges/toColumnRanges.
+export interface InheritedProvenance {
+  readonly span: SourceRange;
+  readonly ranges: readonly { start: bigint; end: bigint }[] | null;
+}
+
+// SourcePiece -> _src_ranges column form: bigint pairs, or null when there's nothing to widen
+// _src_start/_src_end with (normalizeRanges already collapsed a single covering piece to null).
+const toColumnRanges = (pieces: readonly SourcePiece[] | null): InheritedProvenance['ranges'] =>
+  pieces?.map((piece) => ({ start: BigInt(piece.start), end: BigInt(piece.end) })) ?? null;
+
 // Per-flow runtime state for one stream's reassembly, keyed by the stream key extractor's
 // `key` string within StreamsRuntime.flows.get(stream.name). `status` starts 'ok' and only
 // ever moves forward: 'truncated'/'error' are terminal (contributions silently drop once
@@ -1040,6 +1061,10 @@ export interface EmitContext {
   readonly sink: RowSink;
   readonly streams: StreamsRuntime | null;
   readonly issues?: IssueCollector;
+  // Set only while emitStreamMessage is emitting a message's rows: every row projected beneath it
+  // (message tables and deeper dissect tables alike) inherits the message's provenance instead
+  // of composing offsets against the span start, which is meaningless once the span has gaps.
+  inherited?: InheritedProvenance | null;
 }
 
 const emitRow = (
@@ -1493,69 +1518,92 @@ const emitStreamMessage = (
   completingKeys: ReadonlyMap<string, bigint>,
   emitContext: EmitContext,
 ): void => {
-  // Span endpoints: map messageStart/messageEnd (current-base-relative stream positions)
-  // through EACH contributing segment's own linear offset <-> file-offset relationship, clip
-  // to the part of that segment the message actually overlaps, and take the min/max of the
-  // clipped ranges. This is NOT simply first-segment-start/last-segment-end ordered by stream
-  // position: under out-of-order capture a segment earlier in stream order can sit at a LATER
-  // file offset than one after it (rebase reorders stream position without reordering file
-  // position), which would otherwise yield an inverted span (start > end). Clipping and taking
-  // min/max over every overlapping segment always yields a proper covering range, and degrades
-  // to the previous exact single-segment/in-order-multi-segment span when there is no reordering.
+  // Piece collection: map messageStart/messageEnd (current-base-relative stream positions)
+  // through EACH contributing segment's own linear offset <-> file-offset relationship and clip
+  // to the part of that segment the message actually overlaps. Each clipped piece is kept (not
+  // just folded into a min/max), because a reassembled message spanning more than one segment is
+  // discontiguous in the source file — the covering span alone would silently claim bytes the
+  // message never contains. `span` (min/max over the pieces) stays the row's _src_start/_src_end
+  // exactly as before; `exact`/`inherited.ranges` gives the pieces themselves for _src_ranges,
+  // collapsing to null when normalizeRanges finds at most one (single-segment/in-order case,
+  // where the span alone is already exact). This is NOT simply first-segment-start/last-segment-
+  // end ordered by stream position: under out-of-order capture a segment earlier in stream order
+  // can sit at a LATER file offset than one after it (rebase reorders stream position without
+  // reordering file position), which would otherwise yield an inverted span (start > end).
+  // normalizeRanges sorts by file offset and merges touching/overlapping pieces, so it degrades
+  // to the previous exact single-piece span when there is no reordering or gap.
   const boundary = entry.assembler.segmentsOverlapping(messageStart, messageEnd);
+  const pieces: SourcePiece[] = boundary.map((s) => ({
+    start: s.srcStart + Math.max(0, messageStart - s.start),
+    end: s.srcStart + Math.min(s.end - s.start, messageEnd - s.start),
+  }));
+  const exact = normalizeRanges(pieces);
   let spanStart = Infinity;
   let spanEnd = -Infinity;
-  for (const s of boundary) {
-    const clipStart = s.srcStart + Math.max(0, messageStart - s.start);
-    const clipEnd = s.srcStart + Math.min(s.end - s.start, messageEnd - s.start);
-    if (clipStart < spanStart) spanStart = clipStart;
-    if (clipEnd > spanEnd) spanEnd = clipEnd;
+  for (const piece of pieces) {
+    if (piece.start < spanStart) spanStart = piece.start;
+    if (piece.end > spanEnd) spanEnd = piece.end;
   }
   const span: SourceRange = { start: spanStart, end: spanEnd };
+  const inherited: InheritedProvenance = { span, ranges: toColumnRanges(exact) };
 
   const node = { offset: messageStart, length: messageEnd - messageStart };
   const context: ExpressionContext = { _: node, _root: node };
 
-  for (const link of stream.messages) {
-    if (!evaluateExpression(link.when, context)) continue;
+  // Every row projected for this message — its own messages[].table row and any deeper dissect
+  // beneath it — must see the SAME exact provenance computed above, not recompute offsets
+  // against span.start (meaningless once the span has gaps). emitContext.inherited carries that
+  // down through projectChildTable/fireDissect for the duration of this message's rows only,
+  // restored (to whatever a possibly-enclosing message already set, or null) once it is done —
+  // stream messages cannot nest, so `previous` is always null in practice, but restoring it
+  // rather than hardcoding null keeps this correct if that ever changes.
+  const previous = emitContext.inherited ?? null;
+  emitContext.inherited = inherited;
+  try {
+    for (const link of stream.messages) {
+      if (!evaluateExpression(link.when, context)) continue;
 
-    let parsed: ParsedRecord;
-    try {
-      parsed = link.parser(messageBytes);
-    } catch (error) {
-      emitContext.issues?.report({
-        stage: 'dissecting',
-        code: 'DISSECT_PARSE_FAILED',
-        recoverable: true,
-        message: error instanceof Error ? error.message : String(error),
-        sourceStart: span.start,
-        sourceEnd: span.end,
-      });
-      return; // stop: this message is dropped, but framing already advanced past it
-    }
+      let parsed: ParsedRecord;
+      try {
+        parsed = link.parser(messageBytes);
+      } catch (error) {
+        emitContext.issues?.report({
+          stage: 'dissecting',
+          code: 'DISSECT_PARSE_FAILED',
+          recoverable: true,
+          message: error instanceof Error ? error.message : String(error),
+          sourceStart: span.start,
+          sourceEnd: span.end,
+        });
+        return; // stop: this message is dropped, but framing already advanced past it
+      }
 
-    if (link.table) {
-      projectChildTable(link.table, parsed, messageBytes, span.start, completingKeys, emitContext, [], {
-        streamId: entry.streamId,
-        span,
-      });
-    }
+      if (link.table) {
+        projectChildTable(link.table, parsed, messageBytes, span.start, completingKeys, emitContext, [], {
+          streamId: entry.streamId,
+          span,
+          ranges: inherited.ranges,
+        });
+      }
 
-    // Ancestor threading invariant: a framed message is a fresh top-level tree, like the file
-    // root at projectInto — it has no ancestors of its own, only the parser's own output root.
-    for (const deeper of emitContext.compiled.dissectByFrom.get(link.parserId) ?? []) {
-      fireDissect(
-        deeper,
-        { _: parsed.root, _root: parsed.root },
-        completingKeys,
-        emitContext,
-        span,
-        span.start,
-        messageBytes.length,
-        [parsed.root],
-      );
+      // Ancestor threading invariant: a framed message is a fresh top-level tree, like the file
+      // root at projectInto — it has no ancestors of its own, only the parser's own output root.
+      for (const deeper of emitContext.compiled.dissectByFrom.get(link.parserId) ?? []) {
+        fireDissect(
+          deeper,
+          { _: parsed.root, _root: parsed.root },
+          completingKeys,
+          emitContext,
+          span,
+          span.start,
+          messageBytes.length,
+          [parsed.root],
+        );
+      }
+      return; // first matching message link wins
     }
-    return; // first matching message link wins
+  } finally {
+    emitContext.inherited = previous;
   }
 };
 
@@ -1571,16 +1619,24 @@ const projectChildTable = (
   // a framed message is a fresh top-level tree, like the file root).
   ancestors: readonly unknown[],
   // Set only for a stream `messages[].table` link — see the resolver override below.
-  streamMeta?: { streamId: bigint; span: SourceRange },
+  streamMeta?: { streamId: bigint; span: SourceRange; ranges: InheritedProvenance['ranges'] },
 ): void => {
-  const resolver: ProvenanceResolver = streamMeta
+  // A message's exact provenance is inherited two ways: `streamMeta` for the message's own
+  // `messages[].table` row (set by emitStreamMessage, carries streamId too), or
+  // `emitContext.inherited` for a table reached by a DEEPER dissect chained off that message's
+  // parser (emitStreamMessage sets it for the whole fireDissect recursion beneath the message,
+  // and this function is that recursion's leaf). Either way, `inherited` here is the same
+  // { span, ranges } the message computed once, up front.
+  const inherited = streamMeta ?? emitContext.inherited ?? null;
+  const resolver: ProvenanceResolver = inherited
     ? {
         // A reassembled stream buffer is discontiguous with the source file — byte N of
         // `messageBytes` has no fixed relationship to any single file offset, so a parser's
         // `resolve` (which reports offsets relative to the buffer it was handed) cannot be
-        // mapped back through it. Every row from a message-fed table shares the exact span
-        // the framing loop already computed for the whole message instead.
-        resolve: () => streamMeta.span,
+        // mapped back through it, at any dissect depth beneath the message. Every row from a
+        // message-fed table, or a table dissected deeper from it, shares the exact span the
+        // framing loop already computed for the whole message instead.
+        resolve: () => inherited.span,
       }
     : {
         resolve(tableName, match) {
@@ -1591,6 +1647,16 @@ const projectChildTable = (
           return { start: absolutePayloadStart + relative.start, end: absolutePayloadStart + relative.end };
         },
       };
+  // stream_id is only ever set on the message's own table (streamMeta); a deeper dissect table
+  // reached from emitContext.inherited alone has no stream_id column to fill. _src_ranges is
+  // set from the inherited pieces whenever this table actually reserves the column
+  // (boundedProvenance) — streamMeta's own table always does (Task 4 marks it), but a deeper
+  // table only sometimes does, hence the explicit boundedProvenance check on that branch.
+  const extraColumns: Record<string, unknown> | undefined = streamMeta
+    ? { stream_id: streamMeta.streamId, _src_ranges: streamMeta.ranges }
+    : inherited && table.boundedProvenance
+      ? { _src_ranges: inherited.ranges }
+      : undefined;
   const parentKeyValue = keysByTable.get(table.parentKey!.table) ?? null;
   const runtime = emitContext.runtimes.get(table.name)!;
   // Each dissected payload is a fresh document: every scope ancestor for this table's state
@@ -1619,7 +1685,7 @@ const projectChildTable = (
       payloadBytes.length,
       ancestors,
       { name: table.parentKey!.column, value: parentKeyValue },
-      streamMeta ? { stream_id: streamMeta.streamId } : undefined,
+      extraColumns,
     );
   }
 };
@@ -1718,6 +1784,14 @@ export const flushStreams = (emitContext: EmitContext): void => {
         status: entry.status,
       };
       const provenance: ProvenanceResolver = { resolve: () => span };
+      // Exact provenance for the flow row: every accepted contribution's own file range,
+      // normalized (sorted, merged) the same way a message's pieces are. entry.segments holds
+      // ACCEPTED contributions only (duplicates are never recorded — see its doc), so this can
+      // never double-count a dropped retransmission. Null when at most one contribution landed,
+      // same collapse rule as everywhere else _src_ranges is produced.
+      const flowRanges = toColumnRanges(
+        normalizeRanges(entry.segments.map((record) => ({ start: record.srcStart, end: record.srcEnd }))),
+      );
       for (const match of traverseAnchor(stream.flowTable.rows, root)) {
         // Ancestor threading invariant: a flushed flow row has no enclosing parse tree at all.
         emitRow(
@@ -1733,7 +1807,7 @@ export const flushStreams = (emitContext: EmitContext): void => {
           null,
           [],
           undefined,
-          undefined,
+          { _src_ranges: flowRanges },
           entry.streamId, // forcedKey: the streamId reserved eagerly at first contribution
         );
       }
