@@ -4,9 +4,10 @@
 
 | | |
 |---|---|
-| Status | Draft v0.3 — updated 2026-07-18 |
+| Status | Draft v0.3 — updated 2026-09-22 |
 | Owner | TBD |
-| Progress | Phase 0 ✅ shipped · Phase 1a engine prep ✅ shipped 2026-07-18 · Phase 1 slice 1/3 (pcap pack) ✅ shipped 2026-07-18 · slice 2/3 (scale & intake) ✅ shipped 2026-07-19 · slice 3/3 (hex-provenance UI) ✅ shipped 2026-07-19 — Phase 1 complete |
+| Progress | Phase 0 ✅ shipped · Phase 1a engine prep ✅ shipped 2026-07-18 · Phase 1 slice 1/3 (pcap pack) ✅ shipped 2026-07-18 · slice 2/3 (scale & intake) ✅ shipped 2026-07-19 · slice 3/3 (hex-provenance UI) ✅ shipped 2026-07-19 — Phase 1 complete · TCP stream reassembly ✅ shipped 2026-07-18 |
+| Priority order | [ROADMAP.md](ROADMAP.md) (adopted 2026-09-15) supersedes the phase ordering in §12 |
 
 ## 1. Problem
 
@@ -145,11 +146,17 @@ Build decision: precompile all gallery `.ksy` at build time. The Kaitai compiler
 
 ## 12. Roadmap
 
-**Phase 0 — MIDI spike. ✅ Shipped.** Smallest end-to-end loop: drop a `.mid`, get an `events` table, run SQL. Killer demo: pipe query results into Tone.js — `select * from events where channel = 9` and you hear only the drums. "SQL you can listen to" is the shareable moment, and MIDI's tiny files dodge every memory problem while proving the core loop. *Status: cold sample → first result measured at 307 ms vs the <10 s target (`docs/phase-0-benchmark.md`); the projection DSL conformance suite exists. Two manual exit items remain open: the audible smoke test and the unaided external reproduction (`docs/phase-0-external-test.md`).*
+**Phase 0 — MIDI spike. ✅ Shipped.** Smallest end-to-end loop: drop a `.mid`, get an `events` table, run SQL. Killer demo: pipe query results into Tone.js — `select * from events where channel = 9` and you hear only the drums. "SQL you can listen to" is the shareable moment, and MIDI's tiny files dodge every memory problem while proving the core loop. *Status: cold sample → first result measured at 307 ms vs the <10 s target (`docs/phase-0-benchmark.md`); the projection DSL conformance suite exists. The audible smoke test passed on 2026-09-22 (owner check on byteql.dev); the unaided external reproduction remains open (`docs/phase-0-external-test.md`).*
 
 **Phase 1a — engine generalization (prep). ✅ Shipped 2026-07-18.** Everything the second format needs, proven against MIDI as a continuous regression harness: projection spec v0.2 (`dissect` chaining + `parent_key`) validated at load and executed by a single-pass engine with an incremental Arrow batch-flush seam; `ProjectionSession` and a generic per-record errors table (`IssueCollector`) lifted into core; hex literals; `timestamp_us`/`binary` column types; the WIT-aligned `FormatPack`/`RecordSource` boundary; and a probe-based format registry in the parse worker. *Design record and binding runtime contracts: `docs/superpowers/specs/2026-07-18-phase1-generalization-prep-design.md` (see its "Implementation notes").*
 
-**Phase 1 — pcap and the real engine. ⬅ Next.** Remaining scope: the pcap pack with its streaming container framer; worker-protocol streaming and DuckDB incremental registration; OPFS/Parquet spill (requires deliberately revisiting the DuckDB hardening PRAGMAs); File System Access intake with size-tiering; and the hex-provenance UI. Starts with a small pre-task batching the review-deferred cleanups from Phase 1a. *Exit: architecture proven per §6; everything after is content and plugins.*
+**Phase 1 — pcap and the real engine. ✅ Shipped 2026-07-19.** The pcap pack with its streaming container framer; worker-protocol streaming and DuckDB incremental registration; OPFS/Parquet spill (with the DuckDB hardening PRAGMAs deliberately revisited); File System Access intake with size-tiering; and the hex-provenance UI. *Status: both §6 exit metrics met — a 1 GB pcap is queryable in 44.25 s, and a 3-column query over a 4 GB capture reads 1.71 % of the file; the hex↔grid round-trip is e2e-verified on MIDI and pcap. Design records: `docs/superpowers/specs/2026-07-19-phase1-scale-intake-design.md`, `docs/superpowers/specs/2026-07-19-phase1-hex-provenance-ui-design.md`.*
+
+**TCP stream reassembly (engine). ✅ Shipped 2026-07-18.** Pulled forward from Phase 2 (see §13): spec v0.3 `streams:` with a `StreamAssembler`, engine-owned `streams`/`stream_segments` tables, and multi-segment TLS ClientHello and DNS-over-TCP in the pcap pack. *Documented limitations and design: `docs/superpowers/specs/2026-07-18-phase2-tcp-reassembly-design.md`.*
+
+**Also shipped since Phase 1:** the ZIP structural-analysis pack, same-format multi-file sessions, the Trace Workspace layout with resizable panels, results download (CSV/Parquet), whole-result column sorting, and duplicate result-column correctness.
+
+**Current priority order** lives in [ROADMAP.md](ROADMAP.md): truthful multi-range provenance for reassembled messages, then pcapng intake, saved queries, TCP connection-identity hardening, and one complete forensic workflow (EVTX preferred). The phases below remain the product direction; ROADMAP.md decides what comes first.
 
 **Phase 2 — forensics pack + plugin model.** windows_lnk_file, regf, utmp, systemd_journal via the Kaitai path; EVTX as the first Rust component (proving the boundary); a `union all` timeline view across all forensic tables as the flagship feature.
 
@@ -170,7 +177,7 @@ Build decision: precompile all gallery `.ksy` at build time. The Kaitai compiler
 | No usable EVTX `.ksy` — gallery's windows_evt_log is XP-era EVT; EVTX's chunked binary XML + template substitution exceeds Kaitai's declarative model | Sinks the forensics story if unaddressed | Flip into the architecture's proof point: omerbenamram/evtx (mature Rust crate) compiles to wasm as our first component. Same pattern later covers protobuf streams, SQLite, compression-inside-records |
 | Kaitai debug mode (offset recording) slows parsing | Provenance could cost more than "free" | Benchmark in Phase 0; if material, record offsets only at anchor granularity (row-level is all the UI needs) |
 | Kaitai JS runtime throughput on big captures | Phase 1 latency targets | Kaitai targets Rust (beta); component boundary lets us swap hot formats without touching anything else |
-| TCP reassembly (TLS handshakes across segments) is stateful stream processing, not per-record parsing | TLS features limited | Scope v1 to "ClientHello fits in one segment"; reassembly is a Phase 2+ engine feature |
+| TCP reassembly (TLS handshakes across segments) is stateful stream processing, not per-record parsing | TLS features limited | Mitigated: stream reassembly shipped 2026-07-18 (multi-segment ClientHello and DNS-over-TCP). Remaining: FIN/RST teardown, sequence wraparound, overlap handling, and exact per-segment provenance — see ROADMAP.md |
 | Firefox/Safari lack File System Access API | Shrinks addressable users | Chromium-first; degraded in-memory fallback with size cap (§8) |
 | OPFS quota eviction mid-session | Data loss / broken queries | Request persistent storage; surface quota; spill cleanup |
 | Kaitai compiler is GPLv3 | License hygiene | Build-time use only (generated code isn't GPL); lazy-loaded user-path compiler runs client-side unmodified — verify distribution terms before shipping; audit gallery `.ksy` licenses per pack |

@@ -280,10 +280,12 @@ a threaded build. The `byteql.dev` custom domain is attached to the same product
 Phase 0 (MIDI spike) and Phase 1 (pcap, streaming scale intake, hex-provenance UI) have shipped,
 including the Phase 2 TCP stream reassembly engine work. ZIP structural analysis and same-format
 multi-file sessions have also shipped. Measured against the PRD's exit metrics: a 1 GB pcap is
-queryable in ~44 s, and a 3-column query over a 4 GB capture reads 1.7% of the file. Next up:
-pcapng, the forensics pack (lnk, regf, utmp, systemd journal), EVTX as the first Rust component,
-and intelligence plugins (Sigma rule execution, optional local text-to-SQL). See [PRD.md](PRD.md)
-§12 for the full roadmap.
+queryable in ~44 s, and a 3-column query over a 4 GB capture reads 1.7% of the file. Next up, in
+the order set by [ROADMAP.md](ROADMAP.md): truthful multi-range provenance for reassembled TCP
+messages, pcapng intake, saved queries, TCP connection-identity hardening, and one complete
+forensic workflow (EVTX preferred). The longer-term product direction — the forensics pack and
+intelligence plugins (Sigma rule execution, optional local text-to-SQL) — is in [PRD.md](PRD.md)
+§12.
 
 ## Key documents
 

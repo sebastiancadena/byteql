@@ -1,14 +1,17 @@
 # AGENTS.md — ByteQL orientation for fresh sessions
 
-ByteQL turns record-oriented binary files (MIDI today; pcap, evtx, regf next) into relational
-tables you query with DuckDB SQL, entirely in the browser, with every row tracing back to its
-exact source bytes. Product requirements, differentiators, and the projection DSL live in
+ByteQL turns record-oriented binary files (MIDI, pcap, and ZIP today; pcapng and evtx planned)
+into relational tables you query with DuckDB SQL, entirely in the browser, with every row tracing
+back to its exact source bytes. Product requirements, differentiators, and the projection DSL live in
 `PRD.md` — read §9 (architecture) and Appendix A (DSL) first.
 
-## Status (2026-07-19)
+## Status (2026-09-22)
 
-- **Phase 0 (MIDI spike): shipped.** Two manual exit items remain open — the audible smoke test
-  and the unaided external reproduction (`docs/phase-0-external-test.md`).
+Priority order lives in `ROADMAP.md` (adopted 2026-09-15); it supersedes any "next" ordering here
+or in `PRD.md` §12.
+
+- **Phase 0 (MIDI spike): shipped.** The audible smoke test passed on 2026-09-22 (owner check on
+  byteql.dev); the unaided external reproduction remains open (`docs/phase-0-external-test.md`).
 - **Phase 1a (engine generalization prep): shipped.** Design record with binding runtime
   contracts: `docs/superpowers/specs/2026-07-18-phase1-generalization-prep-design.md` — read its
   **"Implementation notes"** before touching the projection engine; they document the payload
@@ -85,13 +88,21 @@ exact source bytes. Product requirements, differentiators, and the projection DS
   `QueryResultView` that the grid, the inspector and both exporters read through one contract.
   Design: `docs/superpowers/specs/2026-09-14-result-column-sorting-design.md`; plan:
   `docs/superpowers/plans/2026-09-14-result-column-sorting.md`; measured limits and evidence:
-  `docs/result-column-sorting-compatibility.md`. Two documented limitations: sorting is refused on
+  `docs/result-column-sorting-compatibility.md`. Documented limitation: sorting is refused on
   the `mvp` DuckDB bundle (its `ORDER BY` over `parquet_scan` fails for a full-range signed 16/32-bit
-  key — a runtime defect, measured with the snapshot path removed), and duplicate output column
-  names already fail in the Arrow bridge before any result exists to sort.
-- **Next:** Phase 0's two open manual exit criteria (audible smoke test; unaided external
-  reproduction — `docs/phase-0-external-test.md`), then Phase 2 content (forensics pack +
-  plugin model, PRD §12).
+  key — a runtime defect, measured with the snapshot path removed).
+- **Duplicate result-column names: shipped 2026-09-16.** Queries such as
+  `select 10 as dup, 'ten' as dup` are preserved by position through querying, inspection,
+  sorting, and CSV/Parquet export (Parquet gets unique export names). Byte provenance stays
+  unavailable when a result repeats a provenance column. Design:
+  `docs/superpowers/specs/2026-09-15-duplicate-result-columns-design.md`; evidence:
+  `docs/result-column-sorting-compatibility.md#duplicate-output-column-names`.
+- **Also shipped:** the ZIP format pack (`packages/formats/zip`), same-format multi-file
+  sessions, the Trace Workspace layout with resizable panels, and results download
+  (`docs/superpowers/specs/2026-09-04-results-download-design.md`).
+- **Next (per `ROADMAP.md`):** truthful multi-range provenance for reassembled TCP messages, then
+  pcapng intake, then saved queries. The unaided external Phase 0 test is still open supporting
+  work.
 
 ## Repo map
 

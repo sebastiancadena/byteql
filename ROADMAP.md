@@ -96,15 +96,15 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
 
 ## Supporting work
 
-- **Close manual acceptance gaps.** Unaided use and audible playback remain pending;
-  sorting and duplicate-label headers also lack real screen-reader and touch acceptance. See
+- **Close manual acceptance gaps.** Audible playback was confirmed by the project owner on
+  2026-09-22; the unaided external test remains pending, and sorting and duplicate-label headers also lack real screen-reader and touch acceptance. See
   [Phase 0 external test](docs/phase-0-external-test.md) and
   [sorting manual checks](docs/result-column-sorting-compatibility.md#outstanding-manual-checks).
 - **Add Firefox/WebKit acceptance coverage.** The current
   [Playwright configuration](apps/web/playwright.config.ts) runs Chromium only. Prioritize
   intake, storage fallbacks, sorting, and downloads.
-- **Refresh roadmap documentation.** `PRD.md` still labels already-shipped Phase 1 work as
-  "Next." Reconcile the status documents with this priority order.
+- **Refresh roadmap documentation — done (2026-09-22).** `PRD.md`, `README.md`, and
+  `AGENTS.md` now point to this file for priority order.
 
 ## Next development cycle
 

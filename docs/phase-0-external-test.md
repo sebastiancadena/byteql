@@ -6,9 +6,11 @@ The automated Chromium acceptance suite covers the sample open-query-inspect loo
 upload, malformed-track partial recovery, query diagnostics, parser-worker crash recreation, audio
 capability load/disposal, post-readiness privacy, and benchmark reporting.
 
-**Manual audible smoke: pending.** This implementation run was headless and no human listened to its
-audio output. The automated test proves that a compatible query opens the audio viewer and that the
-trusted engine boundary receives rows and is disposed when closed; it does not prove audible sound.
+**Manual audible smoke: PASS (2026-09-22).** The project owner confirmed audible MIDI playback on the
+production deployment at `byteql.dev` (release `fdb743e`). The automated test separately proves
+that a compatible query opens the audio viewer and that the trusted engine boundary receives rows and
+is disposed when closed. This owner check does not substitute for the unaided external test below,
+which still requires its own audible-playback items.
 
 **Unaided external test: pending.** A person who did not build ByteQL has not yet executed the script
 below. Do not declare Phase 0 externally reproduced until the result block is completed by that
