@@ -111,4 +111,33 @@ describe('Inspector result columns', () => {
     expect(within(provenance).getByText('10-20')).toBeTruthy();
     expect(within(provenance).getByText('50-60')).toBeTruthy();
   });
+
+  function reassembledRangesTable(pieceCount = 2) {
+    const rangesType = new List(
+      new Field(
+        'item',
+        new Struct([new Field('start', new Uint64(), true), new Field('end', new Uint64(), true)]),
+        true,
+      ),
+    );
+    const base = tableFromArrays({
+      _src_file: ['capture.pcap'],
+      _src_start: BigUint64Array.from([10n]),
+      _src_end: BigUint64Array.from([10n + BigInt(pieceCount) * 20n]),
+    });
+    const pieces = Array.from({ length: pieceCount }, (_, i) => ({
+      start: BigInt(10 + i * 20),
+      end: BigInt(20 + i * 20),
+    }));
+    const ranges = vectorFromArray([pieces], rangesType);
+    return base.assign(new Table({ _src_ranges: ranges }));
+  }
+
+  it('caps the rendered piece list at 50 with a "more" summary item', () => {
+    render(Inspector, { table: reassembledRangesTable(55), selectedRow: 0 });
+
+    const provenance = screen.getByRole('heading', { name: 'Provenance' }).parentElement!;
+    expect(within(provenance).getAllByRole('listitem')).toHaveLength(51);
+    expect(within(provenance).getByText('… +5 more')).toBeTruthy();
+  });
 });

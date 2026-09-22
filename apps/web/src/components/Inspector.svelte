@@ -42,6 +42,9 @@
     onrevealrange = () => undefined,
   }: Props = $props();
 
+  /** A hostile capture can reassemble into ~1M pieces; cap the rendered `<li>` list. */
+  const MAX_INSPECTOR_PIECES = 50;
+
   const provenanceNames = new Set(['_src_start', '_src_end']);
   const requiredProvenanceNames = ['_src_file', '_src_start', '_src_end'] as const;
 
@@ -141,9 +144,12 @@
                   .ranges.length} ranges
               </p>
               <ul>
-                {#each provenanceRange.ranges as piece, pieceIndex (pieceIndex)}
+                {#each provenanceRange.ranges.slice(0, MAX_INSPECTOR_PIECES) as piece, pieceIndex (pieceIndex)}
                   <li>{piece.start}-{piece.end}</li>
                 {/each}
+                {#if provenanceRange.ranges.length > MAX_INSPECTOR_PIECES}
+                  <li>… +{provenanceRange.ranges.length - MAX_INSPECTOR_PIECES} more</li>
+                {/if}
               </ul>
             </dd>
           </div>

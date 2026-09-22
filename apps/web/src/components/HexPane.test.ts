@@ -250,6 +250,18 @@ describe('HexPane', () => {
     expect(root?.getAttribute('data-hex-highlight-ranges')).toBe('0-4,28-32');
   });
 
+  it('bounds data-hex-highlight-ranges to the first 64 pieces for a huge reassembled row', () => {
+    const ranges = Array.from({ length: 100 }, (_, i) => ({ start: i * 4, end: i * 4 + 2 }));
+    const { container } = renderPane({
+      highlight: { start: 0, end: 400, ranges },
+    });
+    const root = container.querySelector('[data-hex-pane]');
+    const value = root?.getAttribute('data-hex-highlight-ranges') ?? '';
+    expect(value.split(',')).toHaveLength(64);
+    expect(value.split(',')[0]).toBe('0-2');
+    expect(value.split(',')[63]).toBe(`${63 * 4}-${63 * 4 + 2}`);
+  });
+
   it('leaves data-hex-highlight-ranges empty when there is no highlight', () => {
     const { container } = renderPane();
     const root = container.querySelector('[data-hex-pane]');

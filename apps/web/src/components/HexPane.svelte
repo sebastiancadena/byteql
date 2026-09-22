@@ -88,6 +88,13 @@
   const COLLAPSED_KEY = 'byteql.hexpane.collapsed';
   const HEIGHT_KEY = 'byteql.hexpane.height';
   const HEX = Array.from({ length: 256 }, (_, b) => b.toString(16).padStart(2, '0'));
+  /**
+   * A hostile reassembled capture can carry ~1M pieces; bound the serialized
+   * `data-hex-highlight-ranges` test hook to the first N so a huge highlight never does
+   * per-piece string work proportional to the whole list. e2e only ever reads the first couple
+   * of pieces, so this stays well above anything a test needs.
+   */
+  const MAX_HIGHLIGHT_RANGE_ATTR_PIECES = 64;
 
   /** Measured from the mounted element's own `--font-mono`, so hit testing matches what is painted. */
   const FALLBACK_FONT = { fontSpec: '12px monospace', charWidth: 7.2 };
@@ -883,7 +890,12 @@
   data-hex-caret={caret ?? ''}
   data-hex-selection={range ? `${range.start}-${range.end}` : ''}
   data-hex-highlight={highlight ? `${highlight.start}-${highlight.end}` : ''}
-  data-hex-highlight-ranges={highlight ? highlight.ranges.map((r) => `${r.start}-${r.end}`).join(',') : ''}
+  data-hex-highlight-ranges={highlight
+    ? highlight.ranges
+        .slice(0, MAX_HIGHLIGHT_RANGE_ATTR_PIECES)
+        .map((r) => `${r.start}-${r.end}`)
+        .join(',')
+    : ''}
   data-hex-range-index={highlight && highlight.ranges.length > 1 ? rangeIndex : ''}
   data-hex-first-row={scrollRow}
   data-hex-provenance={coverageReason}
