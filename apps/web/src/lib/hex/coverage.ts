@@ -118,22 +118,18 @@ export function buildCoverage(table: Table, file: string, rowOffset = 0): Covera
   let rawStarts = new Float64Array(capacity);
   let rawEnds = new Float64Array(capacity);
   let rawRows = new Float64Array(capacity);
-  let rawOrdinal = new Float64Array(capacity);
 
   const grow = (): void => {
     capacity = capacity === 0 ? 1 : capacity * 2;
     const nextStarts = new Float64Array(capacity);
     const nextEnds = new Float64Array(capacity);
     const nextRows = new Float64Array(capacity);
-    const nextOrdinal = new Float64Array(capacity);
     nextStarts.set(rawStarts);
     nextEnds.set(rawEnds);
     nextRows.set(rawRows);
-    nextOrdinal.set(rawOrdinal);
     rawStarts = nextStarts;
     rawEnds = nextEnds;
     rawRows = nextRows;
-    rawOrdinal = nextOrdinal;
   };
 
   let count = 0;
@@ -150,7 +146,6 @@ export function buildCoverage(table: Table, file: string, rowOffset = 0): Covera
       rawStarts[count] = piece.start;
       rawEnds[count] = piece.end;
       rawRows[count] = row + rowOffset;
-      rawOrdinal[count] = rowCount;
       count += 1;
       indexedThisRow = true;
       if (count > COVERAGE_INTERVAL_CAP) return { index: null, reason: 'too-large' };
@@ -165,16 +160,29 @@ export function buildCoverage(table: Table, file: string, rowOffset = 0): Covera
   const starts = new Float64Array(count);
   const ends = new Float64Array(count);
   const rows = new Float64Array(count);
-  const ordinals = new Float64Array(count);
   const maxEndPrefix = new Float64Array(count);
   order.forEach((source, i) => {
     starts[i] = rawStarts[source] as number;
     ends[i] = rawEnds[source] as number;
     rows[i] = rawRows[source] as number;
-    ordinals[i] = rawOrdinal[source] as number;
     maxEndPrefix[i] =
       i === 0 ? (ends[i] as number) : Math.max(maxEndPrefix[i - 1] as number, ends[i] as number);
   });
+
+  // Shading alternates by each row's rank of first appearance in start-sorted (file) order, so
+  // adjacent-on-disk records alternate regardless of the result's row order (e.g. after an
+  // ORDER BY or a column sort). Every piece of one row shares its row's ordinal.
+  const rowOrdinal = new Map<number, number>();
+  const ordinals = new Float64Array(count);
+  for (let i = 0; i < count; i += 1) {
+    const rowId = rows[i] as number;
+    let ordinal = rowOrdinal.get(rowId);
+    if (ordinal === undefined) {
+      ordinal = rowOrdinal.size;
+      rowOrdinal.set(rowId, ordinal);
+    }
+    ordinals[i] = ordinal;
+  }
 
   const index: CoverageIndex = {
     rowCount,

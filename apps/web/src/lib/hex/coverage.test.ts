@@ -127,6 +127,22 @@ describe('buildCoverage', () => {
     expect(index?.rowsAt(250)).toEqual([]);
   });
 
+  it('alternates shading by file order even when rows arrive in a different result order', () => {
+    // Result order [0,10), [20,30), [10,20), [30,40) — file (sorted-by-start) order is
+    // 0,10,20,30. Shading must alternate by file order, not by the order rows were returned.
+    const { index } = buildCoverage(
+      provenanceTable([
+        [0, 10],
+        [20, 30],
+        [10, 20],
+        [30, 40],
+      ]),
+      FILE,
+    );
+    const spans = index?.spansIn(0, 40) ?? [];
+    expect(spans.map((span) => span.alt)).toEqual([false, true, false, true]);
+  });
+
   it('clips spans to the queried viewport and alternates adjacent records', () => {
     const { index } = buildCoverage(
       provenanceTable([
