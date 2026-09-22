@@ -521,3 +521,98 @@ describe('openPcapSource (incremental)', () => {
     expect(finish.issues[1]!.stage).not.toBe('framing');
   });
 });
+
+// File offset of frame `index`'s trailing `payloadLength` bytes inside `capture(frames)`: the
+// 24-byte global header, then one 16-byte record header + frame per packet. Every builder puts
+// the application payload at the very end of the frame (no Ethernet padding).
+const payloadRange = (frames: Uint8Array[], index: number, payloadLength: number) => {
+  let offset = 24;
+  for (let i = 0; i < index; i += 1) offset += 16 + frames[i]!.length;
+  const end = offset + 16 + frames[index]!.length;
+  return [end - payloadLength, end] as const;
+};
+
+// `_src_ranges` as plain [start, end] number pairs; null stays null.
+const rangesOf = (value: unknown): Array<[number, number]> | null => {
+  if (value === null || value === undefined) return null;
+  return Array.from(value as Iterable<{ start: bigint; end: bigint }>, (piece) => [
+    Number(piece.start),
+    Number(piece.end),
+  ]);
+};
+
+const udpDnsPacket = (name: string) =>
+  ethFrame({
+    etherType: 0x0800,
+    payload: ipv4({
+      protocol: 17,
+      src: '10.0.0.9',
+      dst: '10.0.0.8',
+      payload: udp({ srcPort: 5353, dstPort: 53, payload: dnsQuery({ txId: 7, name, type: 1 }) }),
+    }),
+  });
+
+describe('exact provenance for reassembled messages', () => {
+  it.fails('an interleaved TLS ClientHello covers only its own payload bytes', async () => {
+    const record = tlsClientHello({ sni: 'interleaved.example' });
+    const third = Math.ceil(record.length / 3);
+    const parts = [record.subarray(0, third), record.subarray(third, 2 * third), record.subarray(2 * third)];
+    const frames = [
+      tcpPacket(0, parts[0]!, 50000, 443),
+      udpDnsPacket('noise.example'),
+      tcpPacket(third, parts[1]!, 50000, 443),
+      tcpPacket(0, new Uint8Array([1, 2, 3]), 41000, 8080), // unrelated flow, unrelated port
+      tcpPacket(2 * third, parts[2]!, 50000, 443),
+    ];
+    const result = await parseAndProjectPcap(capture(frames), new AbortController().signal);
+    expect(result.issues).toHaveLength(0);
+    const row = findTable(result, 'tls').get(0)!;
+    const expected = [
+      payloadRange(frames, 0, parts[0]!.length),
+      payloadRange(frames, 2, parts[1]!.length),
+      payloadRange(frames, 4, parts[2]!.length),
+    ].map(([s, e]) => [s, e]);
+    expect(rangesOf(row._src_ranges)).toEqual(expected);
+    expect(row._src_start).toBe(BigInt(expected[0]![0]!));
+    expect(row._src_end).toBe(BigInt(expected[2]![1]!));
+  });
+
+  it.fails('an out-of-order interleaved ClientHello keeps file-ordered exact pieces', async () => {
+    const record = tlsClientHello({ sni: 'shuffled.example' });
+    const third = Math.ceil(record.length / 3);
+    const parts = [record.subarray(0, third), record.subarray(third, 2 * third), record.subarray(2 * third)];
+    const frames = [
+      tcpPacket(third, parts[1]!, 50000, 443),
+      udpDnsPacket('noise.example'),
+      tcpPacket(2 * third, parts[2]!, 50000, 443),
+      tcpPacket(0, parts[0]!, 50000, 443),
+    ];
+    const result = await parseAndProjectPcap(capture(frames), new AbortController().signal);
+    expect(result.issues).toHaveLength(0);
+    const row = findTable(result, 'tls').get(0)!;
+    // File order, not stream order: part 2 is captured first, part 1 last.
+    const expected = [
+      payloadRange(frames, 0, parts[1]!.length),
+      payloadRange(frames, 2, parts[2]!.length),
+      payloadRange(frames, 3, parts[0]!.length),
+    ].map(([s, e]) => [s, e]);
+    expect(rangesOf(row._src_ranges)).toEqual(expected);
+    expect(row._src_start).toBe(BigInt(expected[0]![0]!));
+    expect(row._src_end).toBe(BigInt(expected[2]![1]!));
+  });
+
+  it.fails('back-to-back DNS-over-TCP segments exclude the second packet headers', async () => {
+    const payload = dnsOverTcp({ txId: 0xbeef, name: 'stream.example', type: 1 });
+    const frames = [tcpPacket(0, payload.subarray(0, 10)), tcpPacket(10, payload.subarray(10))];
+    const result = await parseAndProjectPcap(capture(frames), new AbortController().signal);
+    const row = findTable(result, 'dns').get(0)!;
+    const first = payloadRange(frames, 0, 10);
+    const second = payloadRange(frames, 1, payload.length - 10);
+    // 16-byte record header + 54 bytes of Ethernet/IPv4/TCP headers separate the pieces.
+    expect(second[0] - first[1]).toBe(16 + 14 + 20 + 20);
+    expect(rangesOf(row._src_ranges)).toEqual([
+      [first[0], first[1]],
+      [second[0], second[1]],
+    ]);
+  });
+});
