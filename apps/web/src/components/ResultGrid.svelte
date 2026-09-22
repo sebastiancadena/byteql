@@ -2,12 +2,12 @@
   /* global HTMLDivElement, HTMLElement, KeyboardEvent */
 
   import type { ResultSort } from '@byteql/db';
-  import { resultColumnLabel, resultSortKeyRefusal } from '@byteql/db/result-columns';
+  import { isSourceRangesType, resultColumnLabel, resultSortKeyRefusal } from '@byteql/db/result-columns';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
-  import type { Table } from 'apache-arrow';
+  import type { DataType, Table } from 'apache-arrow';
   import { untrack } from 'svelte';
 
-  import { isSourceRangesValue, sourceRangesSummary } from '../lib/format/source-ranges.js';
+  import { sourceRangesSummary } from '../lib/format/source-ranges.js';
   import {
     RESULT_ROW_HEIGHT,
     resultDemand,
@@ -291,8 +291,10 @@
     return table.getChildAt(column)?.get(row) ?? null;
   }
 
-  function formatValue(value: unknown): string {
-    if (isSourceRangesValue(value)) return sourceRangesSummary(value);
+  function formatValue(value: unknown, type: DataType): string {
+    if (isSourceRangesType(type) && value !== null && value !== undefined) {
+      return sourceRangesSummary(value as Iterable<{ start: bigint; end: bigint }>);
+    }
     if (value === null || value === undefined) return 'NULL';
     if (typeof value === 'bigint') return value.toString();
     if (value instanceof Uint8Array) {
@@ -415,9 +417,9 @@
               aria-colindex={index + 1}
               class:null-value={value === null || value === undefined}
               class:cell-numeric={numeric(field.type.toString())}
-              title={formatValue(value)}
+              title={formatValue(value, field.type)}
             >
-              {formatValue(value)}
+              {formatValue(value, field.type)}
             </div>
           {/each}
         </div>

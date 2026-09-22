@@ -241,6 +241,29 @@ describe('ResultGrid sort controls', () => {
     expect(onsort).not.toHaveBeenCalled();
   });
 
+  it('renders an ordinary nested list value without mistaking it for a ranges column', () => {
+    const listType = new List(new Field('item', new Int32(), true));
+    const nestedTable = new Table({
+      value: vectorFromArray(
+        [
+          [1, 2, 3],
+          [4, 5],
+        ],
+        listType,
+      ),
+    });
+
+    const { getAllByRole } = render(
+      ResultGrid,
+      props({ table: nestedTable, loadedRows: nestedTable.numRows }),
+    );
+    const cells = getAllByRole('gridcell');
+    expect(cells.length).toBeGreaterThan(0);
+    for (const cell of cells) {
+      expect(cell.textContent ?? '').not.toContain('ranges');
+    }
+  });
+
   it('suppresses row selection and reports busy while a sort runs', async () => {
     const onselect = vi.fn();
     const { container } = render(ResultGrid, props({ onselect, sortBusy: true }));

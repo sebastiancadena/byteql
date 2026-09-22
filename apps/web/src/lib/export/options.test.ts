@@ -10,9 +10,11 @@ import {
   List,
   Null,
   Schema,
+  Struct,
   Table,
   TimeSecond,
   TimestampMillisecond,
+  Uint64,
   Utf8,
   tableFromArrays,
 } from 'apache-arrow';
@@ -23,11 +25,26 @@ import { exportFilename, selectExportColumns } from './options';
 const schema = (...fields: Array<[string, Field['type']]>) =>
   new Schema(fields.map(([name, type]) => new Field(name, type, true)));
 
+const rangesType = new List(
+  new Field(
+    'item',
+    new Struct([new Field('start', new Uint64(), true), new Field('end', new Uint64(), true)]),
+    true,
+  ),
+);
+
 describe('selectExportColumns', () => {
   it('includes every column by default and excludes every grid-hidden name when unchecked', () => {
-    const resultSchema = schema(['value', new Int32()], ['_custom', new Utf8()], ['_src_start', new Int32()]);
+    const resultSchema = schema(
+      ['value', new Int32()],
+      ['_custom', new Utf8()],
+      ['_src_start', new Int32()],
+      ['_src_ranges', rangesType],
+    );
 
-    expect(selectExportColumns(resultSchema, { format: 'csv', includeProvenance: true })).toEqual([0, 1, 2]);
+    expect(selectExportColumns(resultSchema, { format: 'csv', includeProvenance: true })).toEqual([
+      0, 1, 2, 3,
+    ]);
     expect(selectExportColumns(resultSchema, { format: 'csv', includeProvenance: false })).toEqual([0]);
   });
 

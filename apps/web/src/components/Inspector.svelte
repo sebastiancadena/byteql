@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { Table } from 'apache-arrow';
-  import { resultColumnLabel } from '@byteql/db/result-columns';
+  import type { DataType, Table } from 'apache-arrow';
+  import { isSourceRangesType, resultColumnLabel } from '@byteql/db/result-columns';
 
   import { provenanceOfRow } from '../lib/hex/coverage.js';
-  import { isSourceRangesValue, sourceRangesSummary } from '../lib/format/source-ranges.js';
+  import { sourceRangesSummary } from '../lib/format/source-ranges.js';
   import { formatByteRange } from '../lib/ui/trace.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import type { ViewerCapability } from '../lib/viewers/registry.js';
@@ -81,8 +81,10 @@
     return typeof value === 'bigint' || typeof value === 'number';
   }
 
-  function formatValue(value: unknown): string {
-    if (isSourceRangesValue(value)) return sourceRangesSummary(value);
+  function formatValue(value: unknown, type: DataType): string {
+    if (isSourceRangesType(type) && value !== null && value !== undefined) {
+      return sourceRangesSummary(value as Iterable<{ start: bigint; end: bigint }>);
+    }
     if (value === null || value === undefined) return 'NULL';
     if (typeof value === 'bigint') return value.toString();
     if (value instanceof Uint8Array) {
@@ -118,7 +120,9 @@
             {@const value = valueAt(columnIndex)}
             <div>
               <dt>{resultColumnLabel(field)}</dt>
-              <dd class:null-value={value === null} class:tabular={isNumeric(value)}>{formatValue(value)}</dd>
+              <dd class:null-value={value === null} class:tabular={isNumeric(value)}>
+                {formatValue(value, field.type)}
+              </dd>
             </div>
           {/if}
         {/each}
@@ -169,7 +173,7 @@
             {#if provenanceNames.has(resultColumnLabel(field))}
               <div>
                 <dt>{resultColumnLabel(field)}</dt>
-                <dd>{formatValue(valueAt(columnIndex))}</dd>
+                <dd>{formatValue(valueAt(columnIndex), field.type)}</dd>
               </div>
             {/if}
           {/each}
