@@ -85,12 +85,14 @@ nullable.
 
 - **Internal type `src_ranges`.** Added to the `ArrowTypeName` set used by `tableOutputTypes`,
   `TableBatchBuilder`, and `arrow/build.ts`. Not accepted by the spec's zod schema. The builder
-  accepts `null` or an array of `{ start: bigint; end: bigint }` and checks the invariants in
-  development builds and tests; a violation is an engine bug and throws at build time.
+  accepts `null` or an array of `{ start: bigint; end: bigint }` and always checks the ordering,
+  gap, and non-empty invariants (a linear pass per value); a violation is an engine bug and
+  throws at build time.
 - **Marking tables.** `CompiledProjectionTable` gains `boundedProvenance: boolean`, computed in
   the same pre-scan that sets `streamFed`, extended to flow tables and to tables reachable from a
-  message parser. `tableOutputTypes` appends `_src_ranges` for marked tables, after `stream_id`
-  where both exist.
+  message parser. `tableOutputTypes` appends `_src_ranges` for marked tables as the last engine
+  column, immediately after `_src_end` (the worker then appends `_src_file`). A stream fed from a
+  marked table is a compile error, since its contributions would be offset from a bounding span.
 - **`normalizeRanges`.** A pure exported helper: sort by start, merge overlapping or touching
   pieces, return `null` when one piece remains, `null` for empty input.
 - **Messages.** `emitStreamMessage` collects the clipped pieces instead of reducing them and
@@ -141,8 +143,9 @@ nullable.
   `provenanceOfRow` returns `{ file, start, end, ranges }`; an exact row's `ranges` is its single
   `[start, end)`.
 - **Row → bytes.** Workbench's `rowHighlight` carries `ranges` plus the bounding span. Pieces are
-  painted in the highlight color. Bytes inside the span but outside every piece get a hatch in a
-  new `--color-hex-gap` token — the visible bounding/exact distinction. The pane scrolls to the
+  painted in the highlight color. Bytes inside the span but outside every piece get a distinct
+  neutral fill in a new `--color-hex-gap` token (the canvas seam exposes only rect fills, so no
+  hatch pattern) — the visible bounding/exact distinction. The pane scrolls to the
   first piece and flashes it. When a row has two or more pieces, the hex toolbar shows
   `Range 1 of 3 · 1,380 of 5,212 bytes in span` with previous/next buttons and `[` / `]`
   shortcuts (added to the shortcuts overlay).
