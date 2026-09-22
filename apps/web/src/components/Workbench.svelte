@@ -825,9 +825,7 @@
     fileSize={hexFileSize}
     coverage={coverageResult.index}
     coverageReason={coverageResult.reason}
-    highlight={rowHighlight && rowHighlight.file === hexFile
-      ? { start: rowHighlight.start, end: rowHighlight.end }
-      : null}
+    highlight={rowHighlight && rowHighlight.file === hexFile ? rowHighlight : null}
     filterAvailable={coverageResult.reason === 'ok'}
     resetKey={hexResetKey}
     compact={compactDock}

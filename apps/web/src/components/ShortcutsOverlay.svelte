@@ -25,6 +25,7 @@
     { action: 'Bytes: extend selection', keys: 'Shift+Arrows' },
     { action: 'Bytes: reveal row', keys: 'Enter' },
     { action: 'Bytes: select record', keys: 'Double-click' },
+    { action: 'Bytes: previous / next source range', keys: '[ / ]' },
     { action: 'Bytes: copy selection', keys: `${mod}+C` },
     { action: 'This overlay', keys: '?' },
   ];

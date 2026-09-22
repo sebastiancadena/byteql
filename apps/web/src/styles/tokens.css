@@ -29,6 +29,7 @@
   --color-focus: #215b86;
   --color-evidence: #80520a;
   --color-hex-highlight: #f1d99f;
+  --color-hex-gap: #e4e1da;
   --color-hex-selection: #cbdfea;
   --color-shade-a: #e6e9df;
   --color-shade-b: #dce5df;
@@ -147,6 +148,7 @@
   --color-focus: #9ccbe4;
   --color-evidence: #e4b967;
   --color-hex-highlight: #554326;
+  --color-hex-gap: #2f2c28;
   --color-hex-selection: #274853;
   --color-shade-a: #232e25;
   --color-shade-b: #293831;

@@ -62,7 +62,7 @@ describe('HexPane', () => {
   });
 
   it('exposes the grid-row highlight range on data-hex-highlight', () => {
-    const { container } = renderPane({ highlight: { start: 12, end: 20 } });
+    const { container } = renderPane({ highlight: { start: 12, end: 20, ranges: [{ start: 12, end: 20 }] } });
     const root = container.querySelector('[data-hex-pane]');
     // The grid->hex link surfaces as `highlight`, distinct from the pane's own selection; e2e
     // reads this attribute to learn which bytes a row lit up. Absent a highlight it is empty.
@@ -156,7 +156,7 @@ describe('HexPane', () => {
     const { container, getByLabelText, rerender } = renderPane({
       blob: bigBlob,
       fileSize: 4096,
-      highlight: { start: 1600, end: 1610 },
+      highlight: { start: 1600, end: 1610, ranges: [{ start: 1600, end: 1610 }] },
     });
     const root = container.querySelector('[data-hex-pane]');
     // The initial highlight scrolls its row (100) into view.
@@ -167,8 +167,93 @@ describe('HexPane', () => {
     expect(root?.getAttribute('data-hex-first-row')).toBe('0');
 
     // A fresh object with the SAME range must be treated as a no-op (value equality).
-    await rerender({ highlight: { start: 1600, end: 1610 } });
+    await rerender({ highlight: { start: 1600, end: 1610, ranges: [{ start: 1600, end: 1610 }] } });
     expect(root?.getAttribute('data-hex-first-row')).toBe('0');
+  });
+
+  it('navigates multi-piece highlight ranges with [ and ], resetting on a new highlight', async () => {
+    const bigBlob = new Blob([new Uint8Array(10_000)]);
+    const { container, getByRole, getByText, rerender } = renderPane({
+      blob: bigBlob,
+      fileSize: 10_000,
+      highlight: {
+        start: 0,
+        end: 9004,
+        ranges: [
+          { start: 0, end: 4 },
+          { start: 2000, end: 2004 },
+          { start: 9000, end: 9004 },
+        ],
+      },
+    });
+    const pane = container.querySelector('[data-hex-pane]');
+    const canvas = container.querySelector('canvas') as HTMLCanvasElement;
+
+    expect(pane?.getAttribute('data-hex-range-index')).toBe('0');
+    expect(getByText('Range 1 of 3 · 12 of 9,004 bytes in span')).toBeTruthy();
+
+    await fireEvent.keyDown(canvas, { key: ']' });
+    expect(pane?.getAttribute('data-hex-range-index')).toBe('1');
+
+    await fireEvent.keyDown(canvas, { key: ']' });
+    await fireEvent.keyDown(canvas, { key: ']' }); // stays on the last piece
+    expect(pane?.getAttribute('data-hex-range-index')).toBe('2');
+
+    await fireEvent.keyDown(canvas, { key: '[' });
+    expect(pane?.getAttribute('data-hex-range-index')).toBe('1');
+
+    // a new highlight resets navigation
+    await rerender({
+      highlight: {
+        start: 5,
+        end: 30,
+        ranges: [
+          { start: 5, end: 8 },
+          { start: 20, end: 30 },
+        ],
+      },
+    });
+    expect(pane?.getAttribute('data-hex-range-index')).toBe('0');
+
+    expect(getByRole('button', { name: 'Previous source range' })).toBeTruthy();
+    expect(getByRole('button', { name: 'Next source range' })).toBeTruthy();
+  });
+
+  it('renders no range readout for a single-piece highlight and ignores [ and ]', async () => {
+    const { container, queryByText, queryByRole } = renderPane({
+      highlight: { start: 4, end: 20, ranges: [{ start: 4, end: 20 }] },
+    });
+    const pane = container.querySelector('[data-hex-pane]');
+    const canvas = container.querySelector('canvas') as HTMLCanvasElement;
+
+    expect(pane?.getAttribute('data-hex-range-index')).toBe('');
+    expect(queryByText(/Range \d+ of \d+/)).toBeNull();
+    expect(queryByRole('button', { name: 'Previous source range' })).toBeNull();
+    expect(queryByRole('button', { name: 'Next source range' })).toBeNull();
+
+    await fireEvent.keyDown(canvas, { key: ']' });
+    expect(pane?.getAttribute('data-hex-range-index')).toBe('');
+  });
+
+  it('exposes data-hex-highlight-ranges as a comma-joined list of pieces', () => {
+    const { container } = renderPane({
+      highlight: {
+        start: 0,
+        end: 32,
+        ranges: [
+          { start: 0, end: 4 },
+          { start: 28, end: 32 },
+        ],
+      },
+    });
+    const root = container.querySelector('[data-hex-pane]');
+    expect(root?.getAttribute('data-hex-highlight-ranges')).toBe('0-4,28-32');
+  });
+
+  it('leaves data-hex-highlight-ranges empty when there is no highlight', () => {
+    const { container } = renderPane();
+    const root = container.querySelector('[data-hex-pane]');
+    expect(root?.getAttribute('data-hex-highlight-ranges')).toBe('');
   });
 
   it('refuses to copy a selection wider than the 1 MiB limit and announces it', async () => {

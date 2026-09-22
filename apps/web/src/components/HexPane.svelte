@@ -36,7 +36,7 @@
     fileSize: number;
     coverage: CoverageIndex | null;
     coverageReason: CoverageReason;
-    highlight: { start: number; end: number } | null;
+    highlight: { start: number; end: number; ranges: readonly { start: number; end: number }[] } | null;
     filterAvailable: boolean;
     /** Changes when a new result arrives; the pane clears its local selection to follow it. */
     resetKey?: unknown;
@@ -143,6 +143,8 @@
   let readError = $state(false);
   let flashRow = $state<number | null>(null);
   let collapsed = $state(untrack(() => storedCollapsed === 'true' || (storedCollapsed === null && compact)));
+  /** Index into `highlight.ranges` for the range readout and `[`/`]` navigation. */
+  let rangeIndex = $state(0);
   let paneHeight = $state(storedHeight > 0 ? storedHeight : 260);
   /** Embedded, visibility comes from the parent; standalone, from the pane's own toggle. */
   const hidden = $derived(embedded ? !visible : collapsed);
@@ -180,6 +182,10 @@
     if (coverage && coveringRows > 0) text += `, ${coveringRows} covering rows`;
     return text;
   });
+
+  const contentBytes = $derived(
+    highlight ? highlight.ranges.reduce((sum, r) => sum + r.end - r.start, 0) : 0,
+  );
 
   const showFilter = $derived(filterAvailable && range !== null && coverageReason === 'ok');
   const hintText = $derived.by(() => {
@@ -293,24 +299,42 @@
     });
   });
 
+  /** Value equality for the highlight prop, including every piece of `ranges`. */
+  function sameHighlight(
+    a: { start: number; end: number; ranges: readonly { start: number; end: number }[] } | null,
+    b: typeof a,
+  ): boolean {
+    if (a === b) return true;
+    if (a === null || b === null) return false;
+    if (a.start !== b.start || a.end !== b.end || a.ranges.length !== b.ranges.length) return false;
+    return a.ranges.every((piece, i) => piece.start === b.ranges[i]!.start && piece.end === b.ranges[i]!.end);
+  }
+
   // React to a new highlight prop: scroll it into view + flash. Compare by VALUE — Workbench
   // recomputes a derived per publish, so a reference guard would re-flash and re-center on every
   // caret move, fighting user navigation.
-  let lastHighlight: { start: number; end: number } | null = null;
+  let lastHighlight: {
+    start: number;
+    end: number;
+    ranges: readonly { start: number; end: number }[];
+  } | null = null;
   $effect(() => {
     const next = highlight;
-    if (
-      next === lastHighlight ||
-      (next !== null &&
-        lastHighlight !== null &&
-        next.start === lastHighlight.start &&
-        next.end === lastHighlight.end)
-    ) {
-      return;
-    }
+    if (sameHighlight(next, lastHighlight)) return;
     lastHighlight = next;
+    rangeIndex = 0;
     if (next) untrack(() => revealTo(next.start, false));
   });
+
+  /** Step to the previous (-1) or next (1) piece of the current highlight; clamps, no wrap. */
+  function stepRange(delta: -1 | 1): void {
+    const ranges = highlight?.ranges ?? [];
+    if (ranges.length < 2) return;
+    const next = Math.min(ranges.length - 1, Math.max(0, rangeIndex + delta));
+    if (next === rangeIndex) return;
+    rangeIndex = next;
+    revealTo(ranges[next]!.start, false);
+  }
 
   let paintHandle = 0;
   function schedulePaint(): void {
@@ -362,6 +386,7 @@
       shadeB: readColor(style, '--color-shade-b'),
       selection: readColor(style, '--color-hex-selection') || '#cbdfea',
       highlight: readColor(style, '--color-hex-highlight'),
+      gap: readColor(style, '--color-hex-gap'),
       caret: readColor(style, '--color-focus') || '#215b86',
       placeholder: readColor(style, '--color-hex-placeholder'),
     };
@@ -577,6 +602,14 @@
       case 'G':
         event.preventDefault();
         focusGoto();
+        break;
+      case '[':
+        event.preventDefault();
+        stepRange(-1);
+        break;
+      case ']':
+        event.preventDefault();
+        stepRange(1);
         break;
       default:
         break;
@@ -850,6 +883,8 @@
   data-hex-caret={caret ?? ''}
   data-hex-selection={range ? `${range.start}-${range.end}` : ''}
   data-hex-highlight={highlight ? `${highlight.start}-${highlight.end}` : ''}
+  data-hex-highlight-ranges={highlight ? highlight.ranges.map((r) => `${r.start}-${r.end}`).join(',') : ''}
+  data-hex-range-index={highlight && highlight.ranges.length > 1 ? rangeIndex : ''}
   data-hex-first-row={scrollRow}
   data-hex-provenance={coverageReason}
   data-hex-collapsed={hidden}
@@ -912,6 +947,31 @@
             <option value={file.name}>{file.name}</option>
           {/each}
         </select>
+      {/if}
+
+      {#if highlight && highlight.ranges.length > 1}
+        <span class="hex-range-readout" aria-live="polite">
+          Range {rangeIndex + 1} of {highlight.ranges.length} ·
+          {contentBytes.toLocaleString()} of {(highlight.end - highlight.start).toLocaleString()} bytes in span
+        </span>
+        <button
+          type="button"
+          class="hex-action"
+          aria-label="Previous source range"
+          disabled={rangeIndex === 0}
+          onclick={() => stepRange(-1)}
+        >
+          ‹
+        </button>
+        <button
+          type="button"
+          class="hex-action"
+          aria-label="Next source range"
+          disabled={rangeIndex === highlight.ranges.length - 1}
+          onclick={() => stepRange(1)}
+        >
+          ›
+        </button>
       {/if}
 
       {#if showFilter && range}

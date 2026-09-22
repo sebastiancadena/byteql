@@ -10,6 +10,7 @@ export interface HexColors {
   shadeB: string;
   selection: string;
   highlight: string;
+  gap: string;
   caret: string;
   placeholder: string;
 }
@@ -37,7 +38,7 @@ export interface HexFrame {
   byteAt(offset: number): number | null;
   shading: readonly ByteSpan[];
   selection: { start: number; end: number } | null;
-  highlight: { start: number; end: number } | null;
+  highlight: { start: number; end: number; ranges: readonly { start: number; end: number }[] } | null;
   caret: number | null;
 }
 
@@ -70,7 +71,15 @@ export function drawHexFrame(ctx: CanvasTextContext, frame: HexFrame): void {
 
   for (const span of frame.shading)
     fillRange(ctx, frame, span.start, span.end, span.alt ? colors.shadeB : colors.shadeA);
-  if (frame.highlight) fillRange(ctx, frame, frame.highlight.start, frame.highlight.end, colors.highlight);
+  if (frame.highlight) {
+    // Bounding-span bytes that are not message content get the gap marker; only exact pieces get
+    // the highlight. An exact row has one piece equal to its span, so no gap is drawn.
+    if (frame.highlight.ranges.length > 1) {
+      fillRange(ctx, frame, frame.highlight.start, frame.highlight.end, colors.gap);
+    }
+    for (const piece of frame.highlight.ranges)
+      fillRange(ctx, frame, piece.start, piece.end, colors.highlight);
+  }
   if (frame.selection) fillRange(ctx, frame, frame.selection.start, frame.selection.end, colors.selection);
 
   const rows = Math.ceil(frame.heightPx / metrics.rowHeight);
