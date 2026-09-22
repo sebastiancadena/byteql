@@ -1554,9 +1554,9 @@ const emitStreamMessage = (
   // beneath it — must see the SAME exact provenance computed above, not recompute offsets
   // against span.start (meaningless once the span has gaps). emitContext.inherited carries that
   // down through projectChildTable/fireDissect for the duration of this message's rows only,
-  // restored (to whatever a possibly-enclosing message already set, or null) once it is done —
-  // stream messages cannot nest, so `previous` is always null in practice, but restoring it
-  // rather than hardcoding null keeps this correct if that ever changes.
+  // restored (to whatever a possibly-enclosing message already set, or null) once it is done.
+  // Nesting would need a stream fed beneath a message, which compile rejects for bounded
+  // tables — but restoring `previous` rather than hardcoding null keeps this correct regardless.
   const previous = emitContext.inherited ?? null;
   emitContext.inherited = inherited;
   try {
@@ -1650,8 +1650,9 @@ const projectChildTable = (
   // stream_id is only ever set on the message's own table (streamMeta); a deeper dissect table
   // reached from emitContext.inherited alone has no stream_id column to fill. _src_ranges is
   // set from the inherited pieces whenever this table actually reserves the column
-  // (boundedProvenance) — streamMeta's own table always does (Task 4 marks it), but a deeper
-  // table only sometimes does, hence the explicit boundedProvenance check on that branch.
+  // (boundedProvenance) — compile marks every message-fed table boundedProvenance, so
+  // streamMeta's own table always does, but a deeper table only sometimes does, hence the
+  // explicit boundedProvenance check on that branch.
   const extraColumns: Record<string, unknown> | undefined = streamMeta
     ? { stream_id: streamMeta.streamId, _src_ranges: streamMeta.ranges }
     : inherited && table.boundedProvenance
