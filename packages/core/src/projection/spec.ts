@@ -14,7 +14,8 @@ export type ArrowTypeName =
   | 'bool'
   | 'utf8'
   | 'timestamp_us'
-  | 'binary';
+  | 'binary'
+  | 'src_ranges'; // engine-internal (_src_ranges); never accepted by the spec schema below
 
 export interface ProjectionStateSpec {
   scope: string;

@@ -43,6 +43,31 @@ interface StoredSegment {
   srcEnd: number;
 }
 
+/** A half-open absolute file byte range `[start, end)`. */
+export interface SourcePiece {
+  start: number;
+  end: number;
+}
+
+/**
+ * Canonical exact-provenance form: empty pieces dropped, sorted by start, overlapping or
+ * touching pieces merged. Null when at most one piece remains — a single range is already exact
+ * and is expressed by `_src_start`/`_src_end` alone.
+ */
+export const normalizeRanges = (pieces: readonly SourcePiece[]): SourcePiece[] | null => {
+  const sorted = pieces
+    .filter((piece) => piece.end > piece.start)
+    .map((piece) => ({ start: piece.start, end: piece.end }))
+    .sort((a, b) => a.start - b.start);
+  const merged: SourcePiece[] = [];
+  for (const piece of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && piece.start <= last.end) last.end = Math.max(last.end, piece.end);
+    else merged.push(piece);
+  }
+  return merged.length >= 2 ? merged : null;
+};
+
 export class StreamAssembler {
   readonly #maxBuffer: number;
   #base: number | null = null;

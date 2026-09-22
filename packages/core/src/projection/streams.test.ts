@@ -117,3 +117,65 @@ describe('StreamAssembler', () => {
     expect([...a.contiguousView()]).toEqual([1, 2, 3, 4]);
   });
 });
+
+import { normalizeRanges } from './streams.js';
+
+describe('normalizeRanges', () => {
+  it('sorts by start and keeps gapped pieces', () => {
+    expect(
+      normalizeRanges([
+        { start: 50, end: 60 },
+        { start: 10, end: 20 },
+      ]),
+    ).toEqual([
+      { start: 10, end: 20 },
+      { start: 50, end: 60 },
+    ]);
+  });
+  it('merges touching and overlapping pieces', () => {
+    expect(
+      normalizeRanges([
+        { start: 10, end: 20 },
+        { start: 20, end: 25 },
+        { start: 22, end: 30 },
+        { start: 40, end: 41 },
+      ]),
+    ).toEqual([
+      { start: 10, end: 30 },
+      { start: 40, end: 41 },
+    ]);
+  });
+  it('returns null for a single piece, after merging, and for empty input', () => {
+    expect(normalizeRanges([{ start: 1, end: 5 }])).toBeNull();
+    expect(
+      normalizeRanges([
+        { start: 1, end: 5 },
+        { start: 5, end: 9 },
+      ]),
+    ).toBeNull();
+    expect(normalizeRanges([])).toBeNull();
+  });
+  it('drops empty pieces', () => {
+    expect(
+      normalizeRanges([
+        { start: 3, end: 3 },
+        { start: 1, end: 2 },
+        { start: 5, end: 6 },
+      ]),
+    ).toEqual([
+      { start: 1, end: 2 },
+      { start: 5, end: 6 },
+    ]);
+  });
+  it('does not mutate its input', () => {
+    const input = [
+      { start: 20, end: 30 },
+      { start: 10, end: 20 },
+    ];
+    normalizeRanges(input);
+    expect(input).toEqual([
+      { start: 20, end: 30 },
+      { start: 10, end: 20 },
+    ]);
+  });
+});

@@ -1,10 +1,13 @@
 import {
   Binary,
   Bool,
+  Field,
   Int8,
   Int16,
   Int32,
   Int64,
+  List,
+  Struct,
   Table,
   TimestampMicrosecond,
   Uint8,
@@ -23,6 +26,34 @@ import {
 
 import type { ProjectedTable } from '../projection/project.js';
 import type { ArrowTypeName } from '../projection/spec.js';
+
+const SRC_RANGE_PIECE_TYPE = new Struct([
+  new Field('start', new Uint64(), false),
+  new Field('end', new Uint64(), false),
+]);
+export const SRC_RANGES_ARROW_TYPE = new List(new Field('item', SRC_RANGE_PIECE_TYPE, false));
+
+// Enforces the `_src_ranges` contract (≥2 pieces, sorted, strictly gapped, non-empty) on every
+// value. A violation is an engine bug, never input data, so it throws instead of nulling.
+const srcRangesValues = (values: readonly unknown[], table: string, column: string): readonly unknown[] =>
+  values.map((value) => {
+    if (value === null || value === undefined) return null;
+    if (!Array.isArray(value) || value.length < 2) {
+      throw new Error(`SRC_RANGES_INVALID: ${table}.${column} needs at least two pieces or null`);
+    }
+    let previousEnd = -1n;
+    return value.map((piece: { start: number | bigint; end: number | bigint }) => {
+      const start = requireUint64(piece.start, table, column);
+      const end = requireUint64(piece.end, table, column);
+      if (end <= start || start <= previousEnd) {
+        throw new Error(
+          `SRC_RANGES_INVALID: ${table}.${column} piece [${start}, ${end}) is empty, unsorted, or not separated from the previous piece`,
+        );
+      }
+      previousEnd = end;
+      return { start, end };
+    });
+  });
 
 const arrowType = (type: ArrowTypeName): DataType => {
   switch (type) {
@@ -50,6 +81,8 @@ const arrowType = (type: ArrowTypeName): DataType => {
       return new TimestampMicrosecond();
     case 'binary':
       return new Binary();
+    case 'src_ranges':
+      return SRC_RANGES_ARROW_TYPE;
   }
 };
 
@@ -169,7 +202,9 @@ export const columnVector = (
 ): Vector =>
   type === 'timestamp_us'
     ? timestampMicrosecondVector(values, table, column)
-    : vectorFromArray(valuesForType(values, type, table, column), arrowType(type));
+    : type === 'src_ranges'
+      ? vectorFromArray(srcRangesValues(values, table, column), SRC_RANGES_ARROW_TYPE)
+      : vectorFromArray(valuesForType(values, type, table, column), arrowType(type));
 
 export const projectedTableToArrow = (table: ProjectedTable): Table => {
   for (const [name, values] of Object.entries(table.columns)) {

@@ -2,7 +2,7 @@ import { Bool, Int8, Int16, Int32, Int64, Uint8, Uint16, Uint32, Uint64, Utf8 } 
 import { describe, expect, it } from 'vitest';
 
 import type { ProjectedTable } from '../projection/project.js';
-import { ipcToTable, projectedTableToArrow, tableToIpc } from './build.js';
+import { columnVector, ipcToTable, projectedTableToArrow, tableToIpc } from './build.js';
 
 const logicalTable = (): ProjectedTable => ({
   name: 'logical_types',
@@ -204,5 +204,58 @@ describe('binary columns', () => {
     const arrow = ipcToTable(tableToIpc(projectedTableToArrow(table)));
     expect(Array.from(arrow.getChildAt(0)!.get(0) as Uint8Array)).toEqual([1, 2, 3]);
     expect(arrow.getChildAt(0)!.get(1)).toBeNull();
+  });
+});
+
+describe('src_ranges vectors', () => {
+  it('builds List<Struct<start, end>> with nulls', () => {
+    const vector = columnVector(
+      [
+        [
+          { start: 1n, end: 4n },
+          { start: 9n, end: 12n },
+        ],
+        null,
+      ],
+      'src_ranges',
+      't',
+      '_src_ranges',
+    );
+    expect(String(vector.type)).toContain('List');
+    const first = Array.from(vector.get(0) as Iterable<{ start: bigint; end: bigint }>, (p) => [
+      p.start,
+      p.end,
+    ]);
+    expect(first).toEqual([
+      [1n, 4n],
+      [9n, 12n],
+    ]);
+    expect(vector.get(1)).toBeNull();
+  });
+  it.each([
+    ['one piece', [{ start: 1n, end: 4n }]],
+    [
+      'empty piece',
+      [
+        { start: 1n, end: 1n },
+        { start: 5n, end: 6n },
+      ],
+    ],
+    [
+      'touching',
+      [
+        { start: 1n, end: 4n },
+        { start: 4n, end: 6n },
+      ],
+    ],
+    [
+      'unsorted',
+      [
+        { start: 9n, end: 12n },
+        { start: 1n, end: 4n },
+      ],
+    ],
+  ])('rejects an invariant violation: %s', (_label, value) => {
+    expect(() => columnVector([value], 'src_ranges', 't', '_src_ranges')).toThrow(/SRC_RANGES_INVALID/);
   });
 });
