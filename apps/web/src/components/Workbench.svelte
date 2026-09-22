@@ -837,10 +837,7 @@
     onselectionchange={(range) =>
       controller.selectByteRange(range && hexFile ? { file: hexFile, ...range } : null)}
     onfilter={(range) =>
-      hexFile &&
-      run(
-        wrapFilterSql(draftSql || session.sql, { file: hexFile, ...range }, session.result?.schema ?? null),
-      )}
+      hexFile && run(wrapFilterSql(session.sql, { file: hexFile, ...range }, session.result?.schema ?? null))}
     onfilechange={switchHexFile}
     onchromeheightchange={reportHexChrome}
   />

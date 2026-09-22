@@ -1427,6 +1427,34 @@ describe('Inspector Workbench', () => {
     const query = controller.runQuery.mock.calls.at(-1)![0];
     expect(query).toContain('select * from (');
     expect(query).toContain("where _src_file = 'capture.bin' and _src_start < ");
+    expect(query).toContain('select * from records limit 100');
+  });
+
+  it('filter to selection wraps the executed SQL, not the draft editor text', async () => {
+    const user = userEvent.setup();
+    const controller = new FakeController(readyState());
+    render(Workbench, { controller });
+
+    // Edit the SQL editor with a draft query that differs from the executed SQL
+    const editor = screen.getByRole('textbox', { name: 'SQL query' });
+    await user.click(editor);
+    await user.keyboard('{Control>}a{/Control}');
+    await user.type(editor, 'select * from records where id > 10');
+
+    // Select bytes in the hex pane and filter
+    const pane = document.querySelector('[data-hex-pane]') as HTMLElement;
+    await user.type(within(pane).getByLabelText('Go to offset'), '30{Enter}');
+    within(pane).getByRole('application', { name: 'Hex viewer' }).focus();
+    await user.keyboard('{Shift>}{ArrowRight}{/Shift}');
+    await user.click(within(pane).getByRole('button', { name: 'Filter results to selection' }));
+
+    // The wrapped query must contain the EXECUTED SQL, not the draft
+    expect(controller.runQuery).toHaveBeenCalled();
+    const query = controller.runQuery.mock.calls.at(-1)![0];
+    expect(query).toContain('select * from records limit 100'); // Executed SQL
+    expect(query).not.toContain('select * from records where id > 10'); // Draft not wrapped
+    expect(query).toContain('select * from (');
+    expect(query).toContain("where _src_file = 'capture.bin' and _src_start < ");
   });
 
   it('passes the selected row provenance to the hex pane as highlight', async () => {
