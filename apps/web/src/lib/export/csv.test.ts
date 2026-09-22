@@ -10,6 +10,7 @@ import {
   Int32,
   Int64,
   LargeUtf8,
+  List,
   makeData,
   makeVector,
   RecordBatch,
@@ -105,6 +106,29 @@ describe('csvChunks', () => {
         '1969-12-31T23:59:59.999999,1969-12-31T23:59:59.999999999Z,' +
         '+275760-09-14,12:34:56.789123,true,"=1+1",0x00ff\r\n',
     );
+  });
+
+  it('renders source ranges as start-end pairs and an empty field for a null list', () => {
+    const rangesType = new List(
+      new Field(
+        'item',
+        new Struct([new Field('start', new Uint64(), true), new Field('end', new Uint64(), true)]),
+        true,
+      ),
+    );
+    const ranges = vectorFromArray(
+      [
+        [
+          { start: 10n, end: 20n },
+          { start: 50n, end: 60n },
+        ],
+        null,
+      ],
+      rangesType,
+    );
+    const table = new Table({ ranges });
+
+    expect(decode(csvChunks(table, [0], false))).toBe('"10-20;50-60"\r\n\r\n');
   });
 
   it('uses the canonical spellings for floating-point special values', () => {

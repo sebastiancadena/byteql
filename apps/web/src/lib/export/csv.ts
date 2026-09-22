@@ -1,5 +1,7 @@
 import { DataType, DateUnit, TimeUnit, type Data, type Table, Vector } from 'apache-arrow';
-import { resultColumnLabel } from '@byteql/db/result-columns';
+import { isSourceRangesType, resultColumnLabel } from '@byteql/db/result-columns';
+
+import { sourceRangesCsv } from '../format/source-ranges.js';
 
 const MAX_CHUNK_BYTES = 64 * 1024;
 const TEXT_BLOCK_CODE_UNITS = 16 * 1024;
@@ -121,6 +123,13 @@ function* scalarParts(vector: Vector, data: Data, index: number): Generator<stri
   }
 
   if (DataType.isNull(data.type)) return;
+
+  if (isSourceRangesType(data.type)) {
+    const value = vector.get(index) as Iterable<{ start: bigint; end: bigint }> | null;
+    if (value) yield* quotedText(sourceRangesCsv(value));
+    return;
+  }
+
   throw new Error(`Unsupported CSV scalar type ${data.type}.`);
 }
 

@@ -6,7 +6,7 @@ const selected: TraceInput = {
   hasResult: true,
   selectedGlobalRow: 16385,
   selectedLocalRow: 1,
-  provenance: { file: 'second.zip', start: 12, end: 20 },
+  provenance: { file: 'second.zip', start: 12, end: 20, ranges: [{ start: 12, end: 20 }] },
   files: [{ name: 'second.zip', size: 100 }],
 };
 
@@ -98,11 +98,43 @@ describe('buildTraceSummary', () => {
 
   it('refuses an unusable range even when the file exists', () => {
     expect(
-      buildTraceSummary({ ...selected, provenance: { file: 'second.zip', start: Number.NaN, end: 20 } }),
+      buildTraceSummary({
+        ...selected,
+        provenance: {
+          file: 'second.zip',
+          start: Number.NaN,
+          end: 20,
+          ranges: [{ start: Number.NaN, end: 20 }],
+        },
+      }),
     ).toMatchObject({ kind: 'unavailable' });
     expect(
-      buildTraceSummary({ ...selected, provenance: { file: 'second.zip', start: 20, end: 20 } }),
+      buildTraceSummary({
+        ...selected,
+        provenance: { file: 'second.zip', start: 20, end: 20, ranges: [{ start: 20, end: 20 }] },
+      }),
     ).toMatchObject({ kind: 'unavailable' });
+  });
+
+  it('appends the piece count to the label for a reassembled row with more than one range', () => {
+    expect(
+      buildTraceSummary({
+        ...selected,
+        provenance: {
+          file: 'second.zip',
+          start: 12,
+          end: 60,
+          ranges: [
+            { start: 12, end: 20 },
+            { start: 50, end: 60 },
+          ],
+        },
+      }),
+    ).toMatchObject({ kind: 'linked', label: '0x0000000c–0x0000003b · 48 bytes · 2 ranges' });
+  });
+
+  it('leaves the label unchanged for a single-piece range', () => {
+    expect(buildTraceSummary(selected)).toMatchObject({ label: '0x0000000c–0x00000013 · 8 bytes' });
   });
 
   it('numbers the first row 1', () => {

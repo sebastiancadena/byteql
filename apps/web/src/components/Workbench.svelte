@@ -7,7 +7,7 @@
   import { onMount, tick, untrack } from 'svelte';
 
   import type { ExportOptions } from '../lib/export/options.js';
-  import { createCoverageMemo, provenanceOfRow } from '../lib/hex/coverage.js';
+  import { createCoverageMemo, provenanceOfRow, type RowProvenance } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
   import type { SampleId } from '../lib/session/samples.js';
   import { resultSortDisabledReason } from '../lib/session/result-sort-availability.js';
@@ -461,7 +461,7 @@
   let highlightMemo: {
     result: unknown;
     row: number;
-    value: { file: string; start: number; end: number } | null;
+    value: RowProvenance | null;
   } | null = null;
   const selectedLocalRow = $derived(
     session.result &&

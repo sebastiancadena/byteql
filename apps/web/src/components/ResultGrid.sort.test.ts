@@ -1,7 +1,18 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
-import { Field, Int32, RecordBatch, Schema, Table, tableFromArrays } from 'apache-arrow';
+import {
+  Field,
+  Int32,
+  List,
+  RecordBatch,
+  Schema,
+  Struct,
+  Table,
+  Uint64,
+  tableFromArrays,
+  vectorFromArray,
+} from 'apache-arrow';
 import { RESULT_LABEL_METADATA_KEY } from '@byteql/db/result-columns';
 import { readable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -202,6 +213,32 @@ describe('ResultGrid sort controls', () => {
     void rerender(props({ onsort, sortDisabledReason: reason, sort: { columnIndex: 0, direction: 'desc' } }));
     await fireEvent.click(getByRole('button', { name: 'Restore query order' }));
     expect(onsort).toHaveBeenCalledWith(null);
+  });
+
+  it('blocks a byte-ranges column header with its own refusal, and never calls onsort', async () => {
+    const onsort = vi.fn();
+    const rangesType = new List(
+      new Field(
+        'item',
+        new Struct([new Field('start', new Uint64(), true), new Field('end', new Uint64(), true)]),
+        true,
+      ),
+    );
+    const rangesTable = new Table({
+      value: vectorFromArray(Int32Array.from([30, 10, 20])),
+      _src_ranges: vectorFromArray([null, null, null], rangesType),
+    });
+
+    const { getByRole } = render(
+      ResultGrid,
+      props({ table: rangesTable, onsort, loadedRows: rangesTable.numRows }),
+    );
+    await fireEvent.click(getByRole('button', { name: 'Toggle hidden columns' }));
+    const header = getByRole('button', { name: 'Sort _src_ranges ascending' });
+    expect(header.getAttribute('aria-disabled')).toBe('true');
+    expect(header.getAttribute('title')).toBe("Byte ranges can't be sorted.");
+    await fireEvent.click(header);
+    expect(onsort).not.toHaveBeenCalled();
   });
 
   it('suppresses row selection and reports busy while a sort runs', async () => {

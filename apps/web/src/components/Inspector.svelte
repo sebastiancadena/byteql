@@ -3,6 +3,7 @@
   import { resultColumnLabel } from '@byteql/db/result-columns';
 
   import { provenanceOfRow } from '../lib/hex/coverage.js';
+  import { isSourceRangesValue, sourceRangesSummary } from '../lib/format/source-ranges.js';
   import { formatByteRange } from '../lib/ui/trace.js';
   import type { AudioEngine } from '../lib/viewers/tone-engine.js';
   import type { ViewerCapability } from '../lib/viewers/registry.js';
@@ -81,6 +82,7 @@
   }
 
   function formatValue(value: unknown): string {
+    if (isSourceRangesValue(value)) return sourceRangesSummary(value);
     if (value === null || value === undefined) return 'NULL';
     if (typeof value === 'bigint') return value.toString();
     if (value instanceof Uint8Array) {
@@ -125,7 +127,24 @@
 
     <section class="inspector-section provenance" aria-labelledby="provenance-heading">
       <h3 id="provenance-heading">Provenance</h3>
-      {#if provenanceRange && provenanceLabel}
+      {#if provenanceRange && provenanceRange.ranges.length > 1}
+        <dl>
+          <div>
+            <dt>Source range</dt>
+            <dd>
+              <p>
+                Bytes {provenanceRange.start}–{provenanceRange.end} · bounding span · exact: {provenanceRange
+                  .ranges.length} ranges
+              </p>
+              <ul>
+                {#each provenanceRange.ranges as piece, pieceIndex (pieceIndex)}
+                  <li>{piece.start}-{piece.end}</li>
+                {/each}
+              </ul>
+            </dd>
+          </div>
+        </dl>
+      {:else if provenanceRange && provenanceLabel}
         <dl>
           <div>
             <dt>Source range</dt>

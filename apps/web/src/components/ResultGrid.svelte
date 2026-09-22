@@ -2,11 +2,12 @@
   /* global HTMLDivElement, HTMLElement, KeyboardEvent */
 
   import type { ResultSort } from '@byteql/db';
-  import { resultColumnLabel } from '@byteql/db/result-columns';
+  import { resultColumnLabel, resultSortKeyRefusal } from '@byteql/db/result-columns';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import type { Table } from 'apache-arrow';
   import { untrack } from 'svelte';
 
+  import { isSourceRangesValue, sourceRangesSummary } from '../lib/format/source-ranges.js';
   import {
     RESULT_ROW_HEIGHT,
     resultDemand,
@@ -98,7 +99,9 @@
   const sortHelpId = 'result-sort-help';
   const sortUnavailable = $derived(sortDisabledReason !== null);
   const headerBlocked = (index: number): boolean =>
-    sortInteractionBlocked || (nextResultSort(sort, index) !== null && sortUnavailable);
+    sortInteractionBlocked ||
+    (nextResultSort(sort, index) !== null && sortUnavailable) ||
+    resultSortKeyRefusal(table.schema.fields[index]!) !== null;
   const hiddenCount = $derived(
     table.schema.fields.filter((field) => resultColumnLabel(field).startsWith(hiddenPrefix)).length,
   );
@@ -289,6 +292,7 @@
   }
 
   function formatValue(value: unknown): string {
+    if (isSourceRangesValue(value)) return sourceRangesSummary(value);
     if (value === null || value === undefined) return 'NULL';
     if (typeof value === 'bigint') return value.toString();
     if (value instanceof Uint8Array) {
@@ -350,6 +354,7 @@
             aria-label={sortActionLabel(table.schema, sort, index)}
             aria-describedby={sortHelpId}
             aria-disabled={blocked}
+            title={resultSortKeyRefusal(field) ?? undefined}
             onclick={() => {
               if (headerBlocked(index)) return;
               onsort(nextResultSort(sort, index));

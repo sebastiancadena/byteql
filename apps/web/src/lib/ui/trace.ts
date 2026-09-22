@@ -1,3 +1,5 @@
+import type { RowProvenance } from '../hex/coverage.js';
+
 export interface SourceRange {
   file: string;
   start: number;
@@ -14,7 +16,7 @@ export interface TraceInput {
   selectedGlobalRow: number | null;
   /** Null when the selected global row sits outside the decoded window. */
   selectedLocalRow: number | null;
-  provenance: SourceRange | null;
+  provenance: RowProvenance | null;
   files: readonly { name: string; size: number }[];
 }
 
@@ -46,9 +48,15 @@ export function buildTraceSummary(input: TraceInput): TraceSummary {
 
   const range = input.provenance;
   const file = input.files.find((candidate) => candidate.name === range.file);
-  const label = formatByteRange(range.start, range.end);
-  if (!file || !label || range.end > file.size) {
+  const boundingLabel = formatByteRange(range.start, range.end);
+  if (!file || !boundingLabel || range.end > file.size) {
     return { kind: 'unavailable', message: 'Source bytes are unavailable for this row.' };
   }
-  return { kind: 'linked', row: input.selectedGlobalRow + 1, range, label };
+  const label = range.ranges.length > 1 ? `${boundingLabel} · ${range.ranges.length} ranges` : boundingLabel;
+  return {
+    kind: 'linked',
+    row: input.selectedGlobalRow + 1,
+    range: { file: range.file, start: range.start, end: range.end },
+    label,
+  };
 }

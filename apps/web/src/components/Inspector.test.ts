@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen, within } from '@testing-library/svelte';
-import { tableFromArrays } from 'apache-arrow';
+import { Field, List, Struct, Table, Uint64, tableFromArrays, vectorFromArray } from 'apache-arrow';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import Inspector from './Inspector.svelte';
@@ -79,4 +79,36 @@ describe('Inspector result columns', () => {
       }
     },
   );
+
+  it('lists each exact piece for a reassembled row, alongside its bounding span', () => {
+    const rangesType = new List(
+      new Field(
+        'item',
+        new Struct([new Field('start', new Uint64(), true), new Field('end', new Uint64(), true)]),
+        true,
+      ),
+    );
+    const base = tableFromArrays({
+      _src_file: ['capture.pcap'],
+      _src_start: BigUint64Array.from([10n]),
+      _src_end: BigUint64Array.from([60n]),
+    });
+    const ranges = vectorFromArray(
+      [
+        [
+          { start: 10n, end: 20n },
+          { start: 50n, end: 60n },
+        ],
+      ],
+      rangesType,
+    );
+    const table = base.assign(new Table({ _src_ranges: ranges }));
+
+    render(Inspector, { table, selectedRow: 0 });
+
+    const provenance = screen.getByRole('heading', { name: 'Provenance' }).parentElement!;
+    expect(within(provenance).getByText('Bytes 10–60 · bounding span · exact: 2 ranges')).toBeTruthy();
+    expect(within(provenance).getByText('10-20')).toBeTruthy();
+    expect(within(provenance).getByText('50-60')).toBeTruthy();
+  });
 });

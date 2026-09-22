@@ -1,5 +1,5 @@
 import { isSupportedParquetType, unsupportedParquetTypeMessage } from '@byteql/db';
-import { resultColumnLabel } from '@byteql/db/result-columns';
+import { isSourceRangesType, resultColumnLabel } from '@byteql/db/result-columns';
 import { DataType, type Schema } from 'apache-arrow';
 
 export type ExportFormat = 'csv' | 'parquet';
@@ -54,6 +54,8 @@ function isSupportedCsvScalar(type: DataType): boolean {
   if (DataType.isDictionary(type)) {
     return isSupportedCsvScalar(type.dictionary);
   }
+
+  if (isSourceRangesType(type)) return true;
 
   return (
     DataType.isNull(type) ||
