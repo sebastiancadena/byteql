@@ -165,7 +165,29 @@ for (const tier of ['memory', 'spill'] as const) {
     await page.getByRole('button', { name: 'Filter results to selection' }).click();
     await expect(page.locator('.results-heading-meta').getByText('0 rows', { exact: true })).toBeVisible();
 
-    // 4. A byte inside a piece does filter it back in.
+    // 4. The same gap byte, via the byte-click reveal idiom (not the SQL filter): no result row
+    // covers it, so nothing gets selected — mirroring how the midi/pcap tests assert a byte click
+    // DOES reveal a row, but for the negative case a bounding span's gap bytes must produce.
+    await runSql(page, "select * from dns where query_name = 'interleaved.example'");
+    await gotoOffset(page, gapByte);
+    await hexCanvas(page).press('Enter');
+    await expect(page.getByRole('status', { name: 'Coverage notice' })).toHaveText(
+      'No result row covers this byte',
+    );
+    await expect(page.getByRole('row', { name: 'Row 1', exact: true })).not.toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+
+    // 5. A byte inside a piece DOES reveal the row through the same byte-click idiom.
+    await gotoOffset(page, ranges[1]![0] + 1);
+    await hexCanvas(page).press('Enter');
+    await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+
+    // 6. A byte inside a piece does filter it back in.
     await runSql(page, "select * from dns where query_name = 'interleaved.example'");
     await gotoOffset(page, ranges[1]![0] + 1);
     await page.getByRole('button', { name: 'Filter results to selection' }).click();
