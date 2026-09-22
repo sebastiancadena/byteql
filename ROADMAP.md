@@ -31,7 +31,7 @@ Evidence:
 Design:
 [Duplicate result-column correctness](docs/superpowers/specs/2026-09-15-duplicate-result-columns-design.md).
 
-### 2. Make reassembled-message provenance explicit
+### 2. Make reassembled-message provenance explicit — done (2026-09-22)
 
 TCP-derived rows carry a bounding span that can include unrelated bytes between contributing
 packets. The UI currently represents provenance as one range.
@@ -45,6 +45,9 @@ packets. The UI currently represents provenance as one range.
 
 Current contract:
 [TCP reassembly design](docs/superpowers/specs/2026-07-18-phase2-tcp-reassembly-design.md).
+
+Evidence: [hex-provenance e2e](apps/web/e2e/hex-provenance.spec.ts) and
+[exact provenance design](docs/superpowers/specs/2026-09-22-exact-reassembled-provenance-design.md).
 
 ### 3. Add pcapng intake
 
@@ -109,7 +112,7 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
 ## Next development cycle
 
 1. Duplicate-column correctness. **Done, 2026-09-16.**
-2. Truthful multi-range provenance.
+2. Truthful multi-range provenance. **Done, 2026-09-22.**
 3. Pcapng intake.
 
 Saved queries are the next usability feature after that cycle.

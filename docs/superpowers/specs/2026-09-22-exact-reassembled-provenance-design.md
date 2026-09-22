@@ -2,8 +2,7 @@
 
 Date: 2026-09-22
 
-Status: Design approved in conversation; written spec awaiting review. Implementation has not
-started. Nothing here is evidence that the defect has been fixed.
+Status: Implemented 2026-09-22.
 
 ## Purpose and accepted behavior
 
@@ -285,3 +284,35 @@ found and fixed during the Step 9 gate.**
   needed). 11/11 gate tests green. Committed on `feature/exact-reassembled-provenance`:
   `fix(db): rebuild empty list columns when snapshotting zero-row pages`, then
   `feat(db): admit source byte ranges through ingest, sorting, and Parquet export`.
+
+**2026-09-22 — Engine, pcap pack, and UI (Tasks 3–11): SHIPPED.** `_src_ranges` is engine-injected
+as the last engine column, immediately after `_src_end` (the worker then appends `_src_file`),
+matching the placement `tableOutputTypes` already reserved during Task 2. Column-position order
+is therefore `..., _src_start, _src_end, _src_ranges, _src_file`.
+
+- **Gap-fill decision.** Bytes inside a row's bounding span but outside every exact piece are
+  painted with a new, distinct neutral fill (`--color-hex-gap`, defined for light and dark themes
+  in `apps/web/src/styles/tokens.css`) rather than a hatch pattern: `HexPane`'s canvas seam only
+  exposes rect fills, so a gap gets its own flat color instead of a texture. This is the only
+  visible signal that a row's provenance is a bounding span, not exact bytes.
+- **Filter-to-selection now wraps the executed query, not the editor draft.** `filter-sql.ts`
+  reads `_src_ranges` off the inner result's own schema, so the SQL it emits (the conditional
+  `_src_ranges is null or len(list_filter(...)) > 0` clause) is always well-formed for the rows
+  actually on screen even if the SQL editor has since been edited to a different, unexecuted
+  query. Regression coverage: `Workbench.test.ts` — "filter to selection wraps the executed SQL,
+  not the draft editor text".
+- **Multi-piece UI criterion.** The Inspector, the hex toolbar's `Range i of n` readout, the
+  per-byte hex highlight renderer, and the trace label all gate their "more than one range"
+  behavior on the same predicate, `ranges.length > 1` (`Inspector.svelte`, `HexPane.svelte`,
+  `lib/hex/render.ts`, `lib/ui/trace.ts`) — a row with exactly one piece renders identically to a
+  row with no `_src_ranges` at all.
+- Full workspace gate green 2026-09-22: `pnpm -r check`, `pnpm -r test -- --run` (including the
+  MIDI regression), `pnpm lint`, `check:bundle`, and the full Playwright e2e suite, 150/150,
+  covering `apps/web/e2e/hex-provenance.spec.ts` (both the memory and OPFS spill tiers) and
+  `apps/web/e2e/source-ranges-sql.spec.ts`.
+- **Documented limitations, unchanged from the design's accepted scope.** `errors` rows raised by
+  stream issues keep their bounding span with no `_src_ranges`. A query that selects
+  `_src_start`/`_src_end` but drops `_src_ranges` from its column list falls back to treating the
+  span as exact — the UI has no way to know a dropped column existed. TCP connection identity
+  limits (no FIN/RST teardown, no sequence-number wraparound, no partial-overlap reconciliation)
+  are unchanged and remain `ROADMAP.md` priority 5.

@@ -30,6 +30,9 @@ so it becomes an engine concept, not pack machinery.
   first-to-last span over its contributing segments; exact per-segment ranges live in a
   `stream_segments` link table the hex UI can join through. The single-range reserved-column
   contract is unchanged.
+
+  > Amended 2026-09-22: message and flow rows now carry exact pieces in `_src_ranges`; see
+  > `2026-09-22-exact-reassembled-provenance-design.md`.
 - **A first-class `streams` table**: one row per reassembled TCP flow direction (endpoints, counts,
   status), flushed at `finish()`.
 - **Memory: cap + truncate.** Per-stream buffer cap (spec-declared, pcap default 1 MiB). On

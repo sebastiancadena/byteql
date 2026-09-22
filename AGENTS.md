@@ -97,12 +97,22 @@ or in `PRD.md` §12.
   unavailable when a result repeats a provenance column. Design:
   `docs/superpowers/specs/2026-09-15-duplicate-result-columns-design.md`; evidence:
   `docs/result-column-sorting-compatibility.md#duplicate-output-column-names`.
+- **Exact reassembled-message provenance: shipped 2026-09-22.** A reserved `_src_ranges` column
+  (`List<Struct<start, end>>`, nullable, last engine column after `_src_end`) is engine-injected
+  on pcap's `dns`, `tls`, and `streams`: null means `_src_start`/`_src_end` is exact, non-null
+  means it is a bounding span and the list holds the exact contributing byte ranges. The hex pane
+  highlights only those pieces, fills bounding-span gaps with a distinct neutral color, and adds
+  a `Range i of n` readout; byte→row lookup and filter-to-selection (now over the executed query,
+  not the SQL draft) both honor pieces; `packages/db` admits the shape through ingest, sorting
+  (as an unsortable passenger), and Parquet/CSV export. Documented limitations: `errors` rows
+  keep bounding spans with no `_src_ranges`, and a query that selects `_src_start`/`_src_end`
+  but drops `_src_ranges` falls back to treating the span as exact. Design:
+  `docs/superpowers/specs/2026-09-22-exact-reassembled-provenance-design.md`.
 - **Also shipped:** the ZIP format pack (`packages/formats/zip`), same-format multi-file
   sessions, the Trace Workspace layout with resizable panels, and results download
   (`docs/superpowers/specs/2026-09-04-results-download-design.md`).
-- **Next (per `ROADMAP.md`):** truthful multi-range provenance for reassembled TCP messages, then
-  pcapng intake, then saved queries. The unaided external Phase 0 test is still open supporting
-  work.
+- **Next (per `ROADMAP.md`):** pcapng intake, then saved queries. The unaided external Phase 0
+  test is still open supporting work.
 
 ## Repo map
 
