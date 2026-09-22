@@ -6,8 +6,10 @@ import {
   Float64,
   Int32,
   Int64,
+  List,
   RecordBatch,
   Schema,
+  Struct,
   Table,
   TimeUnit,
   Timestamp,
@@ -94,6 +96,31 @@ describe('snapshotPage', () => {
     const snapshot = snapshotPage(empty, 0, SORT_ORDINAL_COLUMN);
     expect(snapshot.numRows).toBe(0);
     expect(snapshot.schema.fields.map((field) => field.name)).toEqual(['c0', SORT_ORDINAL_COLUMN]);
+  });
+
+  it('handles a zero-row page carrying a source-ranges (List<Struct>) column', () => {
+    // A zero-BATCH table (`new Table(schema)`, no data at all) is exactly what the Parquet
+    // writer's empty-result branch builds. Reproduces a real apache-arrow defect: reconstructing
+    // such a table's List<Struct> column through the Record<string, Vector> constructor path
+    // leaves the list vector unable to serialize.
+    const rangesType = new List(
+      new Field(
+        'item',
+        new Struct([new Field('start', new Uint64(), true), new Field('end', new Uint64(), true)]),
+        true,
+      ),
+    );
+    const schema = new Schema([new Field('v', new Int32(), true), new Field('r', rangesType, true)]);
+    const empty = new Table(schema);
+    expect(empty.numRows).toBe(0);
+    expect(empty.batches.length).toBe(0);
+
+    const snapshot = snapshotPage(empty, 0, SORT_ORDINAL_COLUMN);
+
+    expect(snapshot.numRows).toBe(0);
+    expect(snapshot.schema.fields.map((field) => field.name)).toEqual(['c0', 'c1', SORT_ORDINAL_COLUMN]);
+    expect(snapshot.getChild('c1')!.type.toString()).toBe(rangesType.toString());
+    expect(() => tableToIPC(snapshot, 'stream')).not.toThrow();
   });
 
   it.each([

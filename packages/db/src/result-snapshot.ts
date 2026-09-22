@@ -33,7 +33,14 @@ export function snapshotPage(table: Table, startRow: number, ordinalName: string
   const columns: Record<string, Vector> = {};
   const fields: Field[] = [];
   table.schema.fields.forEach((_field, index) => {
-    const child = table.getChildAt(index)!;
+    let child = table.getChildAt(index)!;
+    // A zero-BATCH table (e.g. `new Table(schema)`, as the Parquet writer's empty-result branch
+    // builds) hands back a List vector whose buffers apache-arrow's own assembler cannot later
+    // serialize once it passes through the Record<string, Vector> constructor below — a rebuilt,
+    // genuinely empty vector carries proper offsets/children instead.
+    if (table.numRows === 0 && DataType.isList(child.type)) {
+      child = vectorFromArray([], child.type);
+    }
     columns[`c${index}`] = child;
     // Types come from the CHILD VECTOR, never from the page's declared field. Arrow matches
     // schema fields by name whenever a RecordBatch is built, so a result with duplicate column
