@@ -80,6 +80,7 @@ describe('pcapFormatPack', () => {
       'status',
       '_src_start',
       '_src_end',
+      '_src_ranges',
     ]);
     expect(byName.get('stream_segments')!.columns.map((c) => c.name)).toEqual([
       'segment_id',

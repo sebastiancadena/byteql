@@ -78,6 +78,7 @@ const PCAP_TABLE_SCHEMAS: readonly TableSchema[] = [
     ['an_count', 'uint16'],
     ['_src_start', 'uint64'],
     ['_src_end', 'uint64'],
+    ['_src_ranges', 'src_ranges'],
   ]),
   columns('icmp', [
     ['icmp_id', 'int64'],
@@ -106,6 +107,7 @@ const PCAP_TABLE_SCHEMAS: readonly TableSchema[] = [
     ['sni', 'utf8'],
     ['_src_start', 'uint64'],
     ['_src_end', 'uint64'],
+    ['_src_ranges', 'src_ranges'],
   ]),
   columns('streams', [
     ['stream_id', 'int64'],
@@ -120,6 +122,7 @@ const PCAP_TABLE_SCHEMAS: readonly TableSchema[] = [
     ['status', 'utf8'],
     ['_src_start', 'uint64'],
     ['_src_end', 'uint64'],
+    ['_src_ranges', 'src_ranges'],
   ]),
   columns('stream_segments', [
     ['segment_id', 'int64'],

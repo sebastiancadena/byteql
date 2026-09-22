@@ -1,5 +1,5 @@
 import { ipcToTable, memoryByteSource, type BatchTransfer, type ParseProgress } from '@byteql/core';
-import { Table } from 'apache-arrow';
+import { Table, Vector } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
 import { pcapFormatPack } from '../src/pack.js';
@@ -324,9 +324,18 @@ describe('tcp stream reassembly', () => {
 // openPcapSource: pull-driven incremental projection
 // ---------------------------------------------------------------------------
 
+// A `_src_ranges` cell is a `List<Struct<start, end>>`, so `getChild(...).get(index)` returns an
+// Arrow `Vector` compared by structure/identity in `toEqual`, not by value. Normalize it to plain
+// `[start, end]` bigint pairs (the same shape `rangesOf` below produces) so logically equal
+// ranges compare equal; every other column already yields a plain, comparable JS value.
+const normalizeCell = (value: unknown): unknown =>
+  value instanceof Vector
+    ? Array.from(value as Iterable<{ start: bigint; end: bigint }>, (piece) => [piece.start, piece.end])
+    : value;
+
 const rowObject = (table: Table, index: number): Record<string, unknown> =>
   Object.fromEntries(
-    table.schema.fields.map((field) => [field.name, table.getChild(field.name)!.get(index)]),
+    table.schema.fields.map((field) => [field.name, normalizeCell(table.getChild(field.name)!.get(index))]),
   );
 
 const mergeIpc = (parts: readonly BatchTransfer[]): Table =>
@@ -553,7 +562,7 @@ const udpDnsPacket = (name: string) =>
   });
 
 describe('exact provenance for reassembled messages', () => {
-  it.fails('an interleaved TLS ClientHello covers only its own payload bytes', async () => {
+  it('an interleaved TLS ClientHello covers only its own payload bytes', async () => {
     const record = tlsClientHello({ sni: 'interleaved.example' });
     const third = Math.ceil(record.length / 3);
     const parts = [record.subarray(0, third), record.subarray(third, 2 * third), record.subarray(2 * third)];
@@ -577,7 +586,7 @@ describe('exact provenance for reassembled messages', () => {
     expect(row._src_end).toBe(BigInt(expected[2]![1]!));
   });
 
-  it.fails('an out-of-order interleaved ClientHello keeps file-ordered exact pieces', async () => {
+  it('an out-of-order interleaved ClientHello keeps file-ordered exact pieces', async () => {
     const record = tlsClientHello({ sni: 'shuffled.example' });
     const third = Math.ceil(record.length / 3);
     const parts = [record.subarray(0, third), record.subarray(third, 2 * third), record.subarray(2 * third)];
@@ -601,7 +610,7 @@ describe('exact provenance for reassembled messages', () => {
     expect(row._src_end).toBe(BigInt(expected[2]![1]!));
   });
 
-  it.fails('back-to-back DNS-over-TCP segments exclude the second packet headers', async () => {
+  it('back-to-back DNS-over-TCP segments exclude the second packet headers', async () => {
     const payload = dnsOverTcp({ txId: 0xbeef, name: 'stream.example', type: 1 });
     const frames = [tcpPacket(0, payload.subarray(0, 10)), tcpPacket(10, payload.subarray(10))];
     const result = await parseAndProjectPcap(capture(frames), new AbortController().signal);
@@ -614,5 +623,46 @@ describe('exact provenance for reassembled messages', () => {
       [first[0], first[1]],
       [second[0], second[1]],
     ]);
+  });
+
+  it('keeps UDP DNS rows exact (null) beside a reassembled TCP DNS row', async () => {
+    const payload = dnsOverTcp({ txId: 1, name: 'tcp.example', type: 1 });
+    const frames = [
+      udpDnsPacket('udp.example'),
+      tcpPacket(0, payload.subarray(0, 9)),
+      tcpPacket(9, payload.subarray(9)),
+    ];
+    const result = await parseAndProjectPcap(capture(frames), new AbortController().signal);
+    const dnsT = findTable(result, 'dns');
+    const byName = new Map(
+      Array.from({ length: dnsT.numRows }, (_, i) => [dnsT.get(i)!.query_name, dnsT.get(i)!]),
+    );
+    expect(byName.get('udp.example')!._src_ranges).toBeNull();
+    expect(rangesOf(byName.get('tcp.example')!._src_ranges)).toHaveLength(2);
+  });
+
+  it('gives a flow row its accepted segment payloads', async () => {
+    const payload = dnsOverTcp({ txId: 2, name: 'flow.example', type: 1 });
+    const frames = [
+      tcpPacket(0, payload.subarray(0, 9)),
+      udpDnsPacket('x.example'),
+      tcpPacket(9, payload.subarray(9)),
+    ];
+    const result = await parseAndProjectPcap(capture(frames), new AbortController().signal);
+    const flow = findTable(result, 'streams').get(0)!;
+    expect(rangesOf(flow._src_ranges)).toEqual([
+      [...payloadRange(frames, 0, 9)],
+      [...payloadRange(frames, 2, payload.length - 9)],
+    ]);
+  });
+
+  it('leaves the single-segment path exact and unchanged', async () => {
+    const payload = dnsOverTcp({ txId: 3, name: 'one.example', type: 1 });
+    const frames = [tcpPacket(0, payload)];
+    const result = await parseAndProjectPcap(capture(frames), new AbortController().signal);
+    const row = findTable(result, 'dns').get(0)!;
+    expect(row._src_ranges).toBeNull();
+    const [start, end] = payloadRange(frames, 0, payload.length);
+    expect([row._src_start, row._src_end]).toEqual([BigInt(start), BigInt(end)]);
   });
 });
