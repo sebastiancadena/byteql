@@ -56,7 +56,7 @@ Our wedge: **provenance + SQL + zero-install**, and a dissector registry that no
 
 1. Open local files of arbitrary size via File System Access API; never transmit bytes.
 2. Auto-detect format (plugin `probe`), with manual override.
-3. Produce one or more relational tables per file per its format pack; hidden `_src_start`/`_src_end` provenance columns on every row.
+3. Produce one or more relational tables per file per its format pack; hidden `_src_start`/`_src_end` provenance columns on every row, plus an engine-injected `_src_ranges` (exact byte pieces, non-null only when the span is bounding) on reassembled-message tables.
 4. Full DuckDB SQL over all tables, including cross-table joins via synthetic keys.
 5. Bidirectional hex↔grid linking.
 6. Export any result set as Parquet/CSV.
@@ -249,7 +249,7 @@ Semantics: depth-first, document-order walk of the Kaitai object graph. Nested `
 
 **Stateful accumulators** — what makes MIDI (and surprisingly many formats) possible. Each register declares `scope` (an ancestor prefix of the rows path; when it advances, reset to `init`), `init`, and `update` (evaluated once per anchor **before** columns read it — so `tick` includes the current event's delta; document this ordering explicitly or it becomes a silent off-by-one). Sequence numbers, cumulative offsets, running checksums, previous-record timestamps all fall out of this one mechanism. Updates are pure expressions over (old state, current node); determinism follows from traversal order.
 
-**Keys and provenance.** Every table gets a synthetic monotonic int64 key in traversal order. Child tables from dissector chaining declare `parent_key`, filled with the parent anchor's id — the `dns.packet_id → packets.packet_id` join for free. Every row automatically carries `_src_start`/`_src_end` (hidden in the grid, always queryable) from the anchor's Kaitai debug offsets. Row-level provenance suffices for the hex link; column-level can come later.
+**Keys and provenance.** Every table gets a synthetic monotonic int64 key in traversal order. Child tables from dissector chaining declare `parent_key`, filled with the parent anchor's id — the `dns.packet_id → packets.packet_id` join for free. Every row automatically carries `_src_start`/`_src_end` (hidden in the grid, always queryable) from the anchor's Kaitai debug offsets. Row-level provenance suffices for the hex link; column-level can come later. A reassembled-message table (from stream reassembly) also carries an engine-injected, reserved `_src_ranges` column: null when `_src_start`/`_src_end` is exact, or the list of exact contributing byte pieces when it is only a bounding span. `_src_start`, `_src_end`, and `_src_ranges` are reserved column/key names — a spec that declares one fails to compile.
 
 ### pcap worked example — DSL meets dissector registry
 
