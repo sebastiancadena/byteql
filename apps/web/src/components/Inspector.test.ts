@@ -140,4 +140,28 @@ describe('Inspector result columns', () => {
     expect(within(provenance).getAllByRole('listitem')).toHaveLength(51);
     expect(within(provenance).getByText('… +5 more')).toBeTruthy();
   });
+
+  it('hides exact pieces when the file is not among known sources', () => {
+    render(Inspector, {
+      table: reassembledRangesTable(),
+      selectedRow: 0,
+      sourceFiles: [{ name: 'other.pcap', size: 1000 }],
+    });
+
+    const provenance = screen.getByRole('heading', { name: 'Provenance' }).parentElement!;
+    expect(within(provenance).getByText('Source bytes are unavailable for this row.')).toBeTruthy();
+    expect(within(provenance).queryByText('10-20')).toBeNull();
+  });
+
+  it('hides exact pieces when the bounding span exceeds the known file size', () => {
+    render(Inspector, {
+      table: reassembledRangesTable(),
+      selectedRow: 0,
+      sourceFiles: [{ name: 'capture.pcap', size: 30 }],
+    });
+
+    const provenance = screen.getByRole('heading', { name: 'Provenance' }).parentElement!;
+    expect(within(provenance).getByText('Source bytes are unavailable for this row.')).toBeTruthy();
+    expect(within(provenance).queryByText('10-20')).toBeNull();
+  });
 });

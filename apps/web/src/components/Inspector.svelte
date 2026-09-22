@@ -61,9 +61,10 @@
   );
 
   /**
-   * The same validation the trace strip applies: a range is only shown as a reveal action when a
-   * known source file actually contains it. An unusable range gets the plain unavailable message
-   * rather than a clickable link to bytes that are not there.
+   * The same validation the trace strip (`ui/trace.ts`) applies: a range is only presented — as
+   * a reveal link, or as its exact pieces — when a known source file actually contains it. An
+   * unusable range gets the plain unavailable message rather than a clickable link or a piece
+   * list for bytes that are not there.
    */
   const provenanceLabel = $derived.by(() => {
     if (!provenanceRange) return null;
@@ -134,7 +135,7 @@
 
     <section class="inspector-section provenance" aria-labelledby="provenance-heading">
       <h3 id="provenance-heading">Provenance</h3>
-      {#if provenanceRange && provenanceRange.ranges.length > 1}
+      {#if provenanceRange && provenanceRange.ranges.length > 1 && provenanceLabel}
         <dl>
           <div>
             <dt>Source range</dt>
