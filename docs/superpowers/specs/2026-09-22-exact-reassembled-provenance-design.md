@@ -316,3 +316,52 @@ is therefore `..., _src_start, _src_end, _src_ranges, _src_file`.
   span as exact — the UI has no way to know a dropped column existed. TCP connection identity
   limits (no FIN/RST teardown, no sequence-number wraparound, no partial-overlap reconciliation)
   are unchanged and remain `ROADMAP.md` priority 5.
+
+**2026-09-22 — Final whole-branch review fixes: SHIPPED.**
+
+- **Shading ordinal regression.** `coverage.ts` assigned each row's shading ordinal during the
+  initial (result-order) scan, then reused it after sorting intervals by start; a column sort or
+  `ORDER BY` that reorders rows broke file-order alternation. Fixed by assigning ordinals from
+  each row's rank of first appearance in the start-sorted walk, so shading always alternates by
+  file order regardless of result order. Regression test:
+  `apps/web/src/lib/hex/coverage.test.ts` — "alternates shading by file order even when rows
+  arrive in a different result order".
+- **Piece-count-proportional UI work.** A hostile reassembled capture can carry roughly a million
+  exact pieces on one row; three UI paths were doing work proportional to that count on every
+  render or format call instead of a bounded prefix: `sourceRangesSummary`
+  (`lib/format/source-ranges.ts`) now formats only the first `maxPieces` and takes the total from
+  the vector's own `.length` when available, instead of stringifying the whole list before
+  truncating the text; the Inspector's per-piece `<li>` list (`Inspector.svelte`) is capped at 50
+  pieces with a trailing "… +N more" item; `HexPane`'s `data-hex-highlight-ranges` test-hook
+  attribute serializes at most the first 64 pieces (`MAX_HIGHLIGHT_RANGE_ATTR_PIECES`) — e2e only
+  ever reads the first couple. The hex toolbar's content-byte sum (`contentBytes`) and the
+  highlight-equality check were already `$derived`/effect-scoped (recomputed once per highlight
+  change, not per render), so no change was needed there.
+- **Gap-fill contrast.** `--color-hex-gap` (`#e4e1da` light / `#2f2c28` dark) was visually
+  indistinguishable from the hex background (`--color-surface-inset`) and both shade tokens —
+  ratios of roughly 1.0–1.3:1, well under the ≥1.5:1 distinctness target. Computed with the
+  standard WCAG relative-luminance formula (script: node, sRGB channel linearization then
+  `0.2126R + 0.7152G + 0.0722B`, ratio `(L1+0.05)/(L2+0.05)`):
+
+  | pair                              | before | after (light `#b9bab0`) | after (dark `#4b5149`) |
+  |------------------------------------|--------|--------------------------|--------------------------|
+  | gap vs. `--color-surface-inset`    | light 1.112 / dark 1.279 | 1.669 | 2.177 |
+  | gap vs. `--color-shade-a`          | light 1.062 / dark 1.015 | 1.595 | 1.728 |
+  | gap vs. `--color-shade-b`          | light 1.015 / dark 1.127 | 1.523 | 1.509 |
+  | `--color-text` on gap (byte glyphs)| light 11.549 / dark 11.897 | 7.694 | 6.992 |
+
+  New values are `#b9bab0` (light) / `#4b5149` (dark) — both clear ≥1.5:1 against the background
+  and both shade tones, and byte text painted over the gap fill stays well above the 4.5:1 text
+  minimum. Regression test: `apps/web/src/components/SqlEditor.theme.test.ts` — "makes the hex
+  gap fill visually distinct from the hex background and both shade tones" (part of the existing
+  `describe.each(appearances)` contrast contract, so both themes are checked).
+- **Inspector multi-piece guard.** The multi-piece provenance branch presented exact pieces
+  without the missing-file / `end > file.size` check the single-range branch already applies
+  (`provenanceLabel`, mirroring `lib/ui/trace.ts`'s `buildTraceSummary`). Fixed by gating the
+  multi-piece branch on the same `provenanceLabel` validity instead of duplicating the check.
+- **e2e gap-byte click.** `hex-provenance.spec.ts`'s reassembled-DNS case now also clicks a
+  verified gap byte and asserts the DNS row is absent from the revealed rows, then clicks a piece
+  byte and asserts it is present — covering the negative case the spec's "full truthful loop"
+  requires alongside the existing positive one.
+- `PRD.md` now lists `_src_ranges` alongside `_src_start`/`_src_end` as engine-reserved hidden
+  provenance columns (§9 and Appendix A).

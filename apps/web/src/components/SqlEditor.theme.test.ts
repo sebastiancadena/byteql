@@ -185,6 +185,13 @@ describe.each(appearances)('%s appearance contrast', (appearance, palette) => {
       expect(ratio('--color-border-strong', surface), `border on ${surface}`).toBeGreaterThanOrEqual(3);
     }
   });
+
+  it('makes the hex gap fill visually distinct from the hex background and both shade tones', () => {
+    for (const surface of ['--color-surface-inset', '--color-shade-a', '--color-shade-b'] as const) {
+      expect(ratio('--color-hex-gap', surface), `hex-gap on ${surface}`).toBeGreaterThanOrEqual(1.5);
+    }
+    expect(ratio('--color-text', '--color-hex-gap')).toBeGreaterThanOrEqual(4.5);
+  });
 });
 
 describe('hex canvas fallbacks', () => {
