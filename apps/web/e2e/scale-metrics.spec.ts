@@ -52,15 +52,16 @@ test('scaled capture meets proportional throughput and pushdown read-fraction', 
   const target = Number(process.env.BYTEQL_SCALE_BYTES ?? DEFAULT_TARGET_BYTES);
   const assertParseTarget = target <= PARSE_TARGET_SCALE_CEILING_BYTES;
   const assertReadTarget = assertParseTarget || process.env.BYTEQL_SCALE_ASSERT_READ === '1';
+  const container = process.env.BYTEQL_SCALE_CONTAINER === 'pcapng' ? 'pcapng' : 'pcap';
 
-  const { bytes, packetCount, seed } = generateCapture(target, CAPTURE_SEED);
+  const { bytes, packetCount, seed } = generateCapture(target, CAPTURE_SEED, container);
 
   // `setInputFiles`'s in-memory buffer form caps out at 50 MB ("Cannot set buffer larger than
   // 50Mb"); the 96 MiB default (and every --gb 1/4 manual run) exceeds that, so every scale
   // beyond spill-ingest.spec.ts's much smaller fixtures must go through a real file on disk.
   const captureDir = await mkdtemp(join(tmpdir(), 'byteql-scale-'));
   try {
-    const capturePath = join(captureDir, 'scale.pcap');
+    const capturePath = join(captureDir, `scale.${container}`);
     await writeFile(capturePath, bytes);
 
     await setSessionOverrides(page, SCALE_OVERRIDES);
