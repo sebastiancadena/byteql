@@ -94,8 +94,8 @@ export function installParseWorker(
 
   const runParse = async (taskId: number, name: string, blob: Blob, formatId?: string): Promise<void> => {
     const head = new Uint8Array(await blob.slice(0, PROBE_HEAD_BYTES).arrayBuffer());
-    const pack = selectPack(packs, head, formatId);
-    if (!pack) {
+    const selected = selectPack(packs, head, formatId);
+    if (!selected) {
       scope.postMessage({
         type: 'error',
         taskId,
@@ -105,6 +105,7 @@ export function installParseWorker(
       });
       return;
     }
+    const pack = selected.pack;
 
     const controller = new AbortController();
     active.set(taskId, controller);
@@ -117,6 +118,7 @@ export function installParseWorker(
       const source = pack.open(blobByteSource(blob), {
         signal: controller.signal,
         onProgress: (progress) => scope.postMessage({ type: 'progress', taskId, ...progress }),
+        ...(selected.container !== undefined ? { container: selected.container } : {}),
       });
 
       const overview: TableOverview[] = [];
