@@ -24,7 +24,7 @@ const SMALL_CAPTURE_BYTES = 64 * 1024;
 // parquet chunks. Two facts pin this value, both found empirically against the real pipeline in a
 // real browser (see the Task 11 report):
 //  1. The pcap projection pipeline only emits a SECOND 'packets' batch once the pending row count
-//     across ALL tables crosses the fixed 65_536-row flush threshold (project-pcap.ts) — below
+//     across ALL tables crosses the fixed 65_536-row flush threshold (the pack driver's default) — below
 //     that, the whole capture arrives as one appendBatch call, and one call can only ever produce
 //     ONE rotated (or residual) chunk. That threshold is first crossed, for this packet mix,
 //     between 6.5 and 7 MiB of raw capture.

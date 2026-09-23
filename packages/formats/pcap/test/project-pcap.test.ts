@@ -2,8 +2,8 @@ import { ipcToTable, memoryByteSource, type BatchTransfer, type ParseProgress } 
 import { Table, Vector } from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
-import { pcapFormatPack } from '../src/pack.js';
-import { openPcapSource, parseAndProjectPcap } from '../src/project-pcap.js';
+import { pcapFormatPack } from '../src/index.js';
+import { openPcapSource, parseAndProjectPcap } from './parse-and-project.js';
 import {
   buildPcap,
   dnsOverTcp,

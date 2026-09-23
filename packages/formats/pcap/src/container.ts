@@ -20,7 +20,7 @@
  * callers that don't need incremental framing use it unchanged.
  */
 
-import { memoryByteSource, type ByteSource } from '@byteql/core';
+import { memoryByteSource, PackFatalError, type ByteSource } from '@byteql/core';
 
 export type PcapByteOrder = 'be' | 'le';
 export type PcapTimeUnit = 'us' | 'ns';
@@ -47,16 +47,16 @@ export interface PcapPacketBody {
 export interface PcapPacket {
   /** 0-based index of this record within the capture. */
   index: number;
-  tsSec: number;
+  ts_sec: number;
   /** Fractional timestamp, always normalized to microseconds. */
-  tsFracUs: number;
-  inclLen: number;
-  origLen: number;
+  ts_frac_us: number;
+  incl_len: number;
+  orig_len: number;
   /** `linktype` from the global header, normalized for raw-IP (101 → 228/229). */
   linktype: number;
   /** Absolute offset of this record's 16-byte header. */
   recordStart: number;
-  /** Absolute offset one past this record's body (i.e. `body.start + inclLen`). */
+  /** Absolute offset one past this record's body (i.e. `body.start + incl_len`). */
   bodyEnd: number;
   body: PcapPacketBody;
 }
@@ -103,7 +103,8 @@ function detectMagic(view: DataView): { byteOrder: PcapByteOrder; timeUnit: Pcap
     case MAGIC_LE_NS:
       return { byteOrder: 'le', timeUnit: 'ns' };
     default:
-      throw new Error(
+      throw new PackFatalError(
+        'UNRECOGNIZED_PCAP_MAGIC',
         `UNRECOGNIZED_PCAP_MAGIC: expected one of the classic-pcap magic numbers, got 0x${magicBe.toString(16).padStart(8, '0')}`,
       );
   }
@@ -138,7 +139,8 @@ export async function createPcapFramer(
 ): Promise<PcapFramer> {
   const headBytes = await source.read(0, GLOBAL_HEADER_SIZE);
   if (headBytes.length < GLOBAL_HEADER_SIZE) {
-    throw new Error(
+    throw new PackFatalError(
+      'UNRECOGNIZED_PCAP_MAGIC',
       `UNRECOGNIZED_PCAP_MAGIC: expected at least ${GLOBAL_HEADER_SIZE} global-header bytes, got ${headBytes.length}`,
     );
   }
@@ -241,10 +243,10 @@ export async function createPcapFramer(
 
     const packet: PcapPacket = {
       index,
-      tsSec,
-      tsFracUs: timeUnit === 'ns' ? Math.floor(tsUsecOrNsec / 1000) : tsUsecOrNsec,
-      inclLen,
-      origLen,
+      ts_sec: tsSec,
+      ts_frac_us: timeUnit === 'ns' ? Math.floor(tsUsecOrNsec / 1000) : tsUsecOrNsec,
+      incl_len: inclLen,
+      orig_len: origLen,
       linktype: packetLinktype,
       recordStart,
       bodyEnd,

@@ -11,7 +11,7 @@ import { buildPcap, dnsOverTcp, dnsQuery, ethFrame, ipv4, tcp, udp } from './bui
 // own `&& vitest` tail, so vitest sees a literal `--` as its first arg and the filter never
 // scopes — the whole suite runs. `exec vitest run <file>` invokes vitest directly, so the file
 // argument reaches vitest's own filter unmangled. build-pcap.ts has no imports of its own (pure
-// DataView writers), so this file needs no prior `compile:ksy`/`generate:pack` step.)
+// DataView writers), so this file needs no prior `byteql-pack build` step.)
 it.runIf(process.env.GENERATE_E2E_FIXTURES === '1')('writes the dns-stream e2e fixture', () => {
   const payload = dnsOverTcp({ txId: 0xbeef, name: 'stream.example', type: 1 });
   const packet = (seq: number, data: Uint8Array) =>

@@ -173,13 +173,10 @@ importers:
       kaitai-struct:
         specifier: ^0.11.0
         version: 0.11.0
-      yaml:
-        specifier: ^2.9.0
-        version: 2.9.0
     devDependencies:
-      kaitai-struct-compiler:
-        specifier: ^0.11.0
-        version: 0.11.0
+      '@byteql/pack-tools':
+        specifier: workspace:*
+        version: link:../../pack-tools
 
   packages/formats/zip:
     dependencies:

@@ -94,7 +94,7 @@ export const openFramedSource = (
   // `force` bypasses the dedup guard: the tail flush (finishTail) must always emit one final
   // byte-progress event once the framer has reported any consumption, even when that count is
   // unchanged since the last yield-cadence flush (e.g. the record count lands exactly on a
-  // yieldInterval boundary) — matching openPcapSource, which always reports progress at EOF.
+  // yieldInterval boundary) — matching the pre-kit pcap driver, which always reported progress at EOF.
   const flushBytes = (force = false): void => {
     if (consumed === null) return;
     if (!force && consumed === reportedConsumed) return;

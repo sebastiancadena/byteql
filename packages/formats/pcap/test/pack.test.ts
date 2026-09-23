@@ -1,10 +1,15 @@
 import { memoryByteSource } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
-import { pcapFormatPack } from '../src/pack.js';
+import { pcapFormatPack } from '../src/index.js';
 import { buildPcap } from './build-pcap.js';
 
 describe('pcapFormatPack', () => {
+  it('identifies itself as the pcap pack', () => {
+    expect(pcapFormatPack.id).toBe('pcap');
+    expect(pcapFormatPack.title).toBe('Packet capture');
+  });
+
   it('probes pcap magic in both byte orders', () => {
     expect(pcapFormatPack.probe(new Uint8Array([0xa1, 0xb2, 0xc3, 0xd4]))).toBe(1); // be_us
     expect(pcapFormatPack.probe(new Uint8Array([0xa1, 0xb2, 0x3c, 0x4d]))).toBe(1); // be_ns
