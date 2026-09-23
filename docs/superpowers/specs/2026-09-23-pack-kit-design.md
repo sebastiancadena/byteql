@@ -2,7 +2,7 @@
 
 Date: 2026-09-23
 
-Status: Approved design; implementation plan pending.
+Status: Implemented.
 
 ## Purpose and accepted behavior
 
@@ -407,3 +407,118 @@ Each step is its own commit (or small commit series) with `pnpm -r check`, unit 
   record the result; a regression beyond 10 % blocks the pcap step until addressed.
 - **Strict mode surfacing latent wrapper gaps.** Expected and desired; fixes are part of each
   migration step and must not change goldens (present-null and missing both project NULL).
+
+## Implementation notes (recorded post-execution)
+
+Recorded 2026-09-23 after all 14 implementation tasks landed on `feature/pack-kit`. The Task 1
+base commit (pre-refactor goldens captured, migration not yet started) is `ba9f4f0`; the
+pre-kit `main` commit this branch forked from is `0b8d52f`.
+
+### Progress reporting
+
+`ctx.progress` (a framer-owned progress phase, e.g. MIDI's `normalizing`/`parsing`/`projecting`
+stage labels) is forwarded to the app immediately — it is never coalesced. Only `ctx.bytes`
+(the generic "x of y MB" byte-progress readout) is coalesced to the driver's yield cadence
+(every `yieldInterval` records, default 256); a tail byte-progress event always fires once more
+at EOF regardless of the cadence, so the last number a framer reports is always accurate even
+when the record count lands exactly on a yield boundary. Framers call `ctx.bytes` before each
+point where the driver may yield, so the coalesced event reflects the record just produced.
+
+The unclamped-yield helper (`scheduler.yield()`, falling back to a `MessageChannel` round trip)
+is created once per `openFramedSource` call, not as a module-level singleton — the
+`MessageChannel` fallback has a single pending-resolver slot that is only safe under one
+strictly sequential pump loop, and two `openFramedSource` calls pumping concurrently in the
+same worker must not share one yield instance.
+
+### Conformance kit behavior
+
+The shared conformance suite (`describePackConformance`) compares column names, order, and
+Arrow types against `pack.schemas()` on every emitted Arrow batch, not just the merged result,
+and again on every table in the merged output. Every run — including the abort test — uses
+`strictFields: true`. Every fuzz mutant that completes (rather than throwing the classified
+`PackFatalError`) is re-checked against the schema/nullability/provenance-bounds invariants, not
+just left to complete silently. Determinism and chunk/drain-invariance runs compare tables,
+issues, *and* capabilities, not tables alone.
+
+Fuzzing and the `chunkBytes` 1/7 invariance runs apply only to fixtures at or under
+`fuzz.maxBytes` (default 64 KiB); larger fixtures — pcap's `SkypeIRC.cap` is 411 KiB — use a
+single `chunkBytes` 4093 invariance run instead and skip fuzzing entirely, since seeded
+truncate/flip fuzzing scales with fixture size and a multi-hundred-KB capture would make the
+suite too slow to run on every change.
+
+Two limits are accepted, not fixed: a framer that spins synchronously between yields cannot be
+interrupted mid-record by the abort check (the abort check runs between driver pump iterations,
+not inside a synchronous framer loop), and vitest's timeout is per test, not per fuzz mutant, so
+a hang inside one mutant only surfaces as the whole `it` timing out. Separately, the abort
+conformance test itself fails loudly — never falsely passes — on a fixture small enough that its
+whole parse completes in a single batch before the second `nextBatch()` call can observe the
+abort; every fixture used in this migration is large enough that this does not trigger.
+
+Goldens regenerate with `vitest -u` (or `pnpm --filter <pkg> test -- -u`), reviewed like any
+other file diff.
+
+### Fuzz findings
+
+Seeded truncation/flip fuzzing found one real gap, in ZIP: a declared record length pointing
+past the available bytes previously parsed past the end of the buffer instead of failing
+loudly. Fixed by clamping and reporting: an over-length record now produces a `RECORD_TRUNCATED`
+issue with provenance clamped to the available bytes, and a truncated or inconsistent central
+directory produces `CENTRAL_DIRECTORY_TRUNCATED` (entries clamp to the central-directory region)
+or `CENTRAL_DIRECTORY_ENTRY_COUNT_MISMATCH` (the loop exits early because it ran out of bytes
+before reading the declared entry count). MIDI and pcap's fuzz runs found no findings requiring
+a code fix.
+
+### MIDI behavior deltas
+
+MIDI's abort cadence is coarser than pcap's or ZIP's: normalization and Kaitai parsing for every
+track run synchronously before the first record is yielded, and the driver only yields (and
+therefore only checks abort) every 256 *records* thereafter — a MIDI file with fewer than 256
+tracks can complete its whole normalize/parse pass before an abort has any chance to land. The
+Type 2 fatal keeps its pre-kit user-visible message wording verbatim
+(`UNSUPPORTED_MIDI_TYPE at offset 8: Type 2 files contain independent sequences and are not
+supported in Phase 0`), built via the same `MidiParseError` formatting the pre-kit driver used,
+not a plain string, so the "CODE at offset N: message" shape is unchanged for anything that
+matches on it. The header record's projection failure is now a recoverable `errors` row
+(via the framer's per-record `onError`) instead of failing the whole session — a strict
+improvement, not a behavior the migration needed to preserve.
+
+### `_src_start`/`_src_end` nullability delta
+
+As already documented under "Derived schemas and field safety" above: pcap's and ZIP's
+non-`errors` tables change from nullable to non-null for `_src_start`/`_src_end`, following the
+engine rule (every emitted row resolves a range) rather than the pre-kit hand-written
+nullability maps, which disagreed with MIDI's (already non-null) on this point. The conformance
+suite's nullability check (zero nulls in a column not declared nullable) proves the new flags
+true against real output, not just against the schema declaration.
+
+### Benchmark
+
+Re-run of the 1 GB scale benchmark (`apps/web/bench/run-scale-bench.mjs`) after the pcap
+migration, same machine and session as the rest of this work (arm64, 20 logical cores, Chromium
+149): pre-migration **56.71 s / 56.28 s**, post-migration **56.20 s / 56.54 s** — no regression.
+Read fraction on the 3-column query stayed **1.72 %**. The drift from the July 2026-07-19
+baseline (44.25 s) predates this branch and is unexplained by anything in this migration; it
+leaves roughly 6 % headroom to the 60 s Phase-1 target, worth flagging for follow-up but not a
+pack-kit regression.
+
+### Line count
+
+Non-generated, non-test line count of `packages/formats/*/src/*.ts` (generated files, `*.test.ts`,
+and `*.d.ts` excluded):
+
+```bash
+BASE=ba9f4f0
+count() {
+  git ls-tree -r --name-only "$1" packages/formats \
+    | grep -E '^packages/formats/[^/]+/src/[^/]+\.ts$' \
+    | grep -v -e generated -e '\.test\.ts$' -e '\.d\.ts$' \
+    | while read -r f; do git show "$1:$f"; done | wc -l
+}
+echo "before: $(count "$BASE")  after: $(count HEAD)"
+# before: 2675  after: 1753
+```
+
+The kit cuts hand-written pack code by roughly a third (2675 → 1753 lines) across MIDI, ZIP, and
+pcap combined, by deleting the hand-written table schemas, nullability maps, three
+reimplementations of the `RecordSource` state machine, and the per-pack Kaitai parse/offset
+glue that this design's "Current evidence" section identified as duplicated.
