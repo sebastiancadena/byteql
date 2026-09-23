@@ -62,6 +62,14 @@ queries:
   await assert.rejects(buildPack(dir), /queries\.yaml: queries\.1: unknown table "nope"/u);
 });
 
+test('a stale top-level "format" key in queries.yaml fails the build', async (t) => {
+  const dir = await copyFixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const queries = await readFile(join(dir, 'queries.yaml'), 'utf8');
+  await writeFile(join(dir, 'queries.yaml'), `format: demo\n${queries}`);
+  await assert.rejects(buildPack(dir), /queries\.yaml: unexpected key "format"/u);
+});
+
 test('playback queries require the audio capability', async (t) => {
   const dir = await copyFixture();
   t.after(() => rm(dir, { recursive: true, force: true }));

@@ -1,19 +1,25 @@
 // A table reference is `from`/`join` followed by an (optionally quoted) identifier that is NOT
 // immediately followed by `(` — the negative lookahead excludes table functions such as
 // `from unnest(...)` or `from range(...)`, which this lint does not attempt to validate.
-const TABLE_REF = /\b(?:from|join)\s+("?)([A-Za-z_][A-Za-z0-9_]*)\1(?!\s*\()/giu;
+const TABLE_REF = /\b(?:from|join)\s+("?)([A-Za-z_][A-Za-z0-9_]*)\1(?![A-Za-z0-9_])(?!\s*\()/giu;
 const CTE_NAME = /(?:\bwith\s+(?:recursive\s+)?|,\s*)([A-Za-z_][A-Za-z0-9_]*)\s+as\s*\(/giu;
 const ENGINE_TABLES = ['errors', '_files'];
 
 /**
- * Validates a parsed `queries.yaml` (`{ version, queries }`, `format` tolerated and ignored)
- * against the pack's own spec tables plus the engine/app tables every pack may reference.
+ * Validates a parsed `queries.yaml` (`{ version, queries }`, no other top-level key — `format`
+ * is stale from before the pack manifest carried the id and is rejected like any other unknown
+ * key) against the pack's own spec tables plus the engine/app tables every pack may reference.
  * Returns the query list on success; throws `Error` with a `file: queries.N: message` prefix
  * on the first problem found.
  */
+const TOP_LEVEL_KEYS = new Set(['version', 'queries']);
+
 export const lintQueries = (queryPack, { tables, capabilities, file }) => {
   if (!queryPack || queryPack.version !== '0.1' || !Array.isArray(queryPack.queries)) {
     throw new Error(`${file}: must declare version '0.1' and a queries list`);
+  }
+  for (const key of Object.keys(queryPack)) {
+    if (!TOP_LEVEL_KEYS.has(key)) throw new Error(`${file}: unexpected key "${key}"`);
   }
   const ids = new Set();
   queryPack.queries.forEach((query, index) => {
