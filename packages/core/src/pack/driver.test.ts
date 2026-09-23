@@ -21,6 +21,24 @@ tables:
       v: { expr: _.v, type: uint32 }
 `),
 );
+// Two root tables fed from the same anchor, for the `tables` option restriction test.
+const compiledTwoTables = compileProjection(
+  parseProjectionSpec(`
+version: '0.4'
+format: f
+tables:
+  - name: rec
+    rows: $
+    key: rec_id
+    columns:
+      v: { expr: _.v, type: uint32 }
+  - name: other
+    rows: $
+    key: other_id
+    columns:
+      w: { expr: _.v, type: uint32 }
+`),
+);
 const source = memoryByteSource(new Uint8Array(100));
 const opts = () => ({ signal: new AbortController().signal });
 const drain = async (rs: RecordSource) => {
@@ -129,7 +147,117 @@ describe('openFramedSource', () => {
     expect(seen).toEqual([4, 8, 10]);
   });
 
+  it('always emits the tail byte-progress event, even when it repeats the last cadence value', async () => {
+    const seen: number[] = [];
+    // 8 records at yieldInterval 4: the interior cadence flush already reports 8 (after the
+    // 8th record), so the tail flush at EOF would previously be swallowed by the dedup guard.
+    const rs = openFramedSource(
+      compiled,
+      records(8),
+      source,
+      { signal: new AbortController().signal, onProgress: (p) => seen.push(p.completed) },
+      { ordinalColumn: 'record', yieldInterval: 4 },
+    );
+    await drain(rs);
+    expect(seen).toEqual([4, 8, 8]);
+  });
+
+  it('uses onError to map a projection throw into a custom issue, carrying its code/stage/ordinal', async () => {
+    const framer: Framer = async function* () {
+      yield {
+        root: { v: 1 },
+        provenance: () => {
+          throw new Error('resolver exploded');
+        },
+        onError: () => ({
+          stage: 'custom',
+          code: 'CUSTOM_CODE',
+          message: 'mapped',
+          ordinal: 42,
+          sourceStart: 5,
+          sourceEnd: 9,
+        }),
+      };
+    };
+    const rs = openFramedSource(compiled, framer, source, opts(), { ordinalColumn: 'record' });
+    await drain(rs);
+    const issues = rs.finish().issues;
+    expect(issues).toEqual([
+      {
+        stage: 'custom',
+        track: 42,
+        code: 'CUSTOM_CODE',
+        message: 'mapped',
+        recoverable: true,
+        sourceStart: 5,
+        sourceEnd: 9,
+      },
+    ]);
+  });
+
+  it('the tables option restricts which root tables a record feeds', async () => {
+    const framer: Framer = async function* () {
+      yield { root: { v: 1 }, provenance: { start: 0, end: 1 } }; // feeds both rec and other
+      yield { root: { v: 2 }, provenance: { start: 1, end: 2 }, tables: ['rec'] }; // rec only
+    };
+    const rs = openFramedSource(compiledTwoTables, framer, source, opts(), { ordinalColumn: 'record' });
+    const batches = await drain(rs);
+    const rowsOf = (table: string) =>
+      batches.filter((b) => b.table === table).reduce((sum, b) => sum + b.rows, 0);
+    expect(rowsOf('rec')).toBe(2);
+    expect(rowsOf('other')).toBe(1);
+  });
+
+  it('forwards ctx.progress immediately, not coalesced to the yield cadence', async () => {
+    const progressStages: string[] = [];
+    const framer: Framer = async function* (_s, ctx) {
+      yield { root: { v: 1 }, provenance: { start: 0, end: 1 } };
+      ctx.progress({ stage: 'probing', completed: 1, total: 10, label: 'probe' });
+      yield { root: { v: 2 }, provenance: { start: 1, end: 2 } };
+    };
+    const rs = openFramedSource(
+      compiled,
+      framer,
+      source,
+      { signal: new AbortController().signal, onProgress: (p) => progressStages.push(p.stage) },
+      { ordinalColumn: 'record', yieldInterval: 1_000_000 }, // never reached via byte cadence
+    );
+    await drain(rs);
+    expect(progressStages).toEqual(['probing']);
+  });
+
+  it('the default PROJECTION_FAILED issue carries the static provenance range as sourceStart/sourceEnd', async () => {
+    // A root whose property reads throw synchronously, forcing session.project() to throw for
+    // reasons unrelated to provenance resolution, while provenance itself stays a static range.
+    const explodingRoot: object = new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error('root exploded');
+        },
+      },
+    );
+    const framer: Framer = async function* () {
+      yield { root: explodingRoot, provenance: { start: 3, end: 9 } };
+    };
+    const rs = openFramedSource(compiled, framer, source, opts(), { ordinalColumn: 'record' });
+    await drain(rs);
+    const issues = rs.finish().issues;
+    expect(issues).toEqual([
+      {
+        stage: 'projecting',
+        track: null,
+        code: 'PROJECTION_FAILED',
+        message: expect.stringContaining('root exploded'),
+        recoverable: true,
+        sourceStart: 3,
+        sourceEnd: 9,
+      },
+    ]);
+  });
+
   it('a framer throw fails the source with that error', async () => {
+    // eslint-disable-next-line require-yield -- a fatal framer throws before its first record
     const framer: Framer = async function* () {
       throw new Error('UNRECOGNIZED: nope');
     };

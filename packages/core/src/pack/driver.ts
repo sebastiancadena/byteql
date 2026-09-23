@@ -19,7 +19,6 @@ import { createYield } from './yield.js';
 
 const DEFAULT_FLUSH_ROWS = 65_536;
 const DEFAULT_YIELD_INTERVAL = 256;
-const yieldToWorker = createYield();
 
 const mb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(2);
 
@@ -79,6 +78,10 @@ export const openFramedSource = (
 ): RecordSource => {
   const threshold = options.flushRowThreshold ?? DEFAULT_FLUSH_ROWS;
   const yieldInterval = options.yieldInterval ?? DEFAULT_YIELD_INTERVAL;
+  // Per-call, not module-level: the MessageChannel fallback's single pending-resolver slot
+  // (see yield.ts) is only safe under one strictly sequential pump loop. Two openFramedSource
+  // calls pumping concurrently in the same worker must not share one yield instance.
+  const yieldToWorker = createYield();
   const framerIssues = new IssueCollector({ ordinalColumn: options.ordinalColumn });
   const engineIssues = new IssueCollector({ ordinalColumn: options.ordinalColumn });
   const session = createProjectionSession(compiled, {
@@ -88,8 +91,13 @@ export const openFramedSource = (
   });
   let consumed: number | null = null;
   let reportedConsumed: number | null = null;
-  const flushBytes = (): void => {
-    if (consumed === null || consumed === reportedConsumed) return;
+  // `force` bypasses the dedup guard: the tail flush (finishTail) must always emit one final
+  // byte-progress event once the framer has reported any consumption, even when that count is
+  // unchanged since the last yield-cadence flush (e.g. the record count lands exactly on a
+  // yieldInterval boundary) — matching openPcapSource, which always reports progress at EOF.
+  const flushBytes = (force = false): void => {
+    if (consumed === null) return;
+    if (!force && consumed === reportedConsumed) return;
     reportedConsumed = consumed;
     opts.onProgress?.({
       stage: 'projecting',
@@ -130,7 +138,7 @@ export const openFramedSource = (
       ...toBatches([{ name: errors.name, arrow: projectedTableToArrow(errors), rowCount: errors.rowCount }]),
     ];
     tailEmitted = true;
-    flushBytes();
+    flushBytes(true);
   };
 
   const pump = async (): Promise<void> => {
@@ -175,7 +183,9 @@ export const openFramedSource = (
         while (pending.length === 0 && !tailEmitted) await pump();
       } catch (error) {
         failure = { error };
-        void records.return(undefined);
+        // A framer's `finally` block can itself reject on return(); swallow it here so it
+        // never surfaces as an unhandled rejection — the original `error` is what we throw.
+        void records.return(undefined).catch(() => {});
         throw error;
       }
       const next = pending.shift();
