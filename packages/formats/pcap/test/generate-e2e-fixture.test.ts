@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { it } from 'vitest';
 
 import { buildPcap, dnsOverTcp, dnsQuery, ethFrame, ipv4, tcp, udp } from './build-pcap.js';
+import { pcapngFromPackets } from './build-pcapng.js';
 
 // Regenerates apps/web/e2e/fixtures/dns-stream.pcap. Skipped unless explicitly requested:
 //   GENERATE_E2E_FIXTURES=1 pnpm --filter @byteql/pcap exec vitest run test/generate-e2e-fixture.test.ts
@@ -86,4 +87,28 @@ it.runIf(process.env.GENERATE_E2E_FIXTURES === '1')('writes the interleaved-stre
   );
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, pcap);
+});
+
+// Regenerates apps/web/e2e/fixtures/sample.pcapng: the same single eth -> ipv4 -> udp -> dns
+// packet as sample.pcap (query "a.ru"), written as a one-interface little-endian pcapng.
+it.runIf(process.env.GENERATE_E2E_FIXTURES === '1')('writes the sample.pcapng e2e fixture', () => {
+  const data = ethFrame({
+    etherType: 0x0800,
+    payload: ipv4({
+      protocol: 17,
+      src: '1.1.1.1',
+      dst: '8.8.8.8',
+      payload: udp({
+        srcPort: 5000,
+        dstPort: 53,
+        payload: dnsQuery({ txId: 0x1234, name: 'a.ru', type: 1 }),
+      }),
+    }),
+  });
+  const bytes = pcapngFromPackets({ endian: 'le', linktype: 1, packets: [{ tsSec: 1, tsFrac: 0, data }] });
+  const target = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../apps/web/e2e/fixtures/sample.pcapng',
+  );
+  writeFileSync(target, bytes);
 });

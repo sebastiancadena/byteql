@@ -7,9 +7,14 @@ describe('sample registry', () => {
     expect(SAMPLES.map((sample) => sample.id)).toEqual(['pcap', 'midi']);
   });
 
-  it('maps the pcap sample to the two Wireshark captures plus the DNS-over-TCP fixture', () => {
+  it('maps the pcap sample to the two Wireshark captures, the DNS-over-TCP fixture, and the pcapng capture', () => {
     const pcap = SAMPLES.find((sample) => sample.id === 'pcap');
-    expect(pcap?.files.map((file) => file.name)).toEqual(['SkypeIRC.cap', 'v6.pcap', 'dns-stream.pcap']);
+    expect(pcap?.files.map((file) => file.name)).toEqual([
+      'SkypeIRC.cap',
+      'v6.pcap',
+      'dns-stream.pcap',
+      'http2-16-ssl.pcapng',
+    ]);
   });
 
   it('maps the midi sample to the single Für Elise file', () => {
