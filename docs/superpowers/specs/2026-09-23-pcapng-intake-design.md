@@ -236,9 +236,10 @@ results stay identical. Both numbers go in this spec's implementation notes.
   reviewed as a diff. The only acceptable changes are additive: the synthetic `interfaces` row,
   the `interface_id`/`comment`/`ts_ns` columns, and nullable `ts`. Any other change is a
   regression.
-- **Web e2e:** `pcapng.spec.ts` loads the demo sample and asserts `tls` has SNI rows and
-  `interfaces` is populated, then loads a mixed `.pcap` + `.pcapng` session and runs the
-  "Packets by interface" join. `hex-provenance.spec.ts` gains a pcapng case, keeping the
+- **Web e2e:** the pcapng cases live in `apps/web/e2e/pcap.spec.ts` (no separate
+  `pcapng.spec.ts`): the bundled-sample test asserts the pcapng's `tls` SNI row and its
+  `interfaces` row, and a mixed `.pcap` + `.pcapng` session test runs the packets-to-interfaces
+  join per `_src_file`. `hex-provenance.spec.ts` gains a pcapng case, keeping the
   "hex↔grid round-trip works on every gallery format" criterion.
 
 ## Demo sample
