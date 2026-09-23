@@ -186,8 +186,9 @@ Classic pcap computes `ts_ns = ts_sec · 10⁹ + fraction`, where the fraction i
 Same contract as today: recoverable problems become `errors` rows, and only unreadable input is
 fatal.
 
-- **Fatal (`PackFatalError`):** the first block is not a Section Header Block, its byte-order
-  magic is invalid, or its major version is not 1 — no packets could be read at all.
+- **Fatal (`PackFatalError`):** the first block is not a Section Header Block (`NOT_PCAPNG`),
+  the file ends inside that block's first 16 bytes (`TRUNCATED_BLOCK`), its byte-order magic is
+  invalid, or its major version is not 1 — no packets could be read at all.
 - **Stop, keeping earlier rows:** length below 12, not a multiple of 4, or trailer mismatch
   (`BLOCK_LENGTH_MISMATCH`); block extends past end of file (`TRUNCATED_BLOCK`); a later SHB
   with an invalid byte-order magic (`BAD_BYTE_ORDER_MAGIC`) or a major version other than 1

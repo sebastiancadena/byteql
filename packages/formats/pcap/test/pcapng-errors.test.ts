@@ -1,4 +1,4 @@
-import { memoryByteSource } from '@byteql/core';
+import { memoryByteSource, PackFatalError } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -44,9 +44,20 @@ describe('pcapng fatal first block', () => {
     });
   });
 
-  it('a head shorter than 16 bytes is NOT_PCAPNG', async () => {
+  it('a head too short to hold the SHB block type is NOT_PCAPNG', async () => {
     await expect(createPcapngReader(memoryByteSource(Uint8Array.of(0x0a, 0x0d)))).rejects.toMatchObject({
       code: 'NOT_PCAPNG',
+    });
+  });
+
+  it('an SHB block type cut off before 16 bytes is a fatal TRUNCATED_BLOCK, not NOT_PCAPNG', async () => {
+    // SHB type, total length 28, little-endian byte-order magic: enough for the probe (12 bytes),
+    // but the file ends before the version fields, so the first section is unreadable.
+    const bytes = buildPcapngWithOffsets([{ type: 'shb', endian: 'le' }]).bytes.subarray(0, 12);
+    await expect(createPcapngReader(memoryByteSource(bytes))).rejects.toBeInstanceOf(PackFatalError);
+    await expect(createPcapngReader(memoryByteSource(bytes))).rejects.toMatchObject({
+      code: 'TRUNCATED_BLOCK',
+      message: expect.stringContaining('ends after 12 of the first Section Header Block'),
     });
   });
 

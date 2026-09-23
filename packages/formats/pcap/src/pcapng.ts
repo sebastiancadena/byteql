@@ -126,10 +126,18 @@ export async function createPcapngReader(
   // The first Section Header Block decides whether this is pcapng at all: fatal paths only here.
   const head = await source.read(0, 16);
   const headView = dataView(head);
-  if (head.length < 16 || headView.getUint32(0, false) !== BLOCK_SHB) {
+  // Short-circuit order matters: fewer than 4 bytes cannot even hold a block type.
+  if (head.length < 4 || headView.getUint32(0, false) !== BLOCK_SHB) {
     throw new PackFatalError(
       'NOT_PCAPNG',
       'NOT_PCAPNG: the file does not start with a pcapng Section Header Block',
+    );
+  }
+  if (head.length < 16) {
+    throw new PackFatalError(
+      'TRUNCATED_BLOCK',
+      `TRUNCATED_BLOCK: the file ends after ${head.length} of the first Section Header Block's ` +
+        'first 16 bytes (block type, length, byte-order magic, version)',
     );
   }
   const firstOrder = byteOrderAt(headView, 8);
