@@ -7,7 +7,7 @@
     "byteql-pack": "./bin/byteql-pack.mjs"
   },
   "scripts": {
-    "check": "node --check bin/byteql-pack.mjs && node --check src/build.mjs",
+    "check": "node --check bin/byteql-pack.mjs && node --check src/build.mjs && node --check src/new.mjs",
     "test": "pnpm --filter @byteql/core build && node --test test/*.test.mjs"
   },
   "dependencies": {

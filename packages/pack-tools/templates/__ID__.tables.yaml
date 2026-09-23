@@ -1,0 +1,8 @@
+version: '0.4'
+format: __ID__
+tables:
+  - name: records
+    rows: $
+    key: record_id
+    columns:
+      length: { expr: _.length, type: uint32 }

@@ -1,0 +1,8 @@
+version: '0.1'
+queries:
+  - id: overview
+    title: Table overview
+    kind: grid
+    sql: |
+      select 'records' as table_name, count(*) as row_count from records
+      union all select 'errors', count(*) from errors;
