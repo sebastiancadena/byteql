@@ -2,7 +2,7 @@
 
 Date: 2026-09-23
 
-Status: Approved design, not yet implemented.
+Status: Implemented.
 
 ## Purpose and accepted behavior
 
@@ -257,3 +257,50 @@ samples. It is vendored under `apps/web/src/assets/` with the same attribution a
 - `AGENTS.md` status, the `README.md` format list and pcap package row, and `ROADMAP.md`
   priority 3 marked done.
 - Implementation notes appended to this spec: benchmark numbers and engineering discoveries.
+
+## Implementation notes
+
+**1 GB benchmark, 2026-09-23, Linux arm64, 20 logical processors, Chromium 149.0.7827.0, single
+sample each:**
+
+- `BYTEQL_SCALE_BENCH_SUMMARY gb=1 container=pcap bytes=1000000148 parseElapsedMs=58515.7
+  msPerGb=58515.7 parseTargetMet=true bytesReadFraction=0.017088509470900598
+  readTargetMet=true`
+- `BYTEQL_SCALE_BENCH_SUMMARY gb=1 container=pcapng bytes=1000000484 parseElapsedMs=56487.5
+  msPerGb=56487.4 parseTargetMet=true bytesReadFraction=0.01638399207014784
+  readTargetMet=true`
+
+The `toNs` fast path this design allowed for was not needed: bigint `ts_ns` arithmetic did not
+threaten the target for either container. Classic pcap is now at 58.5 s/GB, about 2.5% under the
+60 s target — it measured ~56 s/GB before this branch and 44 s/GB in July, so headroom is nearly
+gone. This is a single-sample measurement, not a trend, but worth tracking before the next change
+that touches the hot parse path.
+
+**Engineering discoveries made during Tasks 1–8:**
+
+- The shared chunk window's first (priming) load does not bump `generation`; only reloads do.
+  The plan's original snippet bumped `generation` on the first load too, which contradicted its
+  own test. Classic-pcap output is unaffected.
+- `interfaces.interface_id` is an engine-assigned key (`int64`/JS `bigint`), while
+  `packets.interface_id` is a declared `uint32` column. DuckDB joins across the two widths
+  correctly, but JS-side comparisons (tests, key-alignment checks) must normalize before
+  comparing.
+- Regenerating `test/schemas.snapshot.json` also normalized stale `_src_start`/`_src_end`
+  nullability on untouched tables; this was already inert, since the conformance test's
+  `relax()` forced that nullability regardless of the snapshot's literal value.
+- The options-area pad computation uses non-bitwise arithmetic so a hostile `inclLen` near 2^31
+  cannot go negative.
+- pcapng framing issues carry no record ordinal (`errors.record` is null), matching classic
+  framing issues.
+- Parsed blocks are read whole with no size cap, the same as classic pcap's `incl_len` handling
+  — a hostile giant block forces one large allocation. This is a hardening candidate, not fixed
+  here.
+- `packages/formats/pcap/dist` must be rebuilt (`pnpm --filter @byteql/pcap build`) before web
+  e2e sees pack changes.
+- `scripts/run-scale-bench.mjs` spawns `playwright` without a shell and needs
+  `apps/web/node_modules/.bin` on `PATH`.
+
+**Documented limitations (unchanged from the design's scope decisions):** no compressed captures
+(`.pcapng.gz`/`.pcapng.zst`); Decryption Secrets Blocks and Name Resolution Blocks are skipped,
+not used; only `opt_comment` is decoded from packet options; no resync after broken block-length
+framing.

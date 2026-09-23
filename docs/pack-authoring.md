@@ -308,18 +308,25 @@ that are the same shape for every pack.
 
 ## Adding a container to an existing pack
 
-One pack can have more than one container — pcapng, when it ships, becomes a second container of
-the existing `pcap` pack rather than a new pack, sharing one spec, dissect graph, streams, and
-queries so a multi-file session can mix `.pcap` and `.pcapng`. The recipe for adding a container
-to an existing pack:
+One pack can have more than one container — pcapng is the worked example: it shipped as a second
+container of the existing `pcap` pack rather than a new pack, sharing one spec, dissect graph,
+streams, and queries so a multi-file session can mix `.pcap` and `.pcapng`. The recipe for adding
+a container to an existing pack:
 
 1. Add a `containers` entry to `pack.yaml`, with its own `id`, `probe` (its own magic bytes or a
-   probe hook), and `framer` (a new hook name).
+   probe hook), and `framer` (a new hook name). pcapng's entry uses a probe hook
+   (`src/probe.ts`) rather than a bare magic-bytes match: its block type alone (the four bytes
+   `0A 0D 0D 0A`) is weak evidence, so the hook also checks the byte-order magic at offset 8
+   before returning confidence.
 2. Write the new framer, following the same contract as every other framer in this guide. It can
    yield records with `tables` restricted to the record kinds only this container produces
    (pcapng's `interface` records, say) — the classic-pcap framer simply never yields those
    records, so its `interfaces` table (if the spec adds one) comes back empty for pcap files, no
-   `if (container === 'pcapng')` branching required anywhere else.
+   `if (container === 'pcapng')` branching required anywhere else. pcapng's `src/framer.ts`
+   exports `pcapngFramer`, which yields `interfaces` records ahead of the `packets` records that
+   reference them; the classic framer keeps its `interfaces` table populated too by yielding one
+   synthetic interface record built from its own header, so every downstream query that joins
+   `packets` to `interfaces` works the same for both containers.
 3. If the new container introduces new record kinds the shared spec needs to read, add tables
    (or extend existing tables) whose `rows:` anchor at `$.<kind>` on the new framer's root shape
    — the same anchor-path convention every existing table already uses (`$.hdr`,
