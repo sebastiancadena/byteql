@@ -405,7 +405,7 @@ export async function createPcapngReader(
           );
           tsNs = null;
         }
-        const optionsStart = dataStart + ((inclLen + 3) & ~3);
+        const optionsStart = dataStart + (inclLen + ((4 - (inclLen % 4)) % 4));
         const walk = walkOptions(view, optionsStart, length - 4, le, (code, start, size) => {
           if (code === OPT_COMMENT) comment ??= optionText(bytes, start, size);
         });
