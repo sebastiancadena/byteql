@@ -116,9 +116,15 @@ export const smfFramer: Framer = async function* (source, ctx) {
     throw error;
   }
   if (container.header.format === 2) {
+    // Built via MidiParseError so the fatal's user-visible message keeps the "CODE at offset N:"
+    // wording the worker surfaces verbatim — not just the bare sentence.
     throw new PackFatalError(
       'UNSUPPORTED_MIDI_TYPE',
-      'Type 2 files contain independent sequences and are not supported in Phase 0',
+      new MidiParseError(
+        'UNSUPPORTED_MIDI_TYPE',
+        8,
+        'Type 2 files contain independent sequences and are not supported in Phase 0',
+      ).message,
     );
   }
   const total = container.tracks.length;

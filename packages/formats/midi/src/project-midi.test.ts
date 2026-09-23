@@ -753,11 +753,13 @@ describe('parseAndProjectMidi', () => {
 
     // The framer now reports this as a fatal, unreadable-container error (PackFatalError), not a
     // MidiParseError: it isn't derived from the container's own offset-tagged parse failure, so
-    // there is no `offset` field any more — the message text itself is unchanged.
+    // there is no `offset` field any more — but the worker shows `error.message` to users, so the
+    // message text itself keeps the old "CODE at offset N:" wording verbatim.
     await expect(parseAndProjectMidi(bytes, new AbortController().signal)).rejects.toMatchObject({
       name: 'PackFatalError',
       code: 'UNSUPPORTED_MIDI_TYPE',
-      message: 'Type 2 files contain independent sequences and are not supported in Phase 0',
+      message:
+        'UNSUPPORTED_MIDI_TYPE at offset 8: Type 2 files contain independent sequences and are not supported in Phase 0',
     });
   });
 
