@@ -319,14 +319,12 @@ a container to an existing pack:
    `0A 0D 0D 0A`) is weak evidence, so the hook also checks the byte-order magic at offset 8
    before returning confidence.
 2. Write the new framer, following the same contract as every other framer in this guide. It can
-   yield records with `tables` restricted to the record kinds only this container produces
-   (pcapng's `interface` records, say) — the classic-pcap framer simply never yields those
-   records, so its `interfaces` table (if the spec adds one) comes back empty for pcap files, no
-   `if (container === 'pcapng')` branching required anywhere else. pcapng's `src/framer.ts`
-   exports `pcapngFramer`, which yields `interfaces` records ahead of the `packets` records that
-   reference them; the classic framer keeps its `interfaces` table populated too by yielding one
-   synthetic interface record built from its own header, so every downstream query that joins
-   `packets` to `interfaces` works the same for both containers.
+   yield records with `tables` restricted to the record kinds it produces (pcapng's `interface`
+   records, say), with no `if (container === 'pcapng')` branching required anywhere else.
+   pcapng's `src/framer.ts` exports `pcapngFramer`, which yields `interfaces` records ahead of
+   the `packets` records that reference them; the classic framer keeps its `interfaces` table
+   populated too by yielding one synthetic interface record built from its own header, so every
+   downstream query that joins `packets` to `interfaces` works the same for both containers.
 3. If the new container introduces new record kinds the shared spec needs to read, add tables
    (or extend existing tables) whose `rows:` anchor at `$.<kind>` on the new framer's root shape
    — the same anchor-path convention every existing table already uses (`$.hdr`,
