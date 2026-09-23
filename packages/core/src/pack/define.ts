@@ -39,7 +39,9 @@ export interface DefinedPack extends FormatPack {
   openWith(source: ByteSource, opts: OpenOptions, options?: OpenWithOptions): RecordSource;
 }
 
-/** Bytes a declarative probe may inspect; matches the app's PROBE_HEAD_BYTES. */
+/** Bytes a container probe (declarative or hook) may inspect, from the start of the file. */
+export const PROBE_HEAD_BYTES = 4096;
+
 const hexBytes = (hex: string): Uint8Array =>
   Uint8Array.from(hex.match(/../gu)!, (pair) => Number.parseInt(pair, 16));
 
@@ -64,7 +66,13 @@ export const definePack = <Hooks extends PackHooks<string, string, string, strin
     if ('hook' in container.probe) {
       const hook = (hooks.probes as Record<string, (head: Uint8Array) => number | null>)[
         container.probe.hook
-      ]!;
+      ];
+      if (!hook) {
+        throw new Error(
+          `PACK_PROBE_HOOK_MISSING: container ${JSON.stringify(container.id)} names probe hook ` +
+            `${JSON.stringify(container.probe.hook)}, which is not in hooks.probes`,
+        );
+      }
       return { id: container.id, probe: hook };
     }
     const magics = container.probe.magic.map((m) => ({ ...m, bytes: hexBytes(m.hex) }));
@@ -106,7 +114,7 @@ export const definePack = <Hooks extends PackHooks<string, string, string, strin
       if (inner) return inner;
       let id = options.container ?? opts.container;
       if (id === undefined) {
-        const head = await source.read(0, Math.min(source.size, 4096));
+        const head = await source.read(0, Math.min(source.size, PROBE_HEAD_BYTES));
         id = probeContainer(head)?.container ?? manifest.containers[0]!.id;
       }
       const framer = framerFor(id);

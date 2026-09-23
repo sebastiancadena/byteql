@@ -1,6 +1,14 @@
 import { z } from 'zod';
 
 const identifier = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u, 'must be an identifier');
+// `spec`, `queries`, and `ksy.dir` are file paths the build/runtime join onto the pack's own
+// directory; none of them may escape it, whether by being absolute or by walking up with `..`.
+const isContainedPath = (value: string): boolean =>
+  !value.startsWith('/') && !/^[A-Za-z]:[\\/]/u.test(value) && !value.split(/[\\/]/u).includes('..');
+const containedPath = z
+  .string()
+  .min(1)
+  .refine(isContainedPath, 'must be a relative path with no ".." segment and not absolute');
 const magic = z.strictObject({
   at: z.number().int().nonnegative(),
   hex: z.string().regex(/^(?:[0-9a-fA-F]{2})+$/u, 'must be an even-length hex string'),
@@ -17,11 +25,11 @@ export const packManifestSchema = z
     version: z.literal('0.1'),
     id: identifier,
     title: z.string().min(1),
-    spec: z.string().min(1),
-    queries: z.string().min(1),
+    spec: containedPath,
+    queries: containedPath,
     capabilities: z.array(identifier).default([]),
     errors: z.strictObject({ ordinal: identifier }).default({ ordinal: 'record' }),
-    ksy: z.strictObject({ dir: z.string().min(1), roots: z.array(identifier).min(1).optional() }).optional(),
+    ksy: z.strictObject({ dir: containedPath, roots: z.array(identifier).min(1).optional() }).optional(),
     containers: z.array(container).min(1),
   })
   .superRefine((manifest, context) => {

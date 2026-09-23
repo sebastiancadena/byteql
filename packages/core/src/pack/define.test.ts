@@ -92,4 +92,39 @@ describe('definePack', () => {
     );
     await expect(rs.nextBatch()).rejects.toThrow(/PACK_CONTAINER_UNKNOWN/u);
   });
+
+  describe('hook probes', () => {
+    const hookManifest = parsePackManifest({
+      version: '0.1',
+      id: 'demo',
+      title: 'Demo',
+      spec: 'demo.tables.yaml',
+      queries: 'queries.yaml',
+      containers: [{ id: 'c', framer: 'fc', probe: { hook: 'sniff' } }],
+    });
+
+    it('a working hook probe selects its container', () => {
+      const hookPack = definePack(
+        { manifest: hookManifest, specYaml, queries: [] },
+        {
+          framers: { fc: framer('c') },
+          parsers: {},
+          keyExtractors: {},
+          streamFramers: {},
+          probes: { sniff: (head) => (head[0] === 0x42 ? 0.7 : null) },
+        },
+      );
+      expect(hookPack.probeContainer(new Uint8Array([0x42]))).toEqual({ container: 'c', confidence: 0.7 });
+      expect(hookPack.probeContainer(new Uint8Array([0x00]))).toBeNull();
+    });
+
+    it('a probe hook named in the manifest but missing from hooks.probes throws at definition time', () => {
+      expect(() =>
+        definePack(
+          { manifest: hookManifest, specYaml, queries: [] },
+          { framers: { fc: framer('c') }, parsers: {}, keyExtractors: {}, streamFramers: {}, probes: {} },
+        ),
+      ).toThrow(/PACK_PROBE_HOOK_MISSING/u);
+    });
+  });
 });

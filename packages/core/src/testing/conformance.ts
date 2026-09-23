@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ipcToTable } from '../arrow/build.js';
 import { memoryByteSource } from '../byte-source.js';
-import type { DefinedPack, OpenWithOptions } from '../pack/define.js';
+import { PROBE_HEAD_BYTES, type DefinedPack, type OpenWithOptions } from '../pack/define.js';
 import { PackFatalError } from '../pack/framer.js';
 import type { ArrowTypeName } from '../projection/spec.js';
 import type { ParseResult, RecordSource, TableSchema } from '../protocol.js';
@@ -190,7 +190,7 @@ export const describePackConformance = (pack: DefinedPack, options: ConformanceO
       describe(fixture.name, () => {
         it('probes to this pack and container', async () => {
           const bytes = await fixture.load();
-          expect(pack.probeContainer(bytes.subarray(0, 4096))?.container).toBe(fixture.container);
+          expect(pack.probeContainer(bytes.subarray(0, PROBE_HEAD_BYTES))?.container).toBe(fixture.container);
         });
 
         it('matches its golden, schemas, strict fields, and provenance bounds', { timeout }, async () => {

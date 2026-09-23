@@ -112,6 +112,45 @@ describe('parsePackManifest', () => {
     expect((error as PackManifestError).path).toBe('containers.1.id');
   });
 
+  describe('path containment', () => {
+    it('rejects a spec path that walks up with ".."', () => {
+      let error: unknown;
+      try {
+        parsePackManifest({ ...validPcapLike, spec: '../../etc/passwd' });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(PackManifestError);
+      expect((error as PackManifestError).path).toBe('spec');
+    });
+
+    it('rejects an absolute queries path', () => {
+      let error: unknown;
+      try {
+        parsePackManifest({ ...validPcapLike, queries: '/etc/passwd' });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(PackManifestError);
+      expect((error as PackManifestError).path).toBe('queries');
+    });
+
+    it('rejects a ksy.dir that walks up with ".."', () => {
+      let error: unknown;
+      try {
+        parsePackManifest({ ...validPcapLike, ksy: { dir: '../outside' } });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(PackManifestError);
+      expect((error as PackManifestError).path).toBe('ksy.dir');
+    });
+
+    it('accepts an ordinary relative spec path', () => {
+      expect(() => parsePackManifest({ ...validPcapLike, spec: 'nested/pcap.tables.yaml' })).not.toThrow();
+    });
+  });
+
   it('includes the file name in the error message', () => {
     let error: unknown;
     try {
