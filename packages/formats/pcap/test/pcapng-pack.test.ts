@@ -9,6 +9,7 @@ import {
   dnsOverTcp,
   dnsQuery,
   ethFrame,
+  icmpEcho,
   icmpv6Echo,
   ipv4,
   ipv6,
@@ -82,6 +83,7 @@ describe('pcapng parity with classic pcap', () => {
       tsFrac: 5,
       data: eth4(6, tcp({ srcPort: 40002, dstPort: 53, flags: 0x18, seq: 5, payload: dnsTcp.subarray(5) })),
     },
+    { tsSec: 1, tsFrac: 6, data: eth4(1, icmpEcho({ id: 7, seq: 8 })) },
     {
       tsSec: 2,
       tsFrac: 0,
@@ -116,6 +118,7 @@ describe('pcapng parity with classic pcap', () => {
       expect(rows(ng, name).map(strip), name).toEqual(rows(classic, name).map(strip));
     }
     expect(rows(ng, 'tls').map((r) => r.sni)).toEqual(['parity.example']);
+    expect(rows(ng, 'icmp').map((r) => [r.type, r.echo_id, r.echo_seq])).toEqual([[8, 7, 8]]);
     expect(
       rows(ng, 'dns')
         .map((r) => r.query_name)
