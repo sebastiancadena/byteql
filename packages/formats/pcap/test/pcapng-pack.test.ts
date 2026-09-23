@@ -18,7 +18,7 @@ import {
   udp,
   type PcapPacket,
 } from './build-pcap.js';
-import { pcapngFromPackets } from './build-pcapng.js';
+import { buildPcapng, IF_TSOFFSET, IF_TSRESOL, optI64, optU8, pcapngFromPackets } from './build-pcapng.js';
 import { multiSectionPcapng } from './pcapng-fixtures.js';
 import { parseAndProjectPcap } from './parse-and-project.js';
 
@@ -159,6 +159,23 @@ describe('pcapng projection', () => {
     expect(packets[3]!.ts).toBeNull();
     expect(rows(result, 'dns').map((r) => r.query_name)).toEqual(['one.example', 'two.example']);
     expect(rows(result, 'errors').map((r) => r.code)).toEqual(['UNSUPPORTED_BLOCK_TYPE']);
+  });
+
+  it('floors a negative if_tsoffset timestamp to the microsecond and keeps ts_ns exact', async () => {
+    // 1.500000001 s at ns resolution, shifted by -2 s: -0.499999999 s, before the epoch and not a
+    // whole microsecond. Flooring gives -500000 µs; truncating toward zero would give -499999 µs.
+    const bytes = buildPcapng([
+      { type: 'shb', endian: 'le' },
+      { type: 'idb', linktype: 1, options: [optU8(IF_TSRESOL, 9), optI64(IF_TSOFFSET, -2n)] },
+      { type: 'epb', interfaceId: 0, ts: 1_500_000_001n, data: new Uint8Array(14) },
+    ]);
+    const result = await parse(bytes);
+    expect(rows(result, 'interfaces').map((r) => r.ts_offset_s)).toEqual([-2n]);
+    const [packet] = rows(result, 'packets');
+    expect(packet!.ts_ns).toBe(-499_999_999n);
+    // Arrow surfaces timestamp_us as epoch milliseconds: -500000 µs is exactly -500 ms.
+    expect(packet!.ts).toBe(-500);
+    expect(rows(result, 'errors')).toEqual([]);
   });
 
   it('projects the real Wireshark sample with TLS SNI from reassembled TCP', async () => {
