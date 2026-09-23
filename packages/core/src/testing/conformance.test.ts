@@ -74,4 +74,8 @@ describe('runFuzzCase', () => {
       /unclassified/u,
     );
   });
+
+  it('resolves to null for a pack whose framer throws a classified PackFatalError', async () => {
+    await expect(runFuzzCase(toyPack, new Uint8Array([0]), 'a')).resolves.toBeNull();
+  });
 });
