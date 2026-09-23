@@ -7,6 +7,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./kaitai": {
+      "types": "./dist/kaitai/index.d.ts",
+      "default": "./dist/kaitai/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
     }
   },
   "scripts": {
@@ -17,6 +25,7 @@
   "dependencies": {
     "apache-arrow": "^21.1.0",
     "jsep": "^1.4.0",
+    "kaitai-struct": "^0.11.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   }

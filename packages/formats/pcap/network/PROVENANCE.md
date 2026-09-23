@@ -18,7 +18,7 @@ of this, mirroring how the MIDI pack "vendored, then patched" its `.ksy`.
 
 Files live under `network/` (not the pack root) so the upstream
 `imports: /network/<name>` paths resolve **without editing a single file** — the
-same within-package resolution the MIDI pack's `compile.mjs` uses for
+same within-package resolution `byteql-pack build` uses for the MIDI pack's
 `/common/vlq_base128_be`. The leading `/network/` maps to this directory.
 
 ## Files, licenses, and role

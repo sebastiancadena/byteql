@@ -1,0 +1,292 @@
+{
+  "tables": {
+    "errors": {
+      "fields": [
+        {
+          "name": "error_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stage",
+          "type": "Utf8"
+        },
+        {
+          "name": "track",
+          "type": "Int32"
+        },
+        {
+          "name": "code",
+          "type": "Utf8"
+        },
+        {
+          "name": "message",
+          "type": "Utf8"
+        },
+        {
+          "name": "recoverable",
+          "type": "Bool"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "events": {
+      "fields": [
+        {
+          "name": "event_id",
+          "type": "Int64"
+        },
+        {
+          "name": "track",
+          "type": "Int32"
+        },
+        {
+          "name": "event_index",
+          "type": "Int32"
+        },
+        {
+          "name": "delta_time",
+          "type": "Int64"
+        },
+        {
+          "name": "tick",
+          "type": "Int64"
+        },
+        {
+          "name": "kind",
+          "type": "Utf8"
+        },
+        {
+          "name": "channel",
+          "type": "Uint8"
+        },
+        {
+          "name": "note",
+          "type": "Uint8"
+        },
+        {
+          "name": "velocity",
+          "type": "Uint8"
+        },
+        {
+          "name": "controller",
+          "type": "Uint8"
+        },
+        {
+          "name": "value",
+          "type": "Uint8"
+        },
+        {
+          "name": "program",
+          "type": "Uint8"
+        },
+        {
+          "name": "pressure",
+          "type": "Uint8"
+        },
+        {
+          "name": "bend",
+          "type": "Int16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 5,
+      "sha256": "dd078f54fa559c3530ba88089c9dfe6eac868e46ce074cd5cd0a05704a7c30f0",
+      "head": [
+        [
+          "1n",
+          0,
+          0,
+          "0n",
+          "0n",
+          "meta",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "22n",
+          "29n"
+        ],
+        [
+          "2n",
+          0,
+          1,
+          "0n",
+          "0n",
+          "program_change",
+          0,
+          null,
+          null,
+          null,
+          null,
+          5,
+          null,
+          null,
+          "29n",
+          "32n"
+        ],
+        [
+          "3n",
+          0,
+          2,
+          "0n",
+          "0n",
+          "note_on",
+          0,
+          60,
+          100,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "32n",
+          "36n"
+        ],
+        [
+          "4n",
+          0,
+          3,
+          "480n",
+          "480n",
+          "note_off",
+          0,
+          60,
+          0,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "36n",
+          "40n"
+        ],
+        [
+          "5n",
+          0,
+          4,
+          "0n",
+          "480n",
+          "meta",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "40n",
+          "44n"
+        ]
+      ]
+    },
+    "header": {
+      "fields": [
+        {
+          "name": "header_id",
+          "type": "Int64"
+        },
+        {
+          "name": "format",
+          "type": "Uint16"
+        },
+        {
+          "name": "num_tracks",
+          "type": "Uint16"
+        },
+        {
+          "name": "division",
+          "type": "Int16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "d5886cf03604780a6e7b5b753d3c96b6d1567cb26826196cb541dce21bf98544",
+      "head": [
+        [
+          "1n",
+          0,
+          1,
+          -6360,
+          "0n",
+          "14n"
+        ]
+      ]
+    },
+    "tempo": {
+      "fields": [
+        {
+          "name": "tempo_id",
+          "type": "Int64"
+        },
+        {
+          "name": "track",
+          "type": "Int32"
+        },
+        {
+          "name": "tick",
+          "type": "Int64"
+        },
+        {
+          "name": "us_per_quarter",
+          "type": "Uint32"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "f2144877ba46dce46dfef471f6145e22161b3d0cfae7c4c0aee55330346808f7",
+      "head": [
+        [
+          "1n",
+          0,
+          "0n",
+          500000,
+          "22n",
+          "29n"
+        ]
+      ]
+    }
+  },
+  "issues": [],
+  "capabilities": {
+    "audio": {
+      "enabled": false,
+      "reason": "SMPTE time division is not supported by the Phase 0 player."
+    }
+  }
+}

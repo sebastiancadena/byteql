@@ -1,0 +1,257 @@
+[
+  {
+    "name": "central_dir_entries",
+    "columns": [
+      {
+        "name": "central_dir_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "version_made_by",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "version_needed",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "flags",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "compression_method",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "compression",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "crc32",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "compressed_size",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "uncompressed_size",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "mod_time",
+        "type": "timestamp_us",
+        "nullable": true
+      },
+      {
+        "name": "file_name",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "extra_len",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "disk_start",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "internal_attrs",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "external_attrs",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "ofs_local_header",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "comment",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "end_of_central_dir",
+    "columns": [
+      {
+        "name": "eocd_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "num_entries",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "central_dir_size",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "ofs_central_dir",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "comment",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "errors",
+    "columns": [
+      {
+        "name": "error_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "stage",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "record",
+        "type": "int32",
+        "nullable": true
+      },
+      {
+        "name": "code",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "message",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "recoverable",
+        "type": "bool",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "local_files",
+    "columns": [
+      {
+        "name": "local_file_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "version_needed",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "flags",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "compression_method",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "compression",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "crc32",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "compressed_size",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "uncompressed_size",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "mod_time",
+        "type": "timestamp_us",
+        "nullable": true
+      },
+      {
+        "name": "file_name",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "extra_len",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  }
+]

@@ -1,11 +1,11 @@
 /**
  * pcap stream hooks: the flow-key extractor and message framers the projection
- * YAML's `streams:` section references by id (see `parsers.ts` for the parser
- * registry counterpart). Pure functions over already-parsed wrapper roots
+ * YAML's `streams:` section references by id (wired as named hooks in
+ * `index.ts`, beside the dissect parsers). Pure functions over already-parsed wrapper roots
  * (`wrappers.ts`) and raw reassembled bytes.
  */
 
-import type { StreamFramer, StreamKeyExtractor, StreamRegistries } from '@byteql/core';
+import type { StreamFramer, StreamKeyExtractor } from '@byteql/core';
 import { formatIpv4, formatIpv6 } from '@byteql/core';
 
 /** Innermost dissect ancestor that looks like an ip wrapper root. */
@@ -65,12 +65,4 @@ export const dnsTcp: StreamFramer = (buffer) => {
   const length = (buffer[0]! << 8) | buffer[1]!;
   if (length === 0) throw new Error('zero-length DNS-over-TCP message');
   return 2 + length;
-};
-
-export const pcapStreamRegistries: StreamRegistries = {
-  keyExtractors: new Map([['tcp_flow_key', tcpFlowKey]]),
-  framers: new Map([
-    ['tls_record', tlsRecord],
-    ['dns_tcp', dnsTcp],
-  ]),
 };

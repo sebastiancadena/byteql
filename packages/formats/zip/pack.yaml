@@ -1,0 +1,14 @@
+version: '0.1'
+id: zip
+title: ZIP archive
+spec: zip.tables.yaml
+queries: queries.yaml
+errors: { ordinal: record }
+containers:
+  - id: zip
+    framer: zip
+    probe:
+      magic:
+        - { at: 0, hex: 504b0304, confidence: 0.9 }
+        - { at: 0, hex: 504b0506, confidence: 0.9 }
+        - { at: 0, hex: 504b0708, confidence: 0.5 }

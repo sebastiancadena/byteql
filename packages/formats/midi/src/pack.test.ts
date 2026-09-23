@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { memoryByteSource } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
-import { midiFormatPack } from './pack.js';
+import { midiFormatPack } from './index.js';
 
 const fixtureUrl = (name: string): URL => new URL(`../test/fixtures/${name}`, import.meta.url);
 const loadFixture = (name: string): Promise<Uint8Array> =>

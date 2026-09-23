@@ -1,4 +1,4 @@
-version: '0.1'
+version: '0.4'
 format: standard_midi_file
 tables:
   - name: header
@@ -37,34 +37,42 @@ tables:
         expr: '_.event_header & 15'
         type: uint8
         when: '(_.event_header & 240) != 240'
+        nullable: true
       note:
         expr: '_.event_body.note'
         type: uint8
         when: '(_.event_header & 240) == 128 or (_.event_header & 240) == 144 or (_.event_header & 240) == 160'
+        nullable: true
       velocity:
         expr: '_.event_body.velocity'
         type: uint8
         when: '(_.event_header & 240) == 128 or (_.event_header & 240) == 144'
+        nullable: true
       controller:
         expr: '_.event_body.controller'
         type: uint8
         when: '(_.event_header & 240) == 176'
+        nullable: true
       value:
         expr: '_.event_body.value'
         type: uint8
         when: '(_.event_header & 240) == 176'
+        nullable: true
       program:
         expr: '_.event_body.program'
         type: uint8
         when: '(_.event_header & 240) == 192'
+        nullable: true
       pressure:
         expr: '_.event_body.pressure'
         type: uint8
         when: '(_.event_header & 240) == 160 or (_.event_header & 240) == 208'
+        nullable: true
       bend:
         expr: '(_.event_body.b2 << 7) + _.event_body.b1 - 8192'
         type: int16
         when: '(_.event_header & 240) == 224'
+        nullable: true
 
   - name: tempo
     rows: $.tracks[*].events.event[*]

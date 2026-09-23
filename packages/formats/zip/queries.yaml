@@ -1,5 +1,4 @@
 version: '0.1'
-format: zip
 queries:
   - id: overview
     title: Table overview

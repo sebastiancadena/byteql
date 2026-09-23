@@ -62,7 +62,7 @@ export async function planBatch(
   const files: PlannedFile[] = [];
   for (const [index, entry] of entries.entries()) {
     const head = new Uint8Array(await entry.blob.slice(0, PROBE_HEAD_BYTES).arrayBuffer());
-    const pack = selectPack(packs, head);
+    const pack = selectPack(packs, head)?.pack ?? null;
     const base = {
       displayName: displayNames[index]!,
       originalName: entry.name,

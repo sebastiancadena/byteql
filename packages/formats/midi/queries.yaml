@@ -1,5 +1,4 @@
 version: '0.1'
-format: standard_midi_file
 queries:
   - id: overview
     title: Table overview

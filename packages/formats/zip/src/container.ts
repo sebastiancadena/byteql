@@ -73,6 +73,31 @@ const viewOf = (bytes: Uint8Array): DataView =>
 
 const decodeText = (bytes: Uint8Array): string => new TextDecoder('utf-8').decode(bytes);
 
+// A length field (name/extra/comment) read from a corrupted or truncated record can claim more
+// bytes than are actually available in the region being read, which would otherwise push a
+// record's computed `_range.end` past that region — an out-of-bounds provenance range the engine
+// and its consumers (the hex pane, byte-range assertions) never expect. Every site that computes
+// a record's `_range.end` from such a field goes through this helper: it clamps to `availableEnd`
+// and, when the declared end actually ran past it, reports a `RECORD_TRUNCATED` issue naming the
+// record and the declared vs. available length, so the truncation is visible instead of silent.
+// The row itself is still kept (with the clamped range) — it's the best provenance available.
+const clampAndReport = (
+  issues: ZipIssue[],
+  kind: string,
+  start: number,
+  declaredEnd: number,
+  availableEnd: number,
+): number => {
+  if (declaredEnd <= availableEnd) return declaredEnd;
+  issues.push({
+    code: 'RECORD_TRUNCATED',
+    message: `${kind} declares ${declaredEnd - start} byte(s) but only ${availableEnd - start} are available.`,
+    sourceStart: start,
+    sourceEnd: availableEnd,
+  });
+  return availableEnd;
+};
+
 /** Reads the whole central directory + tail into memory; member bodies are never read. */
 export async function readZipContainer(source: ByteSource): Promise<ZipContainer> {
   const issues: ZipIssue[] = [];
@@ -108,12 +133,24 @@ export async function readZipContainer(source: ByteSource): Promise<ZipContainer
     central_dir_size: tailView.getUint32(eocdRel + 12, true),
     ofs_central_dir: tailView.getUint32(eocdRel + 16, true),
     comment: decodeText(tail.subarray(eocdRel + 22, eocdRel + 22 + commentLen)),
-    _range: { start: eocdOffset, end: eocdOffset + EOCD_MIN + commentLen },
+    _range: {
+      start: eocdOffset,
+      end: clampAndReport(
+        issues,
+        'end_of_central_dir record',
+        eocdOffset,
+        eocdOffset + EOCD_MIN + commentLen,
+        size,
+      ),
+    },
   };
 
-  // 2. Read the central directory in one contiguous range.
+  // 2. Read the central directory in one contiguous range. Entries are clamped to the end of
+  // this region (not the file size) — a corrupted length field must never let an entry claim
+  // bytes belonging to the EOCD record that follows it.
   const centralDirEntries: CentralDirRecord[] = [];
   const cd = await source.read(eocd.ofs_central_dir, eocd.central_dir_size);
+  const cdRegionEnd = eocd.ofs_central_dir + cd.length;
   const cdView = viewOf(cd);
   let p = 0;
   while (p + 46 <= cd.length && cdView.getUint32(p, true) === SIG_CENTRAL) {
@@ -123,6 +160,7 @@ export async function readZipContainer(source: ByteSource): Promise<ZipContainer
     const nameStart = p + 46;
     const absStart = eocd.ofs_central_dir + p;
     const recEnd = nameStart + nameLen + extraLen + commentLength;
+    const fileName = decodeText(cd.subarray(nameStart, nameStart + nameLen));
     centralDirEntries.push({
       version_made_by: cdView.getUint16(p + 4, true),
       version_needed: cdView.getUint16(p + 6, true),
@@ -138,11 +176,39 @@ export async function readZipContainer(source: ByteSource): Promise<ZipContainer
       internal_attrs: cdView.getUint16(p + 36, true),
       external_attrs: cdView.getUint32(p + 38, true),
       ofs_local_header: cdView.getUint32(p + 42, true),
-      file_name: decodeText(cd.subarray(nameStart, nameStart + nameLen)),
+      file_name: fileName,
       comment: decodeText(cd.subarray(nameStart + nameLen + extraLen, recEnd)),
-      _range: { start: absStart, end: eocd.ofs_central_dir + recEnd },
+      _range: {
+        start: absStart,
+        end: clampAndReport(
+          issues,
+          `central directory entry ${JSON.stringify(fileName)}`,
+          absStart,
+          eocd.ofs_central_dir + recEnd,
+          cdRegionEnd,
+        ),
+      },
     });
     p = recEnd;
+  }
+  // A single corrupted entry's inflated length can push `p` past `cd.length` in one step,
+  // ending the loop early — whether that also dropped later entries is what the entry-count
+  // check right below this one reports; this issue only flags the overrun itself.
+  if (p > cd.length) {
+    issues.push({
+      code: 'CENTRAL_DIRECTORY_TRUNCATED',
+      message: `A central directory entry's declared length ran past the central directory region; the loop stopped after ${centralDirEntries.length} of ${eocd.num_entries} declared entries were read.`,
+      sourceStart: eocd.ofs_central_dir,
+      sourceEnd: cdRegionEnd,
+    });
+  }
+  if (centralDirEntries.length !== eocd.num_entries) {
+    issues.push({
+      code: 'CENTRAL_DIRECTORY_ENTRY_COUNT_MISMATCH',
+      message: `The End Of Central Directory record declares ${eocd.num_entries} central directory entries but ${centralDirEntries.length} were read.`,
+      sourceStart: eocd.ofs_central_dir,
+      sourceEnd: cdRegionEnd,
+    });
   }
 
   // 3. Read each local header by offset, reconciling data-descriptor sizes from the CD.
@@ -172,6 +238,7 @@ export async function readZipContainer(source: ByteSource): Promise<ZipContainer
       crc = entry.crc32;
     }
     const nameBytes = await source.read(entry.ofs_local_header + 30, nameLen);
+    const fileName = decodeText(nameBytes);
     localFiles.push({
       version_needed: hv.getUint16(4, true),
       flags,
@@ -182,10 +249,16 @@ export async function readZipContainer(source: ByteSource): Promise<ZipContainer
       compressed_size: compressed,
       uncompressed_size: uncompressed,
       extra_len: extraLen,
-      file_name: decodeText(nameBytes),
+      file_name: fileName,
       _range: {
         start: entry.ofs_local_header,
-        end: entry.ofs_local_header + 30 + nameLen + extraLen,
+        end: clampAndReport(
+          issues,
+          `local file header for ${JSON.stringify(fileName)}`,
+          entry.ofs_local_header,
+          entry.ofs_local_header + 30 + nameLen + extraLen,
+          size,
+        ),
       },
     });
   }
@@ -207,6 +280,7 @@ async function forwardScan(source: ByteSource, issues: ZipIssue[]): Promise<Omit
     const nameLen = hv.getUint16(26, true);
     const extraLen = hv.getUint16(28, true);
     const nameBytes = await source.read(offset + 30, nameLen);
+    const fileName = decodeText(nameBytes);
     localFiles.push({
       version_needed: hv.getUint16(4, true),
       flags,
@@ -217,8 +291,17 @@ async function forwardScan(source: ByteSource, issues: ZipIssue[]): Promise<Omit
       compressed_size: compressed,
       uncompressed_size: hv.getUint32(22, true),
       extra_len: extraLen,
-      file_name: decodeText(nameBytes),
-      _range: { start: offset, end: offset + 30 + nameLen + extraLen },
+      file_name: fileName,
+      _range: {
+        start: offset,
+        end: clampAndReport(
+          issues,
+          `local file header for ${JSON.stringify(fileName)}`,
+          offset,
+          offset + 30 + nameLen + extraLen,
+          size,
+        ),
+      },
     });
     if ((flags & FLAG_DATA_DESCRIPTOR) !== 0 && compressed === 0) {
       issues.push({

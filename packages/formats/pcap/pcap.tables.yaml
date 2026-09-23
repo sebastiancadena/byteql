@@ -1,4 +1,4 @@
-version: '0.3'
+version: '0.4'
 format: pcap
 # Multi-file note: the `key` columns below (packet_id, ip_id, tcp_id, stream_id, …) and the
 # `parent_key` references that point at them are assigned PER FILE — they restart at 1 for every
@@ -26,7 +26,7 @@ tables:
       src_addr: { expr: '_.is_v4 ? ip4_str(_.src_addr) : ip6_str(_.src_addr)', type: utf8 }
       dst_addr: { expr: '_.is_v4 ? ip4_str(_.dst_addr) : ip6_str(_.dst_addr)', type: utf8 }
       proto: { expr: _.l4_proto, type: int16 }
-      hop_limit: { expr: _.hop_limit, type: int16 }
+      hop_limit: { expr: _.hop_limit, type: int16, nullable: true }
       length: { expr: _.length, type: uint32 }
   - name: tcp
     rows: $
@@ -54,8 +54,8 @@ tables:
     columns:
       tx_id: { expr: _.transaction_id, type: uint16 }
       qr: { expr: _.qr, type: int8 }
-      query_name: { expr: _.query_name, type: utf8 }
-      query_type: { expr: _.query_type, type: int16 }
+      query_name: { expr: _.query_name, type: utf8, nullable: true }
+      query_type: { expr: _.query_type, type: int16, nullable: true }
       qd_count: { expr: _.qdcount, type: uint16 }
       an_count: { expr: _.ancount, type: uint16 }
   - name: icmp
@@ -64,8 +64,8 @@ tables:
     parent_key: { table: packets, column: packet_id }
     columns:
       type: { expr: _.icmp_type, type: int16 }
-      echo_id: { expr: _.echo_id, type: uint16 }
-      echo_seq: { expr: _.echo_seq, type: uint16 }
+      echo_id: { expr: _.echo_id, type: uint16, nullable: true }
+      echo_seq: { expr: _.echo_seq, type: uint16, nullable: true }
   - name: icmpv6
     rows: $
     key: icmpv6_id
@@ -73,15 +73,15 @@ tables:
     columns:
       type: { expr: _.icmp_type, type: int16 }
       code: { expr: _.code, type: int16 }
-      echo_id: { expr: _.echo_id, type: uint16 }
-      echo_seq: { expr: _.echo_seq, type: uint16 }
+      echo_id: { expr: _.echo_id, type: uint16, nullable: true }
+      echo_seq: { expr: _.echo_seq, type: uint16, nullable: true }
   - name: tls
     rows: $.client_hello
     key: tls_id
     parent_key: { table: packets, column: packet_id }
     columns:
       tls_version: { expr: _.tls_version, type: utf8 }
-      sni: { expr: _.sni, type: utf8 }
+      sni: { expr: _.sni, type: utf8, nullable: true }
   - name: streams
     rows: $
     key: stream_id

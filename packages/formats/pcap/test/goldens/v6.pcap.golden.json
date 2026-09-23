@@ -1,0 +1,1133 @@
+{
+  "tables": {
+    "dns": {
+      "fields": [
+        {
+          "name": "dns_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stream_id",
+          "type": "Int64"
+        },
+        {
+          "name": "tx_id",
+          "type": "Uint16"
+        },
+        {
+          "name": "qr",
+          "type": "Int8"
+        },
+        {
+          "name": "query_name",
+          "type": "Utf8"
+        },
+        {
+          "name": "query_type",
+          "type": "Int16"
+        },
+        {
+          "name": "qd_count",
+          "type": "Uint16"
+        },
+        {
+          "name": "an_count",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_ranges",
+          "type": "List<Struct<{start:Uint64, end:Uint64}>>"
+        }
+      ],
+      "rowCount": 36,
+      "sha256": "7d08b0c7aedb6ed1e49581c958827576f0a3b9a49ccdf46516a11d54fc5426eb",
+      "head": [
+        [
+          "1n",
+          "1n",
+          null,
+          6,
+          0,
+          "itojun.org",
+          255,
+          1,
+          0,
+          "102n",
+          "130n",
+          null
+        ],
+        [
+          "2n",
+          "2n",
+          null,
+          6,
+          1,
+          "itojun.org",
+          255,
+          1,
+          6,
+          "208n",
+          "656n",
+          null
+        ],
+        [
+          "3n",
+          "7n",
+          null,
+          6,
+          0,
+          "www.yahoo.com",
+          15,
+          1,
+          0,
+          "1126n",
+          "1157n",
+          null
+        ],
+        [
+          "4n",
+          "8n",
+          null,
+          6,
+          1,
+          "www.yahoo.com",
+          15,
+          1,
+          1,
+          "1235n",
+          "1531n",
+          null
+        ],
+        [
+          "5n",
+          "14n",
+          null,
+          11378,
+          0,
+          "kiwi.itojun.org",
+          28,
+          1,
+          0,
+          "3223n",
+          "3256n",
+          null
+        ],
+        [
+          "6n",
+          "15n",
+          null,
+          11378,
+          1,
+          "kiwi.itojun.org",
+          28,
+          1,
+          2,
+          "3334n",
+          "3554n",
+          null
+        ],
+        [
+          "7n",
+          "80n",
+          null,
+          32501,
+          0,
+          "kiwi.itojun.org",
+          28,
+          1,
+          0,
+          "14794n",
+          "14827n",
+          null
+        ],
+        [
+          "8n",
+          "81n",
+          null,
+          32501,
+          1,
+          "kiwi.itojun.org",
+          28,
+          1,
+          2,
+          "14905n",
+          "15125n",
+          null
+        ],
+        [
+          "9n",
+          "84n",
+          null,
+          32502,
+          0,
+          "a.e.9.6.7.0.e.f.f.f.7.9.0.6.2.0.1.0.0.0.0.0.0.0.7.0.5.0.e.f.f.3.ip6.int",
+          12,
+          1,
+          0,
+          "15431n",
+          "15520n",
+          null
+        ],
+        [
+          "10n",
+          "85n",
+          null,
+          32502,
+          1,
+          "a.e.9.6.7.0.e.f.f.f.7.9.0.6.2.0.1.0.0.0.0.0.0.0.7.0.5.0.e.f.f.3.ip6.int",
+          12,
+          1,
+          1,
+          "15598n",
+          "15776n",
+          null
+        ]
+      ]
+    },
+    "errors": {
+      "fields": [
+        {
+          "name": "error_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stage",
+          "type": "Utf8"
+        },
+        {
+          "name": "record",
+          "type": "Int32"
+        },
+        {
+          "name": "code",
+          "type": "Utf8"
+        },
+        {
+          "name": "message",
+          "type": "Utf8"
+        },
+        {
+          "name": "recoverable",
+          "type": "Bool"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "icmp": {
+      "fields": [
+        {
+          "name": "icmp_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "type",
+          "type": "Int16"
+        },
+        {
+          "name": "echo_id",
+          "type": "Uint16"
+        },
+        {
+          "name": "echo_seq",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "icmpv6": {
+      "fields": [
+        {
+          "name": "icmpv6_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "type",
+          "type": "Int16"
+        },
+        {
+          "name": "code",
+          "type": "Int16"
+        },
+        {
+          "name": "echo_id",
+          "type": "Uint16"
+        },
+        {
+          "name": "echo_seq",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 49,
+      "sha256": "4e3bf8353c24d23f6edac5dc1a159a337355e27ff85d60b0d37400e66e71d7f9",
+      "head": [
+        [
+          "1n",
+          "3n",
+          135,
+          0,
+          null,
+          null,
+          "726n",
+          "758n"
+        ],
+        [
+          "2n",
+          "4n",
+          136,
+          0,
+          null,
+          null,
+          "828n",
+          "852n"
+        ],
+        [
+          "3n",
+          "5n",
+          135,
+          0,
+          null,
+          null,
+          "922n",
+          "954n"
+        ],
+        [
+          "4n",
+          "6n",
+          136,
+          0,
+          null,
+          null,
+          "1024n",
+          "1048n"
+        ],
+        [
+          "5n",
+          "9n",
+          135,
+          0,
+          null,
+          null,
+          "1601n",
+          "1633n"
+        ],
+        [
+          "6n",
+          "10n",
+          136,
+          0,
+          null,
+          null,
+          "1703n",
+          "1727n"
+        ],
+        [
+          "7n",
+          "11n",
+          135,
+          0,
+          null,
+          null,
+          "1797n",
+          "1829n"
+        ],
+        [
+          "8n",
+          "12n",
+          136,
+          0,
+          null,
+          null,
+          "1899n",
+          "1923n"
+        ],
+        [
+          "9n",
+          "78n",
+          135,
+          0,
+          null,
+          null,
+          "14590n",
+          "14622n"
+        ],
+        [
+          "10n",
+          "79n",
+          136,
+          0,
+          null,
+          null,
+          "14692n",
+          "14716n"
+        ]
+      ]
+    },
+    "ip": {
+      "fields": [
+        {
+          "name": "ip_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "version",
+          "type": "Int8"
+        },
+        {
+          "name": "src_addr",
+          "type": "Utf8"
+        },
+        {
+          "name": "dst_addr",
+          "type": "Utf8"
+        },
+        {
+          "name": "proto",
+          "type": "Int16"
+        },
+        {
+          "name": "hop_limit",
+          "type": "Int16"
+        },
+        {
+          "name": "length",
+          "type": "Uint32"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 161,
+      "sha256": "df752f97e9ac2664dc24fc35ded885ae361d9fb442ed971f28a8c2abbb5d7a69",
+      "head": [
+        [
+          "1n",
+          "1n",
+          6,
+          "3ffe:507:0:1:200:86ff:fe05:80da",
+          "3ffe:501:4819::42",
+          17,
+          64,
+          76,
+          "54n",
+          "130n"
+        ],
+        [
+          "2n",
+          "2n",
+          6,
+          "3ffe:501:4819::42",
+          "3ffe:507:0:1:200:86ff:fe05:80da",
+          17,
+          230,
+          496,
+          "160n",
+          "656n"
+        ],
+        [
+          "3n",
+          "3n",
+          6,
+          "fe80::200:86ff:fe05:80da",
+          "fe80::260:97ff:fe07:69ea",
+          58,
+          255,
+          72,
+          "686n",
+          "758n"
+        ],
+        [
+          "4n",
+          "4n",
+          6,
+          "fe80::260:97ff:fe07:69ea",
+          "fe80::200:86ff:fe05:80da",
+          58,
+          255,
+          64,
+          "788n",
+          "852n"
+        ],
+        [
+          "5n",
+          "5n",
+          6,
+          "3ffe:507:0:1:260:97ff:fe07:69ea",
+          "3ffe:507:0:1:200:86ff:fe05:80da",
+          58,
+          255,
+          72,
+          "882n",
+          "954n"
+        ],
+        [
+          "6n",
+          "6n",
+          6,
+          "3ffe:507:0:1:200:86ff:fe05:80da",
+          "3ffe:507:0:1:260:97ff:fe07:69ea",
+          58,
+          255,
+          64,
+          "984n",
+          "1048n"
+        ],
+        [
+          "7n",
+          "7n",
+          6,
+          "3ffe:507:0:1:200:86ff:fe05:80da",
+          "3ffe:501:4819::42",
+          17,
+          64,
+          79,
+          "1078n",
+          "1157n"
+        ],
+        [
+          "8n",
+          "8n",
+          6,
+          "3ffe:501:4819::42",
+          "3ffe:507:0:1:200:86ff:fe05:80da",
+          17,
+          230,
+          344,
+          "1187n",
+          "1531n"
+        ],
+        [
+          "9n",
+          "9n",
+          6,
+          "3ffe:507:0:1:200:86ff:fe05:80da",
+          "3ffe:507:0:1:260:97ff:fe07:69ea",
+          58,
+          255,
+          72,
+          "1561n",
+          "1633n"
+        ],
+        [
+          "10n",
+          "10n",
+          6,
+          "3ffe:507:0:1:260:97ff:fe07:69ea",
+          "3ffe:507:0:1:200:86ff:fe05:80da",
+          58,
+          255,
+          64,
+          "1663n",
+          "1727n"
+        ]
+      ]
+    },
+    "packets": {
+      "fields": [
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "ts",
+          "type": "Timestamp<MICROSECOND>"
+        },
+        {
+          "name": "caplen",
+          "type": "Uint32"
+        },
+        {
+          "name": "len",
+          "type": "Uint32"
+        },
+        {
+          "name": "linktype",
+          "type": "Uint32"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 161,
+      "sha256": "c4c3c1f3460554b42ea61072743caa38b918ec883d846f90988b111e87e2c2e5",
+      "head": [
+        [
+          "1n",
+          "921159902141757us",
+          90,
+          90,
+          1,
+          "24n",
+          "130n"
+        ],
+        [
+          "2n",
+          "921159902215272us",
+          510,
+          510,
+          1,
+          "130n",
+          "656n"
+        ],
+        [
+          "3n",
+          "921159907494265us",
+          86,
+          86,
+          1,
+          "656n",
+          "758n"
+        ],
+        [
+          "4n",
+          "921159907494596us",
+          78,
+          78,
+          1,
+          "758n",
+          "852n"
+        ],
+        [
+          "5n",
+          "921159907620352us",
+          86,
+          86,
+          1,
+          "852n",
+          "954n"
+        ],
+        [
+          "6n",
+          "921159907620802us",
+          78,
+          78,
+          1,
+          "954n",
+          "1048n"
+        ],
+        [
+          "7n",
+          "921159908759317us",
+          93,
+          93,
+          1,
+          "1048n",
+          "1157n"
+        ],
+        [
+          "8n",
+          "921159908894330us",
+          358,
+          358,
+          1,
+          "1157n",
+          "1531n"
+        ],
+        [
+          "9n",
+          "921159912506705us",
+          86,
+          86,
+          1,
+          "1531n",
+          "1633n"
+        ],
+        [
+          "10n",
+          "921159912506988us",
+          78,
+          78,
+          1,
+          "1633n",
+          "1727n"
+        ]
+      ]
+    },
+    "stream_segments": {
+      "fields": [
+        {
+          "name": "segment_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stream_id",
+          "type": "Int64"
+        },
+        {
+          "name": "tcp_id",
+          "type": "Int64"
+        },
+        {
+          "name": "offset",
+          "type": "Int64"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "streams": {
+      "fields": [
+        {
+          "name": "stream_id",
+          "type": "Int64"
+        },
+        {
+          "name": "src_addr",
+          "type": "Utf8"
+        },
+        {
+          "name": "src_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "dst_addr",
+          "type": "Utf8"
+        },
+        {
+          "name": "dst_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "segment_count",
+          "type": "Uint32"
+        },
+        {
+          "name": "byte_count",
+          "type": "Uint32"
+        },
+        {
+          "name": "message_count",
+          "type": "Uint32"
+        },
+        {
+          "name": "pending_bytes",
+          "type": "Uint32"
+        },
+        {
+          "name": "status",
+          "type": "Utf8"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_ranges",
+          "type": "List<Struct<{start:Uint64, end:Uint64}>>"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "tcp": {
+      "fields": [
+        {
+          "name": "tcp_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "src_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "dst_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "seq",
+          "type": "Int64"
+        },
+        {
+          "name": "ack",
+          "type": "Int64"
+        },
+        {
+          "name": "flags",
+          "type": "Utf8"
+        },
+        {
+          "name": "window",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 62,
+      "sha256": "0cdc1dcd56d36770357f401d61e3f523acaaa6f99056b1c6e9ec890358e49014",
+      "head": [
+        [
+          "1n",
+          "16n",
+          1022,
+          22,
+          "3598119713n",
+          "0n",
+          "SYN",
+          8192,
+          "3624n",
+          "3664n"
+        ],
+        [
+          "2n",
+          "17n",
+          22,
+          1022,
+          "209323491n",
+          "3598119714n",
+          "ACK|SYN",
+          8540,
+          "3734n",
+          "3774n"
+        ],
+        [
+          "3n",
+          "18n",
+          1022,
+          22,
+          "3598119714n",
+          "209323492n",
+          "ACK",
+          8540,
+          "3844n",
+          "3876n"
+        ],
+        [
+          "4n",
+          "19n",
+          22,
+          1022,
+          "209323492n",
+          "3598119714n",
+          "ACK|PSH",
+          8540,
+          "3946n",
+          "3993n"
+        ],
+        [
+          "5n",
+          "20n",
+          1022,
+          22,
+          "3598119714n",
+          "209323507n",
+          "ACK|PSH",
+          8540,
+          "4063n",
+          "4110n"
+        ],
+        [
+          "6n",
+          "21n",
+          22,
+          1022,
+          "209323507n",
+          "3598119729n",
+          "ACK|PSH",
+          8540,
+          "4180n",
+          "4488n"
+        ],
+        [
+          "7n",
+          "22n",
+          1022,
+          22,
+          "3598119729n",
+          "209323783n",
+          "ACK|PSH",
+          8540,
+          "4558n",
+          "4746n"
+        ],
+        [
+          "8n",
+          "23n",
+          22,
+          1022,
+          "209323783n",
+          "3598119885n",
+          "ACK",
+          8540,
+          "4816n",
+          "4848n"
+        ],
+        [
+          "9n",
+          "24n",
+          22,
+          1022,
+          "209323783n",
+          "3598119885n",
+          "ACK|PSH",
+          8540,
+          "4918n",
+          "4962n"
+        ],
+        [
+          "10n",
+          "25n",
+          1022,
+          22,
+          "3598119885n",
+          "209323795n",
+          "ACK|PSH",
+          8540,
+          "5032n",
+          "5084n"
+        ]
+      ]
+    },
+    "tls": {
+      "fields": [
+        {
+          "name": "tls_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stream_id",
+          "type": "Int64"
+        },
+        {
+          "name": "tls_version",
+          "type": "Utf8"
+        },
+        {
+          "name": "sni",
+          "type": "Utf8"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_ranges",
+          "type": "List<Struct<{start:Uint64, end:Uint64}>>"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "udp": {
+      "fields": [
+        {
+          "name": "udp_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "src_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "dst_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "length",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 50,
+      "sha256": "89ac316b818ee6c7da343339cfeeb6d180f4f1decd0b59be9a271369885eee0d",
+      "head": [
+        [
+          "1n",
+          "1n",
+          2396,
+          53,
+          36,
+          "94n",
+          "130n"
+        ],
+        [
+          "2n",
+          "2n",
+          53,
+          2396,
+          456,
+          "200n",
+          "656n"
+        ],
+        [
+          "3n",
+          "7n",
+          2397,
+          53,
+          39,
+          "1118n",
+          "1157n"
+        ],
+        [
+          "4n",
+          "8n",
+          53,
+          2397,
+          304,
+          "1227n",
+          "1531n"
+        ],
+        [
+          "5n",
+          "13n",
+          521,
+          521,
+          1152,
+          "1993n",
+          "3145n"
+        ],
+        [
+          "6n",
+          "14n",
+          2398,
+          53,
+          41,
+          "3215n",
+          "3256n"
+        ],
+        [
+          "7n",
+          "15n",
+          53,
+          2398,
+          228,
+          "3326n",
+          "3554n"
+        ],
+        [
+          "8n",
+          "80n",
+          2399,
+          53,
+          41,
+          "14786n",
+          "14827n"
+        ],
+        [
+          "9n",
+          "81n",
+          53,
+          2399,
+          228,
+          "14897n",
+          "15125n"
+        ],
+        [
+          "10n",
+          "82n",
+          41077,
+          33435,
+          20,
+          "15195n",
+          "15215n"
+        ]
+      ]
+    }
+  },
+  "issues": [],
+  "capabilities": {}
+}

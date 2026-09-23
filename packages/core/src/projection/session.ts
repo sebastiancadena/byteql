@@ -49,6 +49,11 @@ export interface ProjectionSession {
 export interface ProjectionSessionOptions {
   readonly flushRowThreshold?: number;
   readonly issues?: IssueCollector;
+  // When true, a column `expr` evaluation that reads a field absent on the node it's
+  // evaluated against throws ProjectionFieldError instead of silently reading null — a
+  // typo/naming-mismatch guard. Present-null stays null; `when`, `where`, state updates,
+  // dissect payloads, and stream expressions are never strict (see EmitContext's doc).
+  readonly strictFields?: boolean;
 }
 
 export const createProjectionSession = (
@@ -86,7 +91,17 @@ export const createProjectionSession = (
   return {
     project(root, resolver, callOptions) {
       const subset = callOptions?.tables === undefined ? null : new Set(callOptions.tables);
-      projectInto(compiled, root, resolver, sink, runtimes, subset, options.issues, streams);
+      projectInto(
+        compiled,
+        root,
+        resolver,
+        sink,
+        runtimes,
+        subset,
+        options.issues,
+        streams,
+        options.strictFields ?? false,
+      );
     },
     drain() {
       const drained: FinishedTable[] = [];
@@ -109,6 +124,7 @@ export const createProjectionSession = (
         sink,
         streams,
         ...(options.issues ? { issues: options.issues } : {}),
+        ...(options.strictFields ? { strictFields: options.strictFields } : {}),
       };
       flushStreams(emitContext);
       return [

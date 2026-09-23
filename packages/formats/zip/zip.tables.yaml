@@ -1,4 +1,4 @@
-version: '0.3'
+version: '0.4'
 format: zip
 tables:
   - name: local_files
@@ -22,7 +22,7 @@ tables:
       crc32: { expr: _.crc32, type: uint32 }
       compressed_size: { expr: _.compressed_size, type: uint32 }
       uncompressed_size: { expr: _.uncompressed_size, type: uint32 }
-      mod_time: { expr: 'dos_dttm(_.mod_date * 65536 + _.mod_time)', type: timestamp_us }
+      mod_time: { expr: 'dos_dttm(_.mod_date * 65536 + _.mod_time)', type: timestamp_us, nullable: true }
       file_name: { expr: _.file_name, type: utf8 }
       extra_len: { expr: _.extra_len, type: uint16 }
   - name: central_dir_entries
@@ -47,7 +47,7 @@ tables:
       crc32: { expr: _.crc32, type: uint32 }
       compressed_size: { expr: _.compressed_size, type: uint32 }
       uncompressed_size: { expr: _.uncompressed_size, type: uint32 }
-      mod_time: { expr: 'dos_dttm(_.mod_date * 65536 + _.mod_time)', type: timestamp_us }
+      mod_time: { expr: 'dos_dttm(_.mod_date * 65536 + _.mod_time)', type: timestamp_us, nullable: true }
       file_name: { expr: _.file_name, type: utf8 }
       extra_len: { expr: _.extra_len, type: uint16 }
       disk_start: { expr: _.disk_start, type: uint16 }

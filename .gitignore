@@ -9,6 +9,7 @@ playwright-report/
 test-results/
 bench/
 packages/formats/*/gen/
+packages/pack-tools/test/.tmp/
 
 # Rust
 crates/*/target/

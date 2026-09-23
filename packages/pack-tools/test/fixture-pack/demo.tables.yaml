@@ -1,0 +1,19 @@
+version: '0.4'
+format: demo
+tables:
+  - name: rec
+    rows: $
+    key: rec_id
+    columns:
+      value: { expr: _.value, type: uint16 }
+  - name: part
+    rows: $
+    key: part_id
+    parent_key: { table: rec, column: rec_id }
+    columns:
+      a: { expr: _.a, type: uint16 }
+dissect:
+  - from: rec
+    payload: _.body
+    chain:
+      - { when: 'true', parser: two_bytes, table: part }

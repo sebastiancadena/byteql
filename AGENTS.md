@@ -5,7 +5,7 @@ into relational tables you query with DuckDB SQL, entirely in the browser, with 
 back to its exact source bytes. Product requirements, differentiators, and the projection DSL live in
 `PRD.md` — read §9 (architecture) and Appendix A (DSL) first.
 
-## Status (2026-09-22)
+## Status (2026-09-23)
 
 Priority order lives in `ROADMAP.md` (adopted 2026-09-15); it supersedes any "next" ordering here
 or in `PRD.md` §12.
@@ -111,6 +111,15 @@ or in `PRD.md` §12.
 - **Also shipped:** the ZIP format pack (`packages/formats/zip`), same-format multi-file
   sessions, the Trace Workspace layout with resizable panels, and results download
   (`docs/superpowers/specs/2026-09-04-results-download-design.md`).
+- **Pack kit: shipped 2026-09-23.** Format packs are now a manifest (`pack.yaml`) plus a small
+  set of named code hooks instead of hand-copied schemas, drivers, and build scripts: the
+  runtime lives in `packages/core/src/pack/` (`definePack`, the `Framer` contract, the generic
+  `openFramedSource` driver) plus the `@byteql/core/kaitai` and `@byteql/core/testing` subpath
+  exports, and `packages/pack-tools` provides the `byteql-pack build`/`new` CLI. MIDI, ZIP, and
+  pcap are migrated onto it with golden-identical Arrow output and schemas now derived from the
+  compiled spec rather than hand-written. Design and implementation notes:
+  `docs/superpowers/specs/2026-09-23-pack-kit-design.md`; authoring guide:
+  `docs/pack-authoring.md`.
 - **Next (per `ROADMAP.md`):** pcapng intake, then saved queries. The unaided external Phase 0
   test is still open supporting work.
 
@@ -121,8 +130,9 @@ architecture: `app → db → core ← formats`. `packages/core` is zero-DOM (No
 its vitest suites run without a browser).
 
 - `packages/core` — the engine
-  - `src/projection/spec.ts` — YAML spec schema (v0.1/v0.2: tables, state, `when`/`where`,
-    `parent_key`, `dissect`) + zod validation; errors at load, never per-row
+  - `src/projection/spec.ts` — YAML spec schema (v0.1–v0.4: tables, state, `when`/`where`,
+    `parent_key`, `dissect`, and v0.4's `nullable`) + zod validation; errors at load, never
+    per-row
   - `src/projection/expression.ts` — jsep-based sandboxed expression evaluator (closed builtin
     set, hex literals, bigint-aware arithmetic)
   - `src/projection/anchors.ts` — anchor-path compile + single-anchor traversal (dissect child
@@ -139,10 +149,29 @@ its vitest suites run without a browser).
   - `src/issues.ts` — `IssueCollector`: `ParseIssue[]` + the generic per-record `errors` table
   - `src/protocol.ts` — app/worker contracts and `FormatPack`/`RecordSource` (TypeScript mirror
     of the PRD's WIT `record-source`)
-- `packages/formats/midi` — first format pack: `src/container.ts` (framer),
+  - `src/pack/` — the pack kit runtime (zero-DOM), re-exported from `@byteql/core`:
+    `manifest.ts` (`pack.yaml` zod schema), `define.ts` (`definePack`), `framer.ts` (the
+    `Framer` contract, `PackFatalError`), `driver.ts` (`openFramedSource`, the generic
+    pull-driven `RecordSource`), `schemas.ts` (`projectionSchemas`, derives `TableSchema[]`
+    from a compiled spec instead of hand-written maps), `yield.ts` (the unclamped yield
+    helper, created per `openFramedSource` call, not a module singleton)
+  - `src/kaitai/index.ts` — the `@byteql/core/kaitai` subpath export: `kaitaiParse` and
+    `payload` (Kaitai parse + payload-offset-range helpers every format pack's wrappers use)
+  - `src/testing/` — the `@byteql/core/testing` subpath export (production code never imports
+    it): `conformance.ts` (`describePackConformance`, the shared fuzz/golden/invariant suite),
+    `collect.ts` (`collectSource`, drains a `RecordSource` into one `ParseResult`),
+    `golden.ts` (`goldenText`, `schemaSnapshotText`)
+- `packages/formats/midi` — first format pack, migrated onto the pack kit: `src/framer.ts`
+  (`smfFramer`, the `Framer` hook), `src/container.ts` (byte-level container parsing),
   `src/normalize-track.ts` (running-status expansion + byte accounting), `src/kaitai.ts`
-  (generated-parser wrapper), `src/project-midi.ts` (spec-driven projection),
-  `src/pack.ts` (`midiFormatPack` façade); `midi.tables.yaml` is the projection spec
+  (generated-parser wrapper), `src/index.ts` (`definePack` call, exports `midiFormatPack`);
+  `midi.tables.yaml` is the projection spec, `pack.yaml` the manifest
+- `packages/pack-tools` — Node-only dev dependency, never bundled into the app: the
+  `byteql-pack` CLI (`bin/byteql-pack.mjs`). `src/build.mjs` (`byteql-pack build`: validates
+  `pack.yaml` and the spec, compiles `.ksy` schemas, lints `queries.yaml`, emits
+  `src/pack.generated.ts`), `src/new.mjs` (`byteql-pack new <id>`: scaffolds a pack from
+  `templates/`), `src/ksy.mjs` (Kaitai compilation), `src/emit.mjs`/`src/queries.mjs`
+  (generated-file and query-lint helpers). See `docs/pack-authoring.md`.
 - `packages/db` — DuckDB-WASM wrapper (`src/browser.ts`): local-asset init, hardening PRAGMAs,
   `replaceTables` (Arrow IPC in-memory only), serialized query path
 - `apps/web` — Svelte UI: `src/workers/parse.worker.ts` (probe registry → `FormatPack.open` →

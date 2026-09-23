@@ -1,0 +1,6 @@
+version: '0.1'
+queries:
+  - id: overview
+    title: Overview
+    kind: grid
+    sql: select * from rec

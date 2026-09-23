@@ -1,0 +1,17 @@
+version: '0.1'
+id: pcap
+title: Packet capture
+spec: pcap.tables.yaml
+queries: queries.yaml
+errors: { ordinal: record }
+ksy:
+  dir: ksy
+containers:
+  - id: pcap
+    framer: pcap
+    probe:
+      magic:
+        - { at: 0, hex: a1b2c3d4, confidence: 1 }
+        - { at: 0, hex: a1b23c4d, confidence: 1 }
+        - { at: 0, hex: d4c3b2a1, confidence: 1 }
+        - { at: 0, hex: 4d3cb2a1, confidence: 1 }

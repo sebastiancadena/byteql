@@ -1,4 +1,4 @@
-import KaitaiStream from 'kaitai-struct/KaitaiStream.js';
+import { kaitaiParse } from '@byteql/core/kaitai';
 
 import generatedModule, {
   type GeneratedTrack,
@@ -94,11 +94,7 @@ function correlateDebug(
 }
 
 export function parseSyntheticTrack(file: SyntheticTrackFile): ParsedTrackTree {
-  const stream = new KaitaiStream(
-    new DataView(file.bytes.buffer as ArrayBuffer, file.bytes.byteOffset, file.bytes.byteLength),
-  );
-  const parsed = new StandardMidiFile(stream);
-  parsed._read();
+  const parsed = kaitaiParse(StandardMidiFile, file.bytes);
   if (parsed.tracks.length !== 1) {
     throw new Error('KAITAI_TRACK_COUNT: expected one synthetic track');
   }

@@ -1,0 +1,292 @@
+{
+  "tables": {
+    "errors": {
+      "fields": [
+        {
+          "name": "error_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stage",
+          "type": "Utf8"
+        },
+        {
+          "name": "track",
+          "type": "Int32"
+        },
+        {
+          "name": "code",
+          "type": "Utf8"
+        },
+        {
+          "name": "message",
+          "type": "Utf8"
+        },
+        {
+          "name": "recoverable",
+          "type": "Bool"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "events": {
+      "fields": [
+        {
+          "name": "event_id",
+          "type": "Int64"
+        },
+        {
+          "name": "track",
+          "type": "Int32"
+        },
+        {
+          "name": "event_index",
+          "type": "Int32"
+        },
+        {
+          "name": "delta_time",
+          "type": "Int64"
+        },
+        {
+          "name": "tick",
+          "type": "Int64"
+        },
+        {
+          "name": "kind",
+          "type": "Utf8"
+        },
+        {
+          "name": "channel",
+          "type": "Uint8"
+        },
+        {
+          "name": "note",
+          "type": "Uint8"
+        },
+        {
+          "name": "velocity",
+          "type": "Uint8"
+        },
+        {
+          "name": "controller",
+          "type": "Uint8"
+        },
+        {
+          "name": "value",
+          "type": "Uint8"
+        },
+        {
+          "name": "program",
+          "type": "Uint8"
+        },
+        {
+          "name": "pressure",
+          "type": "Uint8"
+        },
+        {
+          "name": "bend",
+          "type": "Int16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 5,
+      "sha256": "c8a62d9e8701370a11470f70415e079e9abd1fab4778fa32550f98486e03ac0a",
+      "head": [
+        [
+          "1n",
+          0,
+          0,
+          "0n",
+          "0n",
+          "note_on",
+          0,
+          60,
+          100,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "22n",
+          "26n"
+        ],
+        [
+          "2n",
+          0,
+          1,
+          "480n",
+          "480n",
+          "note_off",
+          0,
+          60,
+          64,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "26n",
+          "31n"
+        ],
+        [
+          "3n",
+          0,
+          2,
+          "0n",
+          "480n",
+          "meta",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "31n",
+          "35n"
+        ],
+        [
+          "4n",
+          1,
+          0,
+          "0n",
+          "0n",
+          "meta",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "43n",
+          "50n"
+        ],
+        [
+          "5n",
+          1,
+          1,
+          "0n",
+          "0n",
+          "meta",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "50n",
+          "54n"
+        ]
+      ]
+    },
+    "header": {
+      "fields": [
+        {
+          "name": "header_id",
+          "type": "Int64"
+        },
+        {
+          "name": "format",
+          "type": "Uint16"
+        },
+        {
+          "name": "num_tracks",
+          "type": "Uint16"
+        },
+        {
+          "name": "division",
+          "type": "Int16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "fccda4dc8563e24bf593ddf2e3a3098d01a3ba70abd39fdbc5db19a4fbb53080",
+      "head": [
+        [
+          "1n",
+          1,
+          2,
+          480,
+          "0n",
+          "14n"
+        ]
+      ]
+    },
+    "tempo": {
+      "fields": [
+        {
+          "name": "tempo_id",
+          "type": "Int64"
+        },
+        {
+          "name": "track",
+          "type": "Int32"
+        },
+        {
+          "name": "tick",
+          "type": "Int64"
+        },
+        {
+          "name": "us_per_quarter",
+          "type": "Uint32"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "34cd1435a264b78ecb82ba44186befa2bc5d21f4bdc6430600c31a732c85a329",
+      "head": [
+        [
+          "1n",
+          1,
+          "0n",
+          1000000,
+          "43n",
+          "50n"
+        ]
+      ]
+    }
+  },
+  "issues": [],
+  "capabilities": {
+    "audio": {
+      "enabled": true,
+      "reason": null
+    }
+  }
+}

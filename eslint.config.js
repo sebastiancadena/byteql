@@ -14,6 +14,7 @@ export default [
       '**/playwright-report/**',
       '**/test-results/**',
       'packages/formats/*/gen/**',
+      'packages/pack-tools/test/.tmp/**',
     ],
   },
   js.configs.recommended,

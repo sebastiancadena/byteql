@@ -3,6 +3,7 @@ import {
   tableToIpc,
   type BatchTransfer,
   type FormatPack,
+  type OpenOptions,
   type ParseProgress as PackProgress,
   type TableOverview,
   type TableSchema,
@@ -1196,7 +1197,7 @@ describe('SessionController', () => {
       { name: 'tcp', columns: [{ name: 'tcp_id', type: 'int64', nullable: false }] },
     ];
     parser.calls[0]!.finish({
-      format: { id: 'pcap', title: 'PCAP capture' },
+      format: { id: 'pcap', title: 'Packet capture' },
       tables: [{ name: 'packets', rowCount: 2, columns: schemas[0]!.columns }],
       issues: [],
       queries: [],
@@ -3509,5 +3510,75 @@ describe('parse worker boundary', () => {
       type: 'utf8',
       nullable: false,
     });
+  });
+
+  it('forces the pack by formatId and re-probes the container per file, ignoring probeContainer', async () => {
+    // Review-focus regression: a multi-file session mixing two containers of one pack, or
+    // forcing formatId, must open each file with the right container, re-probing when forced.
+    // `selectPack` leaves `container` undefined whenever `formatId` is set (see packs.ts), so
+    // `pack.open` must never receive a `container` option here even though `probeContainer`
+    // reports a confident match — the pack (a `DefinedPack`) re-probes each file's own head
+    // bytes instead of reusing a stale container from a previous file in the batch.
+    const scope = new FakeWorkerScope();
+    const openCalls: OpenOptions[] = [];
+    const open = vi.fn((_source: unknown, opts: OpenOptions) => {
+      openCalls.push(opts);
+      return { nextBatch: async () => null, finish: () => ({ issues: [], capabilities: {} }) };
+    });
+    const pack = fakePack({
+      id: 'multi_container',
+      probeContainer: () => ({ container: 'ng', confidence: 1 }),
+      open: open as unknown as FormatPack['open'],
+    });
+    installParseWorker(scope, [pack]);
+
+    scope.receive({
+      type: 'parse',
+      taskId: 1,
+      name: 'a.bin',
+      blob: new Blob([new Uint8Array([1])]),
+      formatId: 'multi_container',
+    });
+    scope.receive({
+      type: 'parse',
+      taskId: 2,
+      name: 'b.bin',
+      blob: new Blob([new Uint8Array([2])]),
+      formatId: 'multi_container',
+    });
+    await flush();
+
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(openCalls).toHaveLength(2);
+    for (const opts of openCalls) expect(opts.container).toBeUndefined();
+  });
+
+  it('passes the probed container through to pack.open when formatId is not forced', async () => {
+    // Complements the forced-formatId test above: when the pack is chosen by probing (not
+    // forced), the worker must forward the container `selectPack` matched, not drop it.
+    const scope = new FakeWorkerScope();
+    const openCalls: OpenOptions[] = [];
+    const open = vi.fn((_source: unknown, opts: OpenOptions) => {
+      openCalls.push(opts);
+      return { nextBatch: async () => null, finish: () => ({ issues: [], capabilities: {} }) };
+    });
+    const pack = fakePack({
+      id: 'multi_container',
+      probe: () => 1,
+      probeContainer: () => ({ container: 'ng', confidence: 1 }),
+      open: open as unknown as FormatPack['open'],
+    });
+    installParseWorker(scope, [pack]);
+
+    scope.receive({
+      type: 'parse',
+      taskId: 1,
+      name: 'a.bin',
+      blob: new Blob([new Uint8Array([1])]),
+    });
+    await flush();
+
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(openCalls[0]?.container).toBe('ng');
   });
 });

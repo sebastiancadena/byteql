@@ -126,6 +126,8 @@ Gallery formats ship as precompiled Kaitai→JS parsers driven by the projection
 
 *Status: the TypeScript mirror of this contract (`FormatPack`/`RecordSource` in `packages/core/src/protocol.ts`) shipped with Phase 1a — the MIDI pack implements it and the parse worker's probe registry drives it.*
 
+*Status: building a new pack is now a manifest plus named code hooks on the shared pack kit (`packages/core/src/pack/`, `packages/pack-tools`), not hand-copied schemas and drivers — see `docs/pack-authoring.md`.*
+
 Build decision: precompile all gallery `.ksy` at build time. The Kaitai compiler is Scala.js and weighs several MB — lazy-load it only for the "bring your own .ksy" path, never in the critical bundle.
 
 ## 10. Tech stack

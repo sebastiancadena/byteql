@@ -1,0 +1,11 @@
+version: '0.1'
+id: __ID__
+title: __ID__
+spec: __ID__.tables.yaml
+queries: queries.yaml
+containers:
+  - id: __ID__
+    framer: __ID__
+    probe:
+      magic:
+        - { at: 0, hex: '00', confidence: 0.1 } # TODO(author): real magic bytes

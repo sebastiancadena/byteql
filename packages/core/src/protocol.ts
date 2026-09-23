@@ -64,6 +64,8 @@ export interface ParseProgress {
 export interface OpenOptions {
   signal: AbortSignal;
   onProgress?: (progress: ParseProgress) => void;
+  /** Container id to open as, bypassing re-probing (pack-kit multi-container packs). */
+  container?: string;
 }
 
 /**
@@ -96,6 +98,8 @@ export interface FormatPack {
   readonly id: string;
   readonly title: string;
   probe(head: Uint8Array): number | null; // sniff confidence 0..1
+  /** Multi-container packs: which container matched, and at what confidence. */
+  probeContainer?(head: Uint8Array): { container: string; confidence: number } | null;
   schemas(): readonly TableSchema[];
   open(source: ByteSource, opts: OpenOptions): RecordSource;
   readonly queries: readonly PackQuery[];

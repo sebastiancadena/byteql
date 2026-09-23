@@ -1074,7 +1074,15 @@
           />
         </div>
 
-        <div bind:this={resultsToolbarElement} class="results-heading">
+        <!-- `data-result-settle-count` increments on every query that settles (succeeds OR
+             fails); it is the reliable "did the run I just started finish" signal for e2e specs
+             that would otherwise race `session.phase`'s transient `'querying'` value or an
+             elapsed-time readout that can round to the same text twice in a row. -->
+        <div
+          bind:this={resultsToolbarElement}
+          class="results-heading"
+          data-result-settle-count={session.resultSettleCount}
+        >
           <h2>Results</h2>
           <div class="results-heading-meta">
             {#if session.result}

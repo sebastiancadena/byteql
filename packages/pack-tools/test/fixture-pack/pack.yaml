@@ -1,0 +1,13 @@
+version: '0.1'
+id: demo
+title: Demo pack
+spec: demo.tables.yaml
+queries: queries.yaml
+ksy:
+  dir: ksy
+containers:
+  - id: demo
+    framer: demo
+    probe:
+      magic:
+        - { at: 0, hex: aa, confidence: 1 }

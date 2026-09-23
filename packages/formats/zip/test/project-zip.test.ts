@@ -1,7 +1,7 @@
 import { ipcToTable, memoryByteSource } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
-import { parseAndProjectZip } from '../src/project-zip.js';
+import { parseAndProjectZip } from './parse-and-project.js';
 import { buildZip } from './build-zip.js';
 
 const text = (s: string): Uint8Array => new TextEncoder().encode(s);

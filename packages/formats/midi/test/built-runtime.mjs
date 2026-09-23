@@ -5,4 +5,4 @@ const entrypoint = await import('../dist/index.js');
 
 assert.equal(typeof midi.buildSyntheticTrackFile, 'function');
 assert.equal(typeof midi.parseSyntheticTrack, 'function');
-assert.equal(typeof entrypoint.parseAndProjectMidi, 'function');
+assert.equal(typeof entrypoint.midiFormatPack.open, 'function');

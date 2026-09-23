@@ -1,6 +1,8 @@
+import type { RecordParser } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
-import { pcapParserRegistry } from '../src/parsers.js';
+import type { ParserName } from '../src/pack.generated.js';
+import * as wrappers from '../src/wrappers.js';
 import {
   dnsOverTcp,
   dnsQuery,
@@ -58,6 +60,23 @@ interface UdpRoot {
   length: number;
   body: BodyRange;
 }
+
+// The same id -> wrapper table `index.ts` hands `definePack`; `Record<ParserName, ...>` makes the
+// compiler reject a missing or stray id against the ids the spec references.
+const pcapParserRegistry = new Map<string, RecordParser>(
+  Object.entries({
+    ethernet_frame: wrappers.ethernetFrame,
+    ipv4_packet: wrappers.ipv4Packet,
+    ipv6_packet: wrappers.ipv6Packet,
+    tcp_segment: wrappers.tcpSegment,
+    udp_datagram: wrappers.udpDatagram,
+    dns_packet: wrappers.dnsPacket,
+    dns_tcp_message: wrappers.dnsTcpMessage,
+    icmp_packet: wrappers.icmpPacket,
+    icmpv6_packet: wrappers.icmpv6Packet,
+    tls_client_hello: wrappers.tlsClientHello,
+  } satisfies Record<ParserName, RecordParser>),
+);
 
 function parseWith<T>(id: string, bytes: Uint8Array): T {
   const parser = pcapParserRegistry.get(id);

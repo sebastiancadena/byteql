@@ -43,7 +43,7 @@ describe('parsePcapContainer', () => {
     expect(c.packets).toHaveLength(1);
     expect(c.packets[0].body.start).toBe(40); // 24 global + 16 record header
     expect([...c.packets[0].body.bytes]).toEqual([1, 2, 3, 4]);
-    expect(c.packets[0].tsFracUs).toBe(500000);
+    expect(c.packets[0].ts_frac_us).toBe(500000);
   });
 
   it('normalizes ns fraction to microseconds', async () => {
@@ -54,7 +54,7 @@ describe('parsePcapContainer', () => {
         packets: [{ tsSec: 0, tsFrac: 2500, data: new Uint8Array([0]) }],
       }),
     );
-    expect(c.packets[0].tsFracUs).toBe(2); // 2500 ns → 2 µs (integer)
+    expect(c.packets[0].ts_frac_us).toBe(2); // 2500 ns → 2 µs (integer)
   });
 
   it('rewrites raw-IP linktype 101 to 228/229 by peeking the version nibble', async () => {
@@ -84,6 +84,17 @@ describe('parsePcapContainer', () => {
   it('throws on unknown magic', async () => {
     const bad = new Uint8Array(24); // all-zero magic
     await expect(parsePcapContainer(bad)).rejects.toThrow(/UNRECOGNIZED_PCAP_MAGIC/);
+    await expect(parsePcapContainer(bad)).rejects.toMatchObject({
+      name: 'PackFatalError',
+      code: 'UNRECOGNIZED_PCAP_MAGIC',
+    });
+  });
+
+  it('throws a fatal error on a header shorter than 24 bytes', async () => {
+    await expect(parsePcapContainer(new Uint8Array([0xd4, 0xc3, 0xb2, 0xa1]))).rejects.toMatchObject({
+      name: 'PackFatalError',
+      code: 'UNRECOGNIZED_PCAP_MAGIC',
+    });
   });
 });
 
@@ -119,9 +130,9 @@ describe('createPcapFramer', () => {
     framed.forEach((packet, i) => {
       const want = expected.packets[i];
       expect(packet.index).toBe(want.index);
-      expect(packet.tsSec).toBe(want.tsSec);
-      expect(packet.tsFracUs).toBe(want.tsFracUs);
-      expect(packet.inclLen).toBe(want.inclLen);
+      expect(packet.ts_sec).toBe(want.ts_sec);
+      expect(packet.ts_frac_us).toBe(want.ts_frac_us);
+      expect(packet.incl_len).toBe(want.incl_len);
       expect(packet.recordStart).toBe(want.recordStart);
       expect(packet.bodyEnd).toBe(want.bodyEnd);
       expect(packet.body.start).toBe(want.body.start);
@@ -193,7 +204,7 @@ describe('createPcapFramer', () => {
     const framed = await drain(framer);
 
     expect(framed).toHaveLength(1);
-    expect(framed[0].inclLen).toBe(100);
+    expect(framed[0].incl_len).toBe(100);
     expect([...framed[0].body.bytes]).toEqual([...bigBody]);
     expect(framer.bytesConsumed()).toBe(bytes.length);
   });

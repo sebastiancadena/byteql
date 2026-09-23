@@ -1,0 +1,232 @@
+{
+  "tables": {
+    "central_dir_entries": {
+      "fields": [
+        {
+          "name": "central_dir_id",
+          "type": "Int64"
+        },
+        {
+          "name": "version_made_by",
+          "type": "Uint16"
+        },
+        {
+          "name": "version_needed",
+          "type": "Uint16"
+        },
+        {
+          "name": "flags",
+          "type": "Uint16"
+        },
+        {
+          "name": "compression_method",
+          "type": "Uint16"
+        },
+        {
+          "name": "compression",
+          "type": "Utf8"
+        },
+        {
+          "name": "crc32",
+          "type": "Uint32"
+        },
+        {
+          "name": "compressed_size",
+          "type": "Uint32"
+        },
+        {
+          "name": "uncompressed_size",
+          "type": "Uint32"
+        },
+        {
+          "name": "mod_time",
+          "type": "Timestamp<MICROSECOND>"
+        },
+        {
+          "name": "file_name",
+          "type": "Utf8"
+        },
+        {
+          "name": "extra_len",
+          "type": "Uint16"
+        },
+        {
+          "name": "disk_start",
+          "type": "Uint16"
+        },
+        {
+          "name": "internal_attrs",
+          "type": "Uint16"
+        },
+        {
+          "name": "external_attrs",
+          "type": "Uint32"
+        },
+        {
+          "name": "ofs_local_header",
+          "type": "Uint32"
+        },
+        {
+          "name": "comment",
+          "type": "Utf8"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "end_of_central_dir": {
+      "fields": [
+        {
+          "name": "eocd_id",
+          "type": "Int64"
+        },
+        {
+          "name": "num_entries",
+          "type": "Uint16"
+        },
+        {
+          "name": "central_dir_size",
+          "type": "Uint32"
+        },
+        {
+          "name": "ofs_central_dir",
+          "type": "Uint32"
+        },
+        {
+          "name": "comment",
+          "type": "Utf8"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "0f5dfaf7b347bb74fdbdd3e441794c210dd30476527bbe4a7f34c34cd61b1192",
+      "head": [
+        [
+          "1n",
+          0,
+          0,
+          0,
+          "",
+          "0n",
+          "22n"
+        ]
+      ]
+    },
+    "errors": {
+      "fields": [
+        {
+          "name": "error_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stage",
+          "type": "Utf8"
+        },
+        {
+          "name": "record",
+          "type": "Int32"
+        },
+        {
+          "name": "code",
+          "type": "Utf8"
+        },
+        {
+          "name": "message",
+          "type": "Utf8"
+        },
+        {
+          "name": "recoverable",
+          "type": "Bool"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "local_files": {
+      "fields": [
+        {
+          "name": "local_file_id",
+          "type": "Int64"
+        },
+        {
+          "name": "version_needed",
+          "type": "Uint16"
+        },
+        {
+          "name": "flags",
+          "type": "Uint16"
+        },
+        {
+          "name": "compression_method",
+          "type": "Uint16"
+        },
+        {
+          "name": "compression",
+          "type": "Utf8"
+        },
+        {
+          "name": "crc32",
+          "type": "Uint32"
+        },
+        {
+          "name": "compressed_size",
+          "type": "Uint32"
+        },
+        {
+          "name": "uncompressed_size",
+          "type": "Uint32"
+        },
+        {
+          "name": "mod_time",
+          "type": "Timestamp<MICROSECOND>"
+        },
+        {
+          "name": "file_name",
+          "type": "Utf8"
+        },
+        {
+          "name": "extra_len",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    }
+  },
+  "issues": [],
+  "capabilities": {}
+}

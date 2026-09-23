@@ -52,6 +52,10 @@ export interface ExpressionContext {
   readonly _parent?: unknown;
   readonly indexes?: readonly number[];
   readonly state?: Readonly<Record<string, unknown>>;
+  // Called when a MemberExpression reads a key that is absent on a real object (present null
+  // is never reported — see readMember). Strict-field checking (session.ts's `strictFields`
+  // option) wires this to throw a ProjectionFieldError from emitRow's column context.
+  readonly onMissingMember?: (key: string, object: object) => void;
 }
 
 const compiledAsts = new WeakMap<CompiledExpression, Expression>();
@@ -421,14 +425,24 @@ const readOwnDataProperty = (value: unknown, key: string): unknown | typeof miss
 const snakeToCamel = (key: string): string =>
   key.replace(/_([a-z0-9])/gu, (_match, character: string) => character.toUpperCase());
 
-const readMember = (value: unknown, key: string): unknown => {
+const readMember = (value: unknown, key: string, context: ExpressionContext): unknown => {
   const exact = readOwnDataProperty(value, key);
   if (exact !== missingProperty) return exact ?? null;
 
   const camelKey = snakeToCamel(key);
-  if (camelKey === key) return null;
-  const camel = readOwnDataProperty(value, camelKey);
-  return camel === missingProperty ? null : (camel ?? null);
+  if (camelKey !== key) {
+    const camel = readOwnDataProperty(value, camelKey);
+    if (camel !== missingProperty) return camel ?? null;
+  }
+
+  // Missing on a real object — not on null/undefined, which is a present null (e.g.
+  // `_.inner.b` when `inner` itself is null): readOwnDataProperty already returned
+  // missingProperty for that case without this branch's help, but only a genuine object
+  // is a naming mismatch worth reporting to strict mode.
+  if (value !== null && value !== undefined && typeof value === 'object') {
+    context.onMissingMember?.(key, value);
+  }
+  return null;
 };
 
 const readIdentifier = (name: string, context: ExpressionContext): unknown => {
@@ -697,7 +711,7 @@ const evaluateNode = (node: Expression, context: ExpressionContext): unknown => 
       return readIdentifier((node as Identifier).name, context);
     case 'MemberExpression': {
       const member = node as MemberExpression;
-      return readMember(evaluateNode(member.object, context), (member.property as Identifier).name);
+      return readMember(evaluateNode(member.object, context), (member.property as Identifier).name, context);
     }
     case 'UnaryExpression':
       return evaluateUnary(node as UnaryExpression, context);

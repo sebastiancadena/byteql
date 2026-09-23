@@ -1,27 +1,12 @@
 /**
- * Kaitai layer wrappers. Each wrapper parses one network layer's payload bytes
- * with the compiled `gen/` parser and flattens the tree into the simple
- * projection node the pcap YAML reads (see `parsers.ts` for the registry).
- *
- * `body: { bytes, start }` is a `PayloadRange` the projection engine dissects
- * deeper: `bytes` is the layer's payload (a Kaitai `subarray` view) and `start`
- * is that payload's offset **relative to the buffer this wrapper was handed**
- * (i.e. relative to `bytes[0]`). That is exactly Kaitai's `_debug.<field>.start`
- * (`this._io.pos` at the field), and NOT `ioOffset + start`: the engine composes
- * absolute provenance as `baseOffset + payload.start`, and because the real
- * pipeline hands each wrapper a non-zero-`byteOffset` view of the file buffer
- * (see `container.ts`), `ioOffset` is the absolute ArrayBuffer offset — adding it
- * would double-count the enclosing layers. Verified in `wrappers.test.ts`.
- *
- * Wrappers let `_read()` throw on malformed bytes; the engine turns the throw
- * into a `DISSECT_PARSE_FAILED` errors row. None of them attach a `resolve` —
- * the layer tables are all `$`-anchored, so the engine's default (the full
- * payload extent) is the correct provenance for every dissected row.
+ * Kaitai layer wrappers: each parses one network layer's payload with the compiled `gen/`
+ * parser and flattens it into the node the pcap YAML reads; `body` is a `payload()` range (see
+ * `@byteql/core/kaitai` for the offset convention). Every root is total: optional fields are
+ * explicit `null` when absent, so strict-field projection never sees a missing key.
  */
 
-import KaitaiStream from 'kaitai-struct/KaitaiStream.js';
-
 import type { RecordParser } from '@byteql/core';
+import { kaitaiParse as parse, payload } from '@byteql/core/kaitai';
 
 import dnsModule from '../gen/DnsPacket.js';
 import ethernetModule from '../gen/EthernetFrame.js';
@@ -51,34 +36,9 @@ const TLS_HANDSHAKE_CLIENT_HELLO = 0x01;
 /** Bytes to skip past the 5-byte TLS record header + 4-byte handshake header. */
 const TLS_CLIENT_HELLO_BODY_OFFSET = 9;
 
-interface KaitaiParser {
-  _read(): void;
-}
-
-/** Constructs `GenClass` over `bytes` and runs `_read()` (may throw). */
-function parse<T extends KaitaiParser>(GenClass: new (stream: unknown) => T, bytes: Uint8Array): T {
-  const stream = new KaitaiStream(
-    new DataView(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength),
-  );
-  const parsed = new GenClass(stream);
-  parsed._read();
-  return parsed;
-}
-
-/** A parsed node whose `body` was read from the top-level stream. */
-interface WithBody {
-  body: Uint8Array;
-  _debug: { body: { start: number } };
-}
-
-/** The payload-relative `{ bytes, start }` range the engine dissects deeper. */
-function bodyRange(parsed: WithBody): { bytes: Uint8Array; start: number } {
-  return { bytes: parsed.body, start: parsed._debug.body.start };
-}
-
 export const ethernetFrame: RecordParser = (bytes) => {
   const parsed = parse(EthernetFrame, bytes);
-  return { root: { ether_type: parsed.etherType, body: bodyRange(parsed) } };
+  return { root: { ether_type: parsed.etherType, body: payload(parsed, 'body') } };
 };
 
 export const ipv4Packet: RecordParser = (bytes) => {
@@ -92,7 +52,7 @@ export const ipv4Packet: RecordParser = (bytes) => {
       is_v4: true,
       src_addr: parsed.srcIpAddr,
       dst_addr: parsed.dstIpAddr,
-      body: bodyRange(parsed),
+      body: payload(parsed, 'body'),
     },
   };
 };
@@ -108,7 +68,7 @@ export const ipv6Packet: RecordParser = (bytes) => {
       is_v4: false,
       src_addr: parsed.srcIpv6Addr,
       dst_addr: parsed.dstIpv6Addr,
-      body: bodyRange(parsed),
+      body: payload(parsed, 'body'),
     },
   };
 };
@@ -137,7 +97,7 @@ export const tcpSegment: RecordParser = (bytes) => {
       syn: f.syn,
       flags: tcpFlags(flagsByte),
       window_size: parsed.windowSize,
-      body: bodyRange(parsed),
+      body: payload(parsed, 'body'),
     },
   };
 };
@@ -149,7 +109,7 @@ export const udpDatagram: RecordParser = (bytes) => {
       src_port: parsed.srcPort,
       dst_port: parsed.dstPort,
       length: parsed.length,
-      body: bodyRange(parsed),
+      body: payload(parsed, 'body'),
     },
   };
 };
