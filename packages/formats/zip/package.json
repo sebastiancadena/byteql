@@ -10,14 +10,14 @@
     }
   },
   "scripts": {
-    "generate:pack": "node scripts/generate-pack.mjs",
-    "build": "pnpm generate:pack && tsc -p tsconfig.json",
-    "check": "pnpm --filter @byteql/core build && pnpm generate:pack && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm --filter @byteql/core build && pnpm generate:pack && vitest"
+    "build": "byteql-pack build && tsc -p tsconfig.json",
+    "check": "pnpm --filter @byteql/core build && byteql-pack build && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm --filter @byteql/core build && byteql-pack build && vitest"
   },
   "dependencies": {
-    "@byteql/core": "workspace:*",
-    "apache-arrow": "^21.1.0",
-    "yaml": "^2.9.0"
+    "@byteql/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@byteql/pack-tools": "workspace:*"
   }
 }

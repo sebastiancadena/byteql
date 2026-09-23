@@ -186,12 +186,10 @@ importers:
       '@byteql/core':
         specifier: workspace:*
         version: link:../../core
-      apache-arrow:
-        specifier: ^21.1.0
-        version: 21.1.0
-      yaml:
-        specifier: ^2.9.0
-        version: 2.9.0
+    devDependencies:
+      '@byteql/pack-tools':
+        specifier: workspace:*
+        version: link:../../pack-tools
 
   packages/pack-tools:
     dependencies:

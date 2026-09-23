@@ -1,7 +1,7 @@
 import { memoryByteSource } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
-import { zipFormatPack } from '../src/pack.js';
+import { zipFormatPack } from '../src/index.js';
 import { buildZip } from './build-zip.js';
 
 const text = (s: string): Uint8Array => new TextEncoder().encode(s);

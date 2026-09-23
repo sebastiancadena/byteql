@@ -73,6 +73,13 @@ const viewOf = (bytes: Uint8Array): DataView =>
 
 const decodeText = (bytes: Uint8Array): string => new TextDecoder('utf-8').decode(bytes);
 
+// A length field (name/extra/comment) read from a corrupted or truncated record can claim more
+// bytes than the source actually has, which would otherwise push a record's computed `_range.end`
+// past the file's true size — an out-of-bounds provenance range the engine and its consumers (the
+// hex pane, byte-range assertions) never expect. Every `_range.end` computed from such a field is
+// clamped to `size` here.
+const clampEnd = (end: number, size: number): number => Math.min(end, size);
+
 /** Reads the whole central directory + tail into memory; member bodies are never read. */
 export async function readZipContainer(source: ByteSource): Promise<ZipContainer> {
   const issues: ZipIssue[] = [];
@@ -108,7 +115,7 @@ export async function readZipContainer(source: ByteSource): Promise<ZipContainer
     central_dir_size: tailView.getUint32(eocdRel + 12, true),
     ofs_central_dir: tailView.getUint32(eocdRel + 16, true),
     comment: decodeText(tail.subarray(eocdRel + 22, eocdRel + 22 + commentLen)),
-    _range: { start: eocdOffset, end: eocdOffset + EOCD_MIN + commentLen },
+    _range: { start: eocdOffset, end: clampEnd(eocdOffset + EOCD_MIN + commentLen, size) },
   };
 
   // 2. Read the central directory in one contiguous range.
@@ -140,7 +147,7 @@ export async function readZipContainer(source: ByteSource): Promise<ZipContainer
       ofs_local_header: cdView.getUint32(p + 42, true),
       file_name: decodeText(cd.subarray(nameStart, nameStart + nameLen)),
       comment: decodeText(cd.subarray(nameStart + nameLen + extraLen, recEnd)),
-      _range: { start: absStart, end: eocd.ofs_central_dir + recEnd },
+      _range: { start: absStart, end: clampEnd(eocd.ofs_central_dir + recEnd, size) },
     });
     p = recEnd;
   }
@@ -185,7 +192,7 @@ export async function readZipContainer(source: ByteSource): Promise<ZipContainer
       file_name: decodeText(nameBytes),
       _range: {
         start: entry.ofs_local_header,
-        end: entry.ofs_local_header + 30 + nameLen + extraLen,
+        end: clampEnd(entry.ofs_local_header + 30 + nameLen + extraLen, size),
       },
     });
   }
@@ -218,7 +225,7 @@ async function forwardScan(source: ByteSource, issues: ZipIssue[]): Promise<Omit
       uncompressed_size: hv.getUint32(22, true),
       extra_len: extraLen,
       file_name: decodeText(nameBytes),
-      _range: { start: offset, end: offset + 30 + nameLen + extraLen },
+      _range: { start: offset, end: clampEnd(offset + 30 + nameLen + extraLen, size) },
     });
     if ((flags & FLAG_DATA_DESCRIPTOR) !== 0 && compressed === 0) {
       issues.push({
