@@ -74,6 +74,7 @@ export type {
   CompiledChainLink,
   CompiledDissect,
   CompiledProjection,
+  CompiledProjectionTable,
   CompiledStream,
   ProjectedTable,
   ProvenanceResolver,
@@ -86,3 +87,5 @@ export type {
   ProjectionSession,
   ProjectionSessionOptions,
 } from './projection/session.js';
+
+export * from './pack/index.js';

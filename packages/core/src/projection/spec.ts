@@ -27,6 +27,7 @@ export interface ProjectionColumnSpec {
   expr: string;
   type: ArrowTypeName;
   when?: string;
+  nullable?: boolean;
 }
 
 export interface ParentKeySpec {
@@ -75,7 +76,7 @@ export interface TableSpec {
 }
 
 export interface ProjectionSpec {
-  version: '0.1' | '0.2' | '0.3';
+  version: '0.1' | '0.2' | '0.3' | '0.4';
   format: string;
   tables: TableSpec[];
   dissect?: DissectSpec[];
@@ -111,6 +112,7 @@ const columnSpec = z.strictObject({
   expr: nonEmptyString,
   type: arrowType,
   when: nonEmptyString.optional(),
+  nullable: z.boolean().optional(),
 });
 
 const namedRecord = <T extends z.ZodType>(value: T) =>
@@ -189,8 +191,11 @@ const projectionSpec = z.strictObject({
       z.literal(0.2),
       z.literal('0.3'),
       z.literal(0.3),
+      z.literal('0.4'),
+      z.literal(0.4),
     ])
-    .transform((value): '0.1' | '0.2' | '0.3' => {
+    .transform((value): '0.1' | '0.2' | '0.3' | '0.4' => {
+      if (value === '0.4' || value === 0.4) return '0.4';
       if (value === '0.3' || value === 0.3) return '0.3';
       if (value === '0.2' || value === 0.2) return '0.2';
       return '0.1';
@@ -299,7 +304,7 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
     }
   }
 
-  if (parsed.data.version !== '0.3') {
+  if (parsed.data.version === '0.1' || parsed.data.version === '0.2') {
     if (parsed.data.streams !== undefined) {
       throw new ProjectionCompileError(
         'PROJECTION_VERSION_REQUIRED',
@@ -316,6 +321,20 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
         `dissect.${entryIndex}.chain`,
         'stream chain links require version 0.3',
       );
+    }
+  }
+
+  if (parsed.data.version !== '0.4') {
+    for (const [tableIndex, table] of parsed.data.tables.entries()) {
+      for (const [name, column] of Object.entries(table.columns)) {
+        if (column.nullable !== undefined) {
+          throw new ProjectionCompileError(
+            'PROJECTION_VERSION_REQUIRED',
+            `tables.${tableIndex}.columns.${name}.nullable`,
+            'nullable requires version 0.4',
+          );
+        }
+      }
     }
   }
 

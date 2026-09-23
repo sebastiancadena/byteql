@@ -48,9 +48,10 @@ interface CompiledColumn {
   readonly expr: CompiledExpression;
   readonly type: ArrowTypeName;
   readonly when?: CompiledExpression;
+  readonly nullable: boolean | undefined;
 }
 
-interface CompiledProjectionTable {
+export interface CompiledProjectionTable {
   readonly name: string;
   readonly rows: CompiledAnchor;
   readonly where?: CompiledExpression;
@@ -102,6 +103,7 @@ export interface CompiledDissect {
 }
 
 export interface CompiledProjection {
+  readonly specVersion: ProjectionSpec['version'];
   readonly format: string;
   readonly tables: readonly CompiledProjectionTable[];
   readonly rootTables: readonly CompiledProjectionTable[];
@@ -321,6 +323,7 @@ export const compileProjection = (
         name,
         expr: compileCheckedExpression(column.expr, declaredState, `${path}.expr`),
         type: column.type,
+        nullable: column.nullable,
         ...(column.when === undefined
           ? {}
           : { when: compileCheckedExpression(column.when, declaredState, `${path}.when`) }),
@@ -942,6 +945,7 @@ export const compileProjection = (
   );
 
   return Object.freeze({
+    specVersion: spec.version,
     format: spec.format,
     tables: Object.freeze(tables),
     rootTables: Object.freeze(rootTables),
