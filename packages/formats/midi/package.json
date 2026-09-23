@@ -10,11 +10,9 @@
     }
   },
   "scripts": {
-    "compile:ksy": "node scripts/compile.mjs",
-    "generate:pack": "node scripts/generate-pack.mjs",
-    "build": "pnpm compile:ksy && pnpm generate:pack && tsc -p tsconfig.json",
-    "check": "pnpm --filter @byteql/core build && pnpm compile:ksy && pnpm generate:pack && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm --filter @byteql/core build && pnpm compile:ksy && pnpm generate:pack && vitest && pnpm test:built",
+    "build": "byteql-pack build && tsc -p tsconfig.json",
+    "check": "pnpm --filter @byteql/core build && byteql-pack build && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm --filter @byteql/core build && byteql-pack build && vitest && pnpm test:built",
     "test:built": "pnpm build && node test/built-runtime.mjs"
   },
   "dependencies": {
@@ -23,6 +21,6 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "kaitai-struct-compiler": "^0.11.0"
+    "@byteql/pack-tools": "workspace:*"
   }
 }

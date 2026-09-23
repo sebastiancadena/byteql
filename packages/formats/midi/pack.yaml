@@ -1,0 +1,16 @@
+version: '0.1'
+id: standard_midi_file
+title: Standard MIDI file
+spec: midi.tables.yaml
+queries: queries.yaml
+capabilities: [audio]
+errors: { ordinal: track }
+ksy:
+  dir: .
+  roots: [standard_midi_file]
+containers:
+  - id: smf
+    framer: smf
+    probe:
+      magic:
+        - { at: 0, hex: 4d546864, confidence: 1 }

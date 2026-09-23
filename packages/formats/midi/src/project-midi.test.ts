@@ -1,12 +1,13 @@
 import { readFile } from 'node:fs/promises';
 
-import { ipcToTable, parseProjectionSpec, type TableTransfer } from '@byteql/core';
+import { ipcToTable, memoryByteSource, parseProjectionSpec, type TableTransfer } from '@byteql/core';
 import { parse as parseYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 import { largeMidiFixture, midiFile } from '../test/fixtures.js';
-import midiQueries from './midi-queries.generated.js';
-import { parseAndProjectMidi } from './project-midi.js';
+import { parseAndProjectMidi } from '../test/parse-and-project.js';
+import { midiFormatPack } from './index.js';
+import { definition } from './pack.generated.js';
 
 const fixtureUrl = (name: string): URL => new URL(`../test/fixtures/${name}`, import.meta.url);
 const packUrl = (name: string): URL => new URL(`../${name}`, import.meta.url);
@@ -125,7 +126,7 @@ describe('MIDI format pack', () => {
     }
     expect(pack.queries.find((query) => query.id === 'drums')!.sql).toContain('e.channel = 9');
     expect(pack.queries.find((query) => query.id === 'bassline')!.sql).toContain('e.note < 48');
-    expect(midiQueries).toEqual(pack.queries);
+    expect(definition.queries).toEqual(pack.queries);
   });
 });
 
@@ -140,7 +141,7 @@ describe('parseAndProjectMidi', () => {
       enabled: false,
       reason: 'SMPTE time division is not supported by the Phase 0 player.',
     });
-    expect(result.queries).toEqual(midiQueries);
+    expect(result.queries).toEqual(definition.queries);
     expect(rows(transfer(result.tables, 'header'))).toEqual([expectedHeader(0, 1, -6360)]);
     expect(rows(transfer(result.tables, 'events'))).toEqual([
       event({
@@ -750,9 +751,13 @@ describe('parseAndProjectMidi', () => {
   it('rejects Type 2 as unsupported rather than corrupt', async () => {
     const bytes = midiFile({ format: 2, division: 480, tracks: [Uint8Array.of(0, 0xff, 0x2f, 0)] });
 
+    // The framer now reports this as a fatal, unreadable-container error (PackFatalError), not a
+    // MidiParseError: it isn't derived from the container's own offset-tagged parse failure, so
+    // there is no `offset` field any more — the message text itself is unchanged.
     await expect(parseAndProjectMidi(bytes, new AbortController().signal)).rejects.toMatchObject({
+      name: 'PackFatalError',
       code: 'UNSUPPORTED_MIDI_TYPE',
-      offset: 8,
+      message: 'Type 2 files contain independent sequences and are not supported in Phase 0',
     });
   });
 
@@ -772,11 +777,21 @@ describe('parseAndProjectMidi', () => {
     expect(ipcToTable(events.ipc).batches.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('observes AbortSignal after yielding between tracks', async () => {
+  // MIDI's framer yields once per track (a handful of records even for a huge file), so the
+  // generic driver's record-count/byte-threshold yield cadence never triggers a real macrotask
+  // boundary mid-parse for this format — a `setTimeout(0)`-scheduled abort can no longer race a
+  // small fixture's parse the way the old, MIDI-specific cooperative-yield loop allowed. Abort
+  // observance mid-stream is exercised deterministically here instead (and, generically, for
+  // every fixture by the conformance kit's "aborts cleanly" case in test/conformance.test.ts).
+  it('observes an abort requested between drained batches', async () => {
     const controller = new AbortController();
-    const parsing = parseAndProjectMidi(await loadFixture('demo.mid'), controller.signal);
-    setTimeout(() => controller.abort(), 0);
+    const source = midiFormatPack.open(memoryByteSource(await loadFixture('demo.mid')), {
+      signal: controller.signal,
+    });
 
-    await expect(parsing).rejects.toMatchObject({ name: 'AbortError' });
+    await source.nextBatch();
+    controller.abort();
+
+    await expect(source.nextBatch()).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

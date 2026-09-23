@@ -1,10 +1,21 @@
+import { definePack } from '@byteql/core';
+
+import { smfFramer } from './framer.js';
+import { definition, type Hooks } from './pack.generated.js';
+
+export const midiFormatPack = definePack<Hooks>(definition, {
+  framers: { smf: smfFramer },
+  parsers: {},
+  keyExtractors: {},
+  streamFramers: {},
+  probes: {},
+});
+export const midiQueries = definition.queries;
 export { parseMidiContainer } from './container.js';
 export { MidiParseError } from './errors.js';
 export { normalizeTrack } from './normalize-track.js';
-export { default as midiQueries } from './midi-queries.generated.js';
-export { midiFormatPack } from './pack.js';
-export { parseAndProjectMidi } from './project-midi.js';
-export type { MidiParseProgress, MidiProgressCallback } from './project-midi.js';
+export { decodeVlq } from './vlq.js';
+export type { DecodedVlq } from './vlq.js';
 export type {
   MidiContainer,
   MidiHeader,
@@ -13,5 +24,3 @@ export type {
   SourceRange,
   TrackChunk,
 } from './types.js';
-export { decodeVlq } from './vlq.js';
-export type { DecodedVlq } from './vlq.js';
