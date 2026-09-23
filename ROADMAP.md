@@ -62,8 +62,11 @@ removes a practical import barrier.
 pcapng is now a second container of the existing `pcap` pack, sharing one spec, dissect graph,
 streams, and queries. A new `interfaces` table carries one row per Interface Description Block
 (or one synthetic row per classic capture); `packets` gains `interface_id`, `comment`, and
-`ts_ns`. Streaming intake and exact source-byte provenance are preserved; the 1 GB benchmark
-target is still met for both containers.
+`ts_ns`. Streaming intake and exact source-byte provenance are preserved, and the 1 GB benchmark
+target (< 60 s) is still met for both containers. Classic pcap did regress, though: two
+interleaved A/B runs (3 samples each) against the commit before this work measured medians of
+58.8 s/GB against 56.4 s/GB, about 4% slower. The cause is the three new per-packet columns,
+leaving about 2% headroom under the target.
 
 Evidence: [pcapng pack tests](packages/formats/pcap/test/pcapng-pack.test.ts) and
 [pcap e2e](apps/web/e2e/pcap.spec.ts).

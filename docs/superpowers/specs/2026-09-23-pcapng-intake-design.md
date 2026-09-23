@@ -215,6 +215,10 @@ measured against the same < 60 s target. The bigint `ts_ns` arithmetic is the ho
 watch; if it threatens the target, fast paths for `10^-6` and `10^-9` are allowed as long as
 results stay identical. Both numbers go in this spec's implementation notes.
 
+As shipped, this goal was not met: classic pcap measures about 4% slower than before this work,
+still under the 60 s target. The cause is the three new `packets` columns, not timestamp
+arithmetic. See the implementation notes.
+
 ## Testing
 
 - **Fixtures.** A new `test/build-pcapng.ts` builder (beside `build-pcap.ts`) writes SHB, IDB,
@@ -262,21 +266,45 @@ samples. It is vendored under `apps/web/src/assets/` with the same attribution a
 
 ## Implementation notes
 
-**1 GB benchmark, 2026-09-23, Linux arm64, 20 logical processors, Chromium 149.0.7827.0, single
-sample each:**
+**1 GB benchmark A/B, 2026-09-23, Linux arm64, 20 logical processors, Chromium 149.0.7827.0.**
+Classic pcap, `run-scale-bench.mjs --gb 1` (seed 7, 1,000,000,148 bytes), runs strictly one at a
+time and interleaved main/branch. "main" is commit `1f0b8ae`, the commit this branch started from,
+built in a temporary worktree. Parse time in ms/GB:
 
-- `BYTEQL_SCALE_BENCH_SUMMARY gb=1 container=pcap bytes=1000000148 parseElapsedMs=58515.7
-  msPerGb=58515.7 parseTargetMet=true bytesReadFraction=0.017088509470900598
-  readTargetMet=true`
+| Build | Samples | Median | Range |
+|---|---|---|---|
+| main, first A/B | 56,224.1 · 56,654.0 · 56,221.6 | 56,224.1 | 56,221.6–56,654.0 |
+| branch before the final fixes, first A/B | 59,255.0 · 58,769.1 · 58,881.7 | 58,881.7 | 58,769.1–59,255.0 |
+| main, second A/B | 56,695.7 · 56,280.6 · 56,447.7 | 56,447.7 | 56,280.6–56,695.7 |
+| branch with the final fixes, second A/B | 58,751.3 · 58,651.0 · 59,046.4 | 58,751.3 | 58,651.0–59,046.4 |
+| Experiment: the three new `packets` columns removed from the spec | 56,700.0 · 56,478.4 | 56,589.2 | 56,478.4–56,700.0 |
+| Experiment: classic `ts_us` as a Number instead of a bigint | 59,266.3 · 59,064.7 · 60,059.7 | 59,266.3 | 59,064.7–60,059.7 |
+
+**The classic benchmark regresses by about 4%, and the regression is real.** Over all six
+samples of each, the main median is 56,364 ms/GB and the branch median is 58,825 ms/GB (+4.4%,
+about 2.5 s/GB). The ranges do not overlap in either A/B. Classic pcap still meets the < 60 s
+target, with about 2% headroom.
+
+The cause is the three columns this design adds to every `packets` row (`interface_id`,
+`comment`, `ts_ns`): per-row projection, Arrow encoding, and DuckDB ingest for three more columns.
+With those columns removed and nothing else changed, the branch measured the same as main. The
+framer's bigint timestamp work is not the cause. Producing classic `ts_us` as an exact Number,
+which the finding suggested, was measured and gave no gain (the `timestamp_us` builder converts a
+Number to a bigint anyway), so it was not kept. The columns are required by this design, and the
+remaining per-column cost is in `packages/core` (expression evaluation, Arrow builders), which this
+work does not change. The `int64` `packets.interface_id` from the final review costs nothing
+measurable: the framers pass bigint keys, so the column allocates nothing per packet.
+
+pcapng was measured once, before the final fixes:
+
 - `BYTEQL_SCALE_BENCH_SUMMARY gb=1 container=pcapng bytes=1000000484 parseElapsedMs=56487.5
   msPerGb=56487.4 parseTargetMet=true bytesReadFraction=0.01638399207014784
   readTargetMet=true`
 
-The `toNs` fast path this design allowed for was not needed: bigint `ts_ns` arithmetic did not
-threaten the target for either container. Classic pcap is now at 58.5 s/GB, about 2.5% under the
-60 s target — it measured ~56 s/GB before this branch and 44 s/GB in July, so headroom is nearly
-gone. This is a single-sample measurement, not a trend, but worth tracking before the next change
-that touches the hot parse path.
+The `toNs` fast path this design allowed for was not needed: pcapng meets the target, and the
+classic regression comes from the added columns, not from timestamp arithmetic. With about 2%
+headroom on classic pcap, measure the next change that touches the hot parse path, or adds
+per-packet columns, before shipping it.
 
 **Engineering discoveries made during Tasks 1–8:**
 

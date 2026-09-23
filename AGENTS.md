@@ -129,7 +129,9 @@ or in `PRD.md` §12.
   (`http2-16-ssl.pcapng`), and the scale bench gained `--container pcapng`. Documented
   limitations: no compressed captures (`.pcapng.gz`/`.pcapng.zst`), Decryption Secrets Blocks and
   Name Resolution Blocks are skipped and not used, only `opt_comment` is decoded from packet
-  options, and no resync after broken block-length framing. Design and implementation notes:
+  options, and no resync after broken block-length framing. The three new `packets` columns
+  cost classic pcap about 4% on the 1 GB bench (median 58.8 s/GB against 56.4 s/GB before, still
+  under 60 s). Design and implementation notes:
   `docs/superpowers/specs/2026-09-23-pcapng-intake-design.md`.
 - **Next (per `ROADMAP.md`):** saved queries. The unaided external Phase 0 test is still open
   supporting work.
