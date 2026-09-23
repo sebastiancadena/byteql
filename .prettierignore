@@ -8,6 +8,8 @@ test-results/
 packages/formats/*/gen/
 packages/formats/*/test/goldens/
 packages/formats/*/test/schemas.snapshot.json
+packages/formats/*/src/pack.generated.ts
+packages/pack-tools/test/fixture-pack/src/
 packages/core/src/testing/goldens/
 crates/
 .rumdl_cache/
