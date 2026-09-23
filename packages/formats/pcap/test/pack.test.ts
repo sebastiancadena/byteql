@@ -1,8 +1,9 @@
-import { memoryByteSource } from '@byteql/core';
+import { ipcToTable, memoryByteSource } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
 import { pcapFormatPack } from '../src/index.js';
 import { buildPcap } from './build-pcap.js';
+import { parseAndProjectPcap } from './parse-and-project.js';
 
 describe('pcapFormatPack', () => {
   it('identifies itself as the pcap pack', () => {
@@ -22,9 +23,10 @@ describe('pcapFormatPack', () => {
     expect(pcapFormatPack.probe(new Uint8Array([0xa1, 0xb2, 0xc3]))).toBeNull();
   });
 
-  it('declares schemas for all eight pcap tables plus errors', () => {
+  it('declares schemas for all eleven pcap tables plus errors', () => {
     expect(pcapFormatPack.schemas().map((schema) => schema.name)).toEqual([
       'packets',
+      'interfaces',
       'ip',
       'tcp',
       'udp',
@@ -67,6 +69,73 @@ describe('pcapFormatPack', () => {
     ]);
     expect(errors.columns.find((column) => column.name === 'record')!.nullable).toBe(true);
     expect(errors.columns.find((column) => column.name === 'error_id')!.nullable).toBe(false);
+  });
+
+  it('declares the interfaces table and the pcapng-era packets columns', () => {
+    const byName = new Map(pcapFormatPack.schemas().map((s) => [s.name, s]));
+    const packets = byName.get('packets')!;
+    expect(packets.columns.map((c) => c.name)).toEqual([
+      'packet_id',
+      'ts',
+      'caplen',
+      'len',
+      'linktype',
+      'interface_id',
+      'comment',
+      'ts_ns',
+      '_src_start',
+      '_src_end',
+    ]);
+    const nullable = (table: string, column: string) =>
+      byName.get(table)!.columns.find((c) => c.name === column)!.nullable;
+    expect(nullable('packets', 'ts')).toBe(true);
+    expect(nullable('packets', 'ts_ns')).toBe(true);
+    expect(nullable('packets', 'comment')).toBe(true);
+    expect(nullable('packets', 'interface_id')).toBe(false);
+    expect(byName.get('interfaces')!.columns.map((c) => c.name)).toEqual([
+      'interface_id',
+      'section',
+      'if_index',
+      'linktype',
+      'snaplen',
+      'name',
+      'description',
+      'os',
+      'comment',
+      'ts_resolution',
+      'ts_offset_s',
+      '_src_start',
+      '_src_end',
+    ]);
+  });
+
+  it('projects one synthetic interface and interface_id/ts_ns for a classic capture', async () => {
+    const bytes = buildPcap({
+      magic: 'le_ns',
+      linktype: 1,
+      packets: [{ tsSec: 3, tsFrac: 123_456_789, data: new Uint8Array(14) }],
+    });
+    const result = await parseAndProjectPcap(bytes, new AbortController().signal);
+    const table = (name: string) => ipcToTable(result.tables.find((t) => t.name === name)!.ipc).toArray();
+    const [iface] = table('interfaces');
+    expect(iface.toJSON()).toMatchObject({
+      // interface_id is the table's synthetic key, so like every other synthetic key
+      // (packet_id, ip_id, stream_id, ...) it is emitted as a uint64 bigint.
+      interface_id: 1n,
+      section: 0,
+      if_index: 0,
+      linktype: 1,
+      snaplen: 65535,
+      name: null,
+      ts_resolution: '10^-9',
+      ts_offset_s: 0n,
+      _src_start: 0n,
+      _src_end: 24n,
+    });
+    const [packet] = table('packets');
+    expect(packet.interface_id).toBe(1n);
+    expect(packet.comment).toBeNull();
+    expect(packet.ts_ns).toBe(3_123_456_789n);
   });
 
   it('declares schemas for streams and stream_segments, and stream_id on tls/dns', () => {

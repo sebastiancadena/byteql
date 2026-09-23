@@ -55,6 +55,7 @@ describe('parsePcapContainer', () => {
       }),
     );
     expect(c.packets[0].ts_frac_us).toBe(2); // 2500 ns → 2 µs (integer)
+    expect(c.packets[0].ts_frac_ns).toBe(2500);
   });
 
   it('rewrites raw-IP linktype 101 to 228/229 by peeking the version nibble', async () => {

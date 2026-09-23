@@ -480,7 +480,8 @@ describe('openPcapSource (incremental)', () => {
       },
     );
     const first = await source.nextBatch();
-    expect(first?.table).toBe('packets');
+    // The classic framer yields the synthetic interface record before any packet.
+    expect(first?.table).toBe('interfaces');
     controller.abort();
     await expect(source.nextBatch()).rejects.toThrow();
   });

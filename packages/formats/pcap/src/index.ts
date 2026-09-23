@@ -1,7 +1,8 @@
 import { definePack } from '@byteql/core';
 
-import { pcapFramer } from './framer.js';
+import { pcapFramer, pcapngFramer } from './framer.js';
 import { definition, type Hooks } from './pack.generated.js';
+import { probePcapng } from './probe.js';
 import { dnsTcp, tcpFlowKey, tlsRecord } from './streams.js';
 import {
   dnsPacket,
@@ -17,7 +18,7 @@ import {
 } from './wrappers.js';
 
 export const pcapFormatPack = definePack<Hooks>(definition, {
-  framers: { pcap: pcapFramer },
+  framers: { pcap: pcapFramer, pcapng: pcapngFramer },
   parsers: {
     ethernet_frame: ethernetFrame,
     ipv4_packet: ipv4Packet,
@@ -32,5 +33,5 @@ export const pcapFormatPack = definePack<Hooks>(definition, {
   },
   keyExtractors: { tcp_flow_key: tcpFlowKey },
   streamFramers: { tls_record: tlsRecord, dns_tcp: dnsTcp },
-  probes: {},
+  probes: { pcapng: probePcapng },
 });

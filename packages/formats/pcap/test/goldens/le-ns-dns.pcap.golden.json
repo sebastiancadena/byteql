@@ -183,6 +183,81 @@
       "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "head": []
     },
+    "interfaces": {
+      "fields": [
+        {
+          "name": "interface_id",
+          "type": "Int64"
+        },
+        {
+          "name": "section",
+          "type": "Uint32"
+        },
+        {
+          "name": "if_index",
+          "type": "Uint32"
+        },
+        {
+          "name": "linktype",
+          "type": "Uint32"
+        },
+        {
+          "name": "snaplen",
+          "type": "Uint32"
+        },
+        {
+          "name": "name",
+          "type": "Utf8"
+        },
+        {
+          "name": "description",
+          "type": "Utf8"
+        },
+        {
+          "name": "os",
+          "type": "Utf8"
+        },
+        {
+          "name": "comment",
+          "type": "Utf8"
+        },
+        {
+          "name": "ts_resolution",
+          "type": "Utf8"
+        },
+        {
+          "name": "ts_offset_s",
+          "type": "Int64"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "4481cbcdec29305ef8c7940da5fd62fab52efb8fedba7d8d12dfb103579976ff",
+      "head": [
+        [
+          "1n",
+          0,
+          0,
+          1,
+          65535,
+          null,
+          null,
+          null,
+          null,
+          "10^-9",
+          "0n",
+          "0n",
+          "24n"
+        ]
+      ]
+    },
     "ip": {
       "fields": [
         {
@@ -266,6 +341,18 @@
           "type": "Uint32"
         },
         {
+          "name": "interface_id",
+          "type": "Int64"
+        },
+        {
+          "name": "comment",
+          "type": "Utf8"
+        },
+        {
+          "name": "ts_ns",
+          "type": "Int64"
+        },
+        {
           "name": "_src_start",
           "type": "Uint64"
         },
@@ -275,7 +362,7 @@
         }
       ],
       "rowCount": 1,
-      "sha256": "2e4a9df887b6a5f9966ed35e42830717626301bd933e80df3404fbe037a7190c",
+      "sha256": "0c8d8f6c1e55c6725424a2a74d5c3d61ac6d03a4f7292921ffd9ea6f5dbe7efb",
       "head": [
         [
           "1n",
@@ -283,6 +370,9 @@
           69,
           69,
           1,
+          "1n",
+          null,
+          "1999999999n",
           "24n",
           "109n"
         ]

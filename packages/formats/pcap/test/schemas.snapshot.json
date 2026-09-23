@@ -50,12 +50,12 @@
       {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_ranges",
@@ -140,12 +140,12 @@
       {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -185,12 +185,82 @@
       {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "name": "interfaces",
+    "columns": [
+      {
+        "name": "interface_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "section",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "if_index",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "linktype",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "snaplen",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "type": "utf8",
         "nullable": true
+      },
+      {
+        "name": "description",
+        "type": "utf8",
+        "nullable": true
+      },
+      {
+        "name": "os",
+        "type": "utf8",
+        "nullable": true
+      },
+      {
+        "name": "comment",
+        "type": "utf8",
+        "nullable": true
+      },
+      {
+        "name": "ts_resolution",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "ts_offset_s",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": false
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": false
       }
     ]
   },
@@ -240,12 +310,12 @@
       {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -260,7 +330,7 @@
       {
         "name": "ts",
         "type": "timestamp_us",
-        "nullable": false
+        "nullable": true
       },
       {
         "name": "caplen",
@@ -278,14 +348,29 @@
         "nullable": false
       },
       {
+        "name": "interface_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "comment",
+        "type": "utf8",
+        "nullable": true
+      },
+      {
+        "name": "ts_ns",
+        "type": "int64",
+        "nullable": true
+      },
+      {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -315,12 +400,12 @@
       {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -380,12 +465,12 @@
       {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_ranges",
@@ -440,12 +525,12 @@
       {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       }
     ]
   },
@@ -480,12 +565,12 @@
       {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_ranges",
@@ -525,12 +610,12 @@
       {
         "name": "_src_start",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       },
       {
         "name": "_src_end",
         "type": "uint64",
-        "nullable": true
+        "nullable": false
       }
     ]
   }

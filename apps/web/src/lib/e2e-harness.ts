@@ -185,9 +185,10 @@ async function spillFileSize(relativePath: string): Promise<number> {
  * speculated might be necessary) overstated reads by exactly `blockSize`'s factor (16384x in
  * the observed run: a 212,835-byte parquet file "read" 1,610,612,736 bytes by that formula,
  * over 7500x the file's own size — physically impossible). Four observations pinned this down:
- *   1. A fresh `select ts, caplen, len from packets where caplen > 900` (3 of 4 data columns)
- *      against a 212,835-byte packets chunk reported `totalFileReadsCold: 98304` — 46% of the
- *      file, a plausible fraction for 3 of 4 columns.
+ *   1. A fresh `select ts, caplen, len from packets where caplen > 900` (3 of the 4 data
+ *      columns `packets` had when this was measured — ts, caplen, len, linktype; it has 7 now,
+ *      after interface_id, comment and ts_ns) against a 212,835-byte packets chunk reported
+ *      `totalFileReadsCold: 98304` — 46% of the file, a plausible fraction for 3 of 4 columns.
  *   2. Re-running the IDENTICAL query changed nothing (`totalFileReadsCold` stayed 98304) —
  *      duckdb's own buffer pool already held those pages, so genuinely nothing was re-fetched.
  *      This is a real *cumulative, deduplicating* counter, not busywork padding.

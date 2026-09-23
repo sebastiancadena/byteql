@@ -22,6 +22,8 @@
 
 import { memoryByteSource, PackFatalError, type ByteSource } from '@byteql/core';
 
+import { createChunkWindow } from './chunk-window.js';
+
 export type PcapByteOrder = 'be' | 'le';
 export type PcapTimeUnit = 'us' | 'ns';
 
@@ -50,6 +52,8 @@ export interface PcapPacket {
   ts_sec: number;
   /** Fractional timestamp, always normalized to microseconds. */
   ts_frac_us: number;
+  /** Exact fractional timestamp in nanoseconds (µs field × 1000, or the ns field as written). */
+  ts_frac_ns: number;
   incl_len: number;
   orig_len: number;
   /** `linktype` from the global header, normalized for raw-IP (101 → 228/229). */
@@ -91,6 +95,13 @@ const LINKTYPE_RAW_IP = 101;
 const LINKTYPE_RAW_IPV4 = 228;
 const LINKTYPE_RAW_IPV6 = 229;
 
+/** Raw-IP linktype 101 → 228 (IPv4) / 229 (IPv6) by peeking the version nibble. */
+export function normalizeLinktype(linktype: number, body: Uint8Array): number {
+  if (linktype !== LINKTYPE_RAW_IP) return linktype;
+  const firstByte = body[0] ?? 0;
+  return firstByte >> 4 === 4 ? LINKTYPE_RAW_IPV4 : LINKTYPE_RAW_IPV6;
+}
+
 function detectMagic(view: DataView): { byteOrder: PcapByteOrder; timeUnit: PcapTimeUnit } {
   const magicBe = view.getUint32(0, false);
   switch (magicBe) {
@@ -118,12 +129,6 @@ export interface PcapFramer {
   issues(): readonly PcapFramingIssue[];
   /** Absolute offset up to which records have been successfully framed. */
   bytesConsumed(): number;
-}
-
-/** A chunk-window read, and whether the returned bytes are a view into the mutable `chunk`. */
-interface EnsuredRead {
-  bytes: Uint8Array;
-  isChunkView: boolean;
 }
 
 /**
@@ -156,34 +161,10 @@ export async function createPcapFramer(
 
   const issues: PcapFramingIssue[] = [];
 
-  // The current chunk window: `chunk[i]` is absolute offset `chunkStart + i`.
-  // `generation` bumps every time `chunk` is reassigned by a reload, so a
-  // record's framing can tell whether the chunk it started reading from is
-  // still the one its body view points into.
-  let chunk: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
-  let chunkStart = GLOBAL_HEADER_SIZE;
-  let generation = 0;
+  const window = createChunkWindow(source, chunkBytes, GLOBAL_HEADER_SIZE);
   let cursor = GLOBAL_HEADER_SIZE;
   let index = 0;
   let stopped = false;
-
-  /** Returns `[absoluteStart, absoluteStart + length)`, reloading the chunk window if needed. */
-  const ensure = async (absoluteStart: number, length: number): Promise<EnsuredRead> => {
-    const within = absoluteStart - chunkStart;
-    if (within >= 0 && within + length <= chunk.length) {
-      return { bytes: chunk.subarray(within, within + length), isChunkView: true };
-    }
-    if (length > chunkBytes) {
-      // A single record body larger than one chunk: read it directly rather
-      // than growing the shared window. Already an isolated copy — safe to
-      // return as-is, no reload/generation bump needed.
-      return { bytes: await source.read(absoluteStart, length), isChunkView: false };
-    }
-    chunkStart = absoluteStart;
-    chunk = await source.read(absoluteStart, Math.max(chunkBytes, length));
-    generation += 1;
-    return { bytes: chunk.subarray(0, length), isChunkView: true };
-  };
 
   const next = async (): Promise<PcapPacket | null> => {
     if (stopped) return null;
@@ -205,8 +186,8 @@ export async function createPcapFramer(
       return null;
     }
 
-    const generationAtStart = generation;
-    const headerRead = await ensure(recordStart, RECORD_HEADER_SIZE);
+    const generationAtStart = window.generation;
+    const headerRead = await window.ensure(recordStart, RECORD_HEADER_SIZE);
     const headerBytes = headerRead.bytes;
     const headerView = new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
     const tsSec = headerView.getUint32(0, littleEndian);
@@ -227,24 +208,19 @@ export async function createPcapFramer(
       return null;
     }
 
-    const bodyRead = await ensure(bodyStart, inclLen);
+    const bodyRead = await window.ensure(bodyStart, inclLen);
     // The record straddled the chunk edge it entered with (a reload happened
     // while framing it): the body view points into a chunk window that a
     // later `next()` call may recycle, so copy it now. Oversized dedicated
     // reads (`isChunkView === false`) are already isolated copies.
-    const bodyBytes =
-      bodyRead.isChunkView && generation !== generationAtStart ? bodyRead.bytes.slice() : bodyRead.bytes;
-
-    let packetLinktype = header.linktype;
-    if (header.linktype === LINKTYPE_RAW_IP) {
-      const firstByte = bodyBytes[0] ?? 0;
-      packetLinktype = firstByte >> 4 === 4 ? LINKTYPE_RAW_IPV4 : LINKTYPE_RAW_IPV6;
-    }
+    const bodyBytes = window.stable(bodyRead, generationAtStart);
+    const packetLinktype = normalizeLinktype(header.linktype, bodyBytes);
 
     const packet: PcapPacket = {
       index,
       ts_sec: tsSec,
       ts_frac_us: timeUnit === 'ns' ? Math.floor(tsUsecOrNsec / 1000) : tsUsecOrNsec,
+      ts_frac_ns: timeUnit === 'ns' ? tsUsecOrNsec : tsUsecOrNsec * 1000,
       incl_len: inclLen,
       orig_len: origLen,
       linktype: packetLinktype,

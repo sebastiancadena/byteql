@@ -49,7 +49,7 @@ Current contract:
 Evidence: [hex-provenance e2e](apps/web/e2e/hex-provenance.spec.ts) and
 [exact provenance design](docs/superpowers/specs/2026-09-22-exact-reassembled-provenance-design.md).
 
-### 3. Add pcapng intake
+### 3. Add pcapng intake — done (2026-09-23)
 
 The current probe accepts only classic pcap. Supporting Wireshark's default capture format
 removes a practical import barrier.
@@ -59,8 +59,18 @@ removes a practical import barrier.
   packet blocks, with explicit handling of unsupported cases.
 - Preserve streaming intake and source-byte provenance.
 
-References: [Current probe](packages/formats/pcap/src/pack.ts),
-[Wireshark file-format documentation](https://www.wireshark.org/docs/wsug_html_chunked/_files_and_folders.html).
+pcapng is now a second container of the existing `pcap` pack, sharing one spec, dissect graph,
+streams, and queries. A new `interfaces` table carries one row per Interface Description Block
+(or one synthetic row per classic capture); `packets` gains `interface_id`, `comment`, and
+`ts_ns`. Streaming intake and exact source-byte provenance are preserved, and the 1 GB benchmark
+target (< 60 s) is still met for both containers. Classic pcap did regress, though: two
+interleaved A/B runs (3 samples each) against the commit before this work measured medians of
+58.8 s/GB against 56.4 s/GB, about 4% slower. The cause is the three new per-packet columns,
+leaving about 2% headroom under the target.
+
+Evidence: [pcapng pack tests](packages/formats/pcap/test/pcapng-pack.test.ts) and
+[pcap e2e](apps/web/e2e/pcap.spec.ts).
+Design: [pcapng intake design](docs/superpowers/specs/2026-09-23-pcapng-intake-design.md).
 
 ### 4. Add saved queries and opt-in local history
 
@@ -113,7 +123,7 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
 
 1. Duplicate-column correctness. **Done, 2026-09-16.**
 2. Truthful multi-range provenance. **Done, 2026-09-22.**
-3. Pcapng intake.
+3. Pcapng intake. **Done, 2026-09-23.**
 
 Saved queries are the next usability feature after that cycle.
 

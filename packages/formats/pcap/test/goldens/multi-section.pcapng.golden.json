@@ -51,21 +51,35 @@
           "type": "List<Struct<{start:Uint64, end:Uint64}>>"
         }
       ],
-      "rowCount": 1,
-      "sha256": "6809635d92610c5bb8d991f332669a78dad39872f0fee6375fe3a43f26879038",
+      "rowCount": 2,
+      "sha256": "100d47fc6f77e143e6f3f8d0f58bf990085c020023e1a13f76876c59ef28549c",
       "head": [
         [
           "1n",
           "1n",
           null,
-          4660,
+          1,
           0,
-          "a.ru",
+          "one.example",
           1,
           1,
           0,
-          "82n",
-          "104n",
+          "222n",
+          "251n",
+          null
+        ],
+        [
+          "2n",
+          "2n",
+          null,
+          2,
+          0,
+          "two.example",
+          1,
+          1,
+          0,
+          "344n",
+          "373n",
           null
         ]
       ]
@@ -105,9 +119,20 @@
           "type": "Uint64"
         }
       ],
-      "rowCount": 0,
-      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-      "head": []
+      "rowCount": 1,
+      "sha256": "e0d9815d3355a26184de3547a6ece65ce5f8be51ca6635e7ba121f71e14bcc98",
+      "head": [
+        [
+          "1n",
+          "framing",
+          null,
+          "UNSUPPORTED_BLOCK_TYPE",
+          "block type 0x0000007f: 1 block(s) skipped",
+          true,
+          "380n",
+          "400n"
+        ]
+      ]
     },
     "icmp": {
       "fields": [
@@ -140,9 +165,19 @@
           "type": "Uint64"
         }
       ],
-      "rowCount": 0,
-      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-      "head": []
+      "rowCount": 1,
+      "sha256": "0a9734f4b30126da1982aa7c9d1c6de2924ab2a5d0d331b598de842e21d42b9b",
+      "head": [
+        [
+          "1n",
+          "4n",
+          8,
+          2,
+          2,
+          "614n",
+          "622n"
+        ]
+      ]
     },
     "icmpv6": {
       "fields": [
@@ -179,9 +214,20 @@
           "type": "Uint64"
         }
       ],
-      "rowCount": 0,
-      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-      "head": []
+      "rowCount": 1,
+      "sha256": "820d168c3a00a763d6400a83cde7712f78d828298cadcfedc47d65e8c8a0d979",
+      "head": [
+        [
+          "1n",
+          "3n",
+          128,
+          0,
+          1,
+          1,
+          "554n",
+          "562n"
+        ]
+      ]
     },
     "interfaces": {
       "fields": [
@@ -238,23 +284,53 @@
           "type": "Uint64"
         }
       ],
-      "rowCount": 1,
-      "sha256": "f9174e71eb9761d53db515d0be24f5f245039312b184265fc948ca8cfec2d946",
+      "rowCount": 3,
+      "sha256": "899477614ad6cf29e237d4f509cedc665d41f1ba35562e95c28b88da76e83e97",
       "head": [
         [
           "1n",
           0,
           0,
           1,
-          65535,
+          262144,
+          "eth0",
+          "uplink",
+          "Linux",
+          "primary",
+          "10^-9",
+          "0n",
+          "44n",
+          "108n"
+        ],
+        [
+          "2n",
+          0,
+          1,
+          101,
+          0,
+          null,
+          null,
+          "Linux",
+          null,
+          "2^-20",
+          "100n",
+          "108n",
+          "152n"
+        ],
+        [
+          "3n",
+          1,
+          0,
+          1,
+          0,
           null,
           null,
           null,
           null,
           "10^-6",
           "0n",
-          "0n",
-          "24n"
+          "452n",
+          "472n"
         ]
       ]
     },
@@ -301,20 +377,56 @@
           "type": "Uint64"
         }
       ],
-      "rowCount": 1,
-      "sha256": "dc6fbe6c343c29ca2562148c635e5a351c24d77445b433a6de3e0ef389e7a7f6",
+      "rowCount": 4,
+      "sha256": "cb94b4d4915360575040dab9d9f9dd9d728c87a45e30fdee1c7e13a2a7bf1d01",
       "head": [
         [
           "1n",
           "1n",
           4,
-          "1.1.1.1",
-          "8.8.8.8",
+          "10.0.0.1",
+          "10.0.0.2",
           17,
           64,
-          50,
-          "54n",
-          "104n"
+          57,
+          "194n",
+          "251n"
+        ],
+        [
+          "2n",
+          "2n",
+          4,
+          "10.0.0.3",
+          "10.0.0.4",
+          17,
+          64,
+          57,
+          "316n",
+          "373n"
+        ],
+        [
+          "3n",
+          "3n",
+          6,
+          "2001:db8::1",
+          "2001:db8::2",
+          58,
+          64,
+          48,
+          "514n",
+          "562n"
+        ],
+        [
+          "4n",
+          "4n",
+          4,
+          "10.0.0.5",
+          "10.0.0.6",
+          1,
+          64,
+          28,
+          "594n",
+          "622n"
         ]
       ]
     },
@@ -361,20 +473,56 @@
           "type": "Uint64"
         }
       ],
-      "rowCount": 1,
-      "sha256": "9777b82d583cce37f251b825b712733ce3c921bb063eee34cf114b0edd470e02",
+      "rowCount": 4,
+      "sha256": "d4f1cbe2b9994e56d1228585c0ba78fc4eee99ecd5a4edc3ffc2ea243adedd65",
       "head": [
         [
           "1n",
-          "1000000us",
-          64,
-          64,
+          "1700000000123456us",
+          71,
+          71,
           1,
           "1n",
+          "first",
+          "1700000000123456789n",
+          "152n",
+          "272n"
+        ],
+        [
+          "2n",
+          "105500000us",
+          57,
+          57,
+          228,
+          "2n",
           null,
-          "1000000000n",
-          "24n",
-          "104n"
+          "105500000000n",
+          "288n",
+          "380n"
+        ],
+        [
+          "3n",
+          "2000000us",
+          62,
+          62,
+          1,
+          "3n",
+          null,
+          "2000000000n",
+          "472n",
+          "568n"
+        ],
+        [
+          "4n",
+          null,
+          42,
+          42,
+          1,
+          "3n",
+          null,
+          null,
+          "568n",
+          "628n"
         ]
       ]
     },
@@ -585,21 +733,40 @@
           "type": "Uint64"
         }
       ],
-      "rowCount": 1,
-      "sha256": "4dc3bea40ca5281ac99168c900b0eb9de958cdc19a37b552f2cc4985d6a234dc",
+      "rowCount": 2,
+      "sha256": "e0ff7df7357216aee0f1185ff6933ec679e22254078fdc1d7524354a8fcdc619",
       "head": [
         [
           "1n",
           "1n",
-          5000,
+          5353,
           53,
-          30,
-          "74n",
-          "104n"
+          37,
+          "214n",
+          "251n"
+        ],
+        [
+          "2n",
+          "2n",
+          5353,
+          53,
+          37,
+          "336n",
+          "373n"
         ]
       ]
     }
   },
-  "issues": [],
+  "issues": [
+    {
+      "stage": "framing",
+      "track": null,
+      "code": "UNSUPPORTED_BLOCK_TYPE",
+      "message": "block type 0x0000007f: 1 block(s) skipped",
+      "recoverable": true,
+      "sourceStart": 380,
+      "sourceEnd": 400
+    }
+  ],
   "capabilities": {}
 }

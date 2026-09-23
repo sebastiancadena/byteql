@@ -15,3 +15,6 @@ containers:
         - { at: 0, hex: a1b23c4d, confidence: 1 }
         - { at: 0, hex: d4c3b2a1, confidence: 1 }
         - { at: 0, hex: 4d3cb2a1, confidence: 1 }
+  - id: pcapng
+    framer: pcapng
+    probe: { hook: pcapng }

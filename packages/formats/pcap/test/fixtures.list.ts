@@ -3,15 +3,16 @@ import { readFile } from 'node:fs/promises';
 import type { FixtureCase } from '@byteql/core/testing';
 
 import { buildPcap, dnsQuery, ethFrame, ipv4, udp } from './build-pcap.js';
+import { dnsStreamPcapng, multiSectionPcapng } from './pcapng-fixtures.js';
 
-const file = (name: string, path: string): FixtureCase => ({
+const file = (name: string, path: string, container = 'pcap'): FixtureCase => ({
   name,
-  container: 'pcap',
+  container,
   load: async () => new Uint8Array(await readFile(new URL(path, import.meta.url))),
 });
-const built = (name: string, make: () => Uint8Array): FixtureCase => ({
+const built = (name: string, make: () => Uint8Array, container = 'pcap'): FixtureCase => ({
   name,
-  container: 'pcap',
+  container,
   load: async () => make(),
 });
 
@@ -46,4 +47,7 @@ export const PCAP_FIXTURES: FixtureCase[] = [
       ],
     }),
   ),
+  file('http2-16-ssl.pcapng', '../../../../apps/web/src/assets/http2-16-ssl.pcapng', 'pcapng'),
+  built('multi-section.pcapng', () => multiSectionPcapng().bytes, 'pcapng'),
+  built('dns-stream.pcapng', dnsStreamPcapng, 'pcapng'),
 ];

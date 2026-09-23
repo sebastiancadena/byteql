@@ -130,7 +130,8 @@ describe('EmptyState intake', () => {
       screen.getByText('Query its tables with SQL. Select a row to inspect its source bytes.'),
     ).toBeTruthy();
     expect(screen.getByText('Files are processed in this browser. Nothing is uploaded.')).toBeTruthy();
-    expect(screen.getByText('Drop MIDI, pcap, or ZIP files anywhere to open.')).toBeTruthy();
+    expect(screen.getByText('Drop MIDI, pcap/pcapng, or ZIP files anywhere to open.')).toBeTruthy();
+    expect(screen.getByText('MIDI, pcap/pcapng, ZIP')).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Explore a sample' })).toBeTruthy();
 
     // Sample rows describe the choices; the Try sample menu remains the only click target.

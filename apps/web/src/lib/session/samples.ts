@@ -1,6 +1,7 @@
 import skypeIrcUrl from '../../assets/SkypeIRC.cap?url';
 import v6Url from '../../assets/v6.pcap?url';
 import dnsStreamUrl from '../../assets/dns-stream.pcap?url';
+import http2TlsUrl from '../../assets/http2-16-ssl.pcapng?url';
 import furEliseUrl from '../../assets/fur_Elise_opening.mid?url';
 
 export type SampleId = 'pcap' | 'midi';
@@ -30,11 +31,13 @@ export const SAMPLES: readonly SampleDefinition[] = [
   {
     id: 'pcap',
     label: 'Network capture (pcap)',
-    description: 'Three captures projected into packet, IP, TCP, UDP, DNS and TLS tables.',
+    description:
+      'Four captures (pcap and pcapng) projected into packet, interface, IP, TCP, UDP, DNS and TLS tables.',
     files: [
       { name: 'SkypeIRC.cap', url: skypeIrcUrl },
       { name: 'v6.pcap', url: v6Url },
       { name: 'dns-stream.pcap', url: dnsStreamUrl },
+      { name: 'http2-16-ssl.pcapng', url: http2TlsUrl },
     ],
   },
   {

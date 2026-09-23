@@ -1,6 +1,6 @@
 # AGENTS.md — ByteQL orientation for fresh sessions
 
-ByteQL turns record-oriented binary files (MIDI, pcap, and ZIP today; pcapng and evtx planned)
+ByteQL turns record-oriented binary files (MIDI, pcap/pcapng, and ZIP today; evtx planned)
 into relational tables you query with DuckDB SQL, entirely in the browser, with every row tracing
 back to its exact source bytes. Product requirements, differentiators, and the projection DSL live in
 `PRD.md` — read §9 (architecture) and Appendix A (DSL) first.
@@ -120,8 +120,21 @@ or in `PRD.md` §12.
   compiled spec rather than hand-written. Design and implementation notes:
   `docs/superpowers/specs/2026-09-23-pack-kit-design.md`; authoring guide:
   `docs/pack-authoring.md`.
-- **Next (per `ROADMAP.md`):** pcapng intake, then saved queries. The unaided external Phase 0
-  test is still open supporting work.
+- **pcapng intake: shipped 2026-09-23.** Wireshark's default capture format is now the pack's
+  second container (`packages/formats/pcap`, `pack.yaml`'s `pcapng` entry), reusing the existing
+  dissect graph, streams, and queries. A new `interfaces` table gets one row per Interface
+  Description Block (or one synthetic row per classic capture, so `packets join interfaces`
+  behaves identically for both containers); `packets` gains `interface_id`, `comment`, and
+  `ts_ns`. The web app's "Try sample" picker gained a real pcapng capture
+  (`http2-16-ssl.pcapng`), and the scale bench gained `--container pcapng`. Documented
+  limitations: no compressed captures (`.pcapng.gz`/`.pcapng.zst`), Decryption Secrets Blocks and
+  Name Resolution Blocks are skipped and not used, only `opt_comment` is decoded from packet
+  options, and no resync after broken block-length framing. The three new `packets` columns
+  cost classic pcap about 4% on the 1 GB bench (median 58.8 s/GB against 56.4 s/GB before, still
+  under 60 s). Design and implementation notes:
+  `docs/superpowers/specs/2026-09-23-pcapng-intake-design.md`.
+- **Next (per `ROADMAP.md`):** saved queries. The unaided external Phase 0 test is still open
+  supporting work.
 
 ## Repo map
 
@@ -166,6 +179,15 @@ its vitest suites run without a browser).
   `src/normalize-track.ts` (running-status expansion + byte accounting), `src/kaitai.ts`
   (generated-parser wrapper), `src/index.ts` (`definePack` call, exports `midiFormatPack`);
   `midi.tables.yaml` is the projection spec, `pack.yaml` the manifest
+- `packages/formats/pcap` — network capture pack, two containers sharing one spec, dissect
+  graph, streams, and queries: `src/chunk-window.ts` (the `ChunkWindow` reader both containers
+  use — straddle-copy on reload, oversized direct reads, generation counter), `src/container.ts`
+  (classic-pcap reader on `ChunkWindow`), `src/pcapng.ts` (`createPcapngReader`: sections,
+  interfaces, block framing), `src/options.ts` (the pcapng TLV option walker), `src/probe.ts`
+  (the `pcapng` probe hook — block type plus byte-order magic, since the block type alone is
+  weak evidence), `src/framer.ts` (`pcapFramer` and `pcapngFramer`, the `Framer` hooks),
+  `src/index.ts` (`definePack` call, registers both framers and the probe); `pcap.tables.yaml`
+  is the projection spec, `pack.yaml` the manifest
 - `packages/pack-tools` — Node-only dev dependency, never bundled into the app: the
   `byteql-pack` CLI (`bin/byteql-pack.mjs`). `src/build.mjs` (`byteql-pack build`: validates
   `pack.yaml` and the spec, compiles `.ksy` schemas, lints `queries.yaml`, emits

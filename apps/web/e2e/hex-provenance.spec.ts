@@ -94,6 +94,32 @@ test('pcap: browse, reveal, filter-to-selection, and hidden columns chip', async
   expect(Number.parseInt(rowsText ?? '0', 10)).toBeGreaterThanOrEqual(1);
 });
 
+// The fixture bytes are a committed, crafted `.pcapng`: the same single eth -> ipv4 -> udp -> dns
+// packet as sample.pcap (query "a.ru"), written as a one-interface little-endian pcapng, generated
+// once via packages/formats/pcap/test/generate-e2e-fixture.test.ts. The packet's row provenance is
+// its whole Enhanced Packet Block: SHB (28 bytes) + IDB (20 bytes) = 48 bytes in, then a 32-byte
+// EPB header/trailer wrapping the 64-byte eth+ipv4+udp+dns frame (28 fixed + 64 data, already a
+// multiple of 4, + 4 trailer) = 96 bytes, ending at 144 — the whole fixture.
+test('pcapng: browse and reveal the whole Enhanced Packet Block', async ({ page }) => {
+  await page.goto('/');
+  await page
+    .getByLabel('Open file input')
+    .setInputFiles(fileURLToPath(new URL('./fixtures/sample.pcapng', import.meta.url)));
+  await page.getByRole('button', { name: 'Browse packets' }).click();
+  await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
+
+  await page.getByRole('row', { name: 'Row 1', exact: true }).click();
+  const range = await highlightedHexRange(page);
+  expect(range).toEqual({ start: 48, end: 144 });
+
+  await gotoOffset(page, range.start);
+  await hexCanvas(page).press('Shift+ArrowRight');
+  await hexCanvas(page).press('Shift+ArrowRight');
+  await page.getByRole('button', { name: 'Filter results to selection' }).click();
+  await expect(page.getByRole('textbox', { name: 'SQL query' })).toContainText('_src_start <');
+  await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
+});
+
 test('drag-and-drop opens a file through the window overlay', async ({ page }) => {
   await page.goto('/');
   // The window drop handler lives on `.app-shell`, which only mounts once the local engine has

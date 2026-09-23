@@ -2,7 +2,7 @@
 
 Date: 2026-09-23
 
-Status: Approved design, not yet implemented.
+Status: Implemented.
 
 ## Purpose and accepted behavior
 
@@ -105,7 +105,7 @@ Files under `packages/formats/pcap/`:
 
 | Column | Type | Source |
 |---|---|---|
-| `interface_id` | uint32 | File-global 1-based ordinal of the packet's interface (always 1 for classic pcap) |
+| `interface_id` | int64 | File-global 1-based ordinal of the packet's interface (always 1 for classic pcap) |
 | `comment` | utf8, nullable | First `opt_comment` of the packet block; null for classic pcap |
 | `ts_ns` | int64, nullable | Exact epoch nanoseconds; null only for Simple Packet Blocks |
 
@@ -186,8 +186,9 @@ Classic pcap computes `ts_ns = ts_sec · 10⁹ + fraction`, where the fraction i
 Same contract as today: recoverable problems become `errors` rows, and only unreadable input is
 fatal.
 
-- **Fatal (`PackFatalError`):** the first block is not a Section Header Block, its byte-order
-  magic is invalid, or its major version is not 1 — no packets could be read at all.
+- **Fatal (`PackFatalError`):** the first block is not a Section Header Block (`NOT_PCAPNG`),
+  the file ends inside that block's first 16 bytes (`TRUNCATED_BLOCK`), its byte-order magic is
+  invalid, or its major version is not 1 — no packets could be read at all.
 - **Stop, keeping earlier rows:** length below 12, not a multiple of 4, or trailer mismatch
   (`BLOCK_LENGTH_MISMATCH`); block extends past end of file (`TRUNCATED_BLOCK`); a later SHB
   with an invalid byte-order magic (`BAD_BYTE_ORDER_MAGIC`) or a major version other than 1
@@ -214,6 +215,10 @@ measured against the same < 60 s target. The bigint `ts_ns` arithmetic is the ho
 watch; if it threatens the target, fast paths for `10^-6` and `10^-9` are allowed as long as
 results stay identical. Both numbers go in this spec's implementation notes.
 
+As shipped, this goal was not met: classic pcap measures about 4% slower than before this work,
+still under the 60 s target. The cause is the three new `packets` columns, not timestamp
+arithmetic. See the implementation notes.
+
 ## Testing
 
 - **Fixtures.** A new `test/build-pcapng.ts` builder (beside `build-pcap.ts`) writes SHB, IDB,
@@ -236,9 +241,10 @@ results stay identical. Both numbers go in this spec's implementation notes.
   reviewed as a diff. The only acceptable changes are additive: the synthetic `interfaces` row,
   the `interface_id`/`comment`/`ts_ns` columns, and nullable `ts`. Any other change is a
   regression.
-- **Web e2e:** `pcapng.spec.ts` loads the demo sample and asserts `tls` has SNI rows and
-  `interfaces` is populated, then loads a mixed `.pcap` + `.pcapng` session and runs the
-  "Packets by interface" join. `hex-provenance.spec.ts` gains a pcapng case, keeping the
+- **Web e2e:** the pcapng cases live in `apps/web/e2e/pcap.spec.ts` (no separate
+  `pcapng.spec.ts`): the bundled-sample test asserts the pcapng's `tls` SNI row and its
+  `interfaces` row, and a mixed `.pcap` + `.pcapng` session test runs the packets-to-interfaces
+  join per `_src_file`. `hex-provenance.spec.ts` gains a pcapng case, keeping the
   "hex↔grid round-trip works on every gallery format" criterion.
 
 ## Demo sample
@@ -257,3 +263,75 @@ samples. It is vendored under `apps/web/src/assets/` with the same attribution a
 - `AGENTS.md` status, the `README.md` format list and pcap package row, and `ROADMAP.md`
   priority 3 marked done.
 - Implementation notes appended to this spec: benchmark numbers and engineering discoveries.
+
+## Implementation notes
+
+**1 GB benchmark A/B, 2026-09-23, Linux arm64, 20 logical processors, Chromium 149.0.7827.0.**
+Classic pcap, `run-scale-bench.mjs --gb 1` (seed 7, 1,000,000,148 bytes), runs strictly one at a
+time and interleaved main/branch. "main" is commit `1f0b8ae`, the commit this branch started from,
+built in a temporary worktree. Parse time in ms/GB:
+
+| Build | Samples | Median | Range |
+|---|---|---|---|
+| main, first A/B | 56,224.1 · 56,654.0 · 56,221.6 | 56,224.1 | 56,221.6–56,654.0 |
+| branch before the final fixes, first A/B | 59,255.0 · 58,769.1 · 58,881.7 | 58,881.7 | 58,769.1–59,255.0 |
+| main, second A/B | 56,695.7 · 56,280.6 · 56,447.7 | 56,447.7 | 56,280.6–56,695.7 |
+| branch with the final fixes, second A/B | 58,751.3 · 58,651.0 · 59,046.4 | 58,751.3 | 58,651.0–59,046.4 |
+| Experiment: the three new `packets` columns removed from the spec | 56,700.0 · 56,478.4 | 56,589.2 | 56,478.4–56,700.0 |
+| Experiment: classic `ts_us` as a Number instead of a bigint | 59,266.3 · 59,064.7 · 60,059.7 | 59,266.3 | 59,064.7–60,059.7 |
+
+**The classic benchmark regresses by about 4%, and the regression is real.** Over all six
+samples of each, the main median is 56,364 ms/GB and the branch median is 58,825 ms/GB (+4.4%,
+about 2.5 s/GB). The ranges do not overlap in either A/B. Classic pcap still meets the < 60 s
+target, with about 2% headroom.
+
+The cause is the three columns this design adds to every `packets` row (`interface_id`,
+`comment`, `ts_ns`): per-row projection, Arrow encoding, and DuckDB ingest for three more columns.
+With those columns removed and nothing else changed, the branch measured the same as main. The
+framer's bigint timestamp work is not the cause. Producing classic `ts_us` as an exact Number,
+which the finding suggested, was measured and gave no gain (the `timestamp_us` builder converts a
+Number to a bigint anyway), so it was not kept. The columns are required by this design, and the
+remaining per-column cost is in `packages/core` (expression evaluation, Arrow builders), which this
+work does not change. The `int64` `packets.interface_id` from the final review costs nothing
+measurable: the framers pass bigint keys, so the column allocates nothing per packet.
+
+pcapng was measured once, before the final fixes:
+
+- `BYTEQL_SCALE_BENCH_SUMMARY gb=1 container=pcapng bytes=1000000484 parseElapsedMs=56487.5
+  msPerGb=56487.4 parseTargetMet=true bytesReadFraction=0.01638399207014784
+  readTargetMet=true`
+
+The `toNs` fast path this design allowed for was not needed: pcapng meets the target, and the
+classic regression comes from the added columns, not from timestamp arithmetic. With about 2%
+headroom on classic pcap, measure the next change that touches the hot parse path, or adds
+per-packet columns, before shipping it.
+
+**Engineering discoveries made during Tasks 1–8:**
+
+- The shared chunk window's first (priming) load does not bump `generation`; only reloads do.
+  The plan's original snippet bumped `generation` on the first load too, which contradicted its
+  own test. Classic-pcap output is unaffected.
+- `interfaces.interface_id` is an engine-assigned key (`int64`/JS `bigint`). `packets.interface_id`
+  was first declared `uint32`, which forced JS-side comparisons to normalize; the final review
+  changed it to `int64`, like every other key reference in the pack, so both sides now come back
+  as `bigint` and compare directly. The framers pass bigint keys (`1n` for classic pcap, one
+  cached bigint per pcapng interface), so the int64 column allocates nothing per packet.
+- Regenerating `test/schemas.snapshot.json` also normalized stale `_src_start`/`_src_end`
+  nullability on untouched tables; this was already inert, since the conformance test's
+  `relax()` forced that nullability regardless of the snapshot's literal value.
+- The options-area pad computation uses non-bitwise arithmetic so a hostile `inclLen` near 2^31
+  cannot go negative.
+- pcapng framing issues carry no record ordinal (`errors.record` is null), matching classic
+  framing issues.
+- Parsed blocks are read whole with no size cap, the same as classic pcap's `incl_len` handling
+  — a hostile giant block forces one large allocation. This is a hardening candidate, not fixed
+  here.
+- `packages/formats/pcap/dist` must be rebuilt (`pnpm --filter @byteql/pcap build`) before web
+  e2e sees pack changes.
+- `scripts/run-scale-bench.mjs` spawns `playwright` without a shell and needs
+  `apps/web/node_modules/.bin` on `PATH`.
+
+**Documented limitations (unchanged from the design's scope decisions):** no compressed captures
+(`.pcapng.gz`/`.pcapng.zst`); Decryption Secrets Blocks and Name Resolution Blocks are skipped,
+not used; only `opt_comment` is decoded from packet options; no resync after broken block-length
+framing.

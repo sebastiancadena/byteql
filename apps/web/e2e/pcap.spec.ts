@@ -10,6 +10,7 @@ import { runSql, waitForAppReady } from './support/app.js';
 // packages/formats/pcap/test/project-pcap.test.ts). The e2e itself does not depend on those
 // builders at test runtime — only on the static fixture file below.
 const samplePcapPath = fileURLToPath(new URL('./fixtures/sample.pcap', import.meta.url));
+const samplePcapngPath = fileURLToPath(new URL('./fixtures/sample.pcapng', import.meta.url));
 const streamPcapPath = fileURLToPath(new URL('./fixtures/dns-stream.pcap', import.meta.url));
 
 test('opens a pcap and runs the DNS-join query', async ({ page }) => {
@@ -56,7 +57,7 @@ test('reassembles a two-segment DNS-over-TCP query and joins its stream tables',
   await expect(page.getByRole('gridcell', { name: 'ok', exact: true })).toBeVisible();
 });
 
-test('loads the bundled pcap sample as a three-file session from the picker', async ({ page }) => {
+test('loads the bundled pcap sample as a four-file session from the picker', async ({ page }) => {
   await page.goto('/');
   await waitForAppReady(page);
 
@@ -64,13 +65,14 @@ test('loads the bundled pcap sample as a three-file session from the picker', as
   await page.getByRole('button', { name: 'Try sample' }).click();
   await page.getByRole('menuitem', { name: 'Network capture (pcap)' }).click();
 
-  // All three captures land in one multi-file session — the _files catalog lists them.
+  // All four captures land in one multi-file session — the _files catalog lists them.
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
   await runSql(page, 'select original_name from _files order by original_name');
   await expect(page.getByRole('gridcell', { name: 'SkypeIRC.cap' })).toBeVisible();
   await expect(page.getByRole('gridcell', { name: 'v6.pcap' })).toBeVisible();
   await expect(page.getByRole('gridcell', { name: 'dns-stream.pcap' })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: 'http2-16-ssl.pcapng' })).toBeVisible();
 
   // v6.pcap exercises the IPv6 + DNS path: a recognizable query name proves it parsed.
   await runSql(page, "select query_name from dns where query_name = 'www.wide.ad.jp'");
@@ -84,6 +86,13 @@ test('loads the bundled pcap sample as a three-file session from the picker', as
   await runSql(page, 'select src_port, dst_port from streams');
   await expect(page.getByRole('gridcell', { name: '53', exact: true }).first()).toBeVisible();
 
+  // http2-16-ssl.pcapng is a real Wireshark pcapng: its TLS ClientHello's SNI reaches the tls
+  // table, and its single interface lands in interfaces alongside the classic synthetic ones.
+  await runSql(page, "select sni from tls where sni = 'localhost'");
+  await expect(page.getByRole('gridcell', { name: 'localhost', exact: true }).first()).toBeVisible();
+  await runSql(page, "select ts_resolution from interfaces where _src_file = 'http2-16-ssl.pcapng'");
+  await expect(page.getByRole('gridcell', { name: '10^-9', exact: true })).toBeVisible();
+
   // Regression (multi-file join safety): packet_id restarts per file, so a DNS↔packets join must
   // also match _src_file. The file-scoped join must be 1:1 with the dns table — a cross-file-unsafe
   // `using (packet_id)` join would inflate the count by matching packets from other files.
@@ -94,4 +103,28 @@ test('loads the bundled pcap sample as a three-file session from the picker', as
       'and d._src_file = p._src_file) as matches',
   );
   await expect(page.getByRole('gridcell', { name: 'true', exact: true })).toBeVisible();
+});
+
+test('opens a mixed pcap + pcapng session and joins packets to interfaces per file', async ({ page }) => {
+  await page.goto('/');
+  await waitForAppReady(page);
+
+  await page.getByLabel('Open file input').setInputFiles([samplePcapPath, samplePcapngPath]);
+  await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+
+  // Both files carry the same DNS packet; each resolves to its own interface row.
+  await runSql(
+    page,
+    `select count(*) as joined from packets p
+     join interfaces i on p.interface_id = i.interface_id and p._src_file = i._src_file`,
+  );
+  // Wait for the custom query's result to land before reading its cell — the auto-run "overview"
+  // query that fires on ready also has several "2" cells (per-table row counts), so the assertion
+  // below is ambiguous against that stale grid.
+  await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: '2', exact: true })).toBeVisible();
+  await runSql(page, "select count(*) as n from dns where query_name = 'a.ru'");
+  await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: '2', exact: true })).toBeVisible();
 });

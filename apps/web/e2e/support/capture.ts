@@ -7,6 +7,7 @@ import {
   udp,
   type PcapPacket,
 } from '../../../../packages/formats/pcap/test/build-pcap.js';
+import { pcapngFromPackets } from '../../../../packages/formats/pcap/test/build-pcapng.js';
 
 export interface GeneratedCapture {
   bytes: Uint8Array;
@@ -15,8 +16,12 @@ export interface GeneratedCapture {
   seed: number;
 }
 
+export type CaptureContainer = 'pcap' | 'pcapng';
+
 const PCAP_GLOBAL_HEADER_SIZE = 24;
 const PCAP_RECORD_HEADER_SIZE = 16;
+const PCAPNG_PREFIX_SIZE = 28 + 20; // SHB + IDB
+const PCAPNG_EPB_OVERHEAD = 32; // 28 fixed + 4 trailer, plus data padding (added per packet)
 
 /**
  * A tiny 32-bit LCG (Numerical Recipes constants) seeded once per `generateCapture` call.
@@ -54,11 +59,15 @@ const TCP_PAYLOAD_BYTES = 1024;
  *
  * Reused verbatim by Task 12 — keep the signature and packet-shape rules stable.
  */
-export function generateCapture(bytesTarget: number, seed: number): GeneratedCapture {
+export function generateCapture(
+  bytesTarget: number,
+  seed: number,
+  container: CaptureContainer = 'pcap',
+): GeneratedCapture {
   const next = createLcg(seed);
   const packets: PcapPacket[] = [];
   let dnsCount = 0;
-  let totalBytes = PCAP_GLOBAL_HEADER_SIZE;
+  let totalBytes = container === 'pcap' ? PCAP_GLOBAL_HEADER_SIZE : PCAPNG_PREFIX_SIZE;
   let index = 0;
 
   while (totalBytes < bytesTarget) {
@@ -95,10 +104,16 @@ export function generateCapture(bytesTarget: number, seed: number): GeneratedCap
 
     packets.push({ tsSec: index, tsFrac: 0, data });
     if (isDns) dnsCount += 1;
-    totalBytes += PCAP_RECORD_HEADER_SIZE + data.length;
+    totalBytes +=
+      container === 'pcap'
+        ? PCAP_RECORD_HEADER_SIZE + data.length
+        : PCAPNG_EPB_OVERHEAD + ((data.length + 3) & ~3);
     index += 1;
   }
 
-  const bytes = buildPcap({ magic: 'be_us', linktype: 1, packets });
+  const bytes =
+    container === 'pcap'
+      ? buildPcap({ magic: 'be_us', linktype: 1, packets })
+      : pcapngFromPackets({ endian: 'le', linktype: 1, packets });
   return { bytes, packetCount: packets.length, dnsCount, seed };
 }

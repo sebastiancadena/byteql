@@ -85,10 +85,10 @@
       <dl class="intake-facts">
         <div>
           <dt>Formats</dt>
-          <dd>MIDI, pcap, ZIP</dd>
+          <dd>MIDI, pcap/pcapng, ZIP</dd>
         </div>
       </dl>
-      <p class="drop-hint">Drop MIDI, pcap, or ZIP files anywhere to open.</p>
+      <p class="drop-hint">Drop MIDI, pcap/pcapng, or ZIP files anywhere to open.</p>
       <p class="intake-privacy">Files are processed in this browser. Nothing is uploaded.</p>
       {#if pickerError}
         <p class="inline-diagnostic" role="alert">{pickerError}</p>
