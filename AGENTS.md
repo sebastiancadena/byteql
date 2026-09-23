@@ -30,7 +30,7 @@ or in `PRD.md` §12.
   DNS-over-TCP (`dns_tcp_message` parser feeding the existing `dns` table), and ICMPv6 as its
   own `icmpv6` table (byteql-authored `icmpv6.ksy`, `ipv6` `next_header == 58`). TCP stream
   reassembly and its dependents (multi-segment TLS ClientHello, multi-segment DNS-over-TCP)
-  shipped in Phase 2, below; pcapng container support is still deferred.
+  shipped in Phase 2, below; pcapng container support shipped 2026-09-23, below.
 - **Phase 2 (TCP stream reassembly): shipped.** Design record:
   `docs/superpowers/specs/2026-07-18-phase2-tcp-reassembly-design.md`. Engine spec v0.3 adds a
   declarative `streams:` section plus key-extractor/framer registries that sit beside the
@@ -131,8 +131,10 @@ or in `PRD.md` §12.
   Name Resolution Blocks are skipped and not used, only `opt_comment` is decoded from packet
   options, and no resync after broken block-length framing. The three new `packets` columns
   cost classic pcap about 4% on the 1 GB bench (median 58.8 s/GB against 56.4 s/GB before, still
-  under 60 s). Design and implementation notes:
-  `docs/superpowers/specs/2026-09-23-pcapng-intake-design.md`.
+  under 60 s). Deployed to byteql.dev 2026-09-23 at `c032a48`. Design and implementation notes:
+  `docs/superpowers/specs/2026-09-23-pcapng-intake-design.md`; its **"Deferred follow-ups"**
+  section is the resumable list of what was left for later (parse headroom, a hostile block-size
+  cap, SLL/SLL2 link types, the bench script's `PATH` bug, and small test/doc gaps).
 - **Next (per `ROADMAP.md`):** saved queries. The unaided external Phase 0 test is still open
   supporting work.
 
@@ -208,8 +210,14 @@ its vitest suites run without a browser).
 - Per package: `pnpm --filter @byteql/core test -- --run` (same for `@byteql/midi`,
   `@byteql/web`)
 - Browser acceptance: `pnpm --filter @byteql/web test:e2e` (Playwright; builds the instrumented
-  `dist-e2e` — never publish that directory, deployable output is `dist`)
+  `dist-e2e` — never publish that directory, deployable output is `dist`). The app consumes
+  format packs through their built `dist/`, so after changing a pack run
+  `pnpm --filter @byteql/<pack> build` (or `pnpm build`) before e2e, or the app sees the stale pack
 - Privacy/bundle audit: `pnpm --filter @byteql/web check:bundle`
+- Scale bench: `node apps/web/scripts/run-scale-bench.mjs --gb 1 [--container pcap|pcapng]` (needs
+  `apps/web/node_modules/.bin` on `PATH`); run samples one at a time
+- Deploy (manual, no CI): `pnpm release:pages` from the repo root — check, bundle audit, Pages
+  artifact prep and verification, then `wrangler pages deploy` to the `byteql` project
 - Markdown: `rumdl fmt <file>` (MD013 line-length warnings up to ~100 chars are accepted repo
   convention)
 

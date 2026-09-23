@@ -335,3 +335,46 @@ per-packet columns, before shipping it.
 (`.pcapng.gz`/`.pcapng.zst`); Decryption Secrets Blocks and Name Resolution Blocks are skipped,
 not used; only `opt_comment` is decoded from packet options; no resync after broken block-length
 framing.
+
+## Deferred follow-ups
+
+Deployed to byteql.dev on 2026-09-23 at `c032a48`. The items below were found during
+implementation and review and deliberately left for later. Each one is self-contained: it names
+where the work lives and how to know it is done, so it can be picked up in a fresh session. Take
+them through the normal design → plan → implementation flow; none is scheduled in `ROADMAP.md`
+yet.
+
+1. **Restore classic-pcap parse headroom.** The three new `packets` columns cost classic pcap
+   about 4.4% at 1 GB (median 58.8 s/GB against 56.4 s/GB), leaving about 2% under the 60 s
+   target (see "Implementation notes"). The remaining cost is per column in `packages/core`: row
+   projection in `src/projection/project.ts` and the Arrow builders in `src/arrow/build.ts`
+   (`timestamp_us`, for example, converts every value to a bigint). Profile before choosing a
+   fix. Done when a ≥3-sample interleaved A/B
+   (`node apps/web/scripts/run-scale-bench.mjs --gb 1`, run one at a time) shows the classic
+   median back at or below about 56.5 s/GB, with every golden unchanged.
+2. **Cap block and record sizes for hostile input.** Both readers read a parsed block or record
+   whole: `packages/formats/pcap/src/pcapng.ts` (SHB, IDB, EPB, OPB, SPB) and the classic
+   `incl_len` body in `src/container.ts`. A hostile file can therefore declare one block as large
+   as the file and force an allocation of that size. Choose a documented cap, well above any
+   real snaplen (262,144 is the common maximum), and report oversized blocks as
+   `MALFORMED_BLOCK` (pcapng) or `TRUNCATED_RECORD`-style errors (classic) instead of reading
+   them. Done when a fixture that declares an oversized block within the file size yields an
+   `errors` row and no large allocation, and the conformance fuzz still passes.
+3. **Dissect more link types.** Only Ethernet (1) and raw IP (101 → 228/229) reach the `ip`
+   table. Captures from `tcpdump -i any` or `dumpcap -i any` use Linux cooked capture, SLL (113)
+   or SLL2 (276). They project `packets` and `interfaces` rows but no `ip`, `tcp`, or other rows.
+   Add wrappers and `dissect` entries in `pcap.tables.yaml` for both. This applies to both
+   containers.
+4. **Make the benchmark script find Playwright.** `apps/web/scripts/run-scale-bench.mjs` calls
+   `spawnSync('playwright', …)` without a shell, so it fails with `ENOENT` unless
+   `apps/web/node_modules/.bin` is on `PATH`. Resolve the binary explicitly, or run it through
+   `pnpm exec`.
+5. **Small test and doc gaps.** `apps/web/e2e/support/capture.ts`: the `generateCapture`
+   docstring should say that `packetCount` differs by container at the same `bytesTarget`. No
+   test drives a pcapng `inclLen` near 2^31 through the non-bitwise pad in `src/pcapng.ts`. The
+   arithmetic is provably equivalent to the old expression, so a unit test of the pad expression
+   alone would be enough.
+6. **Scope extensions, if users ask.** These were excluded by the design: compressed captures
+   (`.pcapng.gz`, `.pcapng.zst`); surfacing Decryption Secrets Blocks (TLS key logs) and Name
+   Resolution Blocks as tables; decoding packet options other than `opt_comment` (`epb_flags`,
+   drop counts, hashes); and resynchronizing after broken block-length framing.

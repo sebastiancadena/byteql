@@ -116,6 +116,10 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
 - **Add Firefox/WebKit acceptance coverage.** The current
   [Playwright configuration](apps/web/playwright.config.ts) runs Chromium only. Prioritize
   intake, storage fallbacks, sorting, and downloads.
+- **pcapng follow-ups.** Restore classic-pcap parse headroom (about 2% under the 60 s target
+  after pcapng's new columns), cap block sizes for hostile input, and dissect Linux cooked
+  capture (SLL/SLL2). The resumable list, with locations and done-criteria, is the design's
+  [Deferred follow-ups](docs/superpowers/specs/2026-09-23-pcapng-intake-design.md#deferred-follow-ups).
 - **Refresh roadmap documentation — done (2026-09-22).** `PRD.md`, `README.md`, and
   `AGENTS.md` now point to this file for priority order.
 
