@@ -1,0 +1,93 @@
+{
+  "tables": {
+    "errors": {
+      "fields": [
+        {
+          "name": "error_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stage",
+          "type": "Utf8"
+        },
+        {
+          "name": "record",
+          "type": "Int32"
+        },
+        {
+          "name": "code",
+          "type": "Utf8"
+        },
+        {
+          "name": "message",
+          "type": "Utf8"
+        },
+        {
+          "name": "recoverable",
+          "type": "Bool"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "rec": {
+      "fields": [
+        {
+          "name": "rec_id",
+          "type": "Int64"
+        },
+        {
+          "name": "value",
+          "type": "Uint8"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 4,
+      "sha256": "f33343568d786450935626629d5f061d42f64558cfb206671cf775c7ab8ff281",
+      "head": [
+        [
+          "1n",
+          170,
+          "0n",
+          "1n"
+        ],
+        [
+          "2n",
+          1,
+          "1n",
+          "2n"
+        ],
+        [
+          "3n",
+          2,
+          "2n",
+          "3n"
+        ],
+        [
+          "4n",
+          3,
+          "3n",
+          "4n"
+        ]
+      ]
+    }
+  },
+  "issues": [],
+  "capabilities": {}
+}

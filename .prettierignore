@@ -8,6 +8,7 @@ test-results/
 packages/formats/*/gen/
 packages/formats/*/test/goldens/
 packages/formats/*/test/schemas.snapshot.json
+packages/core/src/testing/goldens/
 crates/
 .rumdl_cache/
 pnpm-lock.yaml
