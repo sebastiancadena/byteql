@@ -74,10 +74,13 @@ describe('readZipContainer', () => {
   });
 
   // Regressions from the pack kit's conformance fuzz (seed 1) on the ZIP fixtures: a corrupted
-  // or truncated length field let a record's computed `_range.end` claim bytes past the actual
-  // archive size, tripping `assertTableInvariants`'s provenance-bounds check even though the
-  // container itself never threw.
-  it('clamps a forward-scanned local file record truncated mid-name (regression: fuzz truncation, two-entries.zip TRUNC 1/7)', async () => {
+  // or truncated length field let a record's computed `_range.end` claim bytes past the region
+  // actually available, tripping `assertTableInvariants`'s provenance-bounds check even though
+  // the container itself never threw. The fix clamps `_range.end` (never `_range.start`, which
+  // is always a previously-validated offset) and reports the truncation as a `ZipIssue` instead
+  // of clamping silently, so these tests also assert on the reported issues, not just the
+  // clamped bounds.
+  it('clamps and reports a forward-scanned local file record truncated mid-name (regression: fuzz truncation)', async () => {
     const full = buildZip([{ name: 'a.txt', data: text('hello'), method: 0 }]);
     // Cut off partway through the file name: the declared name length (5) then claims more
     // bytes than remain, and no EOCD survives the cut, so this exercises the forward-scan path.
@@ -86,11 +89,16 @@ describe('readZipContainer', () => {
 
     expect(container.endOfCentralDir).toBeNull();
     expect(container.localFiles).toHaveLength(1);
-    expect(container.localFiles[0]!._range.end).toBeLessThanOrEqual(truncated.byteLength);
-    expect(container.localFiles[0]!._range.end).toBeGreaterThanOrEqual(container.localFiles[0]!._range.start);
+    expect(container.localFiles[0]!._range.start).toBe(0);
+    expect(container.localFiles[0]!._range.end).toBe(truncated.byteLength);
+
+    const issue = container.issues.find((i) => i.code === 'RECORD_TRUNCATED');
+    expect(issue?.sourceStart).toBe(0);
+    expect(issue?.sourceEnd).toBe(truncated.byteLength);
+    expect(issue?.message).toContain('local file header');
   });
 
-  it('clamps a central directory entry whose comment length overruns the archive (regression: fuzz byte flip)', async () => {
+  it('clamps a central directory entry to the central directory region, reports the truncation, and reports the dropped entry (regression: fuzz byte flip)', async () => {
     const bytes = buildZip(
       [
         { name: 'a.txt', data: text('hello') },
@@ -104,14 +112,32 @@ describe('readZipContainer', () => {
     corrupted[entryStart + 32] = 0xff;
     corrupted[entryStart + 33] = 0xff;
     const container = await readZipContainer(memoryByteSource(corrupted));
+    // The central directory region ends exactly where the EOCD record starts — the entry must
+    // be clamped there, never to the (much larger) archive size.
+    const cdRegionEnd = container.endOfCentralDir!._range.start;
 
-    for (const entry of container.centralDirEntries) {
-      expect(entry._range.end).toBeLessThanOrEqual(corrupted.byteLength);
-      expect(entry._range.end).toBeGreaterThanOrEqual(entry._range.start);
-    }
+    // The corrupted entry's inflated length pushes the scan past the central directory, so the
+    // second entry is dropped rather than silently disappearing under an unchanged count.
+    expect(container.centralDirEntries).toHaveLength(1);
+    expect(container.centralDirEntries[0]!._range.start).toBe(entryStart);
+    expect(container.centralDirEntries[0]!._range.end).toBe(cdRegionEnd);
+
+    const truncated = container.issues.find((i) => i.code === 'RECORD_TRUNCATED');
+    expect(truncated?.sourceStart).toBe(entryStart);
+    expect(truncated?.sourceEnd).toBe(cdRegionEnd);
+    expect(truncated?.message).toContain('central directory entry');
+
+    const droppedTail = container.issues.find((i) => i.code === 'CENTRAL_DIRECTORY_TRUNCATED');
+    expect(droppedTail?.sourceStart).toBe(entryStart);
+    expect(droppedTail?.sourceEnd).toBe(cdRegionEnd);
+    expect(droppedTail?.message).toContain('1 of 2');
+
+    const countMismatch = container.issues.find((i) => i.code === 'CENTRAL_DIRECTORY_ENTRY_COUNT_MISMATCH');
+    expect(countMismatch?.message).toContain('declares 2');
+    expect(countMismatch?.message).toContain('1 were read');
   });
 
-  it('clamps the EOCD record whose comment length overruns the archive (regression: fuzz byte flip)', async () => {
+  it('clamps the EOCD record whose comment length overruns the archive and reports the truncation (regression: fuzz byte flip)', async () => {
     const bytes = buildZip([{ name: 'a.txt', data: text('hello'), method: 0 }]);
     const corrupted = bytes.slice();
     const eocdStart = findSignature(corrupted, SIG_EOCD);
@@ -121,9 +147,12 @@ describe('readZipContainer', () => {
     const container = await readZipContainer(memoryByteSource(corrupted));
 
     expect(container.endOfCentralDir).not.toBeNull();
-    expect(container.endOfCentralDir!._range.end).toBeLessThanOrEqual(corrupted.byteLength);
-    expect(container.endOfCentralDir!._range.end).toBeGreaterThanOrEqual(
-      container.endOfCentralDir!._range.start,
-    );
+    expect(container.endOfCentralDir!._range.start).toBe(eocdStart);
+    expect(container.endOfCentralDir!._range.end).toBe(corrupted.byteLength);
+
+    const issue = container.issues.find((i) => i.code === 'RECORD_TRUNCATED');
+    expect(issue?.sourceStart).toBe(eocdStart);
+    expect(issue?.sourceEnd).toBe(corrupted.byteLength);
+    expect(issue?.message).toContain('end_of_central_dir record');
   });
 });

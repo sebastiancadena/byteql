@@ -6,8 +6,11 @@ export const zipFramer: Framer = async function* (source, ctx) {
   ctx.progress({ stage: 'projecting', completed: 0, total: source.size, label: 'Reading ZIP structure' });
   const container = await readZipContainer(source);
   for (const issue of container.issues) ctx.report(issue);
-  // Omit end_of_central_dir (not null) when missing, so its `$.end_of_central_dir` anchor
-  // misses and the table stays empty — see the pre-kit note in project-zip.ts.
+  // Omit end_of_central_dir (rather than setting it null) when missing. The table's anchor,
+  // `$.end_of_central_dir`, matches a single object, not `[*]` — so an explicit `null` property
+  // would still match the anchor and yield one row (with a null `match.node`, which the
+  // provenance resolver below can't service). Omitting the key entirely makes the property
+  // lookup miss instead, so no row is emitted and the table comes back genuinely empty.
   const root: Record<string, unknown> = {
     local_files: container.localFiles,
     central_dir_entries: container.centralDirEntries,
