@@ -13,3 +13,9 @@ export type {
 } from './framer.js';
 export { openFramedSource } from './driver.js';
 export { createYield } from './yield.js';
+
+export { packManifestSchema, parsePackManifest, PackManifestError } from './manifest.js';
+export type { PackManifest } from './manifest.js';
+
+export { definePack } from './define.js';
+export type { DefinedPack, OpenWithOptions, PackDefinition, PackHooks } from './define.js';
