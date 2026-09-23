@@ -185,17 +185,19 @@ export function buildPcapngWithOffsets(blocks: PcapngBlock[]): {
 
 export const buildPcapng = (blocks: PcapngBlock[]): Uint8Array => buildPcapngWithOffsets(blocks).bytes;
 
-export function pcapngFromPackets(opts: { endian: Endian; linktype: number; packets: PcapPacket[] }): Uint8Array {
+export function pcapngFromPackets(opts: {
+  endian: Endian;
+  linktype: number;
+  packets: PcapPacket[];
+}): Uint8Array {
   return buildPcapng([
     { type: 'shb', endian: opts.endian },
     { type: 'idb', linktype: opts.linktype },
-    ...opts.packets.map(
-      (packet): PcapngBlock => ({
-        type: 'epb',
-        interfaceId: 0,
-        ts: BigInt(packet.tsSec) * 1_000_000n + BigInt(packet.tsFrac),
-        data: packet.data,
-      }),
-    ),
+    ...opts.packets.map((packet): PcapngBlock => ({
+      type: 'epb',
+      interfaceId: 0,
+      ts: BigInt(packet.tsSec) * 1_000_000n + BigInt(packet.tsFrac),
+      data: packet.data,
+    })),
   ]);
 }
