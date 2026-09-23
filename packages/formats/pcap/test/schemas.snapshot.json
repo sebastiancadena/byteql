@@ -349,7 +349,7 @@
       },
       {
         "name": "interface_id",
-        "type": "uint32",
+        "type": "int64",
         "nullable": false
       },
       {

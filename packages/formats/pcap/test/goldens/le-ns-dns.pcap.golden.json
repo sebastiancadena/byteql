@@ -342,7 +342,7 @@
         },
         {
           "name": "interface_id",
-          "type": "Uint32"
+          "type": "Int64"
         },
         {
           "name": "comment",
@@ -362,7 +362,7 @@
         }
       ],
       "rowCount": 1,
-      "sha256": "6eb9176a202354e11d5c7d656b5aa00f9d3a7c76f713f562fcdd8c72a8947af1",
+      "sha256": "0c8d8f6c1e55c6725424a2a74d5c3d61ac6d03a4f7292921ffd9ea6f5dbe7efb",
       "head": [
         [
           "1n",
@@ -370,7 +370,7 @@
           69,
           69,
           1,
-          1,
+          "1n",
           null,
           "1999999999n",
           "24n",
