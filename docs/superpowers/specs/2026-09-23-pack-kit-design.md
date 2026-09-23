@@ -449,10 +449,11 @@ suite too slow to run on every change.
 Two limits are accepted, not fixed: a framer that spins synchronously between yields cannot be
 interrupted mid-record by the abort check (the abort check runs between driver pump iterations,
 not inside a synchronous framer loop), and vitest's timeout is per test, not per fuzz mutant, so
-a hang inside one mutant only surfaces as the whole `it` timing out. Separately, the abort
-conformance test itself fails loudly — never falsely passes — on a fixture small enough that its
-whole parse completes in a single batch before the second `nextBatch()` call can observe the
-abort; every fixture used in this migration is large enough that this does not trigger.
+a hang inside one mutant only surfaces as the whole `it` timing out. The abort conformance test
+does not depend on fixture size: `nextBatch()` checks the abort signal unconditionally before it
+looks at any already-queued batch, so a call made after `abort()` rejects with `AbortError` even
+when the whole parse already completed in a single batch and every table is sitting in `pending`
+(`driver.test.ts`, "rejects with AbortError even when every batch is already queued").
 
 Goldens regenerate with `vitest -u` (or `pnpm --filter <pkg> test -- -u`), reviewed like any
 other file diff.

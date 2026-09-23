@@ -297,9 +297,10 @@ describePackConformance(pcapFormatPack, {
 Known limits, not bugs: a framer that spins synchronously without an `await` between records
 cannot be interrupted mid-record by the abort check (the abort check runs between driver pump
 iterations, not inside a synchronous framer loop) — this only matters for a pathological framer,
-and every shipped framer already awaits per record or per byte-source read. The abort test itself
-fails loudly (not falsely-passes) on a fixture small enough that its whole parse completes in one
-batch before the second `nextBatch()` call can observe the abort.
+and every shipped framer already awaits per record or per byte-source read. Fixture size does not
+affect the abort test's reliability: `nextBatch()` checks the abort signal unconditionally before
+looking at any already-queued batch, so a call made after `abort()` rejects with `AbortError`
+even when the whole parse already completed in a single batch.
 
 Packs keep their own framer-, wrapper-, and semantic-level unit tests (wire-format edge cases,
 specific field decoding) alongside `conformance.test.ts` — the kit only covers the properties
@@ -335,8 +336,8 @@ to an existing pack:
   table-overview query, a stub framer that yields the whole file as one record, `index.ts`, and a
   `conformance.test.ts` with an empty fixture slot to fill in. The scaffold builds and passes
   `check` as generated.
-- `byteql-pack build` — validates `pack.yaml`, compiles `.ksy` schemas (if `ksy` is set) to
-  `gen/`, loads and validates the projection spec, lints `queries.yaml`, and emits
+- `byteql-pack build` — validates `pack.yaml`, loads and validates the projection spec, lints
+  `queries.yaml`, compiles `.ksy` schemas (if `ksy` is set) to `gen/`, and emits
   `src/pack.generated.ts` (the parsed manifest, the typed query list, and the hook-name union
   types `definePack` is generic over). Every pack's `build`/`check`/`test` script calls it once,
   before `tsc`/`vitest` — see `packages/formats/pcap/package.json` for the pattern.

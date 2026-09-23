@@ -130,8 +130,9 @@ architecture: `app → db → core ← formats`. `packages/core` is zero-DOM (No
 its vitest suites run without a browser).
 
 - `packages/core` — the engine
-  - `src/projection/spec.ts` — YAML spec schema (v0.1/v0.2: tables, state, `when`/`where`,
-    `parent_key`, `dissect`) + zod validation; errors at load, never per-row
+  - `src/projection/spec.ts` — YAML spec schema (v0.1–v0.4: tables, state, `when`/`where`,
+    `parent_key`, `dissect`, and v0.4's `nullable`) + zod validation; errors at load, never
+    per-row
   - `src/projection/expression.ts` — jsep-based sandboxed expression evaluator (closed builtin
     set, hex literals, bigint-aware arithmetic)
   - `src/projection/anchors.ts` — anchor-path compile + single-anchor traversal (dissect child
