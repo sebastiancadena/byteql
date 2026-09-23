@@ -163,10 +163,11 @@ and a conformance test with an empty fixture slot for the author to fill.
   default**.
 - Specs declaring `version` `0.1`–`0.3` still load and treat every spec column as nullable, so
   behavior changes only when a pack migrates to v0.4.
-- Engine-owned columns follow fixed rules: key and `parent_key` non-null; `stream_id`,
-  `_src_start`, `_src_end`, `_src_ranges` nullable; `errors.<ordinal>` nullable; other `errors`
-  columns non-null. Engine tables (`streams`, `stream_segments`) derive nullability from the
-  same rules plus their existing column definitions.
+- Engine-owned columns follow fixed rules, chosen to match what the engine actually writes:
+  key and `parent_key` non-null; `_src_start` and `_src_end` non-null on projected and stream
+  tables (every emitted row resolves a range) but nullable on `errors`; `stream_id` (injected on
+  message-fed tables) nullable; `_src_ranges` nullable; a segments table's feed-key column
+  nullable; `errors.<ordinal>` nullable; other `errors` columns non-null.
 
 ### `projectionSchemas(compiled, issueOptions)`
 
@@ -174,8 +175,12 @@ Returns `TableSchema[]` for every compiled table, the stream tables, and `errors
 column name comes from `issueOptions.ordinalColumn`, which `definePack` fills from the
 manifest's `errors.ordinal`), in the engine's column order. `definePack`
 exposes it as `pack.schemas()`. Before deletion, the hand-written schemas of all three packs are
-captured as test fixtures and the derived schemas must equal them exactly (names, order, types,
-nullability after each pack adds its `nullable: true` markers).
+captured as test fixtures and the derived schemas must equal them in names, order, and types
+exactly. Nullability must equal them except for one documented delta: the hand-written maps
+disagree about `_src_start`/`_src_end` (MIDI marks them non-null, pcap and ZIP nullable), so
+pcap's and ZIP's non-`errors` tables change to non-null, following the engine rule above. The
+conformance nullability check proves the new flags true. `nullable` is informational (Explorer
+`?` marker, worker column overview) and does not affect Arrow output or goldens.
 
 ### Strict fields
 
