@@ -133,7 +133,7 @@ describe('pcapFormatPack', () => {
       _src_end: 24n,
     });
     const [packet] = table('packets');
-    expect(packet.interface_id).toBe(1);
+    expect(packet.interface_id).toBe(1n);
     expect(packet.comment).toBeNull();
     expect(packet.ts_ns).toBe(3_123_456_789n);
   });

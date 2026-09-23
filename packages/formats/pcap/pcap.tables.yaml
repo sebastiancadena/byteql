@@ -21,7 +21,7 @@ tables:
       linktype: { expr: _.linktype, type: uint32 }
       # 1-based per-file ordinal of the packet's interface; equals interfaces.interface_id for the
       # same _src_file (keys restart per file — join on both).
-      interface_id: { expr: _.interface_id, type: uint32 }
+      interface_id: { expr: _.interface_id, type: int64 }
       comment: { expr: _.comment, type: utf8, nullable: true }
       ts_ns: { expr: _.ts_ns, type: int64, nullable: true }
   - name: interfaces

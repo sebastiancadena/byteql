@@ -146,13 +146,13 @@ describe('pcapng projection', () => {
     ]);
     const packets = rows(result, 'packets');
     expect(packets.map((r) => [r.interface_id, r.linktype, r.ts_ns, r.comment])).toEqual([
-      [1, 1, 1_700_000_000_123_456_789n, 'first'],
-      [2, 228, 105_500_000_000n, null],
-      [3, 1, 2_000_000_000n, null],
-      [3, 1, null, null],
+      [1n, 1, 1_700_000_000_123_456_789n, 'first'],
+      [2n, 228, 105_500_000_000n, null],
+      [3n, 1, 2_000_000_000n, null],
+      [3n, 1, null, null],
     ]);
-    const ids = new Set(ifaces.map((r) => Number(r.interface_id)));
-    expect(packets.every((r) => ids.has(Number(r.interface_id)))).toBe(true);
+    const ids = new Set(ifaces.map((r) => r.interface_id));
+    expect(packets.every((r) => ids.has(r.interface_id))).toBe(true);
     expect(packets[3]!.ts).toBeNull();
     expect(rows(result, 'dns').map((r) => r.query_name)).toEqual(['one.example', 'two.example']);
     expect(rows(result, 'errors').map((r) => r.code)).toEqual(['UNSUPPORTED_BLOCK_TYPE']);

@@ -10,7 +10,8 @@ export interface PacketRootFields {
   incl_len: number;
   orig_len: number;
   linktype: number;
-  interface_id: number;
+  /** Engine key of the packet's interface (int64, like every key reference in the pack). */
+  interface_id: bigint;
   comment: string | null;
   body: PcapPacketBody;
 }
@@ -65,7 +66,7 @@ export const pcapFramer: Framer = async function* (source, ctx) {
         incl_len: packet.incl_len,
         orig_len: packet.orig_len,
         linktype: packet.linktype,
-        interface_id: 1,
+        interface_id: 1n,
         comment: null,
         body: packet.body,
       }),
@@ -88,6 +89,9 @@ const floorDiv = (value: bigint, divisor: bigint): bigint => {
 
 export const pcapngFramer: Framer = async function* (source, ctx) {
   const reader = await createPcapngReader(source, ctx.chunkBytes);
+  // One bigint per interface ordinal, reused by every packet that references it.
+  const interfaceKeys: bigint[] = [];
+  const interfaceKey = (ordinal: number): bigint => (interfaceKeys[ordinal] ??= BigInt(ordinal));
   for (let item = await reader.next(); item !== null; item = await reader.next()) {
     ctx.bytes(reader.bytesConsumed()); // before yield
     if (item.kind === 'interface') {
@@ -117,7 +121,7 @@ export const pcapngFramer: Framer = async function* (source, ctx) {
           incl_len: packet.inclLen,
           orig_len: packet.origLen,
           linktype: packet.linktype,
-          interface_id: packet.interfaceOrdinal,
+          interface_id: interfaceKey(packet.interfaceOrdinal),
           comment: packet.comment,
           body: packet.body,
         }),

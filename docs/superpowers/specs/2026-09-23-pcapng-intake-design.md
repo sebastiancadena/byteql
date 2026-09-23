@@ -105,7 +105,7 @@ Files under `packages/formats/pcap/`:
 
 | Column | Type | Source |
 |---|---|---|
-| `interface_id` | uint32 | File-global 1-based ordinal of the packet's interface (always 1 for classic pcap) |
+| `interface_id` | int64 | File-global 1-based ordinal of the packet's interface (always 1 for classic pcap) |
 | `comment` | utf8, nullable | First `opt_comment` of the packet block; null for classic pcap |
 | `ts_ns` | int64, nullable | Exact epoch nanoseconds; null only for Simple Packet Blocks |
 
@@ -281,10 +281,11 @@ that touches the hot parse path.
 - The shared chunk window's first (priming) load does not bump `generation`; only reloads do.
   The plan's original snippet bumped `generation` on the first load too, which contradicted its
   own test. Classic-pcap output is unaffected.
-- `interfaces.interface_id` is an engine-assigned key (`int64`/JS `bigint`), while
-  `packets.interface_id` is a declared `uint32` column. DuckDB joins across the two widths
-  correctly, but JS-side comparisons (tests, key-alignment checks) must normalize before
-  comparing.
+- `interfaces.interface_id` is an engine-assigned key (`int64`/JS `bigint`). `packets.interface_id`
+  was first declared `uint32`, which forced JS-side comparisons to normalize; the final review
+  changed it to `int64`, like every other key reference in the pack, so both sides now come back
+  as `bigint` and compare directly. The framers pass bigint keys (`1n` for classic pcap, one
+  cached bigint per pcapng interface), so the int64 column allocates nothing per packet.
 - Regenerating `test/schemas.snapshot.json` also normalized stale `_src_start`/`_src_end`
   nullability on untouched tables; this was already inert, since the conformance test's
   `relax()` forced that nullability regardless of the snapshot's literal value.
