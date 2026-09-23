@@ -67,3 +67,13 @@ built bytes parse correctly through the package's compiled `gen/*.js`
 parser (protocol/type fields, body length and contents, and for TLS the
 SNI host name) — catching byte-layout mistakes here instead of three tasks
 later in the framer/wrapper/projection tests that consume these builders.
+
+## `buildPcapng(blocks)` / `buildPcapngWithOffsets(blocks)`
+
+`test/build-pcapng.ts` writes byte-exact pcapng: each block is type u32 + total length u32 +
+body padded to 4 + total length u32, in the byte order of the most recent `shb` block. Block kinds:
+`shb` (byte-order magic and major version overridable for error tests), `idb`, `epb`, `opb`,
+`spb`, and `raw` (any type with a verbatim body — used for NRB/ISB/unknown blocks and malformed
+blocks). `buildPcapngWithOffsets` also returns each block's absolute `[start, end)` so tests can
+assert provenance or patch fields. `pcapngFromPackets` converts classic `buildPcap` packet
+descriptions into a one-interface µs-resolution pcapng, for parity tests.
