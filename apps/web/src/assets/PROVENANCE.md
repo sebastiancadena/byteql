@@ -22,18 +22,22 @@ These files back the empty-state "Try sample" picker (`src/lib/session/samples.t
 ## Network captures
 
 - `SkypeIRC.cap` — Wireshark wiki, SampleCaptures.
-  Source: https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/SkypeIRC.cap
+  Source: <https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/SkypeIRC.cap>
   Contents: Skype, IRC, and DNS traffic over IPv4 (classic libpcap, Ethernet).
 - `v6.pcap` — Wireshark wiki, SampleCaptures.
-  Source: https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/v6.pcap
+  Source: <https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/v6.pcap>
   Contents: IPv6 (6bone) and ICMPv6 packets (classic libpcap, Ethernet).
 - `dns-stream.pcap` — byteql-generated synthetic fixture (also used by the pcap e2e).
   Built by `packages/formats/pcap/test/build-pcap.ts`: a two-segment DNS-over-TCP query for
   `stream.example` split across TCP seq 0/10, so it exercises TCP stream reassembly (the
   `streams` table / "TCP flows" saved query) on the bundled sample. Not from the Wireshark wiki.
+- `http2-16-ssl.pcapng` — Wireshark wiki, SampleCaptures.
+  Source: <https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/http2-16-ssl.pcapng>
+  Contents: HTTP/2 over TLS on loopback (IPv4 and IPv6, TCP/443) with a TLS ClientHello carrying
+  SNI `localhost` (pcapng, Ethernet, nanosecond timestamps, one interface statistics block).
 
 Redistribution follows the Wireshark wiki SampleCaptures terms
-(https://wiki.wireshark.org/SampleCaptures).
+(<https://wiki.wireshark.org/SampleCaptures>).
 
 ## MIDI
 
