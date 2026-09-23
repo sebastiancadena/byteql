@@ -1,0 +1,515 @@
+{
+  "tables": {
+    "dns": {
+      "fields": [
+        {
+          "name": "dns_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stream_id",
+          "type": "Int64"
+        },
+        {
+          "name": "tx_id",
+          "type": "Uint16"
+        },
+        {
+          "name": "qr",
+          "type": "Int8"
+        },
+        {
+          "name": "query_name",
+          "type": "Utf8"
+        },
+        {
+          "name": "query_type",
+          "type": "Int16"
+        },
+        {
+          "name": "qd_count",
+          "type": "Uint16"
+        },
+        {
+          "name": "an_count",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_ranges",
+          "type": "List<Struct<{start:Uint64, end:Uint64}>>"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "6809635d92610c5bb8d991f332669a78dad39872f0fee6375fe3a43f26879038",
+      "head": [
+        [
+          "1n",
+          "1n",
+          null,
+          4660,
+          0,
+          "a.ru",
+          1,
+          1,
+          0,
+          "82n",
+          "104n",
+          null
+        ]
+      ]
+    },
+    "errors": {
+      "fields": [
+        {
+          "name": "error_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stage",
+          "type": "Utf8"
+        },
+        {
+          "name": "record",
+          "type": "Int32"
+        },
+        {
+          "name": "code",
+          "type": "Utf8"
+        },
+        {
+          "name": "message",
+          "type": "Utf8"
+        },
+        {
+          "name": "recoverable",
+          "type": "Bool"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "icmp": {
+      "fields": [
+        {
+          "name": "icmp_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "type",
+          "type": "Int16"
+        },
+        {
+          "name": "echo_id",
+          "type": "Uint16"
+        },
+        {
+          "name": "echo_seq",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "icmpv6": {
+      "fields": [
+        {
+          "name": "icmpv6_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "type",
+          "type": "Int16"
+        },
+        {
+          "name": "code",
+          "type": "Int16"
+        },
+        {
+          "name": "echo_id",
+          "type": "Uint16"
+        },
+        {
+          "name": "echo_seq",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "ip": {
+      "fields": [
+        {
+          "name": "ip_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "version",
+          "type": "Int8"
+        },
+        {
+          "name": "src_addr",
+          "type": "Utf8"
+        },
+        {
+          "name": "dst_addr",
+          "type": "Utf8"
+        },
+        {
+          "name": "proto",
+          "type": "Int16"
+        },
+        {
+          "name": "hop_limit",
+          "type": "Int16"
+        },
+        {
+          "name": "length",
+          "type": "Uint32"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "dc6fbe6c343c29ca2562148c635e5a351c24d77445b433a6de3e0ef389e7a7f6",
+      "head": [
+        [
+          "1n",
+          "1n",
+          4,
+          "1.1.1.1",
+          "8.8.8.8",
+          17,
+          64,
+          50,
+          "54n",
+          "104n"
+        ]
+      ]
+    },
+    "packets": {
+      "fields": [
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "ts",
+          "type": "Timestamp<MICROSECOND>"
+        },
+        {
+          "name": "caplen",
+          "type": "Uint32"
+        },
+        {
+          "name": "len",
+          "type": "Uint32"
+        },
+        {
+          "name": "linktype",
+          "type": "Uint32"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "01a33fb57385c6b28eeceb26524e3dd32bc17517142887fd475128697df7db4f",
+      "head": [
+        [
+          "1n",
+          "1000000us",
+          64,
+          64,
+          1,
+          "24n",
+          "104n"
+        ]
+      ]
+    },
+    "stream_segments": {
+      "fields": [
+        {
+          "name": "segment_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stream_id",
+          "type": "Int64"
+        },
+        {
+          "name": "tcp_id",
+          "type": "Int64"
+        },
+        {
+          "name": "offset",
+          "type": "Int64"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "streams": {
+      "fields": [
+        {
+          "name": "stream_id",
+          "type": "Int64"
+        },
+        {
+          "name": "src_addr",
+          "type": "Utf8"
+        },
+        {
+          "name": "src_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "dst_addr",
+          "type": "Utf8"
+        },
+        {
+          "name": "dst_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "segment_count",
+          "type": "Uint32"
+        },
+        {
+          "name": "byte_count",
+          "type": "Uint32"
+        },
+        {
+          "name": "message_count",
+          "type": "Uint32"
+        },
+        {
+          "name": "pending_bytes",
+          "type": "Uint32"
+        },
+        {
+          "name": "status",
+          "type": "Utf8"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_ranges",
+          "type": "List<Struct<{start:Uint64, end:Uint64}>>"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "tcp": {
+      "fields": [
+        {
+          "name": "tcp_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "src_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "dst_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "seq",
+          "type": "Int64"
+        },
+        {
+          "name": "ack",
+          "type": "Int64"
+        },
+        {
+          "name": "flags",
+          "type": "Utf8"
+        },
+        {
+          "name": "window",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "tls": {
+      "fields": [
+        {
+          "name": "tls_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "stream_id",
+          "type": "Int64"
+        },
+        {
+          "name": "tls_version",
+          "type": "Utf8"
+        },
+        {
+          "name": "sni",
+          "type": "Utf8"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_ranges",
+          "type": "List<Struct<{start:Uint64, end:Uint64}>>"
+        }
+      ],
+      "rowCount": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "head": []
+    },
+    "udp": {
+      "fields": [
+        {
+          "name": "udp_id",
+          "type": "Int64"
+        },
+        {
+          "name": "packet_id",
+          "type": "Int64"
+        },
+        {
+          "name": "src_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "dst_port",
+          "type": "Uint16"
+        },
+        {
+          "name": "length",
+          "type": "Uint16"
+        },
+        {
+          "name": "_src_start",
+          "type": "Uint64"
+        },
+        {
+          "name": "_src_end",
+          "type": "Uint64"
+        }
+      ],
+      "rowCount": 1,
+      "sha256": "4dc3bea40ca5281ac99168c900b0eb9de958cdc19a37b552f2cc4985d6a234dc",
+      "head": [
+        [
+          "1n",
+          "1n",
+          5000,
+          53,
+          30,
+          "74n",
+          "104n"
+        ]
+      ]
+    }
+  },
+  "issues": [],
+  "capabilities": {}
+}

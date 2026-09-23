@@ -1,0 +1,202 @@
+[
+  {
+    "name": "errors",
+    "columns": [
+      {
+        "name": "error_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "stage",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "track",
+        "type": "int32",
+        "nullable": true
+      },
+      {
+        "name": "code",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "message",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "recoverable",
+        "type": "bool",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "events",
+    "columns": [
+      {
+        "name": "event_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "track",
+        "type": "int32",
+        "nullable": false
+      },
+      {
+        "name": "event_index",
+        "type": "int32",
+        "nullable": false
+      },
+      {
+        "name": "delta_time",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "tick",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "kind",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "channel",
+        "type": "uint8",
+        "nullable": true
+      },
+      {
+        "name": "note",
+        "type": "uint8",
+        "nullable": true
+      },
+      {
+        "name": "velocity",
+        "type": "uint8",
+        "nullable": true
+      },
+      {
+        "name": "controller",
+        "type": "uint8",
+        "nullable": true
+      },
+      {
+        "name": "value",
+        "type": "uint8",
+        "nullable": true
+      },
+      {
+        "name": "program",
+        "type": "uint8",
+        "nullable": true
+      },
+      {
+        "name": "pressure",
+        "type": "uint8",
+        "nullable": true
+      },
+      {
+        "name": "bend",
+        "type": "int16",
+        "nullable": true
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": false
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "name": "header",
+    "columns": [
+      {
+        "name": "header_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "format",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "num_tracks",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "division",
+        "type": "int16",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": false
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "name": "tempo",
+    "columns": [
+      {
+        "name": "tempo_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "track",
+        "type": "int32",
+        "nullable": false
+      },
+      {
+        "name": "tick",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "us_per_quarter",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": false
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": false
+      }
+    ]
+  }
+]

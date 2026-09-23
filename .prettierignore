@@ -6,6 +6,8 @@ coverage/
 playwright-report/
 test-results/
 packages/formats/*/gen/
+packages/formats/*/test/goldens/
+packages/formats/*/test/schemas.snapshot.json
 crates/
 .rumdl_cache/
 pnpm-lock.yaml

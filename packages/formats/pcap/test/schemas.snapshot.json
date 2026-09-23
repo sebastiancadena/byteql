@@ -1,0 +1,537 @@
+[
+  {
+    "name": "dns",
+    "columns": [
+      {
+        "name": "dns_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "packet_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "stream_id",
+        "type": "int64",
+        "nullable": true
+      },
+      {
+        "name": "tx_id",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "qr",
+        "type": "int8",
+        "nullable": false
+      },
+      {
+        "name": "query_name",
+        "type": "utf8",
+        "nullable": true
+      },
+      {
+        "name": "query_type",
+        "type": "int16",
+        "nullable": true
+      },
+      {
+        "name": "qd_count",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "an_count",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_ranges",
+        "type": "src_ranges",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "errors",
+    "columns": [
+      {
+        "name": "error_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "stage",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "record",
+        "type": "int32",
+        "nullable": true
+      },
+      {
+        "name": "code",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "message",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "recoverable",
+        "type": "bool",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "icmp",
+    "columns": [
+      {
+        "name": "icmp_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "packet_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "type",
+        "type": "int16",
+        "nullable": false
+      },
+      {
+        "name": "echo_id",
+        "type": "uint16",
+        "nullable": true
+      },
+      {
+        "name": "echo_seq",
+        "type": "uint16",
+        "nullable": true
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "icmpv6",
+    "columns": [
+      {
+        "name": "icmpv6_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "packet_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "type",
+        "type": "int16",
+        "nullable": false
+      },
+      {
+        "name": "code",
+        "type": "int16",
+        "nullable": false
+      },
+      {
+        "name": "echo_id",
+        "type": "uint16",
+        "nullable": true
+      },
+      {
+        "name": "echo_seq",
+        "type": "uint16",
+        "nullable": true
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "ip",
+    "columns": [
+      {
+        "name": "ip_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "packet_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "version",
+        "type": "int8",
+        "nullable": false
+      },
+      {
+        "name": "src_addr",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "dst_addr",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "proto",
+        "type": "int16",
+        "nullable": false
+      },
+      {
+        "name": "hop_limit",
+        "type": "int16",
+        "nullable": true
+      },
+      {
+        "name": "length",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "packets",
+    "columns": [
+      {
+        "name": "packet_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "ts",
+        "type": "timestamp_us",
+        "nullable": false
+      },
+      {
+        "name": "caplen",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "len",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "linktype",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "stream_segments",
+    "columns": [
+      {
+        "name": "segment_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "stream_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "tcp_id",
+        "type": "int64",
+        "nullable": true
+      },
+      {
+        "name": "offset",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "streams",
+    "columns": [
+      {
+        "name": "stream_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "src_addr",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "src_port",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "dst_addr",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "dst_port",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "segment_count",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "byte_count",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "message_count",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "pending_bytes",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_ranges",
+        "type": "src_ranges",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "tcp",
+    "columns": [
+      {
+        "name": "tcp_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "packet_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "src_port",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "dst_port",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "seq",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "ack",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "flags",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "window",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "tls",
+    "columns": [
+      {
+        "name": "tls_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "packet_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "stream_id",
+        "type": "int64",
+        "nullable": true
+      },
+      {
+        "name": "tls_version",
+        "type": "utf8",
+        "nullable": false
+      },
+      {
+        "name": "sni",
+        "type": "utf8",
+        "nullable": true
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_ranges",
+        "type": "src_ranges",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "name": "udp",
+    "columns": [
+      {
+        "name": "udp_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "packet_id",
+        "type": "int64",
+        "nullable": false
+      },
+      {
+        "name": "src_port",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "dst_port",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "length",
+        "type": "uint16",
+        "nullable": false
+      },
+      {
+        "name": "_src_start",
+        "type": "uint64",
+        "nullable": true
+      },
+      {
+        "name": "_src_end",
+        "type": "uint64",
+        "nullable": true
+      }
+    ]
+  }
+]
