@@ -194,10 +194,15 @@ fatal.
   (`UNSUPPORTED_SECTION_VERSION`). Once length framing is untrustworthy there is no safe resync.
 - **Skip the block, continue:** a packet referencing an interface not declared in its section
   (`UNKNOWN_INTERFACE`, since its linktype is unknown); a captured length that exceeds the
-  block's space, or block fields that do not fit their block (`MALFORMED_BLOCK`).
+  block's space, or block fields that do not fit their block (`MALFORMED_BLOCK`). A malformed
+  IDB still occupies its positional index in the section, so later packets that reference it
+  report `UNKNOWN_INTERFACE` rather than binding to the wrong interface. A Section Header Block
+  shorter than its 28-byte minimum stops instead, since every later block depends on it.
 - **Keep the block, drop its options:** an option whose length runs past the options area
   (`MALFORMED_OPTION`); the packet or interface is still emitted with defaults for the options
   not decoded.
+- **Keep the packet, null its timestamps:** a computed `ts_ns` outside the int64 range
+  (`TIMESTAMP_OUT_OF_RANGE`, reachable with hostile resolutions or offsets).
 
 Every issue carries the block's absolute range as provenance and the record ordinal where one
 exists.
