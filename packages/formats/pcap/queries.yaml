@@ -5,6 +5,7 @@ queries:
     kind: grid
     sql: |
       select 'packets' as table_name, count(*) as row_count from packets
+      union all select 'interfaces', count(*) from interfaces
       union all select 'ip', count(*) from ip
       union all select 'tcp', count(*) from tcp
       union all select 'udp', count(*) from udp
@@ -50,4 +51,17 @@ queries:
              s.status, s.message_count, s.byte_count, s.pending_bytes
       from streams s
       order by s.stream_id
+      limit 100;
+
+  - id: packets_by_interface
+    title: Packets by interface
+    kind: grid
+    # Keys restart per file, so the join matches _src_file too (see pcap.tables.yaml).
+    sql: |
+      select i._src_file, i.interface_id, i.name, i.linktype, i.ts_resolution,
+             count(p.packet_id) as packets, sum(p.len) as bytes
+      from interfaces i
+      left join packets p on p.interface_id = i.interface_id and p._src_file = i._src_file
+      group by all
+      order by i._src_file, i.interface_id
       limit 100;

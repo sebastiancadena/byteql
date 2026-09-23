@@ -7,6 +7,7 @@ it('compiles the pcap spec against the pack hooks', () => {
   // the spec tables in order, then the engine-owned stream segment table and errors.
   expect(pcapFormatPack.schemas().map((t) => t.name)).toEqual([
     'packets',
+    'interfaces',
     'ip',
     'tcp',
     'udp',

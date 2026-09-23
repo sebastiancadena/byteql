@@ -13,10 +13,31 @@ tables:
     rows: $
     key: packet_id
     columns:
-      ts: { expr: _.ts_sec * 1000000 + _.ts_frac_us, type: timestamp_us }
+      # ts_us/ts_ns are exact bigints computed by the framers; ts is null only for pcapng
+      # Simple Packet Blocks, which carry no timestamp.
+      ts: { expr: _.ts_us, type: timestamp_us, nullable: true }
       caplen: { expr: _.incl_len, type: uint32 }
       len: { expr: _.orig_len, type: uint32 }
       linktype: { expr: _.linktype, type: uint32 }
+      # 1-based per-file ordinal of the packet's interface; equals interfaces.interface_id for the
+      # same _src_file (keys restart per file — join on both).
+      interface_id: { expr: _.interface_id, type: uint32 }
+      comment: { expr: _.comment, type: utf8, nullable: true }
+      ts_ns: { expr: _.ts_ns, type: int64, nullable: true }
+  - name: interfaces
+    rows: $
+    key: interface_id
+    columns:
+      section: { expr: _.section, type: uint32 }
+      if_index: { expr: _.if_index, type: uint32 }
+      linktype: { expr: _.linktype, type: uint32 }
+      snaplen: { expr: _.snaplen, type: uint32 }
+      name: { expr: _.name, type: utf8, nullable: true }
+      description: { expr: _.description, type: utf8, nullable: true }
+      os: { expr: _.os, type: utf8, nullable: true }
+      comment: { expr: _.comment, type: utf8, nullable: true }
+      ts_resolution: { expr: _.ts_resolution, type: utf8 }
+      ts_offset_s: { expr: _.ts_offset_s, type: int64 }
   - name: ip
     rows: $
     key: ip_id

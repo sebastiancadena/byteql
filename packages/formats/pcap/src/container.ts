@@ -52,6 +52,8 @@ export interface PcapPacket {
   ts_sec: number;
   /** Fractional timestamp, always normalized to microseconds. */
   ts_frac_us: number;
+  /** Exact fractional timestamp in nanoseconds (µs field × 1000, or the ns field as written). */
+  ts_frac_ns: number;
   incl_len: number;
   orig_len: number;
   /** `linktype` from the global header, normalized for raw-IP (101 → 228/229). */
@@ -218,6 +220,7 @@ export async function createPcapFramer(
       index,
       ts_sec: tsSec,
       ts_frac_us: timeUnit === 'ns' ? Math.floor(tsUsecOrNsec / 1000) : tsUsecOrNsec,
+      ts_frac_ns: timeUnit === 'ns' ? tsUsecOrNsec : tsUsecOrNsec * 1000,
       incl_len: inclLen,
       orig_len: origLen,
       linktype: packetLinktype,
