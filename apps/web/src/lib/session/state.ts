@@ -92,6 +92,13 @@ export interface SessionState {
    * a result family the session has already moved past.
    */
   resultIsCurrent: boolean;
+  /**
+   * How many query executions have settled — succeeded or failed — this session. Never reset
+   * (unlike `phase`, which returns to `'ready'` either way), so a caller that only holds a
+   * before/after snapshot (e.g. e2e waiting for a run to finish) can detect "a new execution
+   * settled" without racing `phase`'s transient `'querying'` value.
+   */
+  resultSettleCount: number;
 }
 
 export type SessionEvent =
@@ -160,6 +167,7 @@ export const initialSessionState: SessionState = {
   download: null,
   sorting: null,
   resultIsCurrent: false,
+  resultSettleCount: 0,
 };
 
 const isValidPagedWindow = (result: PagedResultState): boolean =>
@@ -243,6 +251,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         byteSelection: null,
         sorting: null,
         resultIsCurrent: true,
+        resultSettleCount: state.resultSettleCount + 1,
       };
     case 'queryWindowUpdated':
       return state.result && isValidPagedUpdate(state.result, event.result)
@@ -270,6 +279,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
         selectedRow: null,
         sorting: null,
         resultIsCurrent: false,
+        resultSettleCount: state.resultSettleCount + 1,
       };
     case 'rowSelected':
       return state.result === null ? state : { ...state, selectedRow: event.row };

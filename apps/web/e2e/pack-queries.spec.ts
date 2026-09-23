@@ -60,20 +60,19 @@ const CASES: readonly PackCase[] = [
 
 /**
  * Runs the currently-loaded SQL and waits for it to actually settle — success or failure —
- * before the caller inspects the page. The "Results" toolbar's elapsed-time span
- * (`.results-heading-meta .result-count.tabular`) only (re)renders on `querySucceeded`, which
- * replaces `session.result` with a fresh object; on `queryFailed` the previous result (and its
- * elapsed-time text) is left untouched. So: snapshot that text, click Run, and wait for it to
- * change. A query that errors will never produce a new elapsed-time text, so the wait times out
- * and the assertion on the error banner below gives the real failure reason.
+ * before the caller inspects the page. `.results-heading` carries `data-result-settle-count`,
+ * which the session bumps on every query that settles either way (`querySucceeded` or
+ * `queryFailed`; see `Workbench.svelte` / `session/state.ts`). Waiting on the elapsed-time text
+ * instead is flaky: two consecutive queries can round to the same 0.1 ms display and the wait
+ * never observes a change. The settle counter changes on every execution, including a failing
+ * one, so the wait cannot false-pass — the error-banner assertion below still gives the real
+ * failure reason.
  */
 async function runAndSettle(page: Page): Promise<void> {
-  const elapsed = page.locator('.results-heading-meta .result-count.tabular');
-  const before = (await elapsed.count()) > 0 ? await elapsed.textContent() : null;
+  const heading = page.locator('.results-heading');
+  const before = await heading.getAttribute('data-result-settle-count');
   await page.getByRole('button', { name: 'Run query' }).click();
-  await expect
-    .poll(async () => ((await elapsed.count()) > 0 ? await elapsed.textContent() : null))
-    .not.toBe(before);
+  await expect.poll(() => heading.getAttribute('data-result-settle-count')).not.toBe(before);
 }
 
 for (const { name, pack, open } of CASES) {

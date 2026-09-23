@@ -1197,7 +1197,7 @@ describe('SessionController', () => {
       { name: 'tcp', columns: [{ name: 'tcp_id', type: 'int64', nullable: false }] },
     ];
     parser.calls[0]!.finish({
-      format: { id: 'pcap', title: 'PCAP capture' },
+      format: { id: 'pcap', title: 'Packet capture' },
       tables: [{ name: 'packets', rowCount: 2, columns: schemas[0]!.columns }],
       issues: [],
       queries: [],

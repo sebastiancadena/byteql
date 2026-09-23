@@ -35,6 +35,7 @@ const { database, databaseDispose, initialize, dispose, createBrowserDatabase, S
             download: null,
             sorting: null,
             resultIsCurrent: false,
+            resultSettleCount: 0,
           });
           return () => undefined;
         },

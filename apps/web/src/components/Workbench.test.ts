@@ -189,6 +189,7 @@ const readyState = (): SessionState => ({
   download: null,
   sorting: null,
   resultIsCurrent: true,
+  resultSettleCount: 1,
 });
 
 class FakeController {
