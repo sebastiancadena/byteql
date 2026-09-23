@@ -121,6 +121,25 @@ export interface ProjectedTable {
 
 const reservedOutputNames = new Set(['_src_start', '_src_end', '_src_ranges', '_src_file']);
 
+// Thrown from a column `expr` evaluation (only) when `ProjectionSessionOptions.strictFields` is
+// set and the expression reads a field absent on the node it's evaluated against — a likely
+// typo/naming mismatch the engine would otherwise silently paper over as null. `when`, `where`,
+// state updates, dissect payloads, and stream expressions never throw this: see EmitContext's
+// `strictFields` doc and emitRow's column loop.
+export class ProjectionFieldError extends Error {
+  constructor(
+    readonly table: string,
+    readonly column: string,
+    readonly field: string,
+    readonly keys: string[],
+  ) {
+    super(
+      `PROJECTION_FIELD_MISSING: ${table}.${column} reads "${field}", absent on a node with keys [${keys.join(', ')}]`,
+    );
+    this.name = 'ProjectionFieldError';
+  }
+}
+
 const compileAtPath = (source: string, path: string): CompiledExpression => {
   try {
     return compileExpression(source);
@@ -1069,6 +1088,12 @@ export interface EmitContext {
   // (message tables and deeper dissect tables alike) inherits the message's provenance instead
   // of composing offsets against the span start, which is meaningless once the span has gaps.
   inherited?: InheritedProvenance | null;
+  // From ProjectionSessionOptions.strictFields: when true, emitRow's column-expr evaluation
+  // (only) throws ProjectionFieldError instead of silently reading null for a missing field.
+  // Every EmitContext literal built while a strict session is running (projectInto and
+  // session.finish's flushStreams call alike) must carry this so stream-flushed rows are
+  // strict too.
+  readonly strictFields?: boolean;
 }
 
 const emitRow = (
@@ -1127,10 +1152,20 @@ const emitRow = (
   if (extraColumns) Object.assign(row, extraColumns);
   for (const column of table.columns) {
     if (column.name === table.key || column.name === '_src_start' || column.name === '_src_end') continue;
+    // Only the column `expr` is strict — `when` above always uses the plain `context` (row-time
+    // evaluation there still returns null, never throws).
+    const columnContext = emitContext.strictFields
+      ? {
+          ...context,
+          onMissingMember: (field: string, node: object) => {
+            throw new ProjectionFieldError(table.name, column.name, field, Object.keys(node));
+          },
+        }
+      : context;
     row[column.name] =
       column.when && !evaluateExpression(column.when, context)
         ? null
-        : (evaluateExpression(column.expr, context) ?? null);
+        : (evaluateExpression(column.expr, columnContext) ?? null);
   }
   const range = provenance.resolve(table.name, match);
   row._src_start = BigInt(range.start);
@@ -1704,10 +1739,18 @@ export const projectInto = (
   subset: ReadonlySet<string> | null,
   issues?: IssueCollector,
   streams: StreamsRuntime | null = null,
+  strictFields = false,
 ): void => {
   const active = compiled.rootTables.filter((table) => !subset || subset.has(table.name));
   const matcher = buildMatcher(active.map((table) => table.rows));
-  const emitContext: EmitContext = { compiled, runtimes, sink, streams, ...(issues ? { issues } : {}) };
+  const emitContext: EmitContext = {
+    compiled,
+    runtimes,
+    sink,
+    streams,
+    ...(issues ? { issues } : {}),
+    ...(strictFields ? { strictFields } : {}),
+  };
   const emptyKeys: ReadonlyMap<string, bigint> = new Map();
   walkMatcher(root, matcher, (anchorIndex, match) => {
     const table = active[anchorIndex]!;

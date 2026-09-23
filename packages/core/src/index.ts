@@ -67,6 +67,7 @@ export {
   compileProjection,
   createStreamsRuntime,
   flushStreams,
+  ProjectionFieldError,
   projectTree,
   streamSegmentsOutputTypes,
 } from './projection/project.js';
