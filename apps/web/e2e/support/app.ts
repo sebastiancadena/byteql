@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { expect, type Download, type Page, type TestInfo } from '@playwright/test';
@@ -68,8 +69,16 @@ export async function setSessionOverrides(page: Page, overrides: SessionOverride
   }, overrides);
 }
 
-export const fixturePath = (name: string): string =>
-  fileURLToPath(new URL(`../../../../packages/formats/midi/test/fixtures/${name}`, import.meta.url));
+/**
+ * Resolves a fixture by name, checking this directory's own `fixtures/` (pcap/pcapng and other
+ * non-MIDI samples) before falling back to the MIDI pack's fixtures, where most callers' files
+ * live.
+ */
+export const fixturePath = (name: string): string => {
+  const local = fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
+  if (existsSync(local)) return local;
+  return fileURLToPath(new URL(`../../../../packages/formats/midi/test/fixtures/${name}`, import.meta.url));
+};
 
 export async function waitForAppReady(page: Page): Promise<void> {
   await page.locator('[data-app-ready="true"]').waitFor();

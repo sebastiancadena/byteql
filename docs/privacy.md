@@ -65,6 +65,28 @@ Playwright compiles its narrowly gated test hooks into `apps/web/dist-e2e` and p
 directory. Deployable `apps/web/dist` is always produced without the gate and remains the target of
 `check:bundle`; running browser acceptance does not replace it.
 
+## Local query storage
+
+Saved queries and query-history settings live in the origin's IndexedDB database
+`byteql-queries`. Saving a query is an explicit action; the SQL and its name stay in this browser
+and are never sent anywhere. Every run is kept in memory for the current tab; runs are written to
+IndexedDB only while **Keep history after this tab closes** is on, capped at the most recent 100
+across formats. Turning that setting off deletes the stored history in the same operation.
+**Clear history** removes history from memory and storage; deleting a saved query removes it.
+Clearing the site's data removes everything, and exporting a format's queries as a `.sql` file is
+the only backup. Other tabs are told only that the library changed (a `BroadcastChannel` message
+with no SQL). When IndexedDB is unavailable the library works in memory for the tab and says so.
+The post-readiness privacy test saves, persists, exports, and imports a query containing its SQL
+sentinel and still requires zero request events.
+
+A history write is skipped unless persistence is on in the stored settings, checked atomically
+with the write itself; turning persistence off stores "off" before clearing the stored history, so
+a write already in flight either sees "off" and is skipped or is removed by the clear that
+follows. If that clear itself fails, "off" stays stored and the stale entries are removed the next
+time the app opens (the library sweeps stored history on open whenever persistence is off);
+**Clear history** always clears both memory and storage, immediately, whether or not persistence
+is on.
+
 ## Hosting and threat boundary
 
 - Serve the generated `apps/web/dist` directory as immutable static files over HTTPS.

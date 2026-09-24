@@ -72,17 +72,15 @@ Evidence: [pcapng pack tests](packages/formats/pcap/test/pcapng-pack.test.ts) an
 [pcap e2e](apps/web/e2e/pcap.spec.ts).
 Design: [pcapng intake design](docs/superpowers/specs/2026-09-23-pcapng-intake-design.md).
 
-### 4. Add saved queries and opt-in local history
+### 4. Add saved queries and opt-in local history — done (2026-09-24)
 
-The current "Example queries" are format-pack examples, not user-saved work. Make repeat
-investigations easier with:
+Named queries are saved per format and listed beside the pack's example queries; recent runs are
+kept per tab and persisted only when the user opts in; a format's library exports to and imports
+from one annotated `.sql` file. Everything is stored in the browser's IndexedDB and never sent.
 
-- Named queries.
-- Recent executions.
-- SQL import and export.
-- Explicit persistence controls, because SQL can contain sensitive literals.
-
-Existing behavior: [Workbench tests](apps/web/src/components/Workbench.test.ts).
+Evidence: [saved-queries e2e](apps/web/e2e/saved-queries.spec.ts) and
+[privacy e2e](apps/web/e2e/privacy.spec.ts).
+Design: [saved queries design](docs/superpowers/specs/2026-09-24-saved-queries-design.md).
 
 ### 5. Harden TCP connection identity
 
@@ -130,8 +128,9 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
 1. Duplicate-column correctness. **Done, 2026-09-16.**
 2. Truthful multi-range provenance. **Done, 2026-09-22.**
 3. Pcapng intake. **Done, 2026-09-23.**
+4. Saved queries and opt-in local history. **Done, 2026-09-24.**
 
-Saved queries are the next usability feature after that cycle.
+Hardening TCP connection identity (priority 5) is next.
 
 ## Evidence boundary
 

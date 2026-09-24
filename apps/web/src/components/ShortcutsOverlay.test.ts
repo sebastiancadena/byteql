@@ -26,6 +26,7 @@ describe('ShortcutsOverlay', () => {
     expect(screen.getByRole('dialog', { name: 'Keyboard shortcuts' })).toBeTruthy();
     for (const action of [
       'Run query',
+      'Save query',
       'Open file',
       'Show or hide sources',
       'Show or hide values',
@@ -42,6 +43,7 @@ describe('ShortcutsOverlay', () => {
 
     // jsdom's navigator.platform is not a Mac, so the non-Mac modifier is used.
     expect(screen.getByText('Ctrl+Enter')).toBeTruthy();
+    expect(screen.getByText('Ctrl+S')).toBeTruthy();
     expect(screen.getByText('Ctrl+G')).toBeTruthy();
   });
 

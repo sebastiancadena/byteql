@@ -1,7 +1,11 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
 
+  import type { QueryLibrary } from '../lib/queries/library.js';
+  import type { LibraryNotice } from '../lib/queries/notice.js';
+  import type { SavedQuery } from '../lib/queries/types.js';
   import type { SessionState } from '../lib/session/state.js';
+  import QueryLibraryPanel from './QueryLibraryPanel.svelte';
   import Icon from './ui/Icon.svelte';
 
   interface Props {
@@ -12,6 +16,10 @@
     onquery: (sql: string) => void;
     onbrowse: (table: string) => void;
     onselectsource?: (file: string) => void;
+    library?: QueryLibrary | null;
+    onloadquery?: (sql: string, saved: SavedQuery | null) => void;
+    onsaverecent?: (sql: string) => void;
+    onnotice?: (notice: LibraryNotice) => void;
   }
 
   // The public prop stays `state`; it is bound to another name because a local `state`
@@ -23,6 +31,10 @@
     onquery,
     onbrowse,
     onselectsource = () => undefined,
+    library = null,
+    onloadquery = () => undefined,
+    onsaverecent = () => undefined,
+    onnotice = () => undefined,
   }: Props = $props();
 
   const DIAGNOSTICS_CAP = 50;
@@ -124,6 +136,10 @@
         {/each}
       </ul>
     </section>
+  {/if}
+
+  {#if library && session.format}
+    <QueryLibraryPanel {library} format={session.format.id} onload={onloadquery} {onsaverecent} {onnotice} />
   {/if}
 
   {#if session.queries.length > 0}

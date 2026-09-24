@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global Blob, DragEvent, Event, File, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, document, localStorage, window */
+  /* global Blob, DragEvent, Event, File, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, clearTimeout, document, localStorage, setTimeout, window */
 
   import type { ResultSort, ResultSortCapability } from '@byteql/db';
   import { resultColumnLabel } from '@byteql/db/result-columns';
@@ -9,6 +9,9 @@
   import type { ExportOptions } from '../lib/export/options.js';
   import { createCoverageMemo, provenanceOfRow, type RowProvenance } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
+  import type { QueryLibrary } from '../lib/queries/library.js';
+  import type { LibraryNotice } from '../lib/queries/notice.js';
+  import type { SavedQuery } from '../lib/queries/types.js';
   import type { SampleId } from '../lib/session/samples.js';
   import { resultSortDisabledReason } from '../lib/session/result-sort-availability.js';
   import { fieldLabel, isResultSorting, resultSortInteractionBlocked } from '../lib/session/result-sort.js';
@@ -36,6 +39,7 @@
   import ResizeHandle from './ResizeHandle.svelte';
   import ResultGrid from './ResultGrid.svelte';
   import ResultsDownload from './ResultsDownload.svelte';
+  import SaveQueryPopover from './SaveQueryPopover.svelte';
   import ShortcutsOverlay from './ShortcutsOverlay.svelte';
   import SqlEditor from './SqlEditor.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -67,11 +71,46 @@
   interface Props {
     controller: ControllerPort;
     audioEngineFactory?: (() => AudioEngine) | undefined;
+    queryLibrary?: QueryLibrary | null;
   }
 
-  let { controller, audioEngineFactory }: Props = $props();
+  let { controller, audioEngineFactory, queryLibrary = null }: Props = $props();
   let session = $state<SessionState>(initialSessionState);
   let draftSql = $state('');
+  /** The saved query the editor was last loaded from; cleared by any other load. */
+  let loadedSaved = $state<SavedQuery | null>(null);
+  let saveOpen = $state(false);
+  /** Bumped on every library change, so derived lookups re-read the library. */
+  let libraryVersion = $state(0);
+  $effect(() => {
+    const library = queryLibrary;
+    if (!library) return;
+    return library.subscribe(() => (libraryVersion += 1));
+  });
+  /** Only a saved query of the CURRENT format may be updated from the editor. */
+  const loadedForFormat = $derived.by(() => {
+    void libraryVersion;
+    const saved = loadedSaved;
+    if (!saved || saved.format !== session.format?.id) return null;
+    // Re-read the library by id rather than trusting the captured object, so a rename or a
+    // delete from the row menu (or another tab) is reflected the next time Save opens.
+    return queryLibrary?.find(saved.id) ?? null;
+  });
+  let libraryNotice = $state<LibraryNotice | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  function showLibraryNotice(notice: LibraryNotice): void {
+    clearTimeout(noticeTimer);
+    libraryNotice = notice;
+    noticeTimer = setTimeout(() => (libraryNotice = null), 8000);
+  }
+  $effect(() => {
+    const library = queryLibrary;
+    if (!library) return;
+    return library.subscribe((event) => {
+      if (event.type === 'storage-error') showLibraryNotice({ message: event.message });
+    });
+  });
+  $effect(() => () => clearTimeout(noticeTimer));
   let actionError = $state<string | null>(null);
   let coverageMessage = $state<string | null>(null);
   /**
@@ -565,7 +604,12 @@
       const sqlChanged = next.sql !== session.sql;
       session = next;
       if (next.sql && sqlChanged) draftSql = next.sql;
-      if (next.phase === 'opening') overviewSource = null;
+      if (next.phase === 'opening') {
+        overviewSource = null;
+        // A run awaiting settlement belongs to the file that is being replaced; it must never be
+        // recorded against whatever query happens to settle next, in the new session.
+        pendingRun = null;
+      }
 
       const overview = next.queries.find((query) => query.id === 'overview');
       const sourceKey = next.source
@@ -656,17 +700,47 @@
     document.querySelector<HTMLElement>('.result-grid .grid-scroll')?.focus();
   }
 
-  /** Loading an example query fills the editor and focuses it; it never runs the query. */
-  function loadQuery(sql: string): void {
+  /** Loading a query fills the editor and focuses it; it never runs the query. */
+  function loadQuery(sql: string, saved: SavedQuery | null = null): void {
     draftSql = sql;
+    loadedSaved = saved;
+    saveOpen = false;
     void tick().then(() => sqlEditor?.focus());
   }
+
+  /**
+   * The user run awaiting its outcome. Plain (not reactive): it is only read when the settle
+   * count moves. The automatic overview query bypasses `run`, so it is never recorded.
+   */
+  let pendingRun: { format: string; sql: string; settleCount: number } | null = null;
 
   function run(sql: string): void {
     if (!sql.trim()) return;
     draftSql = sql;
+    pendingRun =
+      queryLibrary && session.format
+        ? { format: session.format.id, sql, settleCount: session.resultSettleCount }
+        : null;
     perform(() => controller.runQuery(sql));
   }
+
+  $effect(() => {
+    const settled = session.resultSettleCount;
+    const pending = pendingRun;
+    const library = queryLibrary;
+    if (!pending || !library || settled <= pending.settleCount) return;
+    pendingRun = null;
+    const failed = session.queryError !== null;
+    const result = session.result;
+    untrack(() =>
+      library.recordRun({
+        format: pending.format,
+        sql: pending.sql,
+        status: failed ? 'error' : 'ok',
+        rowCount: !failed && result?.complete ? result.loadedRows : null,
+      }),
+    );
+  });
 
   // While the drawer is a modal surface, Tab stays inside it and Escape closes it; on close,
   // focus returns to whatever opened it.
@@ -676,9 +750,31 @@
     return containFocus(panel, closeDrawer);
   });
 
-  function loadQueryFromCatalog(sql: string): void {
+  function loadQueryFromCatalog(sql: string, saved: SavedQuery | null = null): void {
     closeDrawer();
-    loadQuery(sql);
+    loadQuery(sql, saved);
+  }
+
+  function saveRecent(sql: string): void {
+    closeDrawer();
+    loadQuery(sql, null);
+    saveOpen = true;
+  }
+
+  const canSave = $derived(queryLibrary !== null && session.format !== null && draftSql.trim() !== '');
+
+  function openSave(): void {
+    if (canSave) saveOpen = true;
+  }
+
+  function closeSave(): void {
+    saveOpen = false;
+    void tick().then(() => sqlEditor?.focus());
+  }
+
+  function querySaved(query: SavedQuery): void {
+    loadedSaved = query;
+    closeSave();
   }
 
   function browseFromCatalog(name: string): void {
@@ -934,6 +1030,10 @@
         onquery={loadQueryFromCatalog}
         onbrowse={browseFromCatalog}
         onselectsource={selectSourceFromCatalog}
+        library={queryLibrary}
+        onloadquery={loadQueryFromCatalog}
+        onsaverecent={saveRecent}
+        onnotice={showLibraryNotice}
       />
     </div>
 
@@ -996,13 +1096,41 @@
           <h1>Query</h1>
           <div class="query-actions">
             <span class="shortcut" aria-hidden="true">⌘ Enter</span>
+            {#if queryLibrary && session.format}
+              <div class="save-query-anchor">
+                <button
+                  class="button button-secondary button-compact"
+                  type="button"
+                  aria-expanded={saveOpen}
+                  disabled={!canSave}
+                  onclick={() => (saveOpen ? closeSave() : openSave())}
+                >
+                  Save query
+                </button>
+                {#if saveOpen}
+                  <SaveQueryPopover
+                    library={queryLibrary}
+                    format={session.format.id}
+                    sql={draftSql}
+                    loaded={loadedForFormat}
+                    onsaved={querySaved}
+                    onclose={closeSave}
+                  />
+                {/if}
+              </div>
+            {/if}
             {#if session.phase === 'querying'}
               <!-- Compact like Run query: the two states share a slot, so starting a query must
                    not change the toolbar's height and resize the panes below it. -->
               <button
                 class="button button-secondary button-compact"
                 type="button"
-                onclick={() => perform(() => controller.cancel())}
+                onclick={() => {
+                  // A cancelled run must never be recorded when some later, unrelated query
+                  // settles: it never itself settled.
+                  pendingRun = null;
+                  perform(() => controller.cancel());
+                }}
               >
                 Cancel query
               </button>
@@ -1028,6 +1156,7 @@
             disabled={session.phase === 'querying'}
             onrun={run}
             onchange={(sql) => (draftSql = sql)}
+            onsave={openSave}
           />
         </div>
 
@@ -1045,6 +1174,22 @@
             {#if coverageMessage}
               <div class="format-notice" role="status" aria-label="Coverage notice">
                 {coverageMessage}
+              </div>
+            {/if}
+
+            {#if libraryNotice}
+              <div class="format-notice" role="status" aria-label="Query library notice">
+                <span>{libraryNotice.message}</span>
+                {#if libraryNotice.undo}
+                  <button
+                    class="button button-secondary button-compact"
+                    type="button"
+                    onclick={() => {
+                      libraryNotice?.undo?.();
+                      libraryNotice = null;
+                    }}>Undo</button
+                  >
+                {/if}
               </div>
             {/if}
 
@@ -1163,7 +1308,10 @@
               <button
                 class="button button-secondary"
                 type="button"
-                onclick={() => perform(() => controller.cancel())}
+                onclick={() => {
+                  pendingRun = null;
+                  perform(() => controller.cancel());
+                }}
               >
                 Cancel
               </button>

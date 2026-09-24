@@ -31,7 +31,9 @@ async function fallbackExport(page: Page, format: 'csv' | 'parquet'): Promise<vo
   await page.getByRole('button', { name: 'Dismiss' }).click();
 }
 
-test('emits zero network events or local-data sentinels after application readiness', async ({ page }) => {
+test('emits zero network events or local-data sentinels after application readiness', async ({
+  page,
+}, testInfo) => {
   await page.addInitScript(() => {
     Reflect.deleteProperty(window, 'showSaveFilePicker');
   });
@@ -66,6 +68,22 @@ test('emits zero network events or local-data sentinels after application readin
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
   await page.getByRole('row', { name: 'Row 1', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Provenance' })).toBeVisible();
+
+  // Saved queries and opted-in history are local storage only: saving, persisting history,
+  // exporting and importing must not produce a request or carry the SQL sentinel anywhere.
+  await page.locator('details.recent-queries summary').click();
+  await page.getByRole('checkbox', { name: 'Keep history after this tab closes' }).check();
+  await page.getByRole('button', { name: 'Save query' }).click();
+  await page.getByLabel('Query name').fill('Private sentinel query');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const queriesExport = page.waitForEvent('download');
+  await page.getByRole('region', { name: 'Saved queries' }).getByRole('button', { name: 'Export' }).click();
+  const queriesPath = testInfo.outputPath('privacy-queries.sql');
+  await (await queriesExport).saveAs(queriesPath);
+  await page.getByLabel('Import queries file').setInputFiles(queriesPath);
+  await expect(page.getByRole('status', { name: 'Query library notice' })).toContainText(
+    'skipped 1 duplicate',
+  );
 
   // Collapsing and reopening the inspection dock is presentation only.
   await page.getByRole('button', { name: 'Hide inspection' }).click();

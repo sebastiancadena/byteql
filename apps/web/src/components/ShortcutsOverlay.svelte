@@ -17,6 +17,7 @@
 
   const shortcuts: Array<{ action: string; keys: string }> = [
     { action: 'Run query', keys: `${mod}+Enter` },
+    { action: 'Save query', keys: `${mod}+S` },
     { action: 'Open file', keys: `${mod}+O` },
     { action: 'Show or hide sources', keys: `${mod}+B` },
     { action: 'Show or hide values', keys: `${mod}+I` },

@@ -17,6 +17,8 @@ vi.mock('@byteql/db', () => ({
 
 import type { ResultSort, ResultSortCapability } from '@byteql/db';
 
+import { QueryLibrary } from '../lib/queries/library.js';
+import { MemoryQueryStore } from '../lib/queries/store.js';
 import { initialSessionState, type PagedResultState, type SessionState } from '../lib/session/state.js';
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
 import ResultGrid from './ResultGrid.svelte';
@@ -1986,6 +1988,142 @@ describe('Inspector Workbench', () => {
 
       // The grid is keyed on the QUERY generation: a reorder is the same result, seen differently.
       expect(container.querySelector('[role="grid"]')).toBe(grid);
+    });
+  });
+
+  describe('saved queries', () => {
+    it('shows no Save query control without a library', () => {
+      render(Workbench, { controller: new FakeController(readyState()) });
+      expect(screen.queryByRole('button', { name: 'Save query' })).toBeNull();
+    });
+
+    it('saves the editor SQL without running it', async () => {
+      // `readyState()` already holds SQL and a result, so no overview query auto-runs.
+      const controller = new FakeController(readyState());
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      render(Workbench, { controller, queryLibrary });
+
+      const host = document.querySelector('.sql-editor') as HTMLElement;
+      EditorView.findFromDOM(host)!.dispatch({ changes: { from: 0, insert: 'select 42' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Save query' }));
+      await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      expect(queryLibrary.savedFor(readyState().format!.id).map((query) => query.sql)).toEqual([
+        expect.stringContaining('select 42'),
+      ]);
+      expect(controller.runQuery).not.toHaveBeenCalled();
+    });
+
+    it('forgets the loaded saved query when the format changes', async () => {
+      const controller = new FakeController(readyState());
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      const format = readyState().format!.id;
+      queryLibrary.save({ format, name: 'Kept', sql: 'select 1' });
+      render(Workbench, { controller, queryLibrary });
+
+      await fireEvent.click(await screen.findByRole('button', { name: 'Kept' }));
+      controller.publish({ ...controller.state, format: { id: 'zip', title: 'ZIP archive' } });
+      await tick();
+      const host = document.querySelector('.sql-editor') as HTMLElement;
+      EditorView.findFromDOM(host)!.dispatch({ changes: { from: 0, insert: '-- edited\n' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Save query' }));
+
+      expect(screen.queryByRole('button', { name: 'Update "Kept"' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
+    });
+
+    it('reflects a rename made from the row menu when the popover reopens', async () => {
+      const controller = new FakeController(readyState());
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      const format = readyState().format!.id;
+      queryLibrary.save({ format, name: 'A', sql: 'select 1' });
+      render(Workbench, { controller, queryLibrary });
+
+      await fireEvent.click(await screen.findByRole('button', { name: 'A' }));
+      await fireEvent.click(screen.getByRole('button', { name: 'Actions for A' }));
+      await fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+      const renameInput = screen.getByLabelText('Rename A');
+      await fireEvent.input(renameInput, { target: { value: 'B' } });
+      await fireEvent.keyDown(renameInput, { key: 'Enter' });
+      await tick();
+
+      const host = document.querySelector('.sql-editor') as HTMLElement;
+      EditorView.findFromDOM(host)!.dispatch({ changes: { from: 0, insert: '-- edited\n' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Save query' }));
+
+      expect(screen.getByRole('button', { name: 'Update "B"' })).toBeTruthy();
+    });
+
+    it('records the run that settled, not a stale one', async () => {
+      // Empty SQL and no result make the Workbench auto-run the pack's overview query on ready.
+      const controller = new FakeController({ ...readyState(), sql: '', result: null });
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      const format = readyState().format!.id;
+      // Settle explicitly (runQuery publishes nothing) so the test controls every outcome.
+      controller.runQuery.mockImplementation(async () => undefined);
+      render(Workbench, { controller, queryLibrary });
+      await vi.waitFor(() => expect(controller.runQuery).toHaveBeenCalledWith(queries[0]!.sql));
+
+      // The automatic overview query is not a user run and is never recorded.
+      controller.publish({ ...controller.state, resultSettleCount: controller.state.resultSettleCount + 1 });
+      await tick();
+      expect(queryLibrary.historyFor(format)).toEqual([]);
+
+      const view = EditorView.findFromDOM(document.querySelector('.sql-editor') as HTMLElement)!;
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'select stale' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Run query' }));
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'select fresh' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Run query' }));
+      controller.publish({
+        ...controller.state,
+        queryError: 'Binder Error: nope',
+        resultSettleCount: controller.state.resultSettleCount + 1,
+      });
+      await tick();
+
+      expect(queryLibrary.historyFor(format)).toEqual([
+        expect.objectContaining({ sql: 'select fresh', status: 'error', rowCount: null }),
+      ]);
+    });
+
+    it('does not record a cancelled run when a later, unrelated query settles', async () => {
+      const controller = new FakeController(readyState());
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      const format = readyState().format!.id;
+      render(Workbench, { controller, queryLibrary });
+
+      const view = EditorView.findFromDOM(document.querySelector('.sql-editor') as HTMLElement)!;
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'select cancelled' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Run query' }));
+      expect(controller.runQuery).toHaveBeenCalledWith('select cancelled');
+
+      controller.publish({ ...controller.state, phase: 'querying' });
+      await fireEvent.click(await screen.findByRole('button', { name: 'Cancel query' }));
+      controller.publish({ ...controller.state, phase: 'ready' });
+
+      // An unrelated later settle (e.g. a run started elsewhere) must not resurrect the
+      // cancelled run as a recorded history entry.
+      controller.publish({
+        ...controller.state,
+        resultSettleCount: controller.state.resultSettleCount + 1,
+      });
+      await tick();
+
+      expect(queryLibrary.historyFor(format)).toEqual([]);
+    });
+
+    it('shows library notices with Undo in the query notices', async () => {
+      const controller = new FakeController(readyState());
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      queryLibrary.save({ format: readyState().format!.id, name: 'Gone', sql: 'select 1' });
+      render(Workbench, { controller, queryLibrary });
+
+      await fireEvent.click(await screen.findByRole('button', { name: 'Actions for Gone' }));
+      await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
+      const notice = screen.getByRole('status', { name: 'Query library notice' });
+      expect(notice.textContent).toContain('Deleted Gone');
+      await fireEvent.click(within(notice).getByRole('button', { name: 'Undo' }));
+      expect(await screen.findByRole('button', { name: 'Gone' })).toBeTruthy();
     });
   });
 });
