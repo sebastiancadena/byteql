@@ -107,8 +107,12 @@ test('pcap: a SYN stream_segments row highlights its TCP header', async ({ page 
   await page.getByLabel('Open file input').setInputFiles(reusePcapPath);
   await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
   await runSql(page, 'select * from stream_segments order by segment_id limit 1');
+  // The auto-run "overview" query on session-ready already shows a `Row 1` from a stale grid;
+  // wait for this query's own result (its distinct row count) before clicking, the same pattern
+  // "pcap: sorting and exporting a result with source ranges" (above) uses.
+  await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
   await page.getByRole('row', { name: 'Row 1', exact: true }).click();
-  expect(await highlightedHexRange(page)).toEqual({ start: 74, end: 94 });
+  await expect.poll(() => highlightedHexRange(page)).toEqual({ start: 74, end: 94 });
 });
 
 // The fixture bytes are a committed, crafted `.pcapng`: the same single eth -> ipv4 -> udp -> dns
