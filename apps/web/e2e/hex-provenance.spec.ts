@@ -188,11 +188,16 @@ for (const tier of ['memory', 'spill'] as const) {
     await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 
     await runSql(page, "select * from dns where query_name = 'interleaved.example'");
+    // The auto-run "overview" query on session-ready already shows a stale `Row 1`; wait for this
+    // query's own result (its distinct row count) before clicking, the same pattern
+    // "pcap: a SYN stream_segments row highlights its TCP header" (above) and
+    // "pcap: sorting and exporting a result with source ranges" (below) use.
+    await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
     await page.getByRole('row', { name: 'Row 1', exact: true }).click();
 
     // 1. Only the two exact pieces are highlighted; the bounding span is wider than their sum.
+    await expect.poll(() => highlightedRanges(page).then((r) => r.length)).toBe(2);
     const ranges = await highlightedRanges(page);
-    expect(ranges).toHaveLength(2);
     const span = await highlightedHexRange(page);
     expect(span.start).toBe(ranges[0]![0]);
     expect(span.end).toBe(ranges[1]![1]);
