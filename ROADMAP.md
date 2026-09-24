@@ -142,7 +142,10 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
   `finish()` (~1.2 KB each measured), so a SYN-flood or port-scan capture of a few million SYNs can
   exhaust the parse worker's heap; a live-flow cap or spill is needed. Also classify Windows-style
   1-byte TCP keepalives instead of counting them as overlap conflicts. See priority 5's "Remaining
-  limitations".
+  limitations". Two smaller review leftovers: a flood of FIN/RST segments on a truncated or errored
+  flow still advances the wraparound reference (skip the advance for inactive flows), and two
+  `hex-provenance.spec.ts` steps (re-running the DNS query after a filter, and the sorting test's
+  range read) should wait for their own query result and poll the highlight.
 
 ## Next development cycle
 
@@ -150,8 +153,9 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
 2. Truthful multi-range provenance. **Done, 2026-09-22.**
 3. Pcapng intake. **Done, 2026-09-23.**
 4. Saved queries and opt-in local history. **Done, 2026-09-24.**
+5. TCP connection identity. **Done, 2026-09-24.**
 
-Hardening TCP connection identity (priority 5) is next.
+One forensic investigation workflow (priority 6) is next.
 
 ## Evidence boundary
 
