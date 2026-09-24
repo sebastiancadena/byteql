@@ -17,7 +17,7 @@ import {
 import type { IssueCollector } from '../issues.js';
 import type { ParsedRecord, ParserRegistry, RecordParser } from './parsers.js';
 import type { ArrowTypeName, ProjectionSpec, TableSpec } from './spec.js';
-import { StreamAssembler, normalizeRanges } from './streams.js';
+import { StreamAssembler, normalizeRanges, unwrapOffset } from './streams.js';
 import type {
   StreamFramer,
   StreamKeyExtractor,
@@ -1024,9 +1024,10 @@ export const createRuntimes = (compiled: CompiledProjection): Map<string, TableR
 // One ACCEPTED ('added'/'rebased') contribution to a flow's assembler, recorded at contribution
 // time but deliberately NOT yet translated to a base-relative `offset` — the base can still
 // shift under a later rebase, which would silently invalidate an offset computed too early (see
-// StreamRuntimeEntry.segments doc). `absOffset` is the raw offset value passed to
-// `assembler.add`, in absolute (never-rebased) offset space; `feedKeyValue` is the feed table's
-// key captured at contribution time (the feed row is long gone by flush).
+// StreamRuntimeEntry.segments doc). `absOffset` is the (already-unwrapped, for a wraparound
+// stream) offset value passed to `assembler.add`, in absolute (never-rebased) offset space;
+// `feedKeyValue` is the feed table's key captured at contribution time (the feed row is long
+// gone by flush).
 export interface StreamSegmentRecord {
   readonly absOffset: number;
   readonly srcStart: number;
@@ -1083,9 +1084,9 @@ export interface StreamRuntimeEntry {
   // so this field only ever needs to remember the rejected FIRST contribution.
   fallbackSpan: SourceRange | null;
   // Lifecycle (v0.5): true once an `open` signal has been observed for this generation — sticky,
-  // never reverts. `openOffset` is that segment's raw offset (used by Task 5's join test against
-  // a retransmitted SYN). `closedBy` follows the reset-takes-precedence rule: a later `close`
-  // never overwrites `'reset'`, a later `reset` always overwrites `'close'`.
+  // never reverts. `openOffset` is that segment's (already-unwrapped) offset (used by Task 5's
+  // join test against a retransmitted SYN). `closedBy` follows the reset-takes-precedence rule: a
+  // later `close` never overwrites `'reset'`, a later `reset` always overwrites `'close'`.
   opened: boolean;
   openOffset: number | null;
   closedBy: 'close' | 'reset' | null;
@@ -1101,6 +1102,13 @@ export interface StreamRuntimeEntry {
   // control segments, so this is the exact-and-only source for a data-only segment count
   // (Task 8 switches the flow root's `segment_count` to this field).
   dataSegmentCount: number;
+  // Wraparound (Task 9): the highest extended offset seen so far in this generation (an offset,
+  // or an offset + payload length for a data contribution) — null until this generation's first
+  // contribution. `contributeToStream` passes it as `unwrapOffset`'s `reference` so later raw
+  // offsets resolve to the epoch closest to what this generation has already seen. A fresh
+  // generation gets its own null reference (see the "starts a new generation" branch), so
+  // unwrapping always restarts from that generation's own first offset.
+  unwrapReference: number | null;
 }
 
 export interface StreamsRuntime {
@@ -1158,6 +1166,7 @@ const createFlowEntry = (
     conflictCount: 0,
     belowBaseReported: false,
     dataSegmentCount: 0,
+    unwrapReference: null,
   };
   streams.current.get(stream.name)!.set(keyResult.key, entry);
   streams.ordered.get(stream.name)!.push(entry);
@@ -1513,8 +1522,8 @@ const contributeToStream = (
   const srcStart = isControl ? feedRange.start : absoluteStart;
   const srcEnd = isControl ? feedRange.end : absoluteStart + payload.bytes.length;
 
-  const offset = toSafeOffset(evaluateExpression(stream.offset, context));
-  if (offset === null) {
+  const raw = toSafeOffset(evaluateExpression(stream.offset, context));
+  if (raw === null) {
     emitContext.issues?.report({
       stage: 'reassembling',
       code: 'STREAM_ERROR',
@@ -1554,16 +1563,26 @@ const contributeToStream = (
     return;
   }
 
-  const current = streams.current.get(stream.name)!;
+  const current = streams.current.get(stream.name)!.get(keyResult.key);
+  // Wraparound (Task 9): a stream declaring offset_bits maps the raw modular offset into a
+  // monotonic extended offset, relative to the live generation's own unwrapReference (or epoch 1
+  // for a generation's first contribution) — see unwrapOffset. Streams without offset_bits pass
+  // the raw value through unchanged. Everything downstream of this point (the generation check,
+  // anchor, assembler.add, and the recorded segment) uses the extended `offset`, never `raw`.
+  const unwrap = (reference: number | null) =>
+    stream.offsetBits === null ? raw : unwrapOffset(raw, stream.offsetBits, reference);
+  let offset = unwrap(current?.unwrapReference ?? null);
   // Generation join/split (see startsNewGeneration): an `open` that doesn't join the current
   // generation retires it (it stays in `ordered` for flush) and reserves a fresh entry one
   // generation higher. A non-open contribution always joins whatever generation is current.
-  let entry = current.get(keyResult.key);
+  let entry = current;
   if (!entry) {
     entry = createFlowEntry(stream, keyResult, emitContext, 1);
   } else if (open && startsNewGeneration(entry, offset)) {
     entry = createFlowEntry(stream, keyResult, emitContext, entry.generation + 1);
+    offset = unwrap(null); // a new generation restarts unwrapping from its own first offset
   }
+  entry.unwrapReference = Math.max(entry.unwrapReference ?? offset, offset + payload.bytes.length);
 
   // Lifecycle updates happen BEFORE the inactive-status check below: a late RST/FIN (or a SYN
   // adopting a mid-stream flow) after the assembler has already gone terminal still needs to be
@@ -1607,7 +1626,7 @@ const contributeToStream = (
       stage: 'reassembling',
       code: 'STREAM_OVERLAP_CONFLICT',
       recoverable: true,
-      message: `${flow}: retransmitted bytes at offset ${offset} differ from the first-arrived bytes (kept)`,
+      message: `${flow}: retransmitted bytes at offset ${raw} differ from the first-arrived bytes (kept)`,
       sourceStart: srcStart,
       sourceEnd: srcEnd,
     });

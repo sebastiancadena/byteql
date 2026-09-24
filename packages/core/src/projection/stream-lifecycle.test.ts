@@ -383,3 +383,39 @@ describe('stream overlap reconciliation (runtime)', () => {
     expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_BELOW_BASE']);
   });
 });
+
+describe('stream wraparound', () => {
+  const wrap = '    offset_bits: 8';
+  it('reassembles a message straddling the 2^8 wrap', () => {
+    // open at 253; message [4,'w','r','a','p'] at 253..257 -> raw 253,254,255,0,1
+    const { finished, issues } = project(
+      [chunk(7, OPEN, 253), chunk(7, 0, 253, [4, 119, 114]), chunk(7, 0, 0, [97, 112])],
+      wrap,
+    );
+    expect(issues.issues()).toEqual([]);
+    expect(rows(finished, 'msgs').col('text')).toEqual(['wrap']);
+    expect(rows(finished, 'flows').col('status')).toEqual(['ok']);
+    expect(rows(finished, 'flow_segments').col('offset')).toEqual([0n, 0n, 3n]);
+  });
+
+  it('crosses the wrap twice within a small extent', () => {
+    // 3 messages of 101 bytes each starting at raw 200: 200..301..402..503 crosses 256 and 512
+    const message = (fill: number) => [100, ...Array.from({ length: 100 }, () => fill)];
+    const data = [...message(65), ...message(66), ...message(67)];
+    const chunks = [chunk(7, OPEN, 200)];
+    for (let at = 0; at < data.length; at += 50) {
+      chunks.push(chunk(7, 0, (200 + at) % 256, data.slice(at, at + 50)));
+    }
+    const { finished } = project(chunks, wrap, 512); // 303 bytes exceed the default 64-byte cap
+    expect(rows(finished, 'msgs').count).toBe(3);
+    expect(rows(finished, 'flows').col('status')).toEqual(['ok']);
+  });
+
+  it('matches a retransmitted open after the stream wrapped', () => {
+    const { finished } = project(
+      [chunk(7, OPEN, 250), chunk(7, 0, 250, [9, 1, 2, 3, 4, 5, 6, 7, 8, 9]), chunk(7, OPEN, 250)],
+      wrap,
+    );
+    expect(rows(finished, 'flows').count).toBe(1);
+  });
+});

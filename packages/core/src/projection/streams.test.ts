@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { StreamAssembler } from './streams.js';
+import { StreamAssembler, unwrapOffset } from './streams.js';
 
 const bytes = (...values: number[]) => Uint8Array.from(values);
 
@@ -230,6 +230,24 @@ describe('StreamAssembler.anchor', () => {
     a.add(10, bytes(1, 2), 0, 2);
     expect(a.anchor(0)).toBe('ignored');
     expect(a.base).toBe(10);
+  });
+});
+
+describe('unwrapOffset', () => {
+  it('biases the first offset by the modulus', () => {
+    expect(unwrapOffset(5, 8, null)).toBe(261);
+  });
+  it('reduces raw values modulo 2^bits first', () => {
+    expect(unwrapOffset(256, 8, null)).toBe(256); // 256 % 256 = 0, + 256
+  });
+  it('moves forward across a wrap', () => {
+    expect(unwrapOffset(2, 8, 256 + 250)).toBe(512 + 2);
+  });
+  it('moves backward for a pre-wrap retransmission', () => {
+    expect(unwrapOffset(250, 8, 512 + 3)).toBe(256 + 250);
+  });
+  it('stays in the same epoch for nearby offsets', () => {
+    expect(unwrapOffset(100, 8, 256 + 90)).toBe(356);
   });
 });
 

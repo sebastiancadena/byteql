@@ -76,6 +76,23 @@ export const normalizeRanges = (pieces: readonly SourcePiece[]): SourcePiece[] |
   return merged.length >= 2 ? merged : null;
 };
 
+/**
+ * Maps a modular raw offset (e.g. a 32-bit TCP sequence number) into a monotonic extended
+ * offset space: the first offset of a generation lands in epoch 1 (raw + 2^bits, so a
+ * retransmission from just before a wrap stays non-negative); every later one takes the epoch
+ * that puts it closest to `reference` (RFC 1982 serial arithmetic, correct within ±2^(bits-1)).
+ */
+export const unwrapOffset = (raw: number, bits: number, reference: number | null): number => {
+  const modulus = 2 ** bits;
+  const reduced = raw % modulus;
+  if (reference === null) return reduced + modulus;
+  const half = modulus / 2;
+  let candidate = reference - (reference % modulus) + reduced;
+  if (candidate - reference > half) candidate -= modulus;
+  else if (reference - candidate > half) candidate += modulus;
+  return candidate;
+};
+
 export class StreamAssembler {
   readonly #maxBuffer: number;
   #base: number | null = null;
@@ -168,7 +185,16 @@ export class StreamAssembler {
     const fresh: { start: number; end: number }[] = [];
     let conflicted = false;
     let cursor = offset;
-    for (let i = this.#firstEndingAfter(offset); i < this.#segments.length; i += 1) {
+    // Fast path for the common in-order append: when the last stored segment already ends at or
+    // before `offset`, every segment's end is <= offset (ends are non-decreasing — see
+    // #firstEndingAfter), so the binary search would land on `#segments.length` anyway. Skipping
+    // it here keeps the append path down to one comparison, as the module doc on #rebaseTo claims.
+    const lastStored = this.#segments[this.#segments.length - 1];
+    const scanFrom =
+      lastStored === undefined || lastStored.end <= offset
+        ? this.#segments.length
+        : this.#firstEndingAfter(offset);
+    for (let i = scanFrom; i < this.#segments.length; i += 1) {
       const s = this.#segments[i]!;
       if (s.start >= end) break;
       if (s.start > cursor) fresh.push({ start: cursor, end: s.start });
