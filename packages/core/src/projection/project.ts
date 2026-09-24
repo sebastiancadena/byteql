@@ -17,7 +17,7 @@ import {
 import type { IssueCollector } from '../issues.js';
 import type { ParsedRecord, ParserRegistry, RecordParser } from './parsers.js';
 import type { ArrowTypeName, ProjectionSpec, TableSpec } from './spec.js';
-import { StreamAssembler, normalizeRanges } from './streams.js';
+import { StreamAssembler, normalizeRanges, unwrapOffset } from './streams.js';
 import type {
   StreamFramer,
   StreamKeyExtractor,
@@ -86,6 +86,10 @@ export interface CompiledStream {
   readonly feedTable: string;
   readonly feedKeyColumn: string;
   readonly messages: readonly CompiledStreamMessageLink[];
+  readonly open: CompiledExpression | null;
+  readonly close: CompiledExpression | null;
+  readonly reset: CompiledExpression | null;
+  readonly offsetBits: number | null;
 }
 
 export interface CompiledChainLink {
@@ -396,6 +400,10 @@ export const compileProjection = (
     feedTable: string | null;
     feedKeyColumn: string | null;
     messages: CompiledStreamMessageLink[];
+    open: CompiledExpression | null;
+    close: CompiledExpression | null;
+    reset: CompiledExpression | null;
+    offsetBits: number | null;
   }
 
   // Streams are built as mutable records before the dissect chains are compiled: chain links
@@ -482,6 +490,12 @@ export const compileProjection = (
     // table's own row context.
     const offset = compileCheckedExpression(entry.offset, new Set(), `${path}.offset`);
 
+    const lifecycle = (source: string | undefined, field: 'open' | 'close' | 'reset') =>
+      source === undefined ? null : compileCheckedExpression(source, new Set(), `${path}.${field}`);
+    const open = lifecycle(entry.open, 'open');
+    const close = lifecycle(entry.close, 'close');
+    const reset = lifecycle(entry.reset, 'reset');
+
     // Rule 8/12 (message half): message links compile exactly like dissect chain links rooted
     // off a parser id — same PROJECTION_PARSER_UNKNOWN / PROJECTION_DISSECT_INVALID texts, and
     // `when` always rejects context references (messages fire against a bare parsed-record
@@ -531,6 +545,10 @@ export const compileProjection = (
       feedTable: null,
       feedKeyColumn: null,
       messages,
+      open,
+      close,
+      reset,
+      offsetBits: entry.offset_bits ?? null,
     });
   }
 
@@ -1006,9 +1024,10 @@ export const createRuntimes = (compiled: CompiledProjection): Map<string, TableR
 // One ACCEPTED ('added'/'rebased') contribution to a flow's assembler, recorded at contribution
 // time but deliberately NOT yet translated to a base-relative `offset` — the base can still
 // shift under a later rebase, which would silently invalidate an offset computed too early (see
-// StreamRuntimeEntry.segments doc). `absOffset` is the raw offset value passed to
-// `assembler.add`, in absolute (never-rebased) offset space; `feedKeyValue` is the feed table's
-// key captured at contribution time (the feed row is long gone by flush).
+// StreamRuntimeEntry.segments doc). `absOffset` is the (already-unwrapped, for a wraparound
+// stream) offset value passed to `assembler.add`, in absolute (never-rebased) offset space;
+// `feedKeyValue` is the feed table's key captured at contribution time (the feed row is long
+// gone by flush).
 export interface StreamSegmentRecord {
   readonly absOffset: number;
   readonly srcStart: number;
@@ -1034,7 +1053,10 @@ const toColumnRanges = (pieces: readonly SourcePiece[] | null): InheritedProvena
 // Per-flow runtime state for one stream's reassembly, keyed by the stream key extractor's
 // `key` string within StreamsRuntime.flows.get(stream.name). `status` starts 'ok' and only
 // ever moves forward: 'truncated'/'error' are terminal (contributions silently drop once
-// reached); 'gap' is flush-only (assigned in flushStreams, never during contribution).
+// reached); 'gap' is flush-only (assigned in flushStreams, never during contribution). Since
+// Task 8, overlapping and below-base contributions are reconciled instead of failing the flow
+// (see contributeToStream's AssemblerAddOutcome handling), so 'error' now only comes from a
+// stalled framer and invalid offsets/frame lengths, never from an overlap or a below-base byte.
 export interface StreamRuntimeEntry {
   readonly assembler: StreamAssembler;
   readonly streamId: bigint;
@@ -1061,12 +1083,50 @@ export interface StreamRuntimeEntry {
   // still exists. Once any segment IS stored, srcSpan is populated for good (segments only grow),
   // so this field only ever needs to remember the rejected FIRST contribution.
   fallbackSpan: SourceRange | null;
+  // Lifecycle (v0.5): true once an `open` signal has been observed for this generation — sticky,
+  // never reverts. `openOffset` is that segment's (already-unwrapped) offset (used by Task 5's
+  // join test against a retransmitted SYN). `closedBy` follows the reset-takes-precedence rule: a
+  // later `close` never overwrites `'reset'`, a later `reset` always overwrites `'close'`.
+  opened: boolean;
+  openOffset: number | null;
+  closedBy: 'close' | 'reset' | null;
+  // Fix B (FIN-beyond-data gap, ROADMAP #5 review): the highest offset any `close` signal has
+  // carried on this entry — latched, never reset and never lowered (unlike closedBy, `reset`
+  // never touches this field; see contributeToStream). Null until the first `close`.
+  // flushStreams compares it against the reassembled data end (base + contiguousEnd, or the
+  // anchor base when there is no data) to report 'gap' when the FIN arrived past the last byte
+  // actually captured, even though the assembler itself sees no internal gap.
+  closeOffset: number | null;
+  // 1-based; bumped by Task 5's generation-splitting logic. Distinct generations of the same
+  // (stream, key) each get their own entry, all retained in `ordered` for flush.
+  generation: number;
+  // Incremented once per conflicting overlap (Task 6); status stays 'ok' when it fires.
+  conflictCount: number;
+  // De-dupes the one-per-flow STREAM_BELOW_BASE issue (Task 6): true once that issue has been
+  // reported for this entry.
+  belowBaseReported: boolean;
+  // Count of ACCEPTED data (non-control) contributions only — segments.length also counts
+  // control segments, so this is the exact-and-only source for a data-only segment count
+  // (Task 8 switches the flow root's `segment_count` to this field).
+  dataSegmentCount: number;
+  // Wraparound (Task 9): the highest extended offset seen so far in this generation (an offset,
+  // or an offset + payload length for a data contribution) — null until this generation's first
+  // contribution. `contributeToStream` passes it as `unwrapOffset`'s `reference` so later raw
+  // offsets resolve to the epoch closest to what this generation has already seen. A fresh
+  // generation gets its own null reference (see the "starts a new generation" branch), so
+  // unwrapping always restarts from that generation's own first offset.
+  unwrapReference: number | null;
 }
 
 export interface StreamsRuntime {
   // Outer key: stream name (compiled.streams[].name). Inner key: the stream key extractor's
-  // `key` string — one entry per distinct flow observed so far.
-  readonly flows: Map<string, Map<string, StreamRuntimeEntry>>;
+  // `key` string. Holds the LIVE generation per (stream, key) only — a retired generation
+  // (Task 5) is removed here but stays in `ordered` for flush.
+  readonly current: Map<string, Map<string, StreamRuntimeEntry>>;
+  // Every entry ever created for a stream, in creation order, including retired generations —
+  // this is what flushStreams iterates, since `current` alone would drop a retired generation's
+  // final row.
+  readonly ordered: Map<string, StreamRuntimeEntry[]>;
   // segments_table name -> next segment_id to assign (mirrors TableRuntime.nextKey, but keyed
   // by table name rather than living on a per-table runtime since segments tables have no
   // CompiledProjectionTable of their own).
@@ -1074,9 +1134,58 @@ export interface StreamsRuntime {
 }
 
 export const createStreamsRuntime = (compiled: CompiledProjection): StreamsRuntime => ({
-  flows: new Map(compiled.streams.map((stream) => [stream.name, new Map<string, StreamRuntimeEntry>()])),
+  current: new Map(compiled.streams.map((stream) => [stream.name, new Map<string, StreamRuntimeEntry>()])),
+  ordered: new Map(compiled.streams.map((stream) => [stream.name, []])),
   segmentKeys: new Map(compiled.segmentsTables.map((table) => [table.name, 1n])),
 });
+
+// Reserves the flow's stream_id, registers the entry in both `current` and `ordered`, and
+// initializes the lifecycle fields to their neutral values. `generation` is passed in rather
+// than computed here: Task 4 always creates generation 1; Task 5's join/split decision picks
+// the generation before calling this.
+const createFlowEntry = (
+  stream: CompiledStream,
+  keyResult: StreamKeyResult,
+  emitContext: EmitContext,
+  generation: number,
+): StreamRuntimeEntry => {
+  const streams = emitContext.streams!;
+  // Eager streamId reservation: the flow's row key is claimed from the flow table's own
+  // runtime at first contribution (not at flush time), so message rows — emitted mid-stream,
+  // long before the flow row itself is ever built — can already carry a stable stream_id.
+  const flowRuntime = emitContext.runtimes.get(stream.flowTable.name)!;
+  const streamId = flowRuntime.nextKey;
+  flowRuntime.nextKey += 1n;
+  const entry: StreamRuntimeEntry = {
+    assembler: new StreamAssembler(stream.maxBuffer),
+    streamId,
+    flowRoot: { ...keyResult.root }, // first contribution wins; later ones do not overwrite
+    messageCount: 0,
+    framingStalled: false,
+    stallMessage: null,
+    status: 'ok',
+    segments: [],
+    fallbackSpan: null,
+    opened: false,
+    openOffset: null,
+    closedBy: null,
+    closeOffset: null,
+    generation,
+    conflictCount: 0,
+    belowBaseReported: false,
+    dataSegmentCount: 0,
+    unwrapReference: null,
+  };
+  streams.current.get(stream.name)!.set(keyResult.key, entry);
+  streams.ordered.get(stream.name)!.push(entry);
+  return entry;
+};
+
+// Reads a lifecycle signal (`open`/`close`/`reset`), which follows the same never-throw
+// row-time-evaluation contract as every other expression: no expression declared (null) or a
+// non-true result both count as false.
+const signal = (expression: CompiledExpression | null, context: ExpressionContext): boolean =>
+  expression !== null && evaluateExpression(expression, context) === true;
 
 export interface EmitContext {
   readonly compiled: CompiledProjection;
@@ -1299,7 +1408,16 @@ const fireDissect = (
     if (link.stream) {
       // Rule 1: a stream link matched in fireDissect contributes and returns — first match
       // wins exactly like a parser link, it just never produces a table row of its own here.
-      contributeToStream(link.stream, context, payload, absoluteStart, keysByTable, emitContext, ancestors);
+      contributeToStream(
+        link.stream,
+        context,
+        payload,
+        absoluteStart,
+        keysByTable,
+        emitContext,
+        ancestors,
+        parentRange,
+      );
       return;
     }
 
@@ -1370,6 +1488,17 @@ const toSafeOffset = (value: unknown): number | null => {
   return null;
 };
 
+// Spec "Lifecycle semantics -> Generations": an open joins the current generation when it
+// repeats that generation's recorded open offset (a retransmitted SYN), or when the generation
+// has no open yet, is not closed, and the offset lands exactly on the assembler's base (a SYN
+// captured after that connection's first data — the mid-stream flow is adopted). Anything else
+// is a new connection reusing the same (stream, key) tuple.
+const startsNewGeneration = (entry: StreamRuntimeEntry, offset: number): boolean => {
+  if (entry.openOffset !== null) return entry.openOffset !== offset;
+  if (entry.closedBy !== null) return true;
+  return entry.assembler.base !== offset;
+};
+
 const contributeToStream = (
   stream: CompiledStream,
   context: ExpressionContext,
@@ -1381,17 +1510,28 @@ const contributeToStream = (
   // LAST element is that row's root — not meaningful to a key extractor asked about the row
   // node itself, hence the `.slice(0, -1)` below).
   ancestors: readonly unknown[],
+  // The feeding row's own source range (fireDissect's `parentRange`) — used as a control
+  // segment's provenance, since it has no payload bytes of its own to point at (see the
+  // design's "Control segments are recorded" section).
+  feedRange: SourceRange,
 ): void => {
-  if (payload.bytes.length === 0) return; // empty payload: no contribution, no flow creation
-
   const streams = emitContext.streams;
   if (!streams) return; // no StreamsRuntime wired in (projectInto called without one)
 
-  const srcStart = absoluteStart;
-  const srcEnd = absoluteStart + payload.bytes.length;
+  // What reaches the engine: non-empty payload (as before), OR any lifecycle signal on an
+  // otherwise-empty payload (a SYN/FIN/RST carried with no data). A pure ACK — empty payload,
+  // no signal — still contributes nothing.
+  const open = signal(stream.open, context);
+  const close = signal(stream.close, context);
+  const reset = signal(stream.reset, context);
+  const isControl = payload.bytes.length === 0;
+  if (isControl && !open && !close && !reset) return; // pure ACK: nothing to record
 
-  const offset = toSafeOffset(evaluateExpression(stream.offset, context));
-  if (offset === null) {
+  const srcStart = isControl ? feedRange.start : absoluteStart;
+  const srcEnd = isControl ? feedRange.end : absoluteStart + payload.bytes.length;
+
+  const raw = toSafeOffset(evaluateExpression(stream.offset, context));
+  if (raw === null) {
     emitContext.issues?.report({
       stage: 'reassembling',
       code: 'STREAM_ERROR',
@@ -1431,48 +1571,120 @@ const contributeToStream = (
     return;
   }
 
-  const flowMap = streams.flows.get(stream.name)!;
-  let entry = flowMap.get(keyResult.key);
-  if (!entry) {
-    // Eager streamId reservation: the flow's row key is claimed from the flow table's own
-    // runtime at first contribution (not at flush time), so message rows — emitted mid-stream,
-    // long before the flow row itself is ever built — can already carry a stable stream_id.
-    const flowRuntime = emitContext.runtimes.get(stream.flowTable.name)!;
-    const streamId = flowRuntime.nextKey;
-    flowRuntime.nextKey += 1n;
-    entry = {
-      assembler: new StreamAssembler(stream.maxBuffer),
-      streamId,
-      flowRoot: { ...keyResult.root }, // first contribution wins; later ones do not overwrite
-      messageCount: 0,
-      framingStalled: false,
-      stallMessage: null,
-      status: 'ok',
-      segments: [],
-      fallbackSpan: null,
-    };
-    flowMap.set(keyResult.key, entry);
+  const current = streams.current.get(stream.name)!.get(keyResult.key);
+  // Wraparound (Task 9): a stream declaring offset_bits maps the raw modular offset into a
+  // monotonic extended offset, relative to the live generation's own unwrapReference (or epoch 1
+  // for a generation's first contribution) — see unwrapOffset. Streams without offset_bits pass
+  // the raw value through unchanged. Everything downstream of this point (the generation check,
+  // anchor, assembler.add, and the recorded segment) uses the extended `offset`, never `raw`.
+  const unwrap = (reference: number | null) =>
+    stream.offsetBits === null ? raw : unwrapOffset(raw, stream.offsetBits, reference);
+  let offset = unwrap(current?.unwrapReference ?? null);
+  // Generation join/split (see startsNewGeneration): an `open` that doesn't join the current
+  // generation retires it (it stays in `ordered` for flush) and reserves a fresh entry one
+  // generation higher. A non-open contribution always joins whatever generation is current.
+  let entry: StreamRuntimeEntry;
+  if (!current) {
+    entry = createFlowEntry(stream, keyResult, emitContext, 1);
+  } else if (open && startsNewGeneration(current, offset)) {
+    entry = createFlowEntry(stream, keyResult, emitContext, current.generation + 1);
+    offset = unwrap(null); // a new generation restarts unwrapping from its own first offset
+  } else {
+    entry = current;
+  }
+
+  // Wraparound-reference hardening (ROADMAP #5 review fix A): entry.unwrapReference must never
+  // drift on rejected or inactive input — only an ACTUALLY ACCEPTED contribution may move it
+  // forward, and never by more than what was accepted. Previously every contribution (including
+  // a data segment later rejected as truncated/dropped/duplicate/conflict, even on an
+  // already-inactive flow) advanced the reference unconditionally and before the inactive check
+  // below; a flood of crafted segments each landing near the current reference plus payload
+  // length could walk it forward without bound across millions of packets, eventually
+  // overflowing Number.MAX_SAFE_INTEGER — see stream-lifecycle.test.ts's "keeps the wraparound
+  // reference bounded when rejected segments jump forward on an inactive flow". Every candidate
+  // reaching this helper was itself computed via `unwrap(reference)` against the CURRENT
+  // (pre-this-call) reference, which already guarantees it lands within half the modulus by
+  // construction (RFC 1982 serial arithmetic); the half-modulus check below enforces that as an
+  // invariant rather than trusting it implicitly.
+  const advanceUnwrapReference = (candidate: number): void => {
+    if (stream.offsetBits === null) return; // unwrap() never consults the reference for this stream
+    if (entry.unwrapReference === null) {
+      entry.unwrapReference = candidate;
+      return;
+    }
+    const half = 2 ** (stream.offsetBits - 1);
+    if (Math.abs(candidate - entry.unwrapReference) <= half) {
+      entry.unwrapReference = Math.max(entry.unwrapReference, candidate);
+    }
+  };
+
+  // Lifecycle updates happen BEFORE the inactive-status check below: a late RST/FIN (or a SYN
+  // adopting a mid-stream flow) after the assembler has already gone terminal still needs to be
+  // recorded — see the design's "Segments without open always go to the current generation,
+  // including after it has closed" and this task's "keeps tracking lifecycle after the stream
+  // goes inactive" test.
+  if (open && !entry.opened) {
+    entry.opened = true;
+    entry.openOffset = offset;
+    advanceUnwrapReference(offset); // an open that anchors the flow also anchors the reference
+    // The open segment anchors the base even with an empty payload, with the same rebase rules
+    // as `add` (allowed only while nothing has been consumed) — see StreamAssembler.anchor.
+    if (entry.assembler.anchor(offset) === 'rebased') {
+      entry.framingStalled = false;
+      entry.stallMessage = null;
+    }
+  }
+  // reset always wins, even over an already-'reset' entry
+  if (reset) entry.closedBy = 'reset';
+  else if (close && entry.closedBy === null) entry.closedBy = 'close';
+  // Fix B (FIN-beyond-data gap): the highest offset any `close` signal has carried on this entry,
+  // latched — never reset, never lowered by a smaller/later close. flushStreams compares it
+  // against the reassembled data end to catch a FIN that closes the connection past the last byte
+  // actually captured (see flushStreams's STREAM_GAP branch).
+  if (close) entry.closeOffset = entry.closeOffset === null ? offset : Math.max(entry.closeOffset, offset);
+
+  if (isControl) {
+    // No payload bytes to fold into the assembler: record the control segment (so
+    // stream_segments stays the complete packet-to-connection map) and stop — control segments
+    // never reach the assembler and never contribute to message provenance.
+    advanceUnwrapReference(offset);
+    entry.segments.push({
+      absOffset: offset,
+      srcStart,
+      srcEnd,
+      feedKeyValue: keysByTable.get(stream.feedTable) ?? null,
+    });
+    return;
   }
 
   if (entry.status === 'truncated' || entry.status === 'error') return; // inactive: drop silently
 
-  const result = entry.assembler.add(offset, payload.bytes, srcStart, srcEnd);
-  if (result === 'duplicate') return;
-  if (result === 'below_base' || result === 'overlap') {
-    entry.status = 'error';
+  const outcome = entry.assembler.add(offset, payload.bytes, srcStart, srcEnd);
+  const flow = `stream ${JSON.stringify(stream.name)} flow ${JSON.stringify(keyResult.key)}`;
+  if (outcome.conflicted) {
+    entry.conflictCount += 1;
     emitContext.issues?.report({
       stage: 'reassembling',
-      code: 'STREAM_ERROR',
+      code: 'STREAM_OVERLAP_CONFLICT',
       recoverable: true,
-      message: `stream ${JSON.stringify(stream.name)} flow ${JSON.stringify(keyResult.key)}: segment at offset ${offset} ${
-        result === 'overlap' ? 'overlaps an already-assembled segment' : 'arrived below the consumed base'
-      }`,
+      message: `${flow}: retransmitted bytes at offset ${raw} differ from the first-arrived bytes (kept)`,
       sourceStart: srcStart,
       sourceEnd: srcEnd,
     });
-    return;
   }
-  if (result === 'truncated') {
+  if (outcome.trimmedBelowBase && !entry.belowBaseReported) {
+    entry.belowBaseReported = true;
+    emitContext.issues?.report({
+      stage: 'reassembling',
+      code: 'STREAM_BELOW_BASE',
+      recoverable: true,
+      message: `${flow}: bytes before the reassembled start arrived after framing began and were dropped`,
+      sourceStart: srcStart,
+      sourceEnd: srcEnd,
+    });
+  }
+  if (outcome.status === 'duplicate' || outcome.status === 'conflict' || outcome.status === 'dropped') return;
+  if (outcome.status === 'truncated') {
     entry.status = 'truncated';
     // See fallbackSpan's doc: this is the only way a flow entry can end up with a null
     // assembler.srcSpan at flush — capture this (the first and only) contribution's real file
@@ -1482,15 +1694,17 @@ const contributeToStream = (
       stage: 'reassembling',
       code: 'STREAM_TRUNCATED',
       recoverable: true,
-      message: `stream ${JSON.stringify(stream.name)} flow ${JSON.stringify(keyResult.key)}: buffer exceeded max_buffer (${stream.maxBuffer})`,
+      message: `${flow}: buffer exceeded max_buffer (${stream.maxBuffer})`,
       sourceStart: srcStart,
       sourceEnd: srcEnd,
     });
     return;
   }
 
-  // result is 'added' or 'rebased': fold in the segment row and (re-)attempt framing.
-  if (result === 'rebased') {
+  // outcome.status is 'added' or 'rebased': the only case that may advance the wraparound
+  // reference (fix A) — an actually-accepted contribution, by the full extent it added.
+  advanceUnwrapReference(offset + payload.bytes.length);
+  if (outcome.status === 'rebased') {
     entry.framingStalled = false;
     entry.stallMessage = null;
   }
@@ -1503,6 +1717,7 @@ const contributeToStream = (
     srcEnd,
     feedKeyValue: keysByTable.get(stream.feedTable) ?? null,
   });
+  entry.dataSegmentCount += 1;
 
   // completingKeys: the CURRENT contribution's keysByTable — the packet whose arrival framed
   // whatever messages come out of this call, chronologically last even when its own byte
@@ -1775,6 +1990,25 @@ export const projectInto = (
   });
 };
 
+// The flow row's provenance span: the min/max over every recorded segment (data AND control —
+// entry.segments holds both, see contributeToStream) plus fallbackSpan (the rejected-truncated-
+// first-contribution case, which never reaches entry.segments). Falls back to {0, 0} only when
+// both are empty — unreachable in practice, since a flow entry is created at first contribution.
+const flowSpan = (entry: StreamRuntimeEntry): SourceRange => {
+  let start = Infinity;
+  let end = -Infinity;
+  for (const record of entry.segments) {
+    if (record.srcStart < start) start = record.srcStart;
+    if (record.srcEnd > end) end = record.srcEnd;
+  }
+  if (entry.fallbackSpan) {
+    if (entry.fallbackSpan.start < start) start = entry.fallbackSpan.start;
+    if (entry.fallbackSpan.end > end) end = entry.fallbackSpan.end;
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return { start: 0, end: 0 };
+  return { start, end };
+};
+
 // Resolves every stream's flows to their final flow-table row (and clears any resolvable
 // error state accumulated during contribution) — see the runtime-semantics contract at
 // task-5-brief.md point 9. Idempotent to call is NOT guaranteed: it draws a fresh row per
@@ -1785,16 +2019,14 @@ export const flushStreams = (emitContext: EmitContext): void => {
   if (!streams) return;
 
   for (const stream of emitContext.compiled.streams) {
-    const flowMap = streams.flows.get(stream.name);
-    if (!flowMap) continue;
+    // `ordered` (not `current`): a retired generation (Task 5) is dropped from `current` but
+    // must still be flushed to its own final row.
+    const entries = streams.ordered.get(stream.name);
+    if (!entries) continue;
     const runtime = emitContext.runtimes.get(stream.flowTable.name)!;
 
-    for (const entry of flowMap.values()) {
-      // assembler.srcSpan is null only when no segment was ever stored; fallbackSpan then
-      // supplies the rejected first contribution's real range (see its doc), and only a flow
-      // that never contributed anything at all (unreachable in practice — a flow entry is
-      // created at first contribution) would fall through to the {0, 0} placeholder.
-      const span = entry.assembler.srcSpan ?? entry.fallbackSpan ?? { start: 0, end: 0 };
+    for (const entry of entries) {
+      const span = flowSpan(entry);
 
       // Precedence: a stalled framer beats an end-of-stream gap — a stream that both stalled
       // AND still has unresolved gaps behind it reports 'error', not 'gap'. Both checks only
@@ -1820,16 +2052,41 @@ export const flushStreams = (emitContext: EmitContext): void => {
             sourceStart: span.start,
             sourceEnd: span.end,
           });
+        } else if (
+          // Fix B (ROADMAP #5 review): a FIN beyond the reassembled data is a gap too, even
+          // though the assembler itself sees no internal hole — the capture is simply missing
+          // the tail. Compared in the same extended-offset space as everything else: the
+          // assembler's base plus its contiguous fill, or the anchor base alone when no data was
+          // ever accepted. Skipped (no data AND no anchor) when that space can't be computed at
+          // all, which only happens for a close signal on a generation that never opened or
+          // received any data.
+          entry.closeOffset !== null &&
+          entry.assembler.base !== null &&
+          entry.closeOffset > entry.assembler.base + entry.assembler.contiguousEnd
+        ) {
+          entry.status = 'gap';
+          emitContext.issues?.report({
+            stage: 'reassembling',
+            code: 'STREAM_GAP',
+            recoverable: true,
+            message: `stream ${JSON.stringify(stream.name)}: closed past the last byte actually reassembled`,
+            sourceStart: span.start,
+            sourceEnd: span.end,
+          });
         }
       }
 
       const root: Record<string, unknown> = {
         ...entry.flowRoot,
-        segment_count: entry.assembler.segmentCount,
+        segment_count: entry.dataSegmentCount,
         byte_count: entry.assembler.byteCount,
         message_count: entry.messageCount,
         pending_bytes: entry.assembler.pendingBytes(),
         status: entry.status,
+        opened: entry.opened,
+        closed_by: entry.closedBy,
+        generation: entry.generation,
+        conflict_count: entry.conflictCount,
       };
       const provenance: ProvenanceResolver = { resolve: () => span };
       // Exact provenance for the flow row: every accepted contribution's own file range,
@@ -1864,7 +2121,22 @@ export const flushStreams = (emitContext: EmitContext): void => {
       // only final now — a contribution recorded early in the flow's life can still be rebased
       // by a later, out-of-order-earlier one (see StreamSegmentRecord doc). segment_id keys are
       // still assigned sequentially, arrival-ordered, from streams.segmentKeys.
-      const finalBase = entry.assembler.base ?? 0;
+      // A control-only flow (no data ever added, so the assembler was never anchored either) has
+      // no assembler base at all: fall back to the minimum recorded absOffset among its segments
+      // so its offsets are still base-relative instead of raw file-stream offsets. A plain loop,
+      // not `Math.min(...spread)`: spreading tens of thousands of segments as call arguments
+      // (an RST-storm/scan capture with no SYN can have 100k+ on one tuple) blows the call-stack
+      // limit and would take the whole session down with it. `entry.segments` can be empty here
+      // (the rejected-truncated-FIRST-contribution case — see fallbackSpan's doc), in which case
+      // the loop below over `entry.segments` never runs, so 0 is a safe, inconsequential default.
+      let finalBase = entry.assembler.base;
+      if (finalBase === null) {
+        let min = Infinity;
+        for (const record of entry.segments) {
+          if (record.absOffset < min) min = record.absOffset;
+        }
+        finalBase = Number.isFinite(min) ? min : 0;
+      }
       for (const record of entry.segments) {
         const segmentId = streams.segmentKeys.get(stream.segmentsTable)!;
         streams.segmentKeys.set(stream.segmentsTable, segmentId + 1n);

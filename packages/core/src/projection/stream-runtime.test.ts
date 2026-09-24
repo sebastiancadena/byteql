@@ -259,28 +259,34 @@ describe('stream runtime robustness', () => {
     expect(table(finished, 'flow_segments').rowCount).toBe(2);
   });
 
-  it('marks a partial overlap as error, keeps prior messages, and stops', () => {
+  // Task 8: a fully-covered, mismatched retransmission is reconciled as a conflict (first
+  // bytes win) instead of failing the flow — the stream stays 'ok' and keeps framing.
+  it('reconciles a full overlap as a conflict, keeps prior messages, and keeps framing', () => {
     const { finished, issues } = project([
       chunk(7, 0, [1, 65]), // complete message, consumed
       chunk(7, 2, [3, 66, 67, 68]),
-      chunk(7, 4, [9, 9]), // overlaps [2,6)
-      chunk(7, 6, [1, 70]), // dropped: stream inactive
+      chunk(7, 4, [9, 9]), // fully covered by [2,6), mismatched: conflict, stored bytes kept
+      chunk(7, 6, [1, 70]), // stream stays ok: this frames a third message
     ]);
     expect(issues.issues()).toEqual([
-      expect.objectContaining({ stage: 'reassembling', code: 'STREAM_ERROR', recoverable: true }),
+      expect.objectContaining({ stage: 'reassembling', code: 'STREAM_OVERLAP_CONFLICT', recoverable: true }),
     ]);
     const flows = table(finished, 'flows');
-    expect(flows.arrow.getChild('status')!.get(0)).toBe('error');
-    expect(table(finished, 'msgs').rowCount).toBe(2); // 'A' + the [3,66,67,68] message framed before the overlap
+    expect(flows.arrow.getChild('status')!.get(0)).toBe('ok');
+    expect(table(finished, 'msgs').rowCount).toBe(3); // 'A', 'BCD', and 'F' framed after the conflict
   });
 
-  it('marks a below-base segment after consumption as error', () => {
+  // Task 8: bytes below the locked base are trimmed (and reported once) instead of failing
+  // the flow.
+  it('trims a below-base segment after consumption and reports it once', () => {
     const { finished, issues } = project([
       chunk(7, 10, [1, 65]), // framed immediately, consumed
-      chunk(7, 8, [9, 9]), // below locked base
+      chunk(7, 8, [9, 9]), // fully below the locked base: dropped
     ]);
-    expect(issues.issues()).toEqual([expect.objectContaining({ code: 'STREAM_ERROR' })]);
-    expect(table(finished, 'flows').arrow.getChild('status')!.get(0)).toBe('error');
+    expect(issues.issues()).toEqual([expect.objectContaining({ code: 'STREAM_BELOW_BASE' })]);
+    const flows = table(finished, 'flows');
+    expect(flows.arrow.getChild('status')!.get(0)).toBe('ok');
+    expect(table(finished, 'msgs').rowCount).toBe(1);
   });
 
   it('truncates at the buffer cap, keeping completed messages', () => {
@@ -547,5 +553,36 @@ streams:`,
       [2n, 5n],
       [102n, 104n],
     ]);
+  });
+});
+
+describe('stream lifecycle: neutral values on a spec with no lifecycle fields', () => {
+  // 0.3 columns are implicitly nullable, so closed_by is a plain utf8 (nullable is not legal
+  // pre-0.4) — a stream declaring none of open/close/reset still gets neutral lifecycle values.
+  const neutralYaml = yaml.replace(
+    "      status: { expr: '_.status', type: utf8 }",
+    `      status: { expr: '_.status', type: utf8 }
+      opened: { expr: '_.opened', type: bool }
+      closed_by: { expr: '_.closed_by', type: utf8 }
+      generation: { expr: '_.generation', type: uint32 }
+      conflict_count: { expr: '_.conflict_count', type: uint32 }`,
+  );
+
+  it('gives a flow neutral lifecycle values when the stream declares no lifecycle fields', () => {
+    const compiled = compileProjection(parseProjectionSpec(neutralYaml), registry, streamRegistries);
+    const issues = new IssueCollector();
+    const session = createProjectionSession(compiled, { issues });
+    session.project(
+      { records: [{ n: 0, body: { bytes: chunk(7, 0, [1, 65]), start: 0 } }] },
+      { resolve: () => ({ start: 0, end: 4 }) },
+    );
+    const flows = table(session.finish(), 'flows');
+    expect(flows.rowCount).toBe(1);
+    expect([
+      flows.arrow.getChild('opened')!.get(0),
+      flows.arrow.getChild('closed_by')!.get(0),
+      flows.arrow.getChild('generation')!.get(0),
+      flows.arrow.getChild('conflict_count')!.get(0),
+    ]).toEqual([false, null, 1, 0]);
   });
 });

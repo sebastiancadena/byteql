@@ -33,6 +33,10 @@ so it becomes an engine concept, not pack machinery.
 
   > Amended 2026-09-22: message and flow rows now carry exact pieces in `_src_ranges`; see
   > `2026-09-22-exact-reassembled-provenance-design.md`.
+
+  > Amended 2026-09-24: FIN/RST teardown, tuple-reuse generations, sequence wraparound, and
+  > first-bytes-win overlap reconciliation now exist; see
+  > `2026-09-24-tcp-connection-identity-design.md`.
 - **A first-class `streams` table**: one row per reassembled TCP flow direction (endpoints, counts,
   status), flushed at `finish()`.
 - **Memory: cap + truncate.** Per-stream buffer cap (spec-declared, pcap default 1 MiB). On
@@ -42,6 +46,10 @@ so it becomes an engine concept, not pack machinery.
 
 - Partial-overlap reconciliation, sequence wraparound, FIN/RST teardown (4-tuple reuse within one
   capture merges into one stream — documented limitation).
+
+  > Amended 2026-09-24: FIN/RST teardown, tuple-reuse generations, sequence wraparound, and
+  > first-bytes-win overlap reconciliation now exist; see
+  > `2026-09-24-tcp-connection-identity-design.md`.
 - TLS handshake messages spanning multiple TLS **records** (multi-**segment** single-record now
   works; the single-record ClientHello assumption stays).
 - Bidirectional stream pairing (each direction is its own stream/flow row).

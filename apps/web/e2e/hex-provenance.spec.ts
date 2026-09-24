@@ -16,6 +16,7 @@ import {
 const pane = (page: Page) => page.locator('[data-hex-pane]');
 const hexCanvas = (page: Page) => page.getByRole('application', { name: 'Hex viewer' });
 const interleavedPcapPath = fileURLToPath(new URL('./fixtures/interleaved-stream.pcap', import.meta.url));
+const reusePcapPath = fileURLToPath(new URL('./fixtures/tcp-reuse.pcap', import.meta.url));
 
 async function gotoOffset(page: Page, offset: number): Promise<void> {
   await page.getByLabel('Go to offset').fill(String(offset));
@@ -94,6 +95,26 @@ test('pcap: browse, reveal, filter-to-selection, and hidden columns chip', async
   expect(Number.parseInt(rowsText ?? '0', 10)).toBeGreaterThanOrEqual(1);
 });
 
+// The fixture bytes are a committed, crafted `.pcap`: two DNS-over-TCP connections on one
+// 4-tuple, generated once via packages/formats/pcap/test/generate-e2e-fixture.test.ts (see
+// pcap.spec.ts for the full description). The first packet is the first connection's SYN, whose
+// TCP header starts at file offset 74 (24-byte global header + 16-byte record header + 14-byte
+// Ethernet + 20-byte IPv4) and is 20 bytes long — the binding assertion is that the
+// `stream_segments` row for a control (SYN/FIN/RST) segment highlights exactly its TCP header,
+// not the whole packet or the IP datagram.
+test('pcap: a SYN stream_segments row highlights its TCP header', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Open file input').setInputFiles(reusePcapPath);
+  await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
+  await runSql(page, 'select * from stream_segments order by segment_id limit 1');
+  // The auto-run "overview" query on session-ready already shows a `Row 1` from a stale grid;
+  // wait for this query's own result (its distinct row count) before clicking, the same pattern
+  // "pcap: sorting and exporting a result with source ranges" (above) uses.
+  await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
+  await page.getByRole('row', { name: 'Row 1', exact: true }).click();
+  await expect.poll(() => highlightedHexRange(page)).toEqual({ start: 74, end: 94 });
+});
+
 // The fixture bytes are a committed, crafted `.pcapng`: the same single eth -> ipv4 -> udp -> dns
 // packet as sample.pcap (query "a.ru"), written as a one-interface little-endian pcapng, generated
 // once via packages/formats/pcap/test/generate-e2e-fixture.test.ts. The packet's row provenance is
@@ -167,11 +188,16 @@ for (const tier of ['memory', 'spill'] as const) {
     await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
 
     await runSql(page, "select * from dns where query_name = 'interleaved.example'");
+    // The auto-run "overview" query on session-ready already shows a stale `Row 1`; wait for this
+    // query's own result (its distinct row count) before clicking, the same pattern
+    // "pcap: a SYN stream_segments row highlights its TCP header" (above) and
+    // "pcap: sorting and exporting a result with source ranges" (below) use.
+    await expect(page.locator('.results-heading-meta').getByText('1 rows', { exact: true })).toBeVisible();
     await page.getByRole('row', { name: 'Row 1', exact: true }).click();
 
     // 1. Only the two exact pieces are highlighted; the bounding span is wider than their sum.
+    await expect.poll(() => highlightedRanges(page).then((r) => r.length)).toBe(2);
     const ranges = await highlightedRanges(page);
-    expect(ranges).toHaveLength(2);
     const span = await highlightedHexRange(page);
     expect(span.start).toBe(ranges[0]![0]);
     expect(span.end).toBe(ranges[1]![1]);

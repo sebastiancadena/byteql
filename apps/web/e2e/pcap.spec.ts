@@ -12,6 +12,7 @@ import { runSql, waitForAppReady } from './support/app.js';
 const samplePcapPath = fileURLToPath(new URL('./fixtures/sample.pcap', import.meta.url));
 const samplePcapngPath = fileURLToPath(new URL('./fixtures/sample.pcapng', import.meta.url));
 const streamPcapPath = fileURLToPath(new URL('./fixtures/dns-stream.pcap', import.meta.url));
+const reusePcapPath = fileURLToPath(new URL('./fixtures/tcp-reuse.pcap', import.meta.url));
 
 test('opens a pcap and runs the DNS-join query', async ({ page }) => {
   await page.goto('/');
@@ -55,6 +56,29 @@ test('reassembles a two-segment DNS-over-TCP query and joins its stream tables',
   );
   await expect(page.getByRole('gridcell', { name: 'stream.example' })).toBeVisible();
   await expect(page.getByRole('gridcell', { name: 'ok', exact: true })).toBeVisible();
+});
+
+// The fixture bytes are a committed, crafted `.pcap`: two DNS-over-TCP connections on one 4-tuple
+// (10.0.0.1:40000 -> 10.0.0.2:53) — connection 1 (SYN, query "reuse-one.example", FIN) then
+// connection 2 (SYN with a new ISN, query "reuse-two.example", RST) — generated once via
+// packages/formats/pcap/test/generate-e2e-fixture.test.ts. Exercises Task 6's `streams.generation`
+// and `streams.close_reason` columns end to end through the app.
+test('splits a reused 4-tuple into two connections with close reasons', async ({ page }) => {
+  await page.goto('/');
+  await waitForAppReady(page);
+  await page.getByLabel('Open file input').setInputFiles(reusePcapPath);
+  await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
+
+  await runSql(
+    page,
+    `select d.query_name, s.generation, s.close_reason
+     from dns d join streams s using (stream_id)
+     order by s.generation`,
+  );
+  await expect(page.getByRole('gridcell', { name: 'reuse-one.example' })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: 'reuse-two.example' })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: 'fin', exact: true })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: 'rst', exact: true })).toBeVisible();
 });
 
 test('loads the bundled pcap sample as a four-file session from the picker', async ({ page }) => {

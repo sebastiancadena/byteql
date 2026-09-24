@@ -82,16 +82,32 @@ Evidence: [saved-queries e2e](apps/web/e2e/saved-queries.spec.ts) and
 [privacy e2e](apps/web/e2e/privacy.spec.ts).
 Design: [saved queries design](docs/superpowers/specs/2026-09-24-saved-queries-design.md).
 
-### 5. Harden TCP connection identity
+### 5. Harden TCP connection identity — done (2026-09-24)
 
-FIN/RST teardown and sequence wraparound remain unsupported. Repeated connections using the
-same address/port tuple can merge into one stream.
+FIN/RST teardown and sequence wraparound were unsupported. Repeated connections using the same
+address/port tuple could merge into one stream.
 
-- Start with connection lifecycle and visible incomplete/error states.
-- Follow with sequence wraparound and overlap handling, verified with adversarial fixtures.
+- Connection lifecycle: SYN/FIN/RST now reach the engine as control segments, reused tuples split
+  into generations with a fresh `stream_id`, and the flow root reports `opened`, `closed_by`, and
+  `generation`.
+- Sequence wraparound (RFC 1982 serial arithmetic) and first-bytes-win overlap reconciliation,
+  verified with adversarial fixtures (tuple reuse, RST reuse, wraparound, consistent and
+  conflicting overlap, reset-before-data, missing first segment).
 
-Documented limitations:
-[TCP reassembly design](docs/superpowers/specs/2026-07-18-phase2-tcp-reassembly-design.md).
+Remaining non-goals: bidirectional stream pairing, idle-timeout connection splitting, and early
+flushing of closed flows (they still flush at `finish()`).
+
+Remaining limitations found in the post-implementation review (2026-09-24): every SYN routed to a
+stream (ports 443/53 in pcap) creates a flow entry kept until `finish()` (~1.2 KB each measured;
+300k unanswered SYNs peaked at ~710 MB heap, 1M at ~1.35 GB), so a SYN-flood or port-scan capture
+of a few million SYNs can exhaust the parse worker's heap. Windows-style 1-byte TCP keepalives (one
+garbage byte at SND.NXT−1) overlap already-stored bytes and are counted as
+`STREAM_OVERLAP_CONFLICT` / `conflict_count` unless the byte happens to match. See the follow-up
+bullet under Supporting work.
+
+Evidence: [TCP identity tests](packages/formats/pcap/test/tcp-identity.test.ts) and
+[pcap e2e](apps/web/e2e/pcap.spec.ts).
+Design: [TCP connection identity design](docs/superpowers/specs/2026-09-24-tcp-connection-identity-design.md).
 
 ### 6. Ship one forensic investigation workflow
 
@@ -122,6 +138,11 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
   [Deferred follow-ups](docs/superpowers/specs/2026-09-23-pcapng-intake-design.md#deferred-follow-ups).
 - **Refresh roadmap documentation — done (2026-09-22).** `PRD.md`, `README.md`, and
   `AGENTS.md` now point to this file for priority order.
+- **Cap or spill live TCP flow state.** Every SYN routed to a stream keeps its flow entry until
+  `finish()` (~1.2 KB each measured), so a SYN-flood or port-scan capture of a few million SYNs can
+  exhaust the parse worker's heap; a live-flow cap or spill is needed. Also classify Windows-style
+  1-byte TCP keepalives instead of counting them as overlap conflicts. See priority 5's "Remaining
+  limitations".
 
 ## Next development cycle
 
