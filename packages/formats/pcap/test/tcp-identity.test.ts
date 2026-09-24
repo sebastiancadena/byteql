@@ -167,7 +167,7 @@ describe('tcp connection identity (wraparound and overlap)', () => {
     const payload = dnsOverTcp({ txId: 5, name: 'first.example', type: 1 });
     const forged = payload.slice(0, 12);
     forged[11] ^= 0xff;
-    const { table, result } = await run([
+    const { table } = await run([
       seg({ seq: 1000, flags: SYN }),
       seg({ seq: 1001, flags: PSH | ACK, payload: payload.subarray(0, 12) }),
       seg({ seq: 1001, flags: PSH | ACK, payload: forged }), // packet 3: the conflicting one
