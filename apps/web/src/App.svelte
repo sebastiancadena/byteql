@@ -29,6 +29,10 @@
     let disposed = false;
     let generation = 0;
     let currentController: SessionController | null = null;
+    // Opened exactly once per mount, outside `start`, so a failed attempt or a Retry never opens
+    // a second IndexedDB connection/BroadcastChannel; `openQueryLibrary` never rejects, so this
+    // never needs its own error handling.
+    const libraryPromise = openQueryLibrary();
 
     const start = async (): Promise<void> => {
       const attempt = ++generation;
@@ -40,9 +44,6 @@
       // Fonts load beside the engine, never after it. The loader memoizes, so a retry reuses the
       // settled result rather than re-requesting the faces.
       const fontsReady = prepareUiFonts();
-      // Started once, beside the engine and the fonts; `openQueryLibrary` never rejects, so this
-      // never needs its own error handling. A retry reuses whatever the first attempt opened.
-      const libraryReady = queryLibrary ? Promise.resolve(queryLibrary) : openQueryLibrary();
       try {
         database = await createBrowserDatabase();
         if (disposed || attempt !== generation) {
@@ -67,7 +68,7 @@
         await ownedController.initialize();
         // Readiness means the whole interface is ready: no font request may outlive this marker.
         await fontsReady;
-        const library = await libraryReady;
+        const library = await libraryPromise;
         if (disposed || attempt !== generation || currentController !== ownedController) return;
 
         queryLibrary = library;
@@ -108,7 +109,9 @@
       const ownedController = currentController;
       currentController = null;
       if (ownedController) void ownedController.dispose();
-      queryLibrary?.dispose();
+      // The one dispose path: whether the open already resolved or is still pending, this is the
+      // only place `libraryPromise`'s result is disposed.
+      void libraryPromise.then((library) => library.dispose());
     };
   });
 </script>

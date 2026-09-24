@@ -60,9 +60,18 @@ const { prepareUiFonts } = vi.hoisted(() => ({
   prepareUiFonts: vi.fn<() => Promise<'loaded' | 'fallback'>>(),
 }));
 
+const { queryLibraryDispose, makeQueryLibrary, openQueryLibrary } = vi.hoisted(() => {
+  const queryLibraryDispose = vi.fn();
+  // Workbench subscribes to whatever library it is handed; give the fake the shape it needs.
+  const makeQueryLibrary = () => ({ dispose: queryLibraryDispose, subscribe: vi.fn(() => () => undefined) });
+  const openQueryLibrary = vi.fn(async () => makeQueryLibrary());
+  return { queryLibraryDispose, makeQueryLibrary, openQueryLibrary };
+});
+
 vi.mock('@byteql/db', () => ({ createBrowserDatabase }));
 vi.mock('./lib/session/controller.js', () => ({ SessionController }));
 vi.mock('./lib/ui/fonts.js', () => ({ prepareUiFonts }));
+vi.mock('./lib/queries/library.js', () => ({ openQueryLibrary }));
 
 import App from './App.svelte';
 
@@ -207,5 +216,42 @@ describe('App lifecycle', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('Database worker unavailable');
     expect(screen.getByRole('button', { name: /retry startup/i })).toBeTruthy();
     expect(dispose).not.toHaveBeenCalled();
+  });
+
+  it('opens the query library exactly once across a failed startup and a retry', async () => {
+    initialize.mockRejectedValueOnce(new Error('WASM startup failed'));
+    render(App);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('WASM startup failed');
+    expect(openQueryLibrary).toHaveBeenCalledOnce();
+
+    await fireEvent.click(screen.getByRole('button', { name: /retry startup/i }));
+    expect(await screen.findByText(/nothing is uploaded/i)).toBeTruthy();
+    expect(initialize).toHaveBeenCalledTimes(2);
+    // The retry reuses the library opened by the first attempt; it never opens a second one.
+    expect(openQueryLibrary).toHaveBeenCalledOnce();
+  });
+
+  it('disposes the query library on unmount, whether or not the open has resolved yet', async () => {
+    const view = render(App);
+    await screen.findByText(/nothing is uploaded/i);
+
+    view.unmount();
+    await vi.waitFor(() => expect(queryLibraryDispose).toHaveBeenCalledOnce());
+  });
+
+  it('disposes the query library on unmount even when the open is still pending', async () => {
+    let resolveLibrary!: (library: ReturnType<typeof makeQueryLibrary>) => void;
+    openQueryLibrary.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveLibrary = resolve;
+      }),
+    );
+    const view = render(App);
+    await vi.waitFor(() => expect(openQueryLibrary).toHaveBeenCalledOnce());
+
+    view.unmount();
+    resolveLibrary(makeQueryLibrary());
+    await vi.waitFor(() => expect(queryLibraryDispose).toHaveBeenCalledOnce());
   });
 });
