@@ -249,6 +249,12 @@ describe('unwrapOffset', () => {
   it('stays in the same epoch for nearby offsets', () => {
     expect(unwrapOffset(100, 8, 256 + 90)).toBe(356);
   });
+  it('wraps forward at a realistic 32-bit width', () => {
+    // reference sits just below a 2^32 epoch boundary (epoch base 2^32, offset 0xffffff00 into
+    // it); a raw offset of 0x10 reduces to itself and is far closer to the NEXT epoch
+    // (2^32 + 0x10, only 0x110 ahead) than staying in the reference's epoch (0xfffffef0 behind).
+    expect(unwrapOffset(0x10, 32, 2 ** 32 + 0xffffff00)).toBe(2 ** 33 + 0x10);
+  });
 });
 
 import { normalizeRanges } from './streams.js';

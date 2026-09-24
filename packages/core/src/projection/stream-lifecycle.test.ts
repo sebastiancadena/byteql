@@ -406,7 +406,8 @@ describe('stream wraparound', () => {
     for (let at = 0; at < data.length; at += 50) {
       chunks.push(chunk(7, 0, (200 + at) % 256, data.slice(at, at + 50)));
     }
-    const { finished } = project(chunks, wrap, 512); // 303 bytes exceed the default 64-byte cap
+    const { finished, issues } = project(chunks, wrap, 512); // 303 bytes exceed the default 64-byte cap
+    expect(issues.issues()).toEqual([]);
     expect(rows(finished, 'msgs').count).toBe(3);
     expect(rows(finished, 'flows').col('status')).toEqual(['ok']);
   });
