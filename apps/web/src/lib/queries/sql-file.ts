@@ -24,7 +24,7 @@ export interface QueryFileEntry {
 
 export interface RejectedBlock {
   name: string;
-  reason: 'empty' | 'too-large';
+  reason: 'empty' | 'too-large' | 'unnamed';
 }
 
 export interface ParsedQueryFile {
@@ -34,6 +34,13 @@ export interface ParsedQueryFile {
 }
 
 const singleLine = (name: string): string => name.replace(/\s+/gu, ' ').trim() || UNTITLED;
+
+/** A line that carries no real content: blank, or a `--` comment (which also covers the header
+ * and `-- format:` lines, so this alone decides whether a preamble is "nothing but comments"). */
+const isCommentOrBlank = (line: string): boolean => {
+  const trimmed = line.trim();
+  return trimmed === '' || trimmed.startsWith('--');
+};
 
 /** CRLF to LF, leading blank lines dropped, trailing whitespace trimmed. */
 export function normalizeSql(sql: string): string {
@@ -109,9 +116,20 @@ export function parseQueryFile(text: string, fallbackName: string): ParsedQueryF
   }
 
   if (firstName === -1) {
-    // A library file with no blocks is an empty export; anything else is one plain query.
-    if (!isLibraryFile) addBlock(result, singleLine(fallbackName), lines.join('\n'));
+    // A library file with no blocks is a genuinely empty export only when nothing besides its
+    // header/format comments is present; anything else with no `-- name:` markers — including a
+    // header-like file that turns out to carry real SQL — is imported whole, as one query,
+    // rather than dropped.
+    if (!(isLibraryFile && lines.every(isCommentOrBlank))) {
+      addBlock(result, singleLine(fallbackName), lines.join('\n'));
+    }
     return result;
+  }
+
+  // Non-blank, non-comment text before the first `-- name:` marker (beyond the header/format
+  // lines) is never imported silently and never dropped silently: it becomes one rejected block.
+  if (preamble.some((line) => !isCommentOrBlank(line))) {
+    result.rejected.push({ name: singleLine(fallbackName), reason: 'unnamed' });
   }
 
   let name: string | null = null;

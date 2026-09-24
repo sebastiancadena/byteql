@@ -82,6 +82,24 @@ describe('parseQueryFile', () => {
     });
   });
 
+  it('imports a header-only file that has real content but no name markers as one query', () => {
+    expect(parseQueryFile('-- byteql-queries v1\n-- format: pcap\nselect 1;\n', 'file')).toEqual({
+      format: 'pcap',
+      queries: [{ name: 'file', sql: '-- byteql-queries v1\n-- format: pcap\nselect 1;' }],
+      rejected: [],
+    });
+  });
+
+  it('rejects stray text before the first name marker instead of dropping it silently', () => {
+    const parsed = parseQueryFile(
+      '-- byteql-queries v1\n-- format: pcap\nselect stray;\n\n-- name: A\nselect 1',
+      'file',
+    );
+    expect(parsed.format).toBe('pcap');
+    expect(parsed.queries).toEqual([{ name: 'A', sql: 'select 1' }]);
+    expect(parsed.rejected).toEqual([{ name: 'file', reason: 'unnamed' }]);
+  });
+
   it('handles a BOM and CRLF line endings from other editors', () => {
     const parsed = parseQueryFile('﻿-- format: pcap\r\n-- name: Windows\r\nselect 1;\r\n', 'f');
     expect(parsed.format).toBe('pcap');
