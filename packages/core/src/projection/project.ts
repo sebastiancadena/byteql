@@ -2028,12 +2028,20 @@ export const flushStreams = (emitContext: EmitContext): void => {
       // still assigned sequentially, arrival-ordered, from streams.segmentKeys.
       // A control-only flow (no data ever added, so the assembler was never anchored either) has
       // no assembler base at all: fall back to the minimum recorded absOffset among its segments
-      // so its offsets are still base-relative instead of raw file-stream offsets. A flow with at
-      // least one segment always has one to take the minimum of (a flow entry is only ever
-      // created at first contribution), so 0 here is unreachable, not a meaningful default.
-      const finalBase =
-        entry.assembler.base ??
-        (entry.segments.length > 0 ? Math.min(...entry.segments.map((record) => record.absOffset)) : 0);
+      // so its offsets are still base-relative instead of raw file-stream offsets. A plain loop,
+      // not `Math.min(...spread)`: spreading tens of thousands of segments as call arguments
+      // (an RST-storm/scan capture with no SYN can have 100k+ on one tuple) blows the call-stack
+      // limit and would take the whole session down with it. `entry.segments` can be empty here
+      // (the rejected-truncated-FIRST-contribution case — see fallbackSpan's doc), in which case
+      // the loop below over `entry.segments` never runs, so 0 is a safe, inconsequential default.
+      let finalBase = entry.assembler.base;
+      if (finalBase === null) {
+        let min = Infinity;
+        for (const record of entry.segments) {
+          if (record.absOffset < min) min = record.absOffset;
+        }
+        finalBase = Number.isFinite(min) ? min : 0;
+      }
       for (const record of entry.segments) {
         const segmentId = streams.segmentKeys.get(stream.segmentsTable)!;
         streams.segmentKeys.set(stream.segmentsTable, segmentId + 1n);

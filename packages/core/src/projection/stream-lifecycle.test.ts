@@ -239,6 +239,27 @@ describe('stream lifecycle: control segments', () => {
     expect(flows.col('closed_by')).toEqual(['reset']);
     expect(rows(finished, 'flow_segments').count).toBe(2); // SYN + RST; the truncated data is not
   });
+
+  it('keeps a control segment below a real data base at its negative offset', () => {
+    // CLOSE at stream offset 5 arrives before any data; the data that follows anchors the
+    // assembler's base at 10 (its own offset). The CLOSE segment stays below that base and its
+    // stream_segments offset is negative, not clamped to 0.
+    const { finished } = project([chunk(7, CLOSE, 5), chunk(7, 0, 10, [2, 97, 98])]); // [2,97,98] = msg('ab')
+    expect(rows(finished, 'flow_segments').col('offset')).toEqual([-5n, 0n]);
+  });
+
+  it('finishes without crashing when a control-only flow accumulates far more segments than fit in a call-stack spread', () => {
+    // No open ever arrives, so the assembler is never anchored and flushStreams' finalBase
+    // fallback (the minimum recorded absOffset) has to scan this many segments without blowing
+    // the call stack (a naive `Math.min(...entry.segments.map(...))` throws well before this
+    // count — an RST-storm/scan capture with no SYN can put 100k+ control segments on one tuple).
+    const CONTROL_SEGMENT_COUNT = 200_000;
+    const chunks = Array.from({ length: CONTROL_SEGMENT_COUNT }, (_, i) => chunk(7, CLOSE, i));
+    const { finished } = project(chunks);
+    const flows = rows(finished, 'flows');
+    expect(flows.count).toBe(1);
+    expect(rows(finished, 'flow_segments').count).toBe(CONTROL_SEGMENT_COUNT);
+  });
 });
 
 describe('stream lifecycle: generations', () => {
