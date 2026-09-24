@@ -1468,6 +1468,17 @@ const toSafeOffset = (value: unknown): number | null => {
   return null;
 };
 
+// Spec "Lifecycle semantics -> Generations": an open joins the current generation when it
+// repeats that generation's recorded open offset (a retransmitted SYN), or when the generation
+// has no open yet, is not closed, and the offset lands exactly on the assembler's base (a SYN
+// captured after that connection's first data — the mid-stream flow is adopted). Anything else
+// is a new connection reusing the same (stream, key) tuple.
+const startsNewGeneration = (entry: StreamRuntimeEntry, offset: number): boolean => {
+  if (entry.openOffset !== null) return entry.openOffset !== offset;
+  if (entry.closedBy !== null) return true;
+  return entry.assembler.base !== offset;
+};
+
 const contributeToStream = (
   stream: CompiledStream,
   context: ExpressionContext,
@@ -1541,8 +1552,15 @@ const contributeToStream = (
   }
 
   const current = streams.current.get(stream.name)!;
-  // Task 5 adds the join-vs-split generation decision; for now every new key starts generation 1.
-  const entry = current.get(keyResult.key) ?? createFlowEntry(stream, keyResult, emitContext, 1);
+  // Generation join/split (see startsNewGeneration): an `open` that doesn't join the current
+  // generation retires it (it stays in `ordered` for flush) and reserves a fresh entry one
+  // generation higher. A non-open contribution always joins whatever generation is current.
+  let entry = current.get(keyResult.key);
+  if (!entry) {
+    entry = createFlowEntry(stream, keyResult, emitContext, 1);
+  } else if (open && startsNewGeneration(entry, offset)) {
+    entry = createFlowEntry(stream, keyResult, emitContext, entry.generation + 1);
+  }
 
   // Lifecycle updates happen BEFORE the inactive-status check below: a late RST/FIN (or a SYN
   // adopting a mid-stream flow) after the assembler has already gone terminal still needs to be
@@ -2008,7 +2026,14 @@ export const flushStreams = (emitContext: EmitContext): void => {
       // only final now — a contribution recorded early in the flow's life can still be rebased
       // by a later, out-of-order-earlier one (see StreamSegmentRecord doc). segment_id keys are
       // still assigned sequentially, arrival-ordered, from streams.segmentKeys.
-      const finalBase = entry.assembler.base ?? 0;
+      // A control-only flow (no data ever added, so the assembler was never anchored either) has
+      // no assembler base at all: fall back to the minimum recorded absOffset among its segments
+      // so its offsets are still base-relative instead of raw file-stream offsets. A flow with at
+      // least one segment always has one to take the minimum of (a flow entry is only ever
+      // created at first contribution), so 0 here is unreachable, not a meaningful default.
+      const finalBase =
+        entry.assembler.base ??
+        (entry.segments.length > 0 ? Math.min(...entry.segments.map((record) => record.absOffset)) : 0);
       for (const record of entry.segments) {
         const segmentId = streams.segmentKeys.get(stream.segmentsTable)!;
         streams.segmentKeys.set(stream.segmentsTable, segmentId + 1n);

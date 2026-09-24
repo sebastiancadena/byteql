@@ -141,6 +141,11 @@ export const rows = (finished: { name: string }[], name: string) => {
   };
 };
 
+const ranges = (value: unknown) =>
+  value === null
+    ? null
+    : Array.from(value as Iterable<{ start: bigint; end: bigint }>, (p) => [p.start, p.end]);
+
 describe('stream lifecycle: control segments', () => {
   it('lets an empty open segment create a flow and anchor its base', () => {
     // SYN at seq 10 (no payload), then message [2,'a','b'] split: seq 10 [2,97], seq 12 [98]
@@ -164,6 +169,15 @@ describe('stream lifecycle: control segments', () => {
     // control segment provenance = the feeding chunk row's range (record 0's chunk at [0, 3))
     expect(segs.col('_src_start')[0]).toBe(0n);
     expect(segs.col('_src_end')[0]).toBe(3n);
+    // The flow's _src_ranges holds the SYN's own control range [0, 3) as its own piece,
+    // alongside the two data pieces: record 1's chunk payload at file [103, 105) (chunk bytes
+    // start at 1*100 = 100, payload after the 3-byte header at 103) and record 2's at
+    // [203, 204) (chunk bytes start at 2*100 = 200, payload at 203).
+    expect(ranges(rows(finished, 'flows').col('_src_ranges')[0])).toEqual([
+      [0n, 3n],
+      [103n, 105n],
+      [203n, 204n],
+    ]);
   });
 
   it('turns a missing first data segment after an open into a gap', () => {
@@ -197,6 +211,10 @@ describe('stream lifecycle: control segments', () => {
     expect(flows.col('status')).toEqual(['ok']);
     expect(flows.col('_src_start')).toEqual([0n]);
     expect(flows.col('_src_end')).toEqual([3n]);
+    // Control-only flow: the assembler was never anchored (no open), so flushStreams falls back
+    // to the FIN's own absOffset (40) as the base — its stream_segments row reads offset 0, not
+    // the raw stream offset 40.
+    expect(rows(finished, 'flow_segments').col('offset')).toEqual([0n]);
   });
 
   it('keeps tracking lifecycle after the stream goes inactive', () => {
@@ -205,5 +223,101 @@ describe('stream lifecycle: control segments', () => {
     const flows = rows(finished, 'flows');
     expect(flows.col('status')).toEqual(['error']);
     expect(flows.col('closed_by')).toEqual(['reset']);
+  });
+
+  it('keeps recording control segments once the stream is truncated', () => {
+    // max_buffer 2: the 6-byte data contribution alone exceeds it and is truncated (dropped,
+    // never recorded); the SYN before it and the RST after it are still recorded, and the RST
+    // still updates closed_by even though the stream is already inactive by then.
+    const { finished } = project(
+      [chunk(7, OPEN, 10), chunk(7, 0, 10, [5, 1, 2, 3, 4, 5]), chunk(7, RESET, 16)],
+      '',
+      2,
+    );
+    const flows = rows(finished, 'flows');
+    expect(flows.col('status')).toEqual(['truncated']);
+    expect(flows.col('closed_by')).toEqual(['reset']);
+    expect(rows(finished, 'flow_segments').count).toBe(2); // SYN + RST; the truncated data is not
+  });
+});
+
+describe('stream lifecycle: generations', () => {
+  const msg = (text: string) => [text.length, ...[...text].map((c) => c.charCodeAt(0))];
+
+  it('splits a reused tuple after close into two flows', () => {
+    const { finished } = project([
+      chunk(7, OPEN, 10),
+      chunk(7, 0, 10, msg('ab')),
+      chunk(7, CLOSE, 13),
+      chunk(7, OPEN, 50),
+      chunk(7, 0, 50, msg('cd')),
+    ]);
+    const flows = rows(finished, 'flows');
+    expect(flows.count).toBe(2);
+    expect(flows.col('flow_id')).toEqual([1n, 2n]);
+    expect(flows.col('generation')).toEqual([1, 2]);
+    expect(flows.col('closed_by')).toEqual(['close', null]);
+    const msgs = rows(finished, 'msgs');
+    expect(msgs.col('text')).toEqual(['ab', 'cd']);
+    expect(msgs.col('stream_id')).toEqual([1n, 2n]);
+    expect(rows(finished, 'flow_segments').col('stream_id')).toEqual([1n, 1n, 1n, 2n, 2n]);
+  });
+
+  it('keeps a retransmitted open in the same generation', () => {
+    const { finished } = project([chunk(7, OPEN, 10), chunk(7, OPEN, 10), chunk(7, 0, 10, msg('a'))]);
+    expect(rows(finished, 'flows').count).toBe(1);
+    expect(rows(finished, 'flow_segments').count).toBe(3);
+  });
+
+  it('starts a new generation for an open at a different offset without any close', () => {
+    const { finished } = project([chunk(7, OPEN, 10), chunk(7, OPEN, 90)]);
+    expect(rows(finished, 'flows').col('generation')).toEqual([1, 2]);
+  });
+
+  it('adopts a mid-stream flow when a late open lands on its base', () => {
+    // [5, 97] is an incomplete message, so nothing is consumed yet
+    const { finished } = project([chunk(7, 0, 10, [5, 97]), chunk(7, OPEN, 10)]);
+    const flows = rows(finished, 'flows');
+    expect(flows.count).toBe(1);
+    expect(flows.col('opened')).toEqual([true]);
+  });
+
+  // Review Focus 2
+  it('adopts even after the data was framed (consumed > 0)', () => {
+    const { finished, issues } = project([chunk(7, 0, 10, msg('ab')), chunk(7, OPEN, 10)]);
+    expect(rows(finished, 'msgs').count).toBe(1);
+    expect(rows(finished, 'flows').col('generation')).toEqual([1]);
+    expect(issues.issues()).toEqual([]);
+  });
+
+  it('starts a new generation when an open follows a mid-stream flow at another offset', () => {
+    const { finished } = project([chunk(7, 0, 10, msg('ab')), chunk(7, OPEN, 60)]);
+    expect(rows(finished, 'flows').col('generation')).toEqual([1, 2]);
+  });
+
+  // Review Focus 4
+  it('keeps a late FIN in the closed generation and lets the next open start generation 2', () => {
+    const { finished } = project([
+      chunk(7, OPEN, 10),
+      chunk(7, CLOSE, 10),
+      chunk(7, CLOSE, 10), // retransmitted FIN
+      chunk(7, OPEN, 70),
+    ]);
+    expect(rows(finished, 'flow_segments').col('stream_id')).toEqual([1n, 1n, 1n, 2n]);
+  });
+
+  it('keeps generations independent per key', () => {
+    const { finished } = project([chunk(7, OPEN, 10), chunk(9, OPEN, 10), chunk(7, OPEN, 20)]);
+    expect(rows(finished, 'flows').col('peer')).toEqual(['peer-7', 'peer-9', 'peer-7']);
+    expect(rows(finished, 'flows').col('generation')).toEqual([1, 1, 2]);
+  });
+
+  // Review Focus 1
+  it('handles thousands of generations on one tuple in linear time', () => {
+    const chunks = Array.from({ length: 5000 }, (_, i) => chunk(7, OPEN, i % 256));
+    const started = performance.now();
+    const { finished } = project(chunks);
+    expect(rows(finished, 'flows').count).toBe(5000);
+    expect(performance.now() - started).toBeLessThan(5000);
   });
 });
