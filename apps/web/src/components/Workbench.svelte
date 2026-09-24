@@ -9,6 +9,8 @@
   import type { ExportOptions } from '../lib/export/options.js';
   import { createCoverageMemo, provenanceOfRow, type RowProvenance } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
+  import type { QueryLibrary } from '../lib/queries/library.js';
+  import type { SavedQuery } from '../lib/queries/types.js';
   import type { SampleId } from '../lib/session/samples.js';
   import { resultSortDisabledReason } from '../lib/session/result-sort-availability.js';
   import { fieldLabel, isResultSorting, resultSortInteractionBlocked } from '../lib/session/result-sort.js';
@@ -36,6 +38,7 @@
   import ResizeHandle from './ResizeHandle.svelte';
   import ResultGrid from './ResultGrid.svelte';
   import ResultsDownload from './ResultsDownload.svelte';
+  import SaveQueryPopover from './SaveQueryPopover.svelte';
   import ShortcutsOverlay from './ShortcutsOverlay.svelte';
   import SqlEditor from './SqlEditor.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -67,11 +70,29 @@
   interface Props {
     controller: ControllerPort;
     audioEngineFactory?: (() => AudioEngine) | undefined;
+    queryLibrary?: QueryLibrary | null;
   }
 
-  let { controller, audioEngineFactory }: Props = $props();
+  let { controller, audioEngineFactory, queryLibrary = null }: Props = $props();
   let session = $state<SessionState>(initialSessionState);
   let draftSql = $state('');
+  /** The saved query the editor was last loaded from; cleared by any other load. */
+  let loadedSaved = $state<SavedQuery | null>(null);
+  let saveOpen = $state(false);
+  /** Bumped on every library change, so derived lookups re-read the library. */
+  let libraryVersion = $state(0);
+  $effect(() => {
+    const library = queryLibrary;
+    if (!library) return;
+    return library.subscribe(() => (libraryVersion += 1));
+  });
+  /** Only a saved query of the CURRENT format may be updated from the editor. */
+  const loadedForFormat = $derived.by(() => {
+    void libraryVersion;
+    const saved = loadedSaved;
+    if (!saved || saved.format !== session.format?.id) return null;
+    return saved;
+  });
   let actionError = $state<string | null>(null);
   let coverageMessage = $state<string | null>(null);
   /**
@@ -656,9 +677,11 @@
     document.querySelector<HTMLElement>('.result-grid .grid-scroll')?.focus();
   }
 
-  /** Loading an example query fills the editor and focuses it; it never runs the query. */
-  function loadQuery(sql: string): void {
+  /** Loading a query fills the editor and focuses it; it never runs the query. */
+  function loadQuery(sql: string, saved: SavedQuery | null = null): void {
     draftSql = sql;
+    loadedSaved = saved;
+    saveOpen = false;
     void tick().then(() => sqlEditor?.focus());
   }
 
@@ -676,9 +699,25 @@
     return containFocus(panel, closeDrawer);
   });
 
-  function loadQueryFromCatalog(sql: string): void {
+  function loadQueryFromCatalog(sql: string, saved: SavedQuery | null = null): void {
     closeDrawer();
-    loadQuery(sql);
+    loadQuery(sql, saved);
+  }
+
+  const canSave = $derived(queryLibrary !== null && session.format !== null && draftSql.trim() !== '');
+
+  function openSave(): void {
+    if (canSave) saveOpen = true;
+  }
+
+  function closeSave(): void {
+    saveOpen = false;
+    void tick().then(() => sqlEditor?.focus());
+  }
+
+  function querySaved(query: SavedQuery): void {
+    loadedSaved = query;
+    closeSave();
   }
 
   function browseFromCatalog(name: string): void {
@@ -996,6 +1035,29 @@
           <h1>Query</h1>
           <div class="query-actions">
             <span class="shortcut" aria-hidden="true">⌘ Enter</span>
+            {#if queryLibrary && session.format}
+              <div class="save-query-anchor">
+                <button
+                  class="button button-secondary button-compact"
+                  type="button"
+                  aria-expanded={saveOpen}
+                  disabled={!canSave}
+                  onclick={() => (saveOpen ? closeSave() : openSave())}
+                >
+                  Save query
+                </button>
+                {#if saveOpen}
+                  <SaveQueryPopover
+                    library={queryLibrary}
+                    format={session.format.id}
+                    sql={draftSql}
+                    loaded={loadedForFormat}
+                    onsaved={querySaved}
+                    onclose={closeSave}
+                  />
+                {/if}
+              </div>
+            {/if}
             {#if session.phase === 'querying'}
               <!-- Compact like Run query: the two states share a slot, so starting a query must
                    not change the toolbar's height and resize the panes below it. -->
@@ -1028,6 +1090,7 @@
             disabled={session.phase === 'querying'}
             onrun={run}
             onchange={(sql) => (draftSql = sql)}
+            onsave={openSave}
           />
         </div>
 

@@ -7,6 +7,8 @@
   import BrandLockup from './components/BrandLockup.svelte';
   import Workbench from './components/Workbench.svelte';
   import { createBrowserE2EHarness } from './lib/e2e-harness.js';
+  import type { QueryLibrary } from './lib/queries/library.js';
+  import { openQueryLibrary } from './lib/queries/library.js';
   import { SessionController } from './lib/session/controller.js';
   import { prepareUiFonts } from './lib/ui/fonts.js';
 
@@ -21,6 +23,7 @@
   let starting = $state(true);
   let retryStartup = $state<() => void>(() => undefined);
   let workbench = $state<ReturnType<typeof Workbench> | null>(null);
+  let queryLibrary = $state<QueryLibrary | null>(null);
 
   onMount(() => {
     let disposed = false;
@@ -37,6 +40,9 @@
       // Fonts load beside the engine, never after it. The loader memoizes, so a retry reuses the
       // settled result rather than re-requesting the faces.
       const fontsReady = prepareUiFonts();
+      // Started once, beside the engine and the fonts; `openQueryLibrary` never rejects, so this
+      // never needs its own error handling. A retry reuses whatever the first attempt opened.
+      const libraryReady = queryLibrary ? Promise.resolve(queryLibrary) : openQueryLibrary();
       try {
         database = await createBrowserDatabase();
         if (disposed || attempt !== generation) {
@@ -61,8 +67,10 @@
         await ownedController.initialize();
         // Readiness means the whole interface is ready: no font request may outlive this marker.
         await fontsReady;
+        const library = await libraryReady;
         if (disposed || attempt !== generation || currentController !== ownedController) return;
 
+        queryLibrary = library;
         controller = ownedController;
         starting = false;
       } catch (error) {
@@ -100,13 +108,19 @@
       const ownedController = currentController;
       currentController = null;
       if (ownedController) void ownedController.dispose();
+      queryLibrary?.dispose();
     };
   });
 </script>
 
 {#if controller}
   <div data-app-ready="true">
-    <Workbench bind:this={workbench} {controller} audioEngineFactory={e2eHarness?.audioEngineFactory} />
+    <Workbench
+      bind:this={workbench}
+      {controller}
+      {queryLibrary}
+      audioEngineFactory={e2eHarness?.audioEngineFactory}
+    />
   </div>
 {:else}
   <main class="startup-state" aria-busy={starting}>

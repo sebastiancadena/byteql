@@ -17,6 +17,8 @@ vi.mock('@byteql/db', () => ({
 
 import type { ResultSort, ResultSortCapability } from '@byteql/db';
 
+import { QueryLibrary } from '../lib/queries/library.js';
+import { MemoryQueryStore } from '../lib/queries/store.js';
 import { initialSessionState, type PagedResultState, type SessionState } from '../lib/session/state.js';
 import type { AudioEngine } from '../lib/viewers/tone-engine.js';
 import ResultGrid from './ResultGrid.svelte';
@@ -1986,6 +1988,48 @@ describe('Inspector Workbench', () => {
 
       // The grid is keyed on the QUERY generation: a reorder is the same result, seen differently.
       expect(container.querySelector('[role="grid"]')).toBe(grid);
+    });
+  });
+
+  describe('saved queries', () => {
+    it('shows no Save query control without a library', () => {
+      render(Workbench, { controller: new FakeController(readyState()) });
+      expect(screen.queryByRole('button', { name: 'Save query' })).toBeNull();
+    });
+
+    it('saves the editor SQL without running it', async () => {
+      // `readyState()` already holds SQL and a result, so no overview query auto-runs.
+      const controller = new FakeController(readyState());
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      render(Workbench, { controller, queryLibrary });
+
+      const host = document.querySelector('.sql-editor') as HTMLElement;
+      EditorView.findFromDOM(host)!.dispatch({ changes: { from: 0, insert: 'select 42' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Save query' }));
+      await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      expect(queryLibrary.savedFor(readyState().format!.id).map((query) => query.sql)).toEqual([
+        expect.stringContaining('select 42'),
+      ]);
+      expect(controller.runQuery).not.toHaveBeenCalled();
+    });
+
+    it.todo('forgets the loaded saved query when the format changes', async () => {
+      const controller = new FakeController(readyState());
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      const format = readyState().format!.id;
+      queryLibrary.save({ format, name: 'Kept', sql: 'select 1' });
+      render(Workbench, { controller, queryLibrary });
+
+      await fireEvent.click(await screen.findByRole('button', { name: 'Kept' }));
+      controller.publish({ ...controller.state, format: { id: 'zip', title: 'ZIP archive' } });
+      await tick();
+      const host = document.querySelector('.sql-editor') as HTMLElement;
+      EditorView.findFromDOM(host)!.dispatch({ changes: { from: 0, insert: '-- edited\n' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Save query' }));
+
+      expect(screen.queryByRole('button', { name: 'Update "Kept"' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
     });
   });
 });

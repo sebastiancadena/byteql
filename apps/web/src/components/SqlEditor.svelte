@@ -17,9 +17,17 @@
     appearance?: Theme;
     onrun: (sql: string) => void;
     onchange?: (sql: string) => void;
+    onsave?: () => void;
   }
 
-  let { sql, disabled = false, appearance = 'light', onrun, onchange = () => undefined }: Props = $props();
+  let {
+    sql,
+    disabled = false,
+    appearance = 'light',
+    onrun,
+    onchange = () => undefined,
+    onsave = undefined,
+  }: Props = $props();
   let host: HTMLDivElement;
   let view = $state<EditorView | null>(null);
   const editable = new Compartment();
@@ -85,6 +93,14 @@
             key: 'Mod-Enter',
             run(currentView) {
               onrun(currentView.state.doc.toString());
+              return true;
+            },
+          },
+          {
+            key: 'Mod-s',
+            run() {
+              if (!onsave) return false;
+              onsave();
               return true;
             },
           },
