@@ -40,10 +40,10 @@ or in `PRD.md` §12.
   `stream_segments` tables, injects `stream_id` on message-fed tables, and flushes flow rows at
   finish. `packages/formats/pcap` now reassembles multi-segment TLS ClientHello and
   multi-segment DNS-over-TCP — the single-segment-only limitation is gone — on a 10-parser
-  dissect registry projecting 10 tables + `errors`. Documented limitations: no FIN/RST teardown
-  (4-tuple reuse merges into one stream), no partial-overlap reconciliation, no sequence-number
-  wraparound, single-record ClientHello only, and a tls-before-dns first-match quirk when a TCP
-  segment's ports collide on both 443 and 53.
+  dissect registry projecting 10 tables + `errors`. Documented limitations: single-record
+  ClientHello only, and a tls-before-dns first-match quirk when a TCP segment's ports collide on
+  both 443 and 53. (FIN/RST teardown, partial-overlap reconciliation, and sequence-number
+  wraparound were later addressed — see "TCP connection identity" below.)
 - **Phase 1, slice 2 of 3 (scale & intake): shipped.** Design record:
   `docs/superpowers/specs/2026-07-19-phase1-scale-intake-design.md` — read its
   **"Implementation notes"** for the measured numbers and the engineering discoveries made
@@ -146,7 +146,22 @@ or in `PRD.md` §12.
   persistence switch that deletes stored history when turned off), and the annotated `.sql`
   codec. UI: `SaveQueryPopover` (toolbar + `Ctrl/⌘+S`), `QueryLibraryPanel` (Saved + Recent in
   the Explorer). Design: `docs/superpowers/specs/2026-09-24-saved-queries-design.md`.
-- **Next (per `ROADMAP.md`):** harden TCP connection identity (ROADMAP #5). The unaided
+- **TCP connection identity: shipped 2026-09-24.** Design record:
+  `docs/superpowers/specs/2026-09-24-tcp-connection-identity-design.md`. Projection spec v0.5
+  adds four optional stream fields (`open`/`close`/`reset`/`offset_bits`); control segments (SYN/
+  FIN/RST with no payload) now reach the engine and are recorded in `stream_segments` against the
+  feeding row's range; an `open` segment anchors the assembler base even with an empty payload;
+  reused address/port tuples split into connection generations with a fresh `stream_id` each; the
+  flow root gains `opened`/`closed_by`/`generation`/`conflict_count`; overlapping segments
+  reconcile first-bytes-win (`STREAM_OVERLAP_CONFLICT`) instead of erroring the stream; below-base
+  segments trim instead of erroring (`STREAM_BELOW_BASE`, once per flow); and 32-bit sequence
+  numbers unwrap across wraparound (RFC 1982 serial arithmetic). `packages/formats/pcap` moved to
+  spec v0.5 with `handshake`/`close_reason`/`generation`/`conflict_count` columns on `streams` and
+  a "Reused or reset connections" canned query. Documented limitations: no bidirectional stream
+  pairing (each direction is its own flow row), no idle-timeout connection splitting, closed flows
+  still flush only at `finish()`, and TLS ClientHello stays single-record. Evidence:
+  `packages/formats/pcap/test/tcp-identity.test.ts`, `apps/web/e2e/pcap.spec.ts`.
+- **Next (per `ROADMAP.md`):** ship one forensic investigation workflow (ROADMAP #6). The unaided
   external Phase 0 test is still open supporting work.
 
 ## Repo map
@@ -156,9 +171,9 @@ architecture: `app → db → core ← formats`. `packages/core` is zero-DOM (No
 its vitest suites run without a browser).
 
 - `packages/core` — the engine
-  - `src/projection/spec.ts` — YAML spec schema (v0.1–v0.4: tables, state, `when`/`where`,
-    `parent_key`, `dissect`, and v0.4's `nullable`) + zod validation; errors at load, never
-    per-row
+  - `src/projection/spec.ts` — YAML spec schema (v0.1–v0.5: tables, state, `when`/`where`,
+    `parent_key`, `dissect`, v0.4's `nullable`, and v0.5's stream lifecycle fields) + zod
+    validation; errors at load, never per-row
   - `src/projection/expression.ts` — jsep-based sandboxed expression evaluator (closed builtin
     set, hex literals, bigint-aware arithmetic)
   - `src/projection/anchors.ts` — anchor-path compile + single-anchor traversal (dissect child

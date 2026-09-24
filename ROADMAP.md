@@ -82,16 +82,24 @@ Evidence: [saved-queries e2e](apps/web/e2e/saved-queries.spec.ts) and
 [privacy e2e](apps/web/e2e/privacy.spec.ts).
 Design: [saved queries design](docs/superpowers/specs/2026-09-24-saved-queries-design.md).
 
-### 5. Harden TCP connection identity
+### 5. Harden TCP connection identity — done (2026-09-24)
 
-FIN/RST teardown and sequence wraparound remain unsupported. Repeated connections using the
-same address/port tuple can merge into one stream.
+FIN/RST teardown and sequence wraparound were unsupported. Repeated connections using the same
+address/port tuple could merge into one stream.
 
-- Start with connection lifecycle and visible incomplete/error states.
-- Follow with sequence wraparound and overlap handling, verified with adversarial fixtures.
+- Connection lifecycle: SYN/FIN/RST now reach the engine as control segments, reused tuples split
+  into generations with a fresh `stream_id`, and the flow root reports `opened`, `closed_by`, and
+  `generation`.
+- Sequence wraparound (RFC 1982 serial arithmetic) and first-bytes-win overlap reconciliation,
+  verified with adversarial fixtures (tuple reuse, RST reuse, wraparound, consistent and
+  conflicting overlap, reset-before-data, missing first segment).
 
-Documented limitations:
-[TCP reassembly design](docs/superpowers/specs/2026-07-18-phase2-tcp-reassembly-design.md).
+Remaining non-goals: bidirectional stream pairing, idle-timeout connection splitting, and early
+flushing of closed flows (they still flush at `finish()`).
+
+Evidence: [TCP identity tests](packages/formats/pcap/test/tcp-identity.test.ts) and
+[pcap e2e](apps/web/e2e/pcap.spec.ts).
+Design: [TCP connection identity design](docs/superpowers/specs/2026-09-24-tcp-connection-identity-design.md).
 
 ### 6. Ship one forensic investigation workflow
 

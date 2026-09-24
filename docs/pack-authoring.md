@@ -14,7 +14,7 @@ small set of named code hooks:
 ```text
 packages/formats/<name>/
   pack.yaml                 # identity, containers, probes, capabilities, file pointers
-  <name>.tables.yaml        # projection spec (v0.4)
+  <name>.tables.yaml        # projection spec (v0.5)
   queries.yaml
   ksy/                      # optional
   src/
@@ -216,6 +216,75 @@ conformance kit's schema check compares every emitted Arrow batch against `pack.
 column-for-column, so a spec/hook mismatch fails a test instead of silently yielding NULL
 columns at runtime. `nullable` is informational only (Explorer's `?` marker, the worker's column
 overview) — it never affects Arrow output or goldens.
+
+## Projection spec v0.5 stream lifecycle
+
+Spec v0.5 (`version: '0.5'` in the `.tables.yaml`) adds four optional fields to a `streams:`
+declaration, letting a pack express TCP-style connection lifecycle declaratively instead of
+merging every packet on one address/port tuple into a single flow for the whole capture:
+
+```yaml
+streams:
+  - name: tls_stream
+    key: tcp_flow_key
+    offset: '_.seq_num + (_.syn ? 1 : 0)'
+    offset_bits: 32
+    open: _.syn
+    close: _.fin
+    reset: _.rst
+    framer: tls_record
+    table: streams
+    segments_table: stream_segments
+    max_buffer: 1048576
+    messages:
+      - { when: _.offset == 0, parser: tls_client_hello, table: tls }
+```
+
+- `offset_bits` — an integer in `[8, 48]`. Raw offsets are modular in 2^N; the engine unwraps
+  them into an ever-increasing extended offset per generation (RFC 1982 serial arithmetic) before
+  handing them to the assembler, so a sequence number crossing 2^N no longer looks like a huge
+  jump or a below-base segment. Omit it to keep raw, unwrapped offsets (v0.3/v0.4 behavior).
+- `open` — an expression that marks a segment as starting a connection (TCP: the SYN flag). An
+  open segment anchors the assembler's base to its own offset even with an empty payload, so a
+  capture that misses the connection's first data segment reports a gap instead of silently
+  starting mid-stream.
+- `close` — an expression that marks a segment as ending a connection cleanly (TCP: FIN). Sets the
+  flow row's `closed_by` to `'close'`.
+- `reset` — an expression that marks a segment as aborting a connection (TCP: RST). Sets
+  `closed_by` to `'reset'`; reset takes precedence over a later close, and a later reset always
+  overwrites a prior close.
+
+Specs at `0.3` and `0.4` stay valid and behave exactly as today; a stream declaration only needs
+`version: '0.5'` when it uses one of these four fields.
+
+**Compile rules** (`ProjectionCompileError`, code `PROJECTION_STREAM_INVALID` unless noted):
+
+- Any of the four fields on a stream requires the spec's `version` to be `'0.5'` — the same
+  gating `nullable` uses for `0.4`.
+- `offset_bits` must be an integer in `[8, 48]`.
+- `open`, `close`, and `reset` compile like `offset`: against the feeding link's row context, with
+  no declared state available.
+- Declaring `close` or `reset` without `open` is rejected — without an open signal the engine has
+  no way to start a new generation, so a lifecycle field with no anchor is a spec error, not a
+  silently-ignored no-op.
+
+At row-evaluation time `open`/`close`/`reset` follow the engine's usual never-throw rule: a null
+or non-boolean result counts as false.
+
+**Flow-root fields.** The synthetic flow root (the `streams` table row) gains four fields:
+`opened` (bool — true once an `open` segment has been seen), `closed_by`
+(`'close' | 'reset' | null`), `generation` (1-based; 2 or more means the key was reused within the
+capture), and `conflict_count` (how many overlapping segments disagreed with already-stored
+bytes). A stream declaration that uses none of the v0.5 fields gets the neutral values `false`,
+`null`, `1`, and `0` on every row, so existing packs on `0.3`/`0.4` specs see no schema or data
+change. The engine-synthesized `stream_segments` schema is unchanged; every contributing segment
+with an empty payload (SYN/FIN/RST with no data) is now also recorded there, with its provenance
+set to the feeding row's own source range, since it has no payload bytes of its own.
+
+pcap's `pcap.tables.yaml` is the worked example: both stream declarations set `offset_bits: 32`,
+`open: _.syn`, `close: _.fin`, `reset: _.rst`, and the `streams` table exposes `handshake` (bool,
+`_.opened`), `close_reason` (utf8, nullable, `'fin'`/`'rst'`/null), `generation` (uint32), and
+`conflict_count` (uint32).
 
 ## Parsers and Kaitai helpers
 

@@ -251,3 +251,67 @@ under 60 s/GB; any regression over 5% is explained in the implementation notes.
 - Amendment note in `2026-07-18-phase2-tcp-reassembly-design.md` (like the 2026-09-22 note).
 - `AGENTS.md` status, `ROADMAP.md` priority 5, `CHANGELOG.md`.
 - Documented TCP limitations shrink to the non-goals above.
+
+## Implementation notes
+
+**Performance.** One 1 GB classic `run-scale-bench.mjs` run (arm64, 20 logical cores, Chromium
+149) measured **42,965 ms parse / GB** (42.97 s/GB), against the pre-branch median of 42.6 s/GB —
+a 0.86% difference, well inside the 5% threshold and far under the 60 s/GB bar. Both the parse and
+read-fraction targets are met (`parseTargetMet: true`, `readTargetMet: true`,
+`bytesReadFraction: 0.0171`). No profiling of `contributeToStream` was needed: lifecycle
+evaluation only runs for segments actually routed to a stream link, and pure-ACK segments (the
+overwhelming majority of TCP traffic in the bundled captures) still short-circuit before it.
+Artifact: `apps/web/bench/scale-1gb-2026-09-24.json` (git-ignored).
+
+**Golden diffs and why.** Regenerated pcap goldens fall into exactly the two categories the design
+implies (fresh `stream_id` on generation creation; control ranges joining the flow span), plus the
+new columns themselves:
+
+1. **New `streams` columns only**, neutral values, on fixtures with no TCP traffic or no
+   SYN/FIN/RST in their captured packets (`le-ns-dns.pcap`, `linux-sll2.pcapng`, `linux-sll.pcap`,
+   `multi-section.pcapng`, `sample.pcap`, `SkypeIRC.cap`, `v6.pcap`, `dns-stream.pcap`,
+   `dns-stream.pcapng`, `interleaved-stream.pcap`) — every other column byte-identical.
+2. **`stream_id` renumbering plus span widening**, on `http2-16-ssl.pcapng`: two new control-only
+   flow rows appear (a previously invisible IPv6 SYN/RST probe, `byte_count: 0`), and because new
+   generations are created — and therefore assigned `stream_id`s — before the framer reaches the
+   two data-bearing flows in document order, those two flows renumber `1,2 -> 3,4`. Their
+   `_src_start`/`_src_end`/`_src_ranges` widen to include the SYN and FIN control segments' TCP
+   header ranges (e.g. flow 3: `_src_start` 1138 -> 790, `_src_end` 4533 -> 4966, with new range
+   entries at the front/back), per "control ranges also join the flow row's span and
+   `_src_ranges`". `stream_segments` grows 12 -> 18 (2 for the new control-only flows' SYN/RST, 2
+   each — SYN and FIN — for the two original flows). `tls`'s one row is unchanged except its
+   `stream_id` following the same renumbering. No other table or row value changed in any golden.
+
+**`segment_count` vs `stream_segments` row count.** `streams.segment_count` counts accepted
+data-bearing contributions only (`entry.dataSegmentCount`, incremented once per contribution the
+assembler actually stores). `stream_segments` also holds one row per control segment (SYN/FIN/RST
+with an empty payload), so the two diverge for any flow with a handshake or teardown — a flow can
+show `segment_count: 0` and still have `stream_segments` rows for its SYN and FIN.
+
+**`stream_segments.offset` describes the contributing packet, not the bytes actually used.** A
+retransmission that partially overlaps, or is fully below the base, keeps its full original offset
+and source range in `stream_segments` even though only part (or none) of its bytes were stored by
+the assembler — the row is a record of what arrived, not of what was kept. Consequently:
+
+- Offsets can overlap between rows (a retransmission and the original both show their offsets).
+- Offsets can be negative: a control segment recorded below the flow's data base (for example a
+  retransmitted FIN that arrives before the base-anchoring SYN's offset in raw terms) reports a
+  negative base-relative offset, unclamped.
+- For a control-only flow (never anchored by an `open` segment against real data), offsets are
+  relative to the minimum offset recorded across that flow's segments, not to any assembler base.
+
+The exact bytes a message actually used are always in that message row's `_src_ranges`, never in
+`stream_segments`.
+
+**Deviation found and fixed during implementation, not part of the approved design.** The
+control-only-flow base fallback (used when no `open`-anchored assembler base exists yet) initially
+computed `Math.min(...entry.segments.map(...))`, spreading every recorded segment as a call
+argument; a flow with 100k+ control segments and no `open` (an RST storm or a port scan with no
+completed handshake) overflowed the call stack. Fixed in `55e5e57` with an iterative min instead of
+a spread — behavior-identical, no spec or contract change, covered by a 200,000-segment regression
+test.
+
+**Known pre-existing e2e failure, unrelated to this work.**
+`apps/web/e2e/panel-resize.spec.ts`'s "a diagnostic arriving mid-drag cancels it and leaves nothing
+behind" fails on the pre-branch commit (`9d5ecca`) too; it is not a regression from this design and
+was not investigated further here.
