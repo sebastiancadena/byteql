@@ -193,6 +193,19 @@ describe('pcapParserRegistry', () => {
     expect([...root.body.bytes]).toEqual([0xaa, 0xbb]);
   });
 
+  it('tcp wrapper exposes raw fin/rst flags for stream lifecycle expressions', () => {
+    const bytes = tcp({
+      srcPort: 1234,
+      dstPort: 443,
+      flags: 0x05, // RST|FIN
+      payload: new Uint8Array(0),
+    });
+    const root = parseWith<TcpRoot & { fin: boolean; rst: boolean; syn: boolean }>('tcp_segment', bytes);
+    expect(root.fin).toBe(true);
+    expect(root.rst).toBe(true);
+    expect(root.syn).toBe(false);
+  });
+
   it('udp wrapper exposes ports, length, and an 8-byte body range', () => {
     const bytes = udp({ srcPort: 5353, dstPort: 53, payload: new Uint8Array([1, 2, 3]) });
     const root = parseWith<UdpRoot>('udp_datagram', bytes);

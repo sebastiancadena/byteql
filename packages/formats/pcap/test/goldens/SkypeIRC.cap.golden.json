@@ -885,6 +885,22 @@
           "type": "Utf8"
         },
         {
+          "name": "handshake",
+          "type": "Bool"
+        },
+        {
+          "name": "close_reason",
+          "type": "Utf8"
+        },
+        {
+          "name": "generation",
+          "type": "Uint32"
+        },
+        {
+          "name": "conflict_count",
+          "type": "Uint32"
+        },
+        {
           "name": "_src_start",
           "type": "Uint64"
         },

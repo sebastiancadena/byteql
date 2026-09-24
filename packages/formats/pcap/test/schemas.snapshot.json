@@ -463,6 +463,26 @@
         "nullable": false
       },
       {
+        "name": "handshake",
+        "type": "bool",
+        "nullable": false
+      },
+      {
+        "name": "close_reason",
+        "type": "utf8",
+        "nullable": true
+      },
+      {
+        "name": "generation",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
+        "name": "conflict_count",
+        "type": "uint32",
+        "nullable": false
+      },
+      {
         "name": "_src_start",
         "type": "uint64",
         "nullable": false

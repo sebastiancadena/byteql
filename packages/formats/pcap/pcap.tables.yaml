@@ -1,4 +1,4 @@
-version: '0.4'
+version: '0.5'
 format: pcap
 # Multi-file note: the `key` columns below (packet_id, ip_id, tcp_id, stream_id, …) and the
 # `parent_key` references that point at them are assigned PER FILE — they restart at 1 for every
@@ -116,6 +116,13 @@ tables:
       message_count: { expr: _.message_count, type: uint32 }
       pending_bytes: { expr: _.pending_bytes, type: uint32 }
       status: { expr: _.status, type: utf8 }
+      handshake: { expr: _.opened, type: bool }
+      close_reason:
+        expr: "_.closed_by == 'reset' ? 'rst' : (_.closed_by == 'close' ? 'fin' : null)"
+        type: utf8
+        nullable: true
+      generation: { expr: _.generation, type: uint32 }
+      conflict_count: { expr: _.conflict_count, type: uint32 }
 dissect:
   - from: packets
     payload: _.body
@@ -169,6 +176,11 @@ streams:
     # so a SYN+data payload starts at seq+1. Without the +1 a SYN+data first segment leaves a
     # permanent 1-byte hole and the stream flushes 'gap', dropping every later message.
     offset: '_.seq_num + (_.syn ? 1 : 0)'
+    # Connection lifecycle (spec v0.5): a SYN (or SYN-ACK) opens a generation, so a reused
+    # 4-tuple becomes a new stream; FIN and RST record how this direction ended.
+    open: _.syn
+    close: _.fin
+    reset: _.rst
     framer: tls_record
     table: streams
     segments_table: stream_segments
@@ -179,6 +191,11 @@ streams:
     key: tcp_flow_key
     # SYN adjustment as in tls_stream above.
     offset: '_.seq_num + (_.syn ? 1 : 0)'
+    # Connection lifecycle (spec v0.5): a SYN (or SYN-ACK) opens a generation, so a reused
+    # 4-tuple becomes a new stream; FIN and RST record how this direction ended.
+    open: _.syn
+    close: _.fin
+    reset: _.rst
     framer: dns_tcp
     table: streams
     segments_table: stream_segments

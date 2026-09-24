@@ -540,6 +540,22 @@
           "type": "Utf8"
         },
         {
+          "name": "handshake",
+          "type": "Bool"
+        },
+        {
+          "name": "close_reason",
+          "type": "Utf8"
+        },
+        {
+          "name": "generation",
+          "type": "Uint32"
+        },
+        {
+          "name": "conflict_count",
+          "type": "Uint32"
+        },
+        {
           "name": "_src_start",
           "type": "Uint64"
         },
@@ -553,7 +569,7 @@
         }
       ],
       "rowCount": 1,
-      "sha256": "6dedbde68f9d64716f1cd7f99d91b8c6fc7cd2eb120193a9fc094a9ae26481f0",
+      "sha256": "200eccaa62e6720f559ccebae4b7e637debb0ed94b711b6e35bbbc17a4188375",
       "head": [
         [
           "1n",
@@ -566,6 +582,10 @@
           1,
           0,
           "ok",
+          false,
+          null,
+          1,
+          0,
           "94n",
           "292n",
           [

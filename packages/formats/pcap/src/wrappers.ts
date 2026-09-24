@@ -107,10 +107,12 @@ export const tcpSegment: RecordParser = (bytes) => {
       dst_port: parsed.dstPort,
       seq_num: parsed.seqNum,
       ack_num: parsed.ackNum,
-      // Raw SYN flag: stream `offset` expressions need it to apply standard-forensic
-      // sequence-number semantics (a SYN consumes one sequence number, so a SYN+data
-      // payload starts at seq+1).
+      // Raw SYN/FIN/RST flags: stream `offset`/`open`/`close`/`reset` expressions read these to
+      // apply standard-forensic sequence-number semantics (a SYN consumes one sequence number,
+      // so a SYN+data payload starts at seq+1) and to detect connection lifecycle events.
       syn: f.syn,
+      fin: f.fin,
+      rst: f.rst,
       flags: tcpFlags(flagsByte),
       window_size: parsed.windowSize,
       body: payload(parsed, 'body'),

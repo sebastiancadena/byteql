@@ -53,6 +53,16 @@ queries:
       order by s.stream_id
       limit 100;
 
+  - id: reused_connections
+    title: Reused or reset connections
+    kind: grid
+    sql: |
+      select s.*
+      from streams s
+      where s.generation > 1 or s.close_reason = 'rst'
+      order by s._src_file, s.stream_id
+      limit 100;
+
   - id: packets_by_interface
     title: Packets by interface
     kind: grid
