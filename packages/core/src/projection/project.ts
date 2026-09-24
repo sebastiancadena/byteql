@@ -1575,14 +1575,40 @@ const contributeToStream = (
   // Generation join/split (see startsNewGeneration): an `open` that doesn't join the current
   // generation retires it (it stays in `ordered` for flush) and reserves a fresh entry one
   // generation higher. A non-open contribution always joins whatever generation is current.
-  let entry = current;
-  if (!entry) {
+  let entry: StreamRuntimeEntry;
+  if (!current) {
     entry = createFlowEntry(stream, keyResult, emitContext, 1);
-  } else if (open && startsNewGeneration(entry, offset)) {
-    entry = createFlowEntry(stream, keyResult, emitContext, entry.generation + 1);
+  } else if (open && startsNewGeneration(current, offset)) {
+    entry = createFlowEntry(stream, keyResult, emitContext, current.generation + 1);
     offset = unwrap(null); // a new generation restarts unwrapping from its own first offset
+  } else {
+    entry = current;
   }
-  entry.unwrapReference = Math.max(entry.unwrapReference ?? offset, offset + payload.bytes.length);
+
+  // Wraparound-reference hardening (ROADMAP #5 review fix A): entry.unwrapReference must never
+  // drift on rejected or inactive input — only an ACTUALLY ACCEPTED contribution may move it
+  // forward, and never by more than what was accepted. Previously every contribution (including
+  // a data segment later rejected as truncated/dropped/duplicate/conflict, even on an
+  // already-inactive flow) advanced the reference unconditionally and before the inactive check
+  // below; a flood of crafted segments each landing near the current reference plus payload
+  // length could walk it forward without bound across millions of packets, eventually
+  // overflowing Number.MAX_SAFE_INTEGER — see stream-lifecycle.test.ts's "keeps the wraparound
+  // reference bounded when rejected segments jump forward on an inactive flow". Every candidate
+  // reaching this helper was itself computed via `unwrap(reference)` against the CURRENT
+  // (pre-this-call) reference, which already guarantees it lands within half the modulus by
+  // construction (RFC 1982 serial arithmetic); the half-modulus check below enforces that as an
+  // invariant rather than trusting it implicitly.
+  const advanceUnwrapReference = (candidate: number): void => {
+    if (stream.offsetBits === null) return; // unwrap() never consults the reference for this stream
+    if (entry.unwrapReference === null) {
+      entry.unwrapReference = candidate;
+      return;
+    }
+    const half = 2 ** (stream.offsetBits - 1);
+    if (Math.abs(candidate - entry.unwrapReference) <= half) {
+      entry.unwrapReference = Math.max(entry.unwrapReference, candidate);
+    }
+  };
 
   // Lifecycle updates happen BEFORE the inactive-status check below: a late RST/FIN (or a SYN
   // adopting a mid-stream flow) after the assembler has already gone terminal still needs to be
@@ -1592,6 +1618,7 @@ const contributeToStream = (
   if (open && !entry.opened) {
     entry.opened = true;
     entry.openOffset = offset;
+    advanceUnwrapReference(offset); // an open that anchors the flow also anchors the reference
     // The open segment anchors the base even with an empty payload, with the same rebase rules
     // as `add` (allowed only while nothing has been consumed) — see StreamAssembler.anchor.
     if (entry.assembler.anchor(offset) === 'rebased') {
@@ -1607,6 +1634,7 @@ const contributeToStream = (
     // No payload bytes to fold into the assembler: record the control segment (so
     // stream_segments stays the complete packet-to-connection map) and stop — control segments
     // never reach the assembler and never contribute to message provenance.
+    advanceUnwrapReference(offset);
     entry.segments.push({
       absOffset: offset,
       srcStart,
@@ -1660,7 +1688,9 @@ const contributeToStream = (
     return;
   }
 
-  // outcome.status is 'added' or 'rebased': fold in the segment row and (re-)attempt framing.
+  // outcome.status is 'added' or 'rebased': the only case that may advance the wraparound
+  // reference (fix A) — an actually-accepted contribution, by the full extent it added.
+  advanceUnwrapReference(offset + payload.bytes.length);
   if (outcome.status === 'rebased') {
     entry.framingStalled = false;
     entry.stallMessage = null;

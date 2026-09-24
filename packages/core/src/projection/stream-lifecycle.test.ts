@@ -419,4 +419,31 @@ describe('stream wraparound', () => {
     );
     expect(rows(finished, 'flows').count).toBe(1);
   });
+
+  // Fix A (ROADMAP #5 review): entry.unwrapReference must not drift on rejected/inactive input.
+  it('keeps the wraparound reference bounded when many rejected segments jump forward on a truncated flow', () => {
+    // max_buffer 2: the 6-byte contribution at seq 10 alone exceeds it, truncating the flow
+    // immediately after the anchoring SYN. Every one of the 2000 flood segments that follows is a
+    // plain data contribution on that now-truncated flow, alternating raw seq 138/10 — each ~128
+    // (half the 8-bit modulus) away from wherever the reference currently sits. Pre-fix, every one
+    // of these still advanced entry.unwrapReference unconditionally, before the truncated-flow
+    // check even ran, walking it forward by roughly 128 per segment (~256,000 total here; at
+    // offset_bits 32 and millions of packets this is exactly what can overflow
+    // Number.MAX_SAFE_INTEGER). The fix only lets an ACCEPTED contribution move the reference, so
+    // it never leaves 266 (= unwrap(null) for the anchoring raw seq 10) — none of the flood's data
+    // is ever accepted (the flow is already truncated). The closing RST at raw seq 16 — 6 bytes
+    // past the SYN in real stream terms — proves it: its stream_segments offset comes out as the
+    // true relative 6, not a value drifted by the flood.
+    const flood = Array.from({ length: 2000 }, (_, i) => chunk(7, 0, i % 2 === 0 ? 138 : 10, [1, 0]));
+    const { finished } = project(
+      [chunk(7, OPEN, 10), chunk(7, 0, 10, [5, 1, 2, 3, 4, 5]), ...flood, chunk(7, RESET, 16)],
+      wrap,
+      2,
+    );
+    const flows = rows(finished, 'flows');
+    expect(flows.col('status')).toEqual(['truncated']);
+    const segs = rows(finished, 'flow_segments');
+    expect(segs.count).toBe(2); // SYN + RST only; the truncated data (incl. the whole flood) is dropped
+    expect(segs.col('offset')).toEqual([0n, 6n]);
+  });
 });
