@@ -92,7 +92,9 @@
     void libraryVersion;
     const saved = loadedSaved;
     if (!saved || saved.format !== session.format?.id) return null;
-    return saved;
+    // Re-read the library by id rather than trusting the captured object, so a rename or a
+    // delete from the row menu (or another tab) is reflected the next time Save opens.
+    return queryLibrary?.find(saved.id) ?? null;
   });
   let libraryNotice = $state<LibraryNotice | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -602,7 +604,12 @@
       const sqlChanged = next.sql !== session.sql;
       session = next;
       if (next.sql && sqlChanged) draftSql = next.sql;
-      if (next.phase === 'opening') overviewSource = null;
+      if (next.phase === 'opening') {
+        overviewSource = null;
+        // A run awaiting settlement belongs to the file that is being replaced; it must never be
+        // recorded against whatever query happens to settle next, in the new session.
+        pendingRun = null;
+      }
 
       const overview = next.queries.find((query) => query.id === 'overview');
       const sourceKey = next.source
@@ -1118,7 +1125,12 @@
               <button
                 class="button button-secondary button-compact"
                 type="button"
-                onclick={() => perform(() => controller.cancel())}
+                onclick={() => {
+                  // A cancelled run must never be recorded when some later, unrelated query
+                  // settles: it never itself settled.
+                  pendingRun = null;
+                  perform(() => controller.cancel());
+                }}
               >
                 Cancel query
               </button>
@@ -1296,7 +1308,10 @@
               <button
                 class="button button-secondary"
                 type="button"
-                onclick={() => perform(() => controller.cancel())}
+                onclick={() => {
+                  pendingRun = null;
+                  perform(() => controller.cancel());
+                }}
               >
                 Cancel
               </button>

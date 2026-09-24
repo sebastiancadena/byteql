@@ -93,10 +93,12 @@ export interface SessionState {
    */
   resultIsCurrent: boolean;
   /**
-   * How many query executions have settled — succeeded or failed — this session. Never reset
-   * (unlike `phase`, which returns to `'ready'` either way), so a caller that only holds a
-   * before/after snapshot (e.g. e2e waiting for a run to finish) can detect "a new execution
-   * settled" without racing `phase`'s transient `'querying'` value.
+   * How many query executions have settled — succeeded or failed — this session. It resets to 0
+   * only when a file opens (the `'opening'` event replaces the whole state via
+   * `initialSessionState`); within one open it only ever increases, and `phase` returning to
+   * `'ready'` either way never resets it, so a caller that only holds a before/after snapshot
+   * (e.g. e2e waiting for a run to finish) can detect "a new execution settled" without racing
+   * `phase`'s transient `'querying'` value.
    */
   resultSettleCount: number;
 }
