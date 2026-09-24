@@ -2,7 +2,7 @@
 
 Date: 2026-09-24
 
-Status: Approved design, not yet implemented.
+Status: Implemented 2026-09-24.
 
 ## Purpose and accepted behavior
 
@@ -255,3 +255,36 @@ the SQL sentinel checked against every recorded request.
 
 Update `CHANGELOG.md`, the `ROADMAP.md` item 4 status, the `AGENTS.md` status list, and
 `docs/privacy.md` (as above), and add this spec's "Implementation notes".
+
+## Implementation notes
+
+What differed from the design above, and what was discovered while implementing it:
+
+- The store interface is put-based (`putSaved`, `putHistory(entry, limit)`) with policy in
+  `QueryLibrary`, rather than the design's `save`/`update`/`delete` store verbs.
+- The history store's index is `ranAt` (not `[format, ranAt]`); per-format filtering is done in
+  memory over at most 100 entries.
+- Library notices (delete/undo, import results, storage errors) render in the query-notices row
+  as a polite `role="status"` region, not in the status bar.
+- The automatic overview query that runs when a file opens is not recorded in history; only runs
+  the user starts are.
+- `QueryStore.putHistory` is a no-op unless the stored settings have `persistHistory === true`,
+  checked atomically: IndexedDB does this in one readwrite transaction over `settings` and
+  `history`, and the memory store applies the same rule. This keeps a history write queued in one
+  tab from landing after another tab turned persistence off.
+- Turning persistence off stores `"off"` first, then clears the stored history. A concurrent put
+  either sees `"off"` and is skipped, or was already committed and is removed by the clear. If the
+  clear itself fails, `"off"` stays stored, a storage-error notice appears, and the stale entries
+  remain until persistence is turned on and off again (a known gap).
+- `QueryLibrary` counts local mutations; a cross-tab reload that observes a mutation happened
+  (before or during its read) re-queues itself instead of overwriting newer in-memory state.
+- Cross-tab reload read failures emit a notice "Couldn't read browser storage." in addition to the
+  write-failure notice "Couldn't save to browser storage."
+- `App.svelte` opens the query library once per mount (not once per startup retry) and disposes it
+  on unmount even if the open is still pending; app readiness waits for the open to settle.
+- The panel reuses the global `.query-list`/`.query-glyph` rules already defined in
+  `apps/web/src/styles/workbench.css`; the Explorer had no local copy to duplicate.
+- `fixturePath()` in `apps/web/e2e/support/app.ts` now checks `apps/web/e2e/fixtures/` before the
+  MIDI pack's fixtures, so this feature's own e2e fixtures resolve first.
+- Measured at completion: the web unit suite has 994 passing tests; e2e is 157/158, the one
+  failure a pre-existing panel-resize flake that reproduces with this work reverted.

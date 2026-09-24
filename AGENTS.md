@@ -5,7 +5,7 @@ into relational tables you query with DuckDB SQL, entirely in the browser, with 
 back to its exact source bytes. Product requirements, differentiators, and the projection DSL live in
 `PRD.md` — read §9 (architecture) and Appendix A (DSL) first.
 
-## Status (2026-09-23)
+## Status (2026-09-24)
 
 Priority order lives in `ROADMAP.md` (adopted 2026-09-15); it supersedes any "next" ordering here
 or in `PRD.md` §12.
@@ -140,8 +140,14 @@ or in `PRD.md` §12.
   record or parsed block at `PCAP_MAX_RECORD_BYTES` (16 MiB): `OVERSIZED_RECORD` for classic,
   `MALFORMED_BLOCK` for pcapng. Linux cooked capture (SLL 113, SLL2 276) is dissected through
   to `ip` and below.
-- **Next (per `ROADMAP.md`):** saved queries. The unaided external Phase 0 test is still open
-  supporting work.
+- **Saved queries and opt-in history: shipped 2026-09-24.** `apps/web/src/lib/queries/` (zero
+  Svelte): `QueryStore` over IndexedDB `byteql-queries` with an in-memory fallback,
+  `QueryLibrary` (per-format views, write-behind persistence, history dedup/trim, the
+  persistence switch that deletes stored history when turned off), and the annotated `.sql`
+  codec. UI: `SaveQueryPopover` (toolbar + `Ctrl/⌘+S`), `QueryLibraryPanel` (Saved + Recent in
+  the Explorer). Design: `docs/superpowers/specs/2026-09-24-saved-queries-design.md`.
+- **Next (per `ROADMAP.md`):** harden TCP connection identity (ROADMAP #5). The unaided
+  external Phase 0 test is still open supporting work.
 
 ## Repo map
 
@@ -207,7 +213,8 @@ its vitest suites run without a browser).
   drain batches → one `ParseResult`), `src/lib/session/` (controller + state machine),
   `src/components/`, `src/lib/viewers/` (capability-gated viewer registry; audio today),
   `src/lib/ui/` (layout-agnostic panel resizing/coordination: `resize-handle.ts`,
-  `use-panel-layout.svelte.ts`, `panel-layout.ts`)
+  `use-panel-layout.svelte.ts`, `panel-layout.ts`), `src/lib/queries/` (saved queries and
+  history)
 
 ## Commands (from repo root)
 
