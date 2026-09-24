@@ -197,42 +197,9 @@
 </section>
 
 <style>
-  /* The Explorer's own `.query-list` rules are scoped to Explorer.svelte, so this panel repeats
-     the minimal button/list rules it needs rather than reaching across component boundaries. */
-  .query-list {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .query-list button {
-    display: flex;
-    width: 100%;
-    min-width: 0;
-    min-height: 32px;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-1) var(--space-2);
-    border: 0;
-    border-radius: var(--radius-control);
-    color: var(--color-text);
-    background: transparent;
-    font-size: var(--text-md);
-    text-align: left;
-    cursor: pointer;
-    transition: background var(--duration-quick) ease;
-  }
-
-  .query-list button:hover {
-    background: var(--color-surface-hover);
-  }
-
-  .query-glyph {
-    display: flex;
-    flex: 0 0 auto;
-    color: var(--color-text-subtle);
-  }
-
+  /* `.query-list`, `.query-list button`, `.query-list button:hover`, and `.query-glyph` come
+     from the globally-imported `workbench.css` (already app-wide via `app.css`), so only this
+     panel's genuinely new classes live here. */
   .query-library-heading {
     display: flex;
     align-items: center;
