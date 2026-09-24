@@ -342,3 +342,44 @@ describe('stream lifecycle: generations', () => {
     expect(performance.now() - started).toBeLessThan(5000);
   });
 });
+
+describe('stream overlap reconciliation (runtime)', () => {
+  it('counts a conflict, reports it at the conflicting segment, and keeps going', () => {
+    // msg [3,'a','b','c'] = seq 10..14; retransmit of seq 11..13 with 'X' instead of 'b'
+    // Base 10 (the open). Record n's payload sits at file offset n * 100 + 3.
+    const { finished, issues } = project([
+      chunk(7, OPEN, 10),
+      chunk(7, 0, 10, [3, 97]), // offsets 10..11: length byte 3, 'a'
+      chunk(7, 0, 11, [88, 99]), // offset 11 conflicts (88 vs stored 97, 97 kept); offset 12 'c' is new
+      chunk(7, 0, 13, [100]), // offset 13 'd' completes [3, 97, 99, 100]
+    ]);
+    expect(rows(finished, 'msgs').col('text')).toEqual(['acd']);
+    const flows = rows(finished, 'flows');
+    expect(flows.col('conflict_count')).toEqual([1]);
+    expect(flows.col('status')).toEqual(['ok']);
+    expect(issues.issues().map((i) => [i.code, i.sourceStart, i.sourceEnd])).toEqual([
+      ['STREAM_OVERLAP_CONFLICT', 203, 205],
+    ]);
+  });
+
+  it('compares a retransmission of already-framed bytes against the consumed data', () => {
+    const { finished, issues } = project([
+      chunk(7, OPEN, 10),
+      chunk(7, 0, 10, [1, 97]), // message 'a', framed and consumed
+      chunk(7, 0, 10, [1, 98]), // same offsets, different byte
+    ]);
+    expect(rows(finished, 'msgs').col('text')).toEqual(['a']);
+    expect(rows(finished, 'flows').col('conflict_count')).toEqual([1]);
+    expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_OVERLAP_CONFLICT']);
+  });
+
+  it('reports STREAM_BELOW_BASE once per flow and keeps the stream ok', () => {
+    const { finished, issues } = project([
+      chunk(7, 0, 20, [1, 97]), // mid-stream start; framed, base locked at 20
+      chunk(7, 0, 18, [5, 5, 1]), // 18,19 below base; offset 20 duplicates the stored 1
+      chunk(7, 0, 17, [5]),
+    ]);
+    expect(rows(finished, 'flows').col('status')).toEqual(['ok']);
+    expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_BELOW_BASE']);
+  });
+});

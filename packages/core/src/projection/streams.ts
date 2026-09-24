@@ -33,7 +33,15 @@ export interface AssemblerSegment {
   srcEnd: number;
 }
 
-export type AssemblerAddResult = 'added' | 'rebased' | 'duplicate' | 'below_base' | 'overlap' | 'truncated';
+export type AssemblerAddStatus = 'added' | 'rebased' | 'duplicate' | 'conflict' | 'dropped' | 'truncated';
+
+export interface AssemblerAddOutcome {
+  status: AssemblerAddStatus;
+  /** Some incoming bytes overlapped stored bytes and differed; the stored bytes were kept. */
+  conflicted: boolean;
+  /** A prefix below the locked (consumed > 0) base was discarded. */
+  trimmedBelowBase: boolean;
+}
 
 interface StoredSegment {
   /** Absolute offset-space [start, end) (the raw `offset` values, not rebased). */
@@ -132,39 +140,99 @@ export class StreamAssembler {
       .map((s) => ({ start: s.start - base, end: s.end - base, srcStart: s.srcStart, srcEnd: s.srcEnd }));
   }
 
-  add(offset: number, bytes: Uint8Array, srcStart: number, srcEnd: number): AssemblerAddResult {
+  /**
+   * Reconciles `[offset, offset + bytes.length)` against stored segments: bytes overlapping an
+   * already-stored range are compared (first-arrived bytes win — a mismatch is reported as a
+   * conflict but never overwrites what's stored) and only the fresh (uncovered) sub-ranges are
+   * actually stored, so `#segments` always stays sorted and non-overlapping and exact
+   * `_src_ranges` provenance per stored piece stays correct. A prefix below the locked
+   * (`#consumed > 0`) base is trimmed and reported rather than rejecting the whole call.
+   */
+  // `srcEnd` is accepted (every caller passes it, matching srcStart/bytes.length symmetrically)
+  // but unused in the body: an accepted range's end is always srcStart + bytes.length, computed
+  // fresh per stored piece in #store below.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site symmetry, see above
+  add(offset: number, bytes: Uint8Array, srcStart: number, srcEnd: number): AssemblerAddOutcome {
+    let trimmedBelowBase = false;
+    if (this.#base !== null && this.#consumed > 0 && offset < this.#base) {
+      const cut = Math.min(this.#base - offset, bytes.length);
+      trimmedBelowBase = true;
+      if (cut === bytes.length) return { status: 'dropped', conflicted: false, trimmedBelowBase };
+      offset += cut;
+      srcStart += cut;
+      bytes = bytes.subarray(cut);
+    }
     const end = offset + bytes.length;
 
-    // #segments is sorted ascending by start and (being non-overlapping) has non-decreasing
-    // ends along that order too. Scanning backward from the highest starts lets both checks
-    // below short-circuit on the common ascending-append path (typically 1 comparison) while
-    // still covering the full array in adversarial/gap-filling cases — same semantics as a
-    // plain .some() scan, just ordered to exploit the sortedness invariant.
-    for (let i = this.#segments.length - 1; i >= 0; i--) {
+    // Covered/fresh split over the stored segments this range touches (sorted, non-overlapping).
+    const fresh: { start: number; end: number }[] = [];
+    let conflicted = false;
+    let cursor = offset;
+    for (let i = this.#firstEndingAfter(offset); i < this.#segments.length; i += 1) {
       const s = this.#segments[i]!;
-      if (s.start === offset) {
-        if (s.end === end) return 'duplicate';
-        break; // start is unique among non-overlapping segments; no other can match it
-      }
-      if (s.start < offset) break;
+      if (s.start >= end) break;
+      if (s.start > cursor) fresh.push({ start: cursor, end: s.start });
+      const coveredStart = Math.max(s.start, offset);
+      const coveredEnd = Math.min(s.end, end);
+      if (!conflicted && !this.#matchesStored(coveredStart, coveredEnd, bytes, offset)) conflicted = true;
+      cursor = Math.max(cursor, coveredEnd);
     }
-    for (let i = this.#segments.length - 1; i >= 0; i--) {
-      const s = this.#segments[i]!;
-      if (s.start < end && offset < s.end) return 'overlap';
-      if (s.end <= offset) break; // ends are non-increasing going backward from here
+    if (cursor < end) fresh.push({ start: cursor, end });
+    if (fresh.length === 0) {
+      return { status: conflicted ? 'conflict' : 'duplicate', conflicted, trimmedBelowBase };
     }
 
-    const rebasing = this.#base !== null && offset < this.#base;
-    if (rebasing && this.#consumed > 0) return 'below_base';
-    const newBase = this.#base === null ? offset : Math.min(this.#base, offset);
-    const newExtent = Math.max(end, this.#highestEndAbs ?? end) - newBase;
-    if (newExtent > this.#maxBuffer) return 'truncated';
-
+    const freshStart = fresh[0]!.start;
+    const freshEnd = fresh[fresh.length - 1]!.end;
+    const rebasing = this.#base !== null && freshStart < this.#base; // consumed === 0 here
+    const newBase = this.#base === null ? freshStart : Math.min(this.#base, freshStart);
+    const newExtent = Math.max(freshEnd, this.#highestEndAbs ?? freshEnd) - newBase;
+    if (newExtent > this.#maxBuffer) return { status: 'truncated', conflicted, trimmedBelowBase };
     // See #rebaseTo for the cost bound of a rebase.
     if (rebasing) this.#rebaseTo(newBase, newExtent);
-    this.#base = newBase;
+    else this.#base = newBase;
 
-    const relStart = offset - this.#base;
+    for (const piece of fresh) {
+      this.#store(
+        piece.start,
+        bytes.subarray(piece.start - offset, piece.end - offset),
+        srcStart + (piece.start - offset),
+        srcStart + (piece.end - offset),
+      );
+    }
+    this.#advanceFrontier();
+    return { status: rebasing ? 'rebased' : 'added', conflicted, trimmedBelowBase };
+  }
+
+  /** Index of the first stored segment whose end is past `offset` (ends are non-decreasing). */
+  #firstEndingAfter(offset: number): number {
+    let lo = 0;
+    let hi = this.#segments.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.#segments[mid]!.end <= offset) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  #matchesStored(start: number, end: number, bytes: Uint8Array, offset: number): boolean {
+    const base = this.#base!;
+    for (let p = start; p < end; p += 1) {
+      if (this.#data[p - base] !== bytes[p - offset]) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Stores one fresh (already known not to overlap any existing segment), non-empty piece:
+   * grows/copies `#data`, inserts a sorted `StoredSegment`, and updates the byte/src-span
+   * counters and `#highestEndAbs`. Assumes `#base` is already final for this `add` call — the
+   * caller settles the base (including any rebase) before calling this.
+   */
+  #store(start: number, bytes: Uint8Array, srcStart: number, srcEnd: number): void {
+    const end = start + bytes.length;
+    const relStart = start - this.#base!;
     if (relStart + bytes.length > this.#data.length) {
       const needed = relStart + bytes.length;
       const grown = new Uint8Array(Math.min(Math.max(needed, this.#data.length * 2), this.#maxBuffer));
@@ -173,14 +241,14 @@ export class StreamAssembler {
     }
     this.#data.set(bytes, relStart);
 
-    const segment: StoredSegment = { start: offset, end, srcStart, srcEnd };
+    const segment: StoredSegment = { start, end, srcStart, srcEnd };
     let insertedAt: number;
     const lastSegment = this.#segments[this.#segments.length - 1];
-    if (lastSegment === undefined || offset > lastSegment.start) {
+    if (lastSegment === undefined || start > lastSegment.start) {
       this.#segments.push(segment);
       insertedAt = this.#segments.length - 1;
     } else {
-      const at = this.#segments.findIndex((s) => s.start > offset);
+      const at = this.#segments.findIndex((s) => s.start > start);
       if (at < 0) {
         this.#segments.push(segment);
         insertedAt = this.#segments.length - 1;
@@ -194,9 +262,6 @@ export class StreamAssembler {
     this.#srcMin = this.#srcMin === null ? srcStart : Math.min(this.#srcMin, srcStart);
     this.#srcMax = this.#srcMax === null ? srcEnd : Math.max(this.#srcMax, srcEnd);
     if (insertedAt < this.#frontierIndex) this.#frontierIndex = insertedAt;
-
-    this.#advanceFrontier();
-    return rebasing ? 'rebased' : 'added';
   }
 
   /**
@@ -221,13 +286,16 @@ export class StreamAssembler {
   }
 
   // Cost bound: a rebase is an O(extent) copy of #data plus the O(n) segment-array
-  // insertion/frontier rescan in add()'s caller path, so an adversarial strictly-descending
-  // arrival order (each segment rebasing the base further down) is worst-case quadratic in the
-  // number of segments. That's deliberately accepted rather than engineered away: #maxBuffer
-  // hard-bounds the extent factor, and callers abort-check per record upstream, so the quadratic
-  // blowup can only ever run over a bounded buffer for a bounded record count. If this ever shows
-  // up as a real cost, the fix is to stop reusing the linear #segments array for insertion and
-  // reach for an index that supports O(log n) insertion (e.g. a sorted tree/skip list) instead.
+  // insertion/frontier rescan in add()'s caller path (once per #store call — splitting a
+  // conflicting/bridging add into several fresh pieces adds at most one #firstEndingAfter binary
+  // search plus one linear pass over the segments the range touches, not an extra pass per
+  // piece), so an adversarial strictly-descending arrival order (each segment rebasing the base
+  // further down) is worst-case quadratic in the number of segments. That's deliberately accepted
+  // rather than engineered away: #maxBuffer hard-bounds the extent factor, and callers
+  // abort-check per record upstream, so the quadratic blowup can only ever run over a bounded
+  // buffer for a bounded record count. If this ever shows up as a real cost, the fix is to stop
+  // reusing the linear #segments array for insertion and reach for an index that supports
+  // O(log n) insertion (e.g. a sorted tree/skip list) instead.
   #rebaseTo(newBase: number, newExtent: number): void {
     const shift = this.#base! - newBase;
     const shiftedLen = Math.min(Math.max(this.#data.length + shift, newExtent), this.#maxBuffer);

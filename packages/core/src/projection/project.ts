@@ -1052,7 +1052,10 @@ const toColumnRanges = (pieces: readonly SourcePiece[] | null): InheritedProvena
 // Per-flow runtime state for one stream's reassembly, keyed by the stream key extractor's
 // `key` string within StreamsRuntime.flows.get(stream.name). `status` starts 'ok' and only
 // ever moves forward: 'truncated'/'error' are terminal (contributions silently drop once
-// reached); 'gap' is flush-only (assigned in flushStreams, never during contribution).
+// reached); 'gap' is flush-only (assigned in flushStreams, never during contribution). Since
+// Task 8, overlapping and below-base contributions are reconciled instead of failing the flow
+// (see contributeToStream's AssemblerAddOutcome handling), so 'error' now only comes from a
+// stalled framer and invalid offsets/frame lengths, never from an overlap or a below-base byte.
 export interface StreamRuntimeEntry {
   readonly assembler: StreamAssembler;
   readonly streamId: bigint;
@@ -1596,23 +1599,32 @@ const contributeToStream = (
 
   if (entry.status === 'truncated' || entry.status === 'error') return; // inactive: drop silently
 
-  const result = entry.assembler.add(offset, payload.bytes, srcStart, srcEnd);
-  if (result === 'duplicate') return;
-  if (result === 'below_base' || result === 'overlap') {
-    entry.status = 'error';
+  const outcome = entry.assembler.add(offset, payload.bytes, srcStart, srcEnd);
+  const flow = `stream ${JSON.stringify(stream.name)} flow ${JSON.stringify(keyResult.key)}`;
+  if (outcome.conflicted) {
+    entry.conflictCount += 1;
     emitContext.issues?.report({
       stage: 'reassembling',
-      code: 'STREAM_ERROR',
+      code: 'STREAM_OVERLAP_CONFLICT',
       recoverable: true,
-      message: `stream ${JSON.stringify(stream.name)} flow ${JSON.stringify(keyResult.key)}: segment at offset ${offset} ${
-        result === 'overlap' ? 'overlaps an already-assembled segment' : 'arrived below the consumed base'
-      }`,
+      message: `${flow}: retransmitted bytes at offset ${offset} differ from the first-arrived bytes (kept)`,
       sourceStart: srcStart,
       sourceEnd: srcEnd,
     });
-    return;
   }
-  if (result === 'truncated') {
+  if (outcome.trimmedBelowBase && !entry.belowBaseReported) {
+    entry.belowBaseReported = true;
+    emitContext.issues?.report({
+      stage: 'reassembling',
+      code: 'STREAM_BELOW_BASE',
+      recoverable: true,
+      message: `${flow}: bytes before the reassembled start arrived after framing began and were dropped`,
+      sourceStart: srcStart,
+      sourceEnd: srcEnd,
+    });
+  }
+  if (outcome.status === 'duplicate' || outcome.status === 'conflict' || outcome.status === 'dropped') return;
+  if (outcome.status === 'truncated') {
     entry.status = 'truncated';
     // See fallbackSpan's doc: this is the only way a flow entry can end up with a null
     // assembler.srcSpan at flush — capture this (the first and only) contribution's real file
@@ -1622,15 +1634,15 @@ const contributeToStream = (
       stage: 'reassembling',
       code: 'STREAM_TRUNCATED',
       recoverable: true,
-      message: `stream ${JSON.stringify(stream.name)} flow ${JSON.stringify(keyResult.key)}: buffer exceeded max_buffer (${stream.maxBuffer})`,
+      message: `${flow}: buffer exceeded max_buffer (${stream.maxBuffer})`,
       sourceStart: srcStart,
       sourceEnd: srcEnd,
     });
     return;
   }
 
-  // result is 'added' or 'rebased': fold in the segment row and (re-)attempt framing.
-  if (result === 'rebased') {
+  // outcome.status is 'added' or 'rebased': fold in the segment row and (re-)attempt framing.
+  if (outcome.status === 'rebased') {
     entry.framingStalled = false;
     entry.stallMessage = null;
   }
@@ -1983,7 +1995,7 @@ export const flushStreams = (emitContext: EmitContext): void => {
 
       const root: Record<string, unknown> = {
         ...entry.flowRoot,
-        segment_count: entry.assembler.segmentCount,
+        segment_count: entry.dataSegmentCount,
         byte_count: entry.assembler.byteCount,
         message_count: entry.messageCount,
         pending_bytes: entry.assembler.pendingBytes(),
