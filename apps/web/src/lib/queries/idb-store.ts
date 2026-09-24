@@ -125,6 +125,24 @@ export class IndexedDbQueryStore implements QueryStore {
     });
   }
 
+  clearHistoryIfOff(): Promise<void> {
+    // Same one-transaction pattern as putHistory, mirrored: only clear when the stored settings
+    // still say persistence is off, checked atomically with the clear itself.
+    const transaction = this.#db.transaction(['settings', 'history'], 'readwrite');
+    const done = transactionDone(transaction);
+    let cleared = false;
+    const settingsRequest = transaction.objectStore('settings').get(SETTINGS_KEY);
+    settingsRequest.onsuccess = () => {
+      const stored = settingsRequest.result as Partial<QuerySettings> | undefined;
+      if (stored?.persistHistory ?? DEFAULT_SETTINGS.persistHistory) return;
+      cleared = true;
+      transaction.objectStore('history').clear();
+    };
+    return done.then(() => {
+      if (cleared) this.#channel?.postMessage({ change: 'history' });
+    });
+  }
+
   async getSettings(): Promise<QuerySettings> {
     const stored = await this.#read<Partial<QuerySettings> | undefined>('settings', (store) =>
       store.get(SETTINGS_KEY),

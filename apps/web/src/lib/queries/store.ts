@@ -23,6 +23,12 @@ export interface QueryStore {
    */
   putHistory(entry: HistoryEntry, limit: number): Promise<void>;
   clearHistory(): Promise<void>;
+  /**
+   * No-op unless the *stored* settings have `persistHistory === false` (checked atomically, same
+   * as `putHistory`). Used to sweep stale history a failed `clearHistory` left behind, without
+   * ever clearing history a concurrent turn-on is relying on.
+   */
+  clearHistoryIfOff(): Promise<void>;
   getSettings(): Promise<QuerySettings>;
   setSettings(settings: QuerySettings): Promise<void>;
   /** Notified when ANOTHER tab changed the store. Never for this store's own writes. */
@@ -73,6 +79,11 @@ export class MemoryQueryStore implements QueryStore {
   }
 
   async clearHistory(): Promise<void> {
+    this.#history = [];
+  }
+
+  async clearHistoryIfOff(): Promise<void> {
+    if (this.#settings.persistHistory) return;
     this.#history = [];
   }
 

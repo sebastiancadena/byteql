@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  openQueryLibrary,
   QueryLibrary,
   STORAGE_ERROR_MESSAGE,
   STORAGE_READ_ERROR_MESSAGE,
@@ -162,6 +163,47 @@ describe('QueryLibrary history', () => {
     expect((await store.getSettings()).persistHistory).toBe(false);
   });
 
+  it('still clears stored history when setSettings itself fails during turn-off', async () => {
+    const { library, store } = await openLibrary();
+    library.setPersistHistory(true);
+    library.recordRun(run());
+    await library.flush();
+
+    vi.spyOn(store, 'setSettings').mockRejectedValueOnce(new Error('boom'));
+    const events: LibraryEvent[] = [];
+    library.subscribe((event) => events.push(event));
+
+    library.setPersistHistory(false);
+    await library.flush();
+
+    expect(await store.listHistory()).toEqual([]);
+    expect(events).toContainEqual({ type: 'storage-error', message: STORAGE_ERROR_MESSAGE });
+  });
+
+  it('sweeps stale history left by a failed turn-off clear the next time the library opens', async () => {
+    const store = new MemoryQueryStore();
+    const first = (await openLibrary(store)).library;
+    first.setPersistHistory(true);
+    first.recordRun(run());
+    await first.flush();
+
+    vi.spyOn(store, 'clearHistory').mockRejectedValueOnce(new Error('boom'));
+    first.setPersistHistory(false);
+    await first.flush();
+    // The failed clear leaves the stale entry stored, even though "off" is stored too.
+    expect(await store.listHistory()).toHaveLength(1);
+
+    const second = (await openLibrary(store)).library;
+    expect(await store.listHistory()).toEqual([]);
+    expect(second.historyFor('pcap')).toEqual([]);
+  });
+
+  it('still opens successfully when the on-open history sweep itself fails', async () => {
+    const store = new MemoryQueryStore();
+    vi.spyOn(store, 'clearHistoryIfOff').mockRejectedValueOnce(new Error('boom'));
+    await expect(openLibrary(store)).resolves.toBeTruthy();
+  });
+
   it('restores persisted history on open only when persistence is on', async () => {
     const store = new MemoryQueryStore();
     const first = (await openLibrary(store)).library;
@@ -241,6 +283,28 @@ describe('QueryLibrary storage failures and other tabs', () => {
     library.save({ format: 'pcap', name: 'B', sql: 'select 2' });
     await library.flush();
     expect((await store.listSaved()).map((query) => query.name)).toEqual(['B']);
+  });
+
+  it('keeps the write queue healthy across a reload when a listener throws', async () => {
+    const store = new MemoryQueryStore();
+    let remote: ((change: 'saved' | 'history' | 'settings') => void) | null = null;
+    vi.spyOn(store, 'subscribe').mockImplementation((listener) => {
+      remote = listener;
+      return () => undefined;
+    });
+    const { library } = await openLibrary(store);
+    library.subscribe(() => {
+      throw new Error('listener bug');
+    });
+
+    remote!('saved');
+    await library.flush();
+
+    // The queue must still accept and persist a write made after a listener threw during reload.
+    library.save({ format: 'pcap', name: 'A', sql: 'select 1' });
+    await library.flush();
+
+    expect((await store.listSaved()).map((query) => query.name)).toEqual(['A']);
   });
 
   it('reloads saved queries when another tab changes them', async () => {
@@ -351,5 +415,38 @@ describe('QueryLibrary races between local mutations and reloads', () => {
 
     expect(library.find(saved.id)).not.toBeNull();
     expect(library.savedFor('pcap').map((query) => query.id)).toContain(saved.id);
+  });
+});
+
+describe('openQueryLibrary fallback', () => {
+  const original = (globalThis as { indexedDB?: unknown }).indexedDB;
+
+  afterEach(() => {
+    if (original === undefined) delete (globalThis as { indexedDB?: unknown }).indexedDB;
+    else (globalThis as { indexedDB?: unknown }).indexedDB = original;
+  });
+
+  it('falls back to an in-memory library when indexedDB is missing, and saving still works', async () => {
+    delete (globalThis as { indexedDB?: unknown }).indexedDB;
+
+    const library = await openQueryLibrary();
+
+    expect(library.persistent).toBe(false);
+    const saved = library.save({ format: 'pcap', name: 'A', sql: 'select 1' });
+    expect(library.find(saved.id)).not.toBeNull();
+  });
+
+  it('falls back to an in-memory library when indexedDB.open fails, and saving still works', async () => {
+    (globalThis as { indexedDB?: unknown }).indexedDB = {
+      open: () => {
+        throw new Error('blocked');
+      },
+    };
+
+    const library = await openQueryLibrary();
+
+    expect(library.persistent).toBe(false);
+    const saved = library.save({ format: 'pcap', name: 'A', sql: 'select 1' });
+    expect(library.find(saved.id)).not.toBeNull();
   });
 });

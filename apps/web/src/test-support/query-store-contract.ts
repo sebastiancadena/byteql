@@ -96,5 +96,20 @@ export function describeQueryStoreContract(label: string, create: () => Promise<
       await store.putHistory(historyEntry(), 10);
       expect(await store.listHistory()).toEqual([]);
     });
+
+    it('clearHistoryIfOff clears stored history when stored persistence is off', async () => {
+      await store.setSettings({ persistHistory: true, historyLimit: 100 });
+      await store.putHistory(historyEntry(), 10);
+      await store.setSettings({ persistHistory: false, historyLimit: 100 });
+      await store.clearHistoryIfOff();
+      expect(await store.listHistory()).toEqual([]);
+    });
+
+    it('clearHistoryIfOff keeps stored history when stored persistence is on', async () => {
+      await store.setSettings({ persistHistory: true, historyLimit: 100 });
+      await store.putHistory(historyEntry(), 10);
+      await store.clearHistoryIfOff();
+      expect(await store.listHistory()).toHaveLength(1);
+    });
   });
 }

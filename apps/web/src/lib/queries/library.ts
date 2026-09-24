@@ -71,6 +71,12 @@ export class QueryLibrary {
   static async open(store: QueryStore, deps: LibraryDeps = {}): Promise<QueryLibrary> {
     const [saved, settings] = await Promise.all([store.listSaved(), store.getSettings()]);
     const history = settings.persistHistory ? await store.listHistory() : [];
+    if (!settings.persistHistory) {
+      // Sweeps stale entries a previous turn-off's failed clear left behind. Failure here must
+      // never break open: there are no listeners yet to tell, and the next persistence toggle
+      // gets another chance to clear.
+      await store.clearHistoryIfOff().catch(() => undefined);
+    }
     return new QueryLibrary(store, { saved, history, settings }, deps);
   }
 
@@ -194,10 +200,16 @@ export class QueryLibrary {
       // Settings first, then clear: once "off" is stored, a concurrent putHistory either
       // already saw "off" (and skipped itself) or commits before this clear runs and gets
       // removed by it. Clearing first would leave a window where "off" isn't stored yet, so a
-      // concurrent putHistory could still land and outlive the clear.
+      // concurrent putHistory could still land and outlive the clear. The clear itself runs in a
+      // `finally`, so even a failed `setSettings` (a rejected write never landed the "off"
+      // record) still gets its cleanup attempt — the storage-error event still reaches the
+      // subscriber via `#persist`'s catch.
       this.#persist(async () => {
-        await this.#store.setSettings(settings);
-        await this.#store.clearHistory();
+        try {
+          await this.#store.setSettings(settings);
+        } finally {
+          await this.#store.clearHistory();
+        }
       });
     }
     this.#changed();
@@ -300,7 +312,14 @@ export class QueryLibrary {
   }
 
   #emit(event: LibraryEvent): void {
-    for (const listener of this.#listeners) listener(event);
+    for (const listener of this.#listeners) {
+      try {
+        listener(event);
+      } catch {
+        // A listener's own bug must never poison #persist/#reload's chained write queue, which
+        // call #emit synchronously as part of their promises.
+      }
+    }
   }
 }
 

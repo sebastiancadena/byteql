@@ -82,7 +82,10 @@ sentinel and still requires zero request events.
 A history write is skipped unless persistence is on in the stored settings, checked atomically
 with the write itself; turning persistence off stores "off" before clearing the stored history, so
 a write already in flight either sees "off" and is skipped or is removed by the clear that
-follows.
+follows. If that clear itself fails, "off" stays stored and the stale entries are removed the next
+time the app opens (the library sweeps stored history on open whenever persistence is off);
+**Clear history** always clears both memory and storage, immediately, whether or not persistence
+is on.
 
 ## Hosting and threat boundary
 
