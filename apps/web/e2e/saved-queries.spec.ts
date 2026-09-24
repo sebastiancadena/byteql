@@ -102,7 +102,15 @@ test('history persists only while opted in, and opting out empties storage', asy
   await expect(page.getByRole('region', { name: 'Recent' }).getByText('select 2 as kept')).toBeVisible();
 
   await page.getByRole('checkbox', { name: 'Keep history after this tab closes' }).uncheck();
-  await expect.poll(() => readStore(page, 'history')).toEqual([]);
+
+  // The store's write queue is ordered: saving this query only resolves after everything queued
+  // ahead of it (including any history write still in flight from before the uncheck) has
+  // landed, so once it shows up in `saved`, `history` is already whatever it is going to be.
+  await saveQuery(page, 'select 3 as after_off', 'After off');
+  await expect
+    .poll(async () => (await readStore<StoredQuery>(page, 'saved')).map((entry) => entry.name))
+    .toContain('After off');
+  expect(await readStore(page, 'history')).toEqual([]);
 });
 
 test('export then import into a fresh profile reproduces the library', async ({ browser }, testInfo) => {
