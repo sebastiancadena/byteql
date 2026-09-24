@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { defaultQueryName, fileStem, normalizeQueryName, relativeTime, sqlPreview } from './display.js';
+import {
+  defaultQueryName,
+  fileStem,
+  importReportMessage,
+  normalizeQueryName,
+  relativeTime,
+  sqlPreview,
+} from './display.js';
 
 describe('defaultQueryName', () => {
   it('uses the first non-comment line, whitespace collapsed', () => {
@@ -55,5 +62,17 @@ describe('fileStem', () => {
   it('drops the extension only', () => {
     expect(fileStem('triage.queries.sql')).toBe('triage.queries');
     expect(fileStem('.sql')).toBe('.sql');
+  });
+});
+
+describe('importReportMessage', () => {
+  it('names only the non-zero counts', () => {
+    expect(importReportMessage({ imported: 1, skipped: 0, rejected: 0 })).toBe('Imported 1 query');
+    expect(importReportMessage({ imported: 7, skipped: 2, rejected: 1 })).toBe(
+      'Imported 7 queries, skipped 2 duplicates, rejected 1',
+    );
+    expect(importReportMessage({ imported: 0, skipped: 1, rejected: 0 })).toBe(
+      'Imported 0 queries, skipped 1 duplicate',
+    );
   });
 });

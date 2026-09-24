@@ -1,3 +1,5 @@
+import type { ImportReport } from './library.js';
+
 const UNTITLED = 'Untitled query';
 
 const collapse = (text: string): string => text.replace(/\s+/gu, ' ').trim();
@@ -39,4 +41,13 @@ export function relativeTime(then: number, now: number): string {
 
 export function fileStem(name: string): string {
   return name.replace(/(?<=.)\.[^.]*$/u, '');
+}
+
+const plural = (count: number, one: string, many: string): string => `${count} ${count === 1 ? one : many}`;
+
+export function importReportMessage(report: ImportReport): string {
+  const parts = [`Imported ${plural(report.imported, 'query', 'queries')}`];
+  if (report.skipped > 0) parts.push(`skipped ${plural(report.skipped, 'duplicate', 'duplicates')}`);
+  if (report.rejected > 0) parts.push(`rejected ${report.rejected}`);
+  return parts.join(', ');
 }

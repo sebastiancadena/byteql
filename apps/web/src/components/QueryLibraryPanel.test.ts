@@ -13,6 +13,8 @@ async function setup(format = 'pcap') {
   return { library, props };
 }
 
+const sqlFile = (text: string, name = 'lib.sql'): File => new File([text], name, { type: 'text/plain' });
+
 describe('QueryLibraryPanel', () => {
   afterEach(() => cleanup());
 
@@ -118,5 +120,48 @@ describe('QueryLibraryPanel', () => {
     expect(library.settings.persistHistory).toBe(true);
     await fireEvent.click(screen.getByRole('button', { name: 'Clear history' }));
     expect(library.historyFor('pcap')).toEqual([]);
+  });
+
+  it('imports a file and reports the counts', async () => {
+    const { library, props } = await setup();
+    render(QueryLibraryPanel, props);
+    const input = screen.getByLabelText('Import queries file');
+    await fireEvent.change(input, {
+      target: { files: [sqlFile('-- byteql-queries v1\n-- format: pcap\n\n-- name: A\nselect 1\n')] },
+    });
+    await vi.waitFor(() => expect(library.savedFor('pcap')).toHaveLength(1));
+    expect(props.onnotice).toHaveBeenCalledWith({ message: 'Imported 1 query' });
+  });
+
+  it('asks before importing a file saved for another format', async () => {
+    const { library, props } = await setup('midi');
+    render(QueryLibraryPanel, props);
+    await fireEvent.change(screen.getByLabelText('Import queries file'), {
+      target: { files: [sqlFile('-- format: pcap\n-- name: A\nselect 1\n')] },
+    });
+    const question = await screen.findByText(
+      'These queries were saved for pcap. Import them into midi anyway?',
+    );
+    expect(library.savedFor('midi')).toEqual([]);
+    await fireEvent.click(within(question.parentElement!).getByRole('button', { name: 'Import' }));
+    expect(library.savedFor('midi')).toHaveLength(1);
+  });
+
+  it('rejects a file that is not UTF-8 without importing anything', async () => {
+    const { library, props } = await setup();
+    render(QueryLibraryPanel, props);
+    await fireEvent.change(screen.getByLabelText('Import queries file'), {
+      target: { files: [new File([new Uint8Array([0x73, 0xff])], 'bad.sql')] },
+    });
+    await vi.waitFor(() =>
+      expect(props.onnotice).toHaveBeenCalledWith({ message: 'The file is not valid UTF-8 text.' }),
+    );
+    expect(library.savedFor('pcap')).toEqual([]);
+  });
+
+  it('disables Export for an empty library', async () => {
+    const { props } = await setup();
+    render(QueryLibraryPanel, props);
+    expect((screen.getByRole('button', { name: 'Export' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

@@ -1,10 +1,18 @@
 <script lang="ts">
-  /* global HTMLElement, HTMLInputElement, KeyboardEvent, navigator */
+  /* global Event, HTMLElement, HTMLInputElement, KeyboardEvent, navigator */
   import { tick } from 'svelte';
 
-  import { relativeTime, sqlPreview } from '../lib/queries/display.js';
+  import { fileStem, importReportMessage, relativeTime, sqlPreview } from '../lib/queries/display.js';
+  import { saveTextFile } from '../lib/queries/download.js';
   import type { QueryLibrary } from '../lib/queries/library.js';
   import type { LibraryNotice } from '../lib/queries/notice.js';
+  import {
+    decodeQueryFile,
+    parseQueryFile,
+    QueryFileError,
+    QUERY_FILE_MAX_BYTES,
+    type ParsedQueryFile,
+  } from '../lib/queries/sql-file.js';
   import type { SavedQuery } from '../lib/queries/types.js';
   import { popoverMenu } from '../lib/ui/menu.js';
   import Icon from './ui/Icon.svelte';
@@ -92,18 +100,98 @@
     if (status === 'error') return 'error';
     return rowCount === null ? 'ok' : `ok · ${rowCount.toLocaleString()} rows`;
   }
+
+  let fileInput = $state<HTMLInputElement | null>(null);
+  /** A parsed file waiting for confirmation because it names another format. */
+  let pendingImport = $state<ParsedQueryFile | null>(null);
+
+  function finishImport(parsed: ParsedQueryFile): void {
+    pendingImport = null;
+    onnotice({ message: importReportMessage(library.importQueries(format, parsed)) });
+  }
+
+  async function importFile(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    if (file.size > QUERY_FILE_MAX_BYTES) {
+      onnotice({ message: 'The file is larger than 1 MiB.' });
+      return;
+    }
+    try {
+      const text = decodeQueryFile(new Uint8Array(await file.arrayBuffer()));
+      const parsed = parseQueryFile(text, fileStem(file.name));
+      if (parsed.format !== null && parsed.format !== format) pendingImport = parsed;
+      else finishImport(parsed);
+    } catch (error) {
+      onnotice({ message: error instanceof QueryFileError ? error.message : 'The file could not be read.' });
+    }
+  }
+
+  async function exportLibrary(): Promise<void> {
+    const { filename, text } = library.exportFile(format);
+    try {
+      if ((await saveTextFile(filename, text)) === 'saved') {
+        const count = saved.length;
+        onnotice({ message: `Exported ${count} ${count === 1 ? 'query' : 'queries'}` });
+      }
+    } catch {
+      onnotice({ message: 'The queries could not be exported.' });
+    }
+  }
 </script>
 
 <section class="explorer-section query-section" aria-labelledby="saved-queries-heading">
   <div class="query-library-heading">
     <h3 id="saved-queries-heading">Saved queries</h3>
-    <!-- Import and Export controls are added in Task 7. -->
+    <div class="query-library-actions">
+      <button class="button button-secondary button-compact" type="button" onclick={() => fileInput?.click()}>
+        Import
+      </button>
+      <button
+        class="button button-secondary button-compact"
+        type="button"
+        disabled={saved.length === 0}
+        onclick={exportLibrary}>Export</button
+      >
+      <input
+        bind:this={fileInput}
+        class="visually-hidden"
+        type="file"
+        accept=".sql,text/plain"
+        aria-label="Import queries file"
+        onchange={importFile}
+      />
+    </div>
   </div>
+  {#if pendingImport}
+    <div class="query-import-confirm" role="group" aria-label="Confirm import">
+      <p>These queries were saved for {pendingImport.format}. Import them into {format} anyway?</p>
+      <button
+        class="button button-primary button-compact"
+        type="button"
+        onclick={() => finishImport(pendingImport!)}
+      >
+        Import
+      </button>
+      <button
+        class="button button-secondary button-compact"
+        type="button"
+        onclick={() => (pendingImport = null)}
+      >
+        Cancel
+      </button>
+    </div>
+  {/if}
   {#if !library.persistent}
     <p class="query-library-note">This browser is blocking storage — queries last until the tab closes.</p>
   {/if}
   {#if saved.length === 0}
     <p class="query-library-empty">Save a query to keep it for later visits.</p>
+    <button type="button" class="button button-secondary button-compact" onclick={() => fileInput?.click()}
+      >Import</button
+    >
   {:else}
     <ul class="query-list">
       {#each saved as query (query.id)}
@@ -211,10 +299,35 @@
     margin: 0;
   }
 
+  .query-library-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: var(--space-1);
+  }
+
   .query-library-note,
   .query-library-empty {
     margin: 0;
     color: var(--color-text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .query-library-empty {
+    margin-bottom: var(--space-2);
+  }
+
+  .query-import-confirm {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0 0 var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-raised);
+  }
+
+  .query-import-confirm p {
+    margin: 0;
     font-size: var(--text-sm);
   }
 
