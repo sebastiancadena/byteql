@@ -11,7 +11,9 @@ import {
   optU8,
   type PcapngBlock,
 } from './build-pcapng.js';
-import { BLOCK_SHB, createPcapngReader, type PcapngItem } from '../src/pcapng.js';
+import { sparseByteSource } from './sparse-source.js';
+import { PCAP_MAX_RECORD_BYTES } from '../src/container.js';
+import { BLOCK_EPB, BLOCK_SHB, createPcapngReader, type PcapngItem } from '../src/pcapng.js';
 
 const base: PcapngBlock[] = [
   { type: 'shb', endian: 'le' },
@@ -19,8 +21,8 @@ const base: PcapngBlock[] = [
   { type: 'epb', interfaceId: 0, ts: 1n, data: Uint8Array.of(1, 2, 3, 4) },
 ];
 
-const run = async (bytes: Uint8Array) => {
-  const reader = await createPcapngReader(memoryByteSource(bytes));
+const run = async (bytes: Uint8Array, maxBlockBytes?: number) => {
+  const reader = await createPcapngReader(memoryByteSource(bytes), undefined, maxBlockBytes);
   const items: PcapngItem[] = [];
   for (let item = await reader.next(); item !== null; item = await reader.next()) items.push(item);
   return { items, issues: reader.issues(), packets: items.filter((i) => i.kind === 'packet').length };
@@ -243,5 +245,75 @@ describe('pcapng skip-and-continue errors', () => {
         sourceEnd: blocks[3]!.end,
       },
     ]);
+  });
+});
+
+describe('pcapng block-size cap', () => {
+  const big = { type: 'epb', interfaceId: 0, ts: 2n, data: new Uint8Array(64).fill(2) } as const;
+
+  it('skips a packet block over the cap as MALFORMED_BLOCK and keeps reading', async () => {
+    const { bytes, blocks } = buildPcapngWithOffsets([...base, big, ...base.slice(2)]);
+    const { items, issues } = await run(bytes, 64);
+    const packets = items.flatMap((i) => (i.kind === 'packet' ? [i.packet.tsNs] : []));
+    expect(packets).toEqual([1000n, 1000n]);
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: 'MALFORMED_BLOCK',
+        message: expect.stringContaining('more than the 64-byte limit; skipped'),
+        sourceStart: blocks[3]!.start,
+        sourceEnd: blocks[3]!.end,
+      }),
+    ]);
+  });
+
+  it('an oversized IDB keeps its positional index', async () => {
+    const { bytes } = buildPcapngWithOffsets([
+      { type: 'shb', endian: 'le' },
+      { type: 'idb', linktype: 1, options: [optText(OPT_COMMENT, 'x'.repeat(80))] }, // index 0, oversized
+      { type: 'idb', linktype: 1 }, // index 1
+      { type: 'epb', interfaceId: 1, ts: 2n, data: Uint8Array.of(2) },
+    ]);
+    const { items, issues } = await run(bytes, 64);
+    expect(issues.map((i) => i.code)).toEqual(['MALFORMED_BLOCK']);
+    const packets = items.flatMap((i) => (i.kind === 'packet' ? [i.packet] : []));
+    expect(packets.map((p) => p.interfaceOrdinal)).toEqual([1]);
+  });
+
+  it('an oversized later section header stops reading, keeping earlier packets', async () => {
+    const { bytes } = buildPcapngWithOffsets([
+      ...base,
+      { type: 'shb', endian: 'le', options: [optText(OPT_COMMENT, 'x'.repeat(80))] },
+      ...base.slice(1),
+    ]);
+    const { packets, issues } = await run(bytes, 64);
+    expect(packets).toBe(1);
+    expect(issues.map((i) => i.code)).toEqual(['MALFORMED_BLOCK']);
+  });
+
+  it('never reads a block declared larger than the default cap, even when it fits the file', async () => {
+    const head = buildPcapngWithOffsets(base.slice(0, 2)).bytes;
+    const declared = PCAP_MAX_RECORD_BYTES * 2;
+    const hostileHeader = new Uint8Array(12);
+    const headerView = new DataView(hostileHeader.buffer);
+    headerView.setUint32(0, BLOCK_EPB, true);
+    headerView.setUint32(4, declared, true);
+    const trailer = new Uint8Array(4);
+    new DataView(trailer.buffer).setUint32(0, declared, true);
+    const tail = buildPcapngWithOffsets(base).bytes.subarray(head.length);
+    const tailAt = head.length + declared;
+    const source = sparseByteSource(tailAt + tail.length, [
+      { offset: 0, bytes: head },
+      { offset: head.length, bytes: hostileHeader },
+      { offset: tailAt - 4, bytes: trailer },
+      { offset: tailAt, bytes: tail },
+    ]);
+
+    const reader = await createPcapngReader(source, 64 * 1024);
+    const items: PcapngItem[] = [];
+    for (let item = await reader.next(); item !== null; item = await reader.next()) items.push(item);
+
+    expect(items.filter((i) => i.kind === 'packet')).toHaveLength(1);
+    expect(reader.issues().map((i) => i.code)).toEqual(['MALFORMED_BLOCK']);
+    expect(source.largestRead).toBeLessThanOrEqual(64 * 1024);
   });
 });

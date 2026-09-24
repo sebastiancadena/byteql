@@ -2,7 +2,8 @@ import { memoryByteSource, type ByteSource } from '@byteql/core';
 import { describe, expect, it } from 'vitest';
 
 import { buildPcap } from './build-pcap.js';
-import { createPcapFramer, parsePcapContainer } from '../src/container.js';
+import { sparseByteSource } from './sparse-source.js';
+import { createPcapFramer, parsePcapContainer, PCAP_MAX_RECORD_BYTES } from '../src/container.js';
 
 /**
  * Reads land in ONE reused scratch buffer — any retained view is clobbered by
@@ -274,5 +275,64 @@ describe('createPcapFramer', () => {
 
     expect(await framer.next()).toBeNull();
     expect(framer.bytesConsumed()).toBe(bytes.length);
+  });
+});
+
+describe('createPcapFramer record-size cap', () => {
+  const drainAll = async (framer: Awaited<ReturnType<typeof createPcapFramer>>) => {
+    const packets = [];
+    for (let packet = await framer.next(); packet !== null; packet = await framer.next())
+      packets.push(packet);
+    return packets;
+  };
+
+  it('skips a record over the cap as OVERSIZED_RECORD and keeps framing the rest', async () => {
+    const bytes = buildPcap({
+      magic: 'le_us',
+      linktype: 1,
+      packets: [
+        { tsSec: 1, tsFrac: 0, data: new Uint8Array(8).fill(1) },
+        { tsSec: 2, tsFrac: 0, data: new Uint8Array(64).fill(2) },
+        { tsSec: 3, tsFrac: 0, data: new Uint8Array(8).fill(3) },
+      ],
+    });
+    const framer = await createPcapFramer(memoryByteSource(bytes), 1024, 32);
+    const packets = await drainAll(framer);
+
+    expect(packets.map((p) => p.ts_sec)).toEqual([1, 3]);
+    expect(framer.issues()).toEqual([
+      {
+        code: 'OVERSIZED_RECORD',
+        message: 'record 1: declared 64 body bytes, more than the 32-byte limit; skipped',
+        sourceStart: 24 + 16 + 8,
+        sourceEnd: 24 + 16 + 8 + 16 + 64,
+      },
+    ]);
+    expect(framer.bytesConsumed()).toBe(bytes.length);
+  });
+
+  it('never reads a record declared larger than the default cap, even when it fits the file', async () => {
+    const header = buildPcap({ magic: 'le_us', linktype: 1, packets: [] });
+    const declared = PCAP_MAX_RECORD_BYTES * 2;
+    const hostile = new Uint8Array(16);
+    new DataView(hostile.buffer).setUint32(8, declared, true);
+    const tail = buildPcap({
+      magic: 'le_us',
+      linktype: 1,
+      packets: [{ tsSec: 9, tsFrac: 0, data: new Uint8Array(4).fill(9) }],
+    }).subarray(24);
+    const tailAt = 24 + 16 + declared;
+    const source = sparseByteSource(tailAt + tail.length, [
+      { offset: 0, bytes: header },
+      { offset: 24, bytes: hostile },
+      { offset: tailAt, bytes: tail },
+    ]);
+
+    const framer = await createPcapFramer(source, 64 * 1024);
+    const packets = await drainAll(framer);
+
+    expect(packets.map((p) => p.ts_sec)).toEqual([9]);
+    expect(framer.issues().map((i) => i.code)).toEqual(['OVERSIZED_RECORD']);
+    expect(source.largestRead).toBeLessThanOrEqual(64 * 1024);
   });
 });

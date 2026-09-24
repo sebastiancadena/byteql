@@ -198,7 +198,11 @@ fatal.
   block's space, or block fields that do not fit their block (`MALFORMED_BLOCK`). A malformed
   IDB still occupies its positional index in the section, so later packets that reference it
   report `UNKNOWN_INTERFACE` rather than binding to the wrong interface. A Section Header Block
-  shorter than its 28-byte minimum stops instead, since every later block depends on it.
+  shorter than its 28-byte minimum stops instead, since every later block depends on it. A
+  parsed block (SHB, IDB, EPB, OPB, SPB) longer than `PCAP_MAX_RECORD_BYTES` (16 MiB) is
+  `MALFORMED_BLOCK` too: only its trailer is read, never its body, so a hostile length cannot
+  force a file-sized allocation; an oversized SHB stops. Classic pcap applies the same cap to a
+  record's `incl_len`, reported as `OVERSIZED_RECORD` and skipped by its declared length.
 - **Keep the block, drop its options:** an option whose length runs past the options area
   (`MALFORMED_OPTION`); the packet or interface is still emitted with defaults for the options
   not decoded.

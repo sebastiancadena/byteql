@@ -12,6 +12,7 @@ import { createChunkWindow, type WindowRead } from './chunk-window.js';
 import {
   normalizeLinktype,
   PCAP_CHUNK_BYTES,
+  PCAP_MAX_RECORD_BYTES,
   type PcapFramingIssue,
   type PcapPacketBody,
 } from './container.js';
@@ -128,6 +129,7 @@ const hex8 = (value: number): string => `0x${value.toString(16).padStart(8, '0')
 export async function createPcapngReader(
   source: ByteSource,
   chunkBytes: number = PCAP_CHUNK_BYTES,
+  maxBlockBytes: number = PCAP_MAX_RECORD_BYTES,
 ): Promise<PcapngReader> {
   // The first Section Header Block decides whether this is pcapng at all: fatal paths only here.
   const head = await source.read(0, 16);
@@ -250,9 +252,11 @@ export async function createPcapngReader(
       const blockEnd = blockStart + length;
       const parsed =
         isShb || type === BLOCK_IDB || type === BLOCK_EPB || type === BLOCK_OPB || type === BLOCK_SPB;
+      // A parsed block over the cap is framed like a skipped one (trailer only) and never read.
+      const oversized = parsed && length > maxBlockBytes;
       // Parsed blocks are read whole (one window read, so the body view and the trailer come from
       // the same chunk); skipped blocks only read their trailer.
-      const read: WindowRead | null = parsed ? await window.ensure(blockStart, length) : null;
+      const read: WindowRead | null = parsed && !oversized ? await window.ensure(blockStart, length) : null;
       const trailer = read
         ? dataView(read.bytes).getUint32(length - 4, littleEndian)
         : dataView((await window.ensure(blockEnd - 4, 4)).bytes).getUint32(0, littleEndian);
@@ -266,6 +270,19 @@ export async function createPcapngReader(
         break;
       }
       cursor = blockEnd;
+
+      if (oversized) {
+        const message = `block ${hex8(type)} at ${blockStart}: ${length} bytes is more than the ${maxBlockBytes}-byte limit`;
+        if (isShb) {
+          // The section's options and version are unread, so nothing after it can be trusted.
+          stop('MALFORMED_BLOCK', message, blockStart, blockEnd);
+          break;
+        }
+        // An unread IDB still holds its positional index, like any other malformed IDB.
+        if (type === BLOCK_IDB) interfaces.push(null);
+        report('MALFORMED_BLOCK', `${message}; skipped`, blockStart, blockEnd);
+        continue;
+      }
 
       if (!read) {
         if (!SILENTLY_SKIPPED.has(type)) {
