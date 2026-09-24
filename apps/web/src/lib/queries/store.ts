@@ -40,6 +40,7 @@ export function trimHistory(entries: readonly HistoryEntry[], limit: number): Hi
 export class MemoryQueryStore implements QueryStore {
   readonly persistent = false;
   readonly #saved = new Map<string, SavedQuery>();
+  readonly #listeners = new Set<(change: StoreChange) => void>();
   #history: HistoryEntry[] = [];
   #settings: QuerySettings = { ...DEFAULT_SETTINGS };
 
@@ -78,8 +79,11 @@ export class MemoryQueryStore implements QueryStore {
     this.#settings = { ...settings };
   }
 
-  subscribe(): () => void {
-    return () => undefined;
+  subscribe(listener: (change: StoreChange) => void): () => void {
+    // Never fires: a single tab has nothing else to be notified by. Still tracked so
+    // `unsubscribe` behaves like the real store instead of silently doing nothing.
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   close(): void {}
