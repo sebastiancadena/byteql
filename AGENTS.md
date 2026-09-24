@@ -214,8 +214,8 @@ its vitest suites run without a browser).
   format packs through their built `dist/`, so after changing a pack run
   `pnpm --filter @byteql/<pack> build` (or `pnpm build`) before e2e, or the app sees the stale pack
 - Privacy/bundle audit: `pnpm --filter @byteql/web check:bundle`
-- Scale bench: `node apps/web/scripts/run-scale-bench.mjs --gb 1 [--container pcap|pcapng]` (needs
-  `apps/web/node_modules/.bin` on `PATH`); run samples one at a time
+- Scale bench: `node apps/web/scripts/run-scale-bench.mjs --gb 1 [--container pcap|pcapng]`; run
+  samples one at a time
 - Deploy (manual, no CI): `pnpm release:pages` from the repo root — check, bundle audit, Pages
   artifact prep and verification, then `wrangler pages deploy` to the `byteql` project
 - Markdown: `rumdl fmt <file>` (MD013 line-length warnings up to ~100 chars are accepted repo

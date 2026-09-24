@@ -100,7 +100,11 @@ if (gb > 1) {
   env.BYTEQL_SCALE_ASSERT_READ = '1';
 }
 
-const result = spawnSync('playwright', ['test', 'scale-metrics'], {
+// Resolve the package-local binary explicitly: without a shell, a bare 'playwright' only resolves
+// when node_modules/.bin happens to be on PATH (e.g. under `pnpm exec`), and fails with ENOENT
+// otherwise.
+const playwrightBin = join(webRoot, 'node_modules', '.bin', 'playwright');
+const result = spawnSync(playwrightBin, ['test', 'scale-metrics'], {
   cwd: webRoot,
   env,
   stdio: 'inherit',
