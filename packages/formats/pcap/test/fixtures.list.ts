@@ -2,7 +2,9 @@ import { readFile } from 'node:fs/promises';
 
 import type { FixtureCase } from '@byteql/core/testing';
 
+import { sllCapturePackets } from './sll-fixtures.js';
 import { buildPcap, dnsQuery, ethFrame, ipv4, udp } from './build-pcap.js';
+import { pcapngFromPackets } from './build-pcapng.js';
 import { dnsStreamPcapng, multiSectionPcapng } from './pcapng-fixtures.js';
 
 const file = (name: string, path: string, container = 'pcap'): FixtureCase => ({
@@ -50,4 +52,12 @@ export const PCAP_FIXTURES: FixtureCase[] = [
   file('http2-16-ssl.pcapng', '../../../../apps/web/src/assets/http2-16-ssl.pcapng', 'pcapng'),
   built('multi-section.pcapng', () => multiSectionPcapng().bytes, 'pcapng'),
   built('dns-stream.pcapng', dnsStreamPcapng, 'pcapng'),
+  built('linux-sll.pcap', () =>
+    buildPcap({ magic: 'le_us', linktype: 113, packets: sllCapturePackets('sll') }),
+  ),
+  built(
+    'linux-sll2.pcapng',
+    () => pcapngFromPackets({ endian: 'le', linktype: 276, packets: sllCapturePackets('sll2') }),
+    'pcapng',
+  ),
 ];

@@ -123,11 +123,24 @@ dissect:
       - { when: _.linktype == 1, parser: ethernet_frame }
       - { when: _.linktype == 228, parser: ipv4_packet, table: ip }
       - { when: _.linktype == 229, parser: ipv6_packet, table: ip }
+      # Linux cooked capture (`tcpdump -i any`): v1 and v2 pseudo headers.
+      - { when: _.linktype == 113, parser: linux_sll }
+      - { when: _.linktype == 276, parser: linux_sll2 }
   - from: ethernet_frame
     payload: _.body
     chain:
       - { when: _.ether_type == 0x0800, parser: ipv4_packet, table: ip }
       - { when: _.ether_type == 0x86dd, parser: ipv6_packet, table: ip }
+  - from: linux_sll
+    payload: _.body
+    chain:
+      - { when: _.protocol == 0x0800, parser: ipv4_packet, table: ip }
+      - { when: _.protocol == 0x86dd, parser: ipv6_packet, table: ip }
+  - from: linux_sll2
+    payload: _.body
+    chain:
+      - { when: _.protocol == 0x0800, parser: ipv4_packet, table: ip }
+      - { when: _.protocol == 0x86dd, parser: ipv6_packet, table: ip }
   - from: ipv4_packet
     payload: _.body
     chain:

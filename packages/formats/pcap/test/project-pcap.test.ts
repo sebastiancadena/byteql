@@ -16,6 +16,8 @@ import {
   tlsClientHello,
   udp,
 } from './build-pcap.js';
+import { pcapngFromPackets } from './build-pcapng.js';
+import { sllCapturePackets } from './sll-fixtures.js';
 
 const dns = dnsQuery({ txId: 0x1234, name: 'a.ru', type: 1 });
 const pkt = ethFrame({
@@ -665,5 +667,30 @@ describe('exact provenance for reassembled messages', () => {
     expect(row._src_ranges).toBeNull();
     const [start, end] = payloadRange(frames, 0, payload.length);
     expect([row._src_start, row._src_end]).toEqual([BigInt(start), BigInt(end)]);
+  });
+});
+
+describe('Linux cooked capture', () => {
+  it.each([
+    [
+      'SLL (113), classic pcap',
+      () => buildPcap({ magic: 'le_us', linktype: 113, packets: sllCapturePackets('sll') }),
+    ],
+    [
+      'SLL2 (276), pcapng',
+      () => pcapngFromPackets({ endian: 'le', linktype: 276, packets: sllCapturePackets('sll2') }),
+    ],
+  ])('dissects %s through to ip, udp, dns, and icmpv6', async (_label, build) => {
+    const result = await parseAndProjectPcap(build(), new AbortController().signal);
+    expect(findTable(result, 'packets').numRows).toBe(3);
+    const ip = findTable(result, 'ip');
+    expect(ip.toArray().map((r) => [r.version, r.src_addr, r.dst_addr, r.packet_id])).toEqual([
+      [4, '10.0.0.1', '10.0.0.53', 1n],
+      [6, '::1', '::2', 2n],
+    ]);
+    expect(findTable(result, 'udp').numRows).toBe(1);
+    expect(findTable(result, 'dns').get(0)!.query_name).toBe('any.example');
+    expect(findTable(result, 'icmpv6').get(0)!.echo_id).toBe(7);
+    expect(result.tables.find((t) => t.name === 'errors')?.rowCount ?? 0).toBe(0);
   });
 });

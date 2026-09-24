@@ -14,6 +14,8 @@ import icmpModule from '../gen/IcmpPacket.js';
 import icmpv6Module from '../gen/Icmpv6Packet.js';
 import ipv4Module from '../gen/Ipv4Packet.js';
 import ipv6Module from '../gen/Ipv6Packet.js';
+import linuxSllModule from '../gen/LinuxSll.js';
+import linuxSll2Module from '../gen/LinuxSll2.js';
 import tcpModule from '../gen/TcpSegment.js';
 import tlsModule from '../gen/TlsClientHello.js';
 import udpModule from '../gen/UdpDatagram.js';
@@ -25,6 +27,8 @@ const { IcmpPacket } = icmpModule;
 const { Icmpv6Packet } = icmpv6Module;
 const { Ipv4Packet } = ipv4Module;
 const { Ipv6Packet } = ipv6Module;
+const { LinuxSll } = linuxSllModule;
+const { LinuxSll2 } = linuxSll2Module;
 const { TcpSegment } = tcpModule;
 const { TlsClientHello } = tlsModule;
 const { UdpDatagram } = udpModule;
@@ -39,6 +43,18 @@ const TLS_CLIENT_HELLO_BODY_OFFSET = 9;
 export const ethernetFrame: RecordParser = (bytes) => {
   const parsed = parse(EthernetFrame, bytes);
   return { root: { ether_type: parsed.etherType, body: payload(parsed, 'body') } };
+};
+
+/** Linux cooked capture v1 (linktype 113): `protocol` is an Ethernet type, like `ether_type`. */
+export const linuxSll: RecordParser = (bytes) => {
+  const parsed = parse(LinuxSll, bytes);
+  return { root: { protocol: parsed.protocol, body: payload(parsed, 'body') } };
+};
+
+/** Linux cooked capture v2 (linktype 276). */
+export const linuxSll2: RecordParser = (bytes) => {
+  const parsed = parse(LinuxSll2, bytes);
+  return { root: { protocol: parsed.protocol, body: payload(parsed, 'body') } };
 };
 
 export const ipv4Packet: RecordParser = (bytes) => {

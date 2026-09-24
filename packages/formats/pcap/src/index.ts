@@ -12,6 +12,8 @@ import {
   icmpv6Packet,
   ipv4Packet,
   ipv6Packet,
+  linuxSll,
+  linuxSll2,
   tcpSegment,
   tlsClientHello,
   udpDatagram,
@@ -21,6 +23,8 @@ export const pcapFormatPack = definePack<Hooks>(definition, {
   framers: { pcap: pcapFramer, pcapng: pcapngFramer },
   parsers: {
     ethernet_frame: ethernetFrame,
+    linux_sll: linuxSll,
+    linux_sll2: linuxSll2,
     ipv4_packet: ipv4Packet,
     ipv6_packet: ipv6Packet,
     tcp_segment: tcpSegment,
