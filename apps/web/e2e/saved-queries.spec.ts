@@ -85,6 +85,12 @@ test('history persists only while opted in, and opting out empties storage', asy
 
   await runSql(page, 'select 1 as not_kept');
   await expect(page.getByRole('columnheader', { name: /not_kept/u })).toBeVisible();
+  // The library's store writes run in one ordered queue, so once this save has landed any history
+  // write wrongly queued for the run above would have landed too.
+  await saveQuery(page, 'select 0 as barrier', 'Barrier');
+  await expect
+    .poll(async () => (await readStore<StoredQuery>(page, 'saved')).map((entry) => entry.name))
+    .toContain('Barrier');
   expect(await readStore(page, 'history')).toEqual([]);
 
   await openRecent(page);

@@ -293,12 +293,13 @@ What differed from the design above, and what was discovered while implementing 
 - Export goes through a small `lib/queries/download.ts` helper (`saveTextFile`: a save handle
   when available, otherwise a Blob object URL), not the result-export destination code — the two
   have different retry/cleanup needs and nothing to share beyond "write a local file".
-- Cross-tab: when another tab turns history on, this tab does not adopt its live history; the
-  library only reloads stored history on the `settings`/`history` `BroadcastChannel` notification
-  while ITS OWN `persistHistory` is already true. A tab that currently has persistence off picks
-  up the other tab's history the next time it reloads the page (`QueryLibrary.open` re-reads
-  stored history whenever the stored setting is on).
-- `QueryStore.clearHistoryIfOff()` sweeps stored history whenever the *stored* settings have
+- Cross-tab: when another tab turns history on, this tab adopts the setting straight away (its
+  `settings` notification reloads the settings), and the other tab's write-through then sends one
+  `history` notification per entry. Because this tab's persistence is now on, each of those
+  reloads replaces this tab's Recent view with the stored history as the writes arrive, so this
+  tab's in-memory-only entries drop out of view. A `settings` notification never reloads history
+  by itself.
+- `QueryStore.clearHistoryIfOff()` sweeps stored history whenever the _stored_ settings have
   persistence off, atomically with the check (mirroring `putHistory`'s atomicity). `QueryLibrary`
   calls it once on `open()` when the just-read settings have persistence off, so a stale write
   left by a failed turn-off clear is removed the next time the app opens, not just the next time
