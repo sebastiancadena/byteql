@@ -57,6 +57,10 @@ export interface StreamSpec {
   segments_table: string;
   max_buffer: number;
   messages: StreamMessageLinkSpec[];
+  offset_bits?: number;
+  open?: string;
+  close?: string;
+  reset?: string;
 }
 
 export interface DissectSpec {
@@ -76,7 +80,7 @@ export interface TableSpec {
 }
 
 export interface ProjectionSpec {
-  version: '0.1' | '0.2' | '0.3' | '0.4';
+  version: '0.1' | '0.2' | '0.3' | '0.4' | '0.5';
   format: string;
   tables: TableSpec[];
   dissect?: DissectSpec[];
@@ -164,6 +168,10 @@ const streamSpec = z.strictObject({
   segments_table: identifier,
   max_buffer: z.number().int().positive(),
   messages: z.array(messageLinkSpec).min(1),
+  offset_bits: z.number().int().optional(),
+  open: nonEmptyString.optional(),
+  close: nonEmptyString.optional(),
+  reset: nonEmptyString.optional(),
 });
 
 const dissectSpec = z.strictObject({
@@ -193,8 +201,11 @@ const projectionSpec = z.strictObject({
       z.literal(0.3),
       z.literal('0.4'),
       z.literal(0.4),
+      z.literal('0.5'),
+      z.literal(0.5),
     ])
-    .transform((value): '0.1' | '0.2' | '0.3' | '0.4' => {
+    .transform((value): '0.1' | '0.2' | '0.3' | '0.4' | '0.5' => {
+      if (value === '0.5' || value === 0.5) return '0.5';
       if (value === '0.4' || value === 0.4) return '0.4';
       if (value === '0.3' || value === 0.3) return '0.3';
       if (value === '0.2' || value === 0.2) return '0.2';
@@ -214,6 +225,13 @@ const readOwnDataProperty = (value: unknown, key: string): unknown => {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   return descriptor && 'value' in descriptor ? descriptor.value : undefined;
 };
+
+const VERSION_ORDER = ['0.1', '0.2', '0.3', '0.4', '0.5'] as const;
+
+export const specVersionAtLeast = (
+  version: ProjectionSpec['version'],
+  min: ProjectionSpec['version'],
+): boolean => VERSION_ORDER.indexOf(version) >= VERSION_ORDER.indexOf(min);
 
 const validateRawMappingNames = (yamlValue: unknown): void => {
   const tables = readOwnDataProperty(yamlValue, 'tables');
@@ -324,7 +342,7 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
     }
   }
 
-  if (parsed.data.version !== '0.4') {
+  if (!specVersionAtLeast(parsed.data.version, '0.4')) {
     for (const [tableIndex, table] of parsed.data.tables.entries()) {
       for (const [name, column] of Object.entries(table.columns)) {
         if (column.nullable !== undefined) {
@@ -334,6 +352,37 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
             'nullable requires version 0.4',
           );
         }
+      }
+    }
+  }
+
+  for (const [index, stream] of (parsed.data.streams ?? []).entries()) {
+    const v05 =
+      stream.offset_bits !== undefined ||
+      stream.open !== undefined ||
+      stream.close !== undefined ||
+      stream.reset !== undefined;
+    if (v05 && !specVersionAtLeast(parsed.data.version, '0.5')) {
+      throw new ProjectionCompileError(
+        'PROJECTION_VERSION_REQUIRED',
+        `streams.${index}`,
+        'offset_bits, open, close, and reset require version 0.5',
+      );
+    }
+    if (stream.offset_bits !== undefined && (stream.offset_bits < 8 || stream.offset_bits > 48)) {
+      throw new ProjectionCompileError(
+        'PROJECTION_STREAM_INVALID',
+        `streams.${index}.offset_bits`,
+        `offset_bits must be an integer from 8 to 48, got ${stream.offset_bits}`,
+      );
+    }
+    for (const field of ['close', 'reset'] as const) {
+      if (stream[field] !== undefined && stream.open === undefined) {
+        throw new ProjectionCompileError(
+          'PROJECTION_STREAM_INVALID',
+          `streams.${index}.${field}`,
+          `${field} requires open: without an open signal no connection generation can start`,
+        );
       }
     }
   }

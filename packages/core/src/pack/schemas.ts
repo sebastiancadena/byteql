@@ -5,6 +5,7 @@ import {
   type CompiledProjection,
   type CompiledProjectionTable,
 } from '../projection/project.js';
+import { specVersionAtLeast } from '../projection/spec.js';
 import type { TableSchema } from '../protocol.js';
 
 export interface ProjectionSchemaOptions {
@@ -39,7 +40,7 @@ export const projectionSchemas = (
   compiled: CompiledProjection,
   options: ProjectionSchemaOptions,
 ): TableSchema[] => {
-  const legacy = compiled.specVersion !== '0.4';
+  const legacy = !specVersionAtLeast(compiled.specVersion, '0.4');
   const errors = new IssueCollector({ ordinalColumn: options.ordinalColumn }).table();
   return [
     ...compiled.tables.map((table) => tableSchema(table, legacy)),
