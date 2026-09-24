@@ -402,3 +402,36 @@ streams:`,
     expect(() => compileYaml(bad)).toThrow(/bounded provenance/);
   });
 });
+
+describe('v0.5 lifecycle compile', () => {
+  const v05 = (extra: string) =>
+    validYaml
+      .replace("version: '0.3'", "version: '0.5'")
+      .replace('    offset: _.seq\n', `    offset: _.seq\n${extra}`);
+
+  it('compiles open/close/reset/offset_bits onto the stream', () => {
+    const compiled = compileProjection(
+      parseProjectionSpec(
+        v05('    offset_bits: 8\n    open: _.port == 1\n    close: _.port == 2\n    reset: _.port == 3\n'),
+      ),
+      registry,
+      streamRegistries,
+    );
+    const stream = compiled.streams[0]!;
+    expect(stream.offsetBits).toBe(8);
+    expect(stream.open).not.toBeNull();
+    expect(stream.close).not.toBeNull();
+    expect(stream.reset).not.toBeNull();
+  });
+
+  it('leaves them null on a 0.3 stream', () => {
+    const stream = compileProjection(parseProjectionSpec(validYaml), registry, streamRegistries).streams[0]!;
+    expect([stream.open, stream.close, stream.reset, stream.offsetBits]).toEqual([null, null, null, null]);
+  });
+
+  it('rejects a lifecycle expression that does not compile, at its path', () => {
+    expect(() =>
+      compileProjection(parseProjectionSpec(v05('    open: _.port ==\n')), registry, streamRegistries),
+    ).toThrow(expect.objectContaining({ path: 'streams.0.open' }));
+  });
+});

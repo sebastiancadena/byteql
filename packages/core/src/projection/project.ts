@@ -86,6 +86,10 @@ export interface CompiledStream {
   readonly feedTable: string;
   readonly feedKeyColumn: string;
   readonly messages: readonly CompiledStreamMessageLink[];
+  readonly open: CompiledExpression | null;
+  readonly close: CompiledExpression | null;
+  readonly reset: CompiledExpression | null;
+  readonly offsetBits: number | null;
 }
 
 export interface CompiledChainLink {
@@ -396,6 +400,10 @@ export const compileProjection = (
     feedTable: string | null;
     feedKeyColumn: string | null;
     messages: CompiledStreamMessageLink[];
+    open: CompiledExpression | null;
+    close: CompiledExpression | null;
+    reset: CompiledExpression | null;
+    offsetBits: number | null;
   }
 
   // Streams are built as mutable records before the dissect chains are compiled: chain links
@@ -482,6 +490,12 @@ export const compileProjection = (
     // table's own row context.
     const offset = compileCheckedExpression(entry.offset, new Set(), `${path}.offset`);
 
+    const lifecycle = (source: string | undefined, field: 'open' | 'close' | 'reset') =>
+      source === undefined ? null : compileCheckedExpression(source, new Set(), `${path}.${field}`);
+    const open = lifecycle(entry.open, 'open');
+    const close = lifecycle(entry.close, 'close');
+    const reset = lifecycle(entry.reset, 'reset');
+
     // Rule 8/12 (message half): message links compile exactly like dissect chain links rooted
     // off a parser id — same PROJECTION_PARSER_UNKNOWN / PROJECTION_DISSECT_INVALID texts, and
     // `when` always rejects context references (messages fire against a bare parsed-record
@@ -531,6 +545,10 @@ export const compileProjection = (
       feedTable: null,
       feedKeyColumn: null,
       messages,
+      open,
+      close,
+      reset,
+      offsetBits: entry.offset_bits ?? null,
     });
   }
 
