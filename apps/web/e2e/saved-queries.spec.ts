@@ -90,7 +90,7 @@ test('history persists only while opted in, and opting out empties storage', asy
   await openRecent(page);
   await page.getByRole('checkbox', { name: 'Keep history after this tab closes' }).check();
   await runSql(page, 'select 2 as kept');
-  await expect(page.getByRole('columnheader', { name: /kept/u })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: /\bkept\b/u })).toBeVisible();
   await expect
     .poll(async () => (await readStore<StoredQuery>(page, 'history')).map((entry) => entry.sql))
     .toContain('select 2 as kept');
