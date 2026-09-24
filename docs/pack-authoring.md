@@ -249,7 +249,11 @@ streams:
   capture that misses the connection's first data segment reports a gap instead of silently
   starting mid-stream.
 - `close` — an expression that marks a segment as ending a connection cleanly (TCP: FIN). Sets the
-  flow row's `closed_by` to `'close'`.
+  flow row's `closed_by` to `'close'`. If the close segment's offset lands past the last byte the
+  engine actually reassembled (the assembler's base plus its contiguous fill, or the anchor base
+  alone when no data arrived), the flow reports `status: 'gap'` at flush (the same `STREAM_GAP`
+  issue as any other unresolved gap) instead of `'ok'` — a FIN doesn't just close the connection,
+  it also claims the capture saw everything up to it, and that claim is checked.
 - `reset` — an expression that marks a segment as aborting a connection (TCP: RST). Sets
   `closed_by` to `'reset'`; reset takes precedence over a later close, and a later reset always
   overwrites a prior close.

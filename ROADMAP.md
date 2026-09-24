@@ -97,6 +97,14 @@ address/port tuple could merge into one stream.
 Remaining non-goals: bidirectional stream pairing, idle-timeout connection splitting, and early
 flushing of closed flows (they still flush at `finish()`).
 
+Remaining limitations found in the post-implementation review (2026-09-24): every SYN routed to a
+stream (ports 443/53 in pcap) creates a flow entry kept until `finish()` (~1.2 KB each measured;
+300k unanswered SYNs peaked at ~710 MB heap, 1M at ~1.35 GB), so a SYN-flood or port-scan capture
+of a few million SYNs can exhaust the parse worker's heap. Windows-style 1-byte TCP keepalives (one
+garbage byte at SND.NXT−1) overlap already-stored bytes and are counted as
+`STREAM_OVERLAP_CONFLICT` / `conflict_count` unless the byte happens to match. See the follow-up
+bullet under Supporting work.
+
 Evidence: [TCP identity tests](packages/formats/pcap/test/tcp-identity.test.ts) and
 [pcap e2e](apps/web/e2e/pcap.spec.ts).
 Design: [TCP connection identity design](docs/superpowers/specs/2026-09-24-tcp-connection-identity-design.md).
@@ -130,6 +138,11 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
   [Deferred follow-ups](docs/superpowers/specs/2026-09-23-pcapng-intake-design.md#deferred-follow-ups).
 - **Refresh roadmap documentation — done (2026-09-22).** `PRD.md`, `README.md`, and
   `AGENTS.md` now point to this file for priority order.
+- **Cap or spill live TCP flow state.** Every SYN routed to a stream keeps its flow entry until
+  `finish()` (~1.2 KB each measured), so a SYN-flood or port-scan capture of a few million SYNs can
+  exhaust the parse worker's heap; a live-flow cap or spill is needed. Also classify Windows-style
+  1-byte TCP keepalives instead of counting them as overlap conflicts. See priority 5's "Remaining
+  limitations".
 
 ## Next development cycle
 

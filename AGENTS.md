@@ -161,6 +161,28 @@ or in `PRD.md` §12.
   pairing (each direction is its own flow row), no idle-timeout connection splitting, closed flows
   still flush only at `finish()`, and TLS ClientHello stays single-record. Evidence:
   `packages/formats/pcap/test/tcp-identity.test.ts`, `apps/web/e2e/pcap.spec.ts`.
+  `stream_id` values for existing captures can change from a re-run of the same capture through a
+  newer engine version — control-only flows created earlier in document order take earlier ids
+  (e.g. `http2-16-ssl.pcapng`'s two data-bearing flows renumbered `1,2 -> 3,4` when the two new
+  control-only probe flows were introduced) — relevant to saved queries that hard-code `stream_id`.
+- **TCP connection identity hardening (post-implementation review fixes): done 2026-09-24.** Two
+  correctness fixes found in a whole-branch review of the above: (1) the wraparound unwrap
+  reference now advances only on an accepted contribution, an open segment that anchors the flow,
+  or a control segment within half the modulus of the current reference — previously it advanced
+  unconditionally, including for rejected/inactive input, so a flood of crafted segments could walk
+  it forward without bound and eventually overflow `Number.MAX_SAFE_INTEGER`; (2) a `close` signal
+  (FIN) that lands past the last byte actually reassembled now reports `status: 'gap'`
+  (`STREAM_GAP`) instead of `'ok'`, tracked via a latched per-flow `closeOffset` compared at flush
+  against the assembler's contiguous data end. Documented limitations found in the same review,
+  still open: every SYN routed to a stream (ports 443/53 in pcap) creates a flow kept until
+  `finish()` (~1.2 KB each measured; 300k unanswered SYNs peaked at ~710 MB heap, 1M at ~1.35 GB),
+  so a SYN-flood/port-scan capture of a few million SYNs can exhaust the parse worker's heap
+  (follow-up: a live-flow cap or spill); and Windows-style 1-byte TCP keepalives (one garbage byte
+  at SND.NXT−1) overlap already-stored bytes and are counted as `STREAM_OVERLAP_CONFLICT` /
+  `conflict_count` unless the byte happens to match (follow-up: keepalive classification). See
+  `ROADMAP.md` priority 5's "Remaining limitations". Evidence:
+  `packages/core/src/projection/stream-lifecycle.test.ts`,
+  `packages/formats/pcap/test/tcp-identity.test.ts`.
 - **Next (per `ROADMAP.md`):** ship one forensic investigation workflow (ROADMAP #6). The unaided
   external Phase 0 test is still open supporting work.
 

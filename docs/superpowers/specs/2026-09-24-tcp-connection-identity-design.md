@@ -163,8 +163,11 @@ Compile-time rules (`ProjectionCompileError`, `PROJECTION_STREAM_INVALID` unless
 
 - Any of the four fields requires `version: '0.5'` (spec-load error, like `nullable` requires
   `0.4`).
-- `offset_bits` is an integer in `[8, 48]`, so an extended offset plus its bias stays a safe
-  integer.
+- `offset_bits` is an integer in `[8, 48]`, so a single extended offset plus its bias stays a safe
+  integer. This bounds one `unwrapOffset` call, not the reference it reads/writes across many
+  calls — see the "Wraparound reference hardening" implementation note below for the separate
+  guard that keeps the per-flow reference itself from drifting unboundedly over a long sequence of
+  contributions.
 - `open`, `close`, `reset` compile like `offset`: against the feeding link's row context with no
   declared state.
 - `close` or `reset` without `open` is rejected — without an open signal no generation can start.
@@ -315,3 +318,49 @@ test.
 `apps/web/e2e/panel-resize.spec.ts`'s "a diagnostic arriving mid-drag cancels it and leaves nothing
 behind" fails on the pre-branch commit (`9d5ecca`) too; it is not a regression from this design and
 was not investigated further here.
+
+**Wraparound reference hardening (post-implementation review fix, 2026-09-24).** A whole-branch
+review found that `entry.unwrapReference` advanced unconditionally on every contribution reaching
+`contributeToStream` — including a data segment later rejected as truncated/dropped/duplicate/
+conflict, and before the inactive-status check even ran, so it kept advancing on an already-dead
+flow too. Since `unwrapOffset` always resolves a raw offset to within half the modulus of whatever
+reference it is given, a flood of crafted segments each landing near the current reference could
+walk the reference forward by up to half the modulus per segment, with no bound on how many
+segments could do this — over millions of packets this can overflow `Number.MAX_SAFE_INTEGER`.
+Fixed by only ever advancing the reference from (a) an accepted contribution (assembler outcome
+`'added'`/`'rebased'`, by the extent actually accepted), (b) an `open` segment that anchors the
+flow (by its own offset), or (c) a control segment, still bounded to within half the modulus of the
+current reference. Legitimate traffic is unaffected: every offset reaching this logic was already
+computed via `unwrapOffset` against the pre-call reference, which lands within that same bound by
+construction, so the guard changes nothing for accepted contributions and only closes the hole for
+rejected/inactive ones. Regression test:
+`packages/core/src/projection/stream-lifecycle.test.ts`'s "keeps the wraparound reference bounded
+when many rejected segments jump forward on a truncated flow" (2000 rejected segments at
+`offset_bits: 8`, confirmed to fail against the pre-fix code with the reference drifted by
+~256,000).
+
+**FIN-beyond-data gap (post-implementation review fix, 2026-09-24).** The same review found that
+`StreamAssembler.hasGap()` only detects a hole inside bytes the assembler has actually buffered, so
+a FIN or RST that closes a connection past the last byte the capture actually recorded — a
+truncated capture, or a control-only flow with no data at all — reported a clean `'ok'` status
+instead of a gap. Fixed with a latched per-flow `closeOffset` (the highest offset any `close`
+signal has carried, set only by `close`, never by `reset`, and never lowered), compared at flush
+against the reassembled data end in the same extended-offset space as everything else: the
+assembler's base plus its contiguous fill, or the anchor base alone when no data was ever accepted.
+When `closeOffset` lands past that point and status would otherwise be `'ok'`, flushStreams now
+reports `'gap'` with the existing `STREAM_GAP` issue. The check is skipped (not merely "no gap")
+when there is no anchor and no data at all — a `close` on a generation that never opened and never
+received data has no data-end coordinate to compare against. Regression tests:
+`stream-lifecycle.test.ts`'s "close beyond reassembled data" pair (no-data gap; exact-data-end
+`'ok'`) and `tcp-identity.test.ts`'s "reports a gap when FIN closes past the last byte actually
+captured" (SYN with no data, FIN 500 bytes past the ISN). No bundled pcap capture has a FIN beyond
+its captured data, so no golden changed.
+
+**Known limitations found in the same review, not fixed here.** Every SYN routed to a stream (ports
+443/53 in pcap) creates a flow entry kept until `finish()` (~1.2 KB each measured; 300k unanswered
+SYNs peaked at ~710 MB heap, 1M at ~1.35 GB) — a SYN-flood or port-scan capture of a few million
+SYNs can exhaust the parse worker's heap; follow-up is a live-flow cap or spill. Windows-style
+1-byte TCP keepalives (one garbage byte at SND.NXT−1) overlap already-stored bytes and are counted
+as `STREAM_OVERLAP_CONFLICT` / `conflict_count` unless the byte happens to match; follow-up is
+keepalive classification. Both are tracked in `ROADMAP.md` priority 5's "Remaining limitations" and
+its Supporting-work follow-up bullet.
