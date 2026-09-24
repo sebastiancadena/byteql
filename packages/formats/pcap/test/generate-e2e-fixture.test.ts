@@ -112,3 +112,41 @@ it.runIf(process.env.GENERATE_E2E_FIXTURES === '1')('writes the sample.pcapng e2
   );
   writeFileSync(target, bytes);
 });
+
+// Regenerates apps/web/e2e/fixtures/tcp-reuse.pcap: two DNS-over-TCP connections on one 4-tuple
+// (10.0.0.1:40000 -> 10.0.0.2:53). Connection 1: SYN, query "reuse-one.example", FIN.
+// Connection 2: SYN (new ISN), query "reuse-two.example", RST. Packet 1 is the first SYN, whose
+// TCP header starts at file offset 24 + 16 + 14 + 20 = 74 (global header, record header,
+// Ethernet, IPv4) and is 20 bytes long.
+it.runIf(process.env.GENERATE_E2E_FIXTURES === '1')('writes the tcp-reuse e2e fixture', () => {
+  const one = dnsOverTcp({ txId: 0x0101, name: 'reuse-one.example', type: 1 });
+  const two = dnsOverTcp({ txId: 0x0202, name: 'reuse-two.example', type: 1 });
+  const packet = (seq: number, flags: number, data = new Uint8Array(0)) =>
+    ethFrame({
+      etherType: 0x0800,
+      payload: ipv4({
+        protocol: 6,
+        src: '10.0.0.1',
+        dst: '10.0.0.2',
+        payload: tcp({ srcPort: 40000, dstPort: 53, flags, seq, payload: data }),
+      }),
+    });
+  const pcap = buildPcap({
+    magic: 'be_us',
+    linktype: 1,
+    packets: [
+      packet(1000, 0x02),
+      packet(1001, 0x18, one),
+      packet(1001 + one.length, 0x11),
+      packet(70000, 0x02),
+      packet(70001, 0x18, two),
+      packet(70001 + two.length, 0x04),
+    ].map((data, i) => ({ tsSec: i + 1, tsFrac: 0, data })),
+  });
+  const target = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../apps/web/e2e/fixtures/tcp-reuse.pcap',
+  );
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, pcap);
+});

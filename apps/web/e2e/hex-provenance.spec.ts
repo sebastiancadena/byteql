@@ -16,6 +16,7 @@ import {
 const pane = (page: Page) => page.locator('[data-hex-pane]');
 const hexCanvas = (page: Page) => page.getByRole('application', { name: 'Hex viewer' });
 const interleavedPcapPath = fileURLToPath(new URL('./fixtures/interleaved-stream.pcap', import.meta.url));
+const reusePcapPath = fileURLToPath(new URL('./fixtures/tcp-reuse.pcap', import.meta.url));
 
 async function gotoOffset(page: Page, offset: number): Promise<void> {
   await page.getByLabel('Go to offset').fill(String(offset));
@@ -92,6 +93,22 @@ test('pcap: browse, reveal, filter-to-selection, and hidden columns chip', async
     .getByText(/\d+ rows/u)
     .textContent();
   expect(Number.parseInt(rowsText ?? '0', 10)).toBeGreaterThanOrEqual(1);
+});
+
+// The fixture bytes are a committed, crafted `.pcap`: two DNS-over-TCP connections on one
+// 4-tuple, generated once via packages/formats/pcap/test/generate-e2e-fixture.test.ts (see
+// pcap.spec.ts for the full description). The first packet is the first connection's SYN, whose
+// TCP header starts at file offset 74 (24-byte global header + 16-byte record header + 14-byte
+// Ethernet + 20-byte IPv4) and is 20 bytes long — the binding assertion is that the
+// `stream_segments` row for a control (SYN/FIN/RST) segment highlights exactly its TCP header,
+// not the whole packet or the IP datagram.
+test('pcap: a SYN stream_segments row highlights its TCP header', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Open file input').setInputFiles(reusePcapPath);
+  await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible();
+  await runSql(page, 'select * from stream_segments order by segment_id limit 1');
+  await page.getByRole('row', { name: 'Row 1', exact: true }).click();
+  expect(await highlightedHexRange(page)).toEqual({ start: 74, end: 94 });
 });
 
 // The fixture bytes are a committed, crafted `.pcapng`: the same single eth -> ipv4 -> udp -> dns
