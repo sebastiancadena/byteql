@@ -122,3 +122,66 @@ describe('tcp connection identity (lifecycle)', () => {
     expect(segs.map((s) => Number(s._src_end - s._src_start))).toEqual([20, 20]);
   });
 });
+
+describe('tcp connection identity (wraparound and overlap)', () => {
+  it('fixture 3: reassembles a DNS response straddling 2^32', async () => {
+    // 32-byte message; payload starts at 0xfffffff1, so byte 15 sits at 2^32. The third
+    // segment's raw seq is (0xfffffff0 + 21) mod 2^32 = 5: without unwrapping it lands ~4 GiB
+    // below the base and the stream truncates.
+    const payload = dnsOverTcp({ txId: 3, name: 'wrap.example', type: 1 });
+    const isn = 0xfffffff0;
+    const { table, result } = await run([
+      seg({ seq: isn, flags: SYN }),
+      seg({ seq: isn + 1, flags: PSH | ACK, payload: payload.subarray(0, 10) }),
+      seg({ seq: isn + 11, flags: PSH | ACK, payload: payload.subarray(10, 20) }),
+      seg({ seq: (isn + 21) >>> 0, flags: PSH | ACK, payload: payload.subarray(20) }),
+    ]);
+    expect(result.issues).toEqual([]);
+    expect(
+      table('dns')
+        .toArray()
+        .map((d) => d.query_name),
+    ).toEqual(['wrap.example']);
+    expect(clientFlows(table('streams'))[0]!.status).toBe('ok');
+  });
+
+  it('fixture 4: accepts a repacked retransmission spanning two segments', async () => {
+    const payload = dnsOverTcp({ txId: 4, name: 'repack.example', type: 1 });
+    const { table, result } = await run([
+      seg({ seq: 1000, flags: SYN }),
+      seg({ seq: 1001, flags: PSH | ACK, payload: payload.subarray(0, 6) }),
+      seg({ seq: 1007, flags: PSH | ACK, payload: payload.subarray(6, 12) }),
+      seg({ seq: 1004, flags: PSH | ACK, payload: payload.subarray(3) }), // covers both + the rest
+    ]);
+    expect(result.issues).toEqual([]);
+    expect(
+      table('dns')
+        .toArray()
+        .map((d) => d.query_name),
+    ).toEqual(['repack.example']);
+    const flow = clientFlows(table('streams'))[0]!;
+    expect([flow.status, flow.conflict_count]).toEqual(['ok', 0]);
+  });
+
+  it('fixture 5: keeps the first bytes of a conflicting retransmission and flags it', async () => {
+    const payload = dnsOverTcp({ txId: 5, name: 'first.example', type: 1 });
+    const forged = payload.slice(0, 12);
+    forged[11] ^= 0xff;
+    const { table, result } = await run([
+      seg({ seq: 1000, flags: SYN }),
+      seg({ seq: 1001, flags: PSH | ACK, payload: payload.subarray(0, 12) }),
+      seg({ seq: 1001, flags: PSH | ACK, payload: forged }), // packet 3: the conflicting one
+      seg({ seq: 1013, flags: PSH | ACK, payload: payload.subarray(12) }),
+    ]);
+    expect(
+      table('dns')
+        .toArray()
+        .map((d) => d.query_name),
+    ).toEqual(['first.example']);
+    expect(clientFlows(table('streams'))[0]!.conflict_count).toBe(1);
+    const errors = table('errors').toArray();
+    expect(errors.map((e) => e.code)).toEqual(['STREAM_OVERLAP_CONFLICT']);
+    const conflictSeg = table('tcp').toArray()[2]!;
+    expect(errors[0]!._src_start).toBe(conflictSeg._src_start + 20n); // its payload, past the TCP header
+  });
+});

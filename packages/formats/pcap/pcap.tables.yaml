@@ -176,6 +176,8 @@ streams:
     # so a SYN+data payload starts at seq+1. Without the +1 a SYN+data first segment leaves a
     # permanent 1-byte hole and the stream flushes 'gap', dropping every later message.
     offset: '_.seq_num + (_.syn ? 1 : 0)'
+    # TCP sequence numbers are 32-bit and wrap; the engine unwraps them (spec v0.5).
+    offset_bits: 32
     # Connection lifecycle (spec v0.5): a SYN (or SYN-ACK) opens a generation, so a reused
     # 4-tuple becomes a new stream; FIN and RST record how this direction ended.
     open: _.syn
@@ -191,6 +193,8 @@ streams:
     key: tcp_flow_key
     # SYN adjustment as in tls_stream above.
     offset: '_.seq_num + (_.syn ? 1 : 0)'
+    # TCP sequence numbers are 32-bit and wrap; the engine unwraps them (spec v0.5).
+    offset_bits: 32
     # Connection lifecycle (spec v0.5): a SYN (or SYN-ACK) opens a generation, so a reused
     # 4-tuple becomes a new stream; FIN and RST record how this direction ended.
     open: _.syn
