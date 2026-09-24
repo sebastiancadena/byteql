@@ -160,26 +160,8 @@ export class StreamAssembler {
     const newExtent = Math.max(end, this.#highestEndAbs ?? end) - newBase;
     if (newExtent > this.#maxBuffer) return 'truncated';
 
-    // Cost bound: a rebase is an O(extent) copy of #data (below) plus the O(n) segment-array
-    // insertion/frontier rescan above, so an adversarial strictly-descending arrival order (each
-    // segment rebasing the base further down) is worst-case quadratic in the number of segments.
-    // That's deliberately accepted rather than engineered away: #maxBuffer hard-bounds the extent
-    // factor, and callers abort-check per record upstream, so the quadratic blowup can only ever
-    // run over a bounded buffer for a bounded record count. If this ever shows up as a real cost,
-    // the fix is to stop reusing the linear #segments array for insertion and reach for an
-    // index that supports O(log n) insertion (e.g. a sorted tree/skip list) instead.
-    if (rebasing) {
-      const shift = this.#base! - newBase;
-      const shiftedLen = Math.min(Math.max(this.#data.length + shift, newExtent), this.#maxBuffer);
-      const shifted = new Uint8Array(shiftedLen);
-      shifted.set(this.#data, shift);
-      this.#data = shifted;
-      // contiguousEnd is a filled-from-base frontier; a rebase moves the base, so reset it
-      // (and the cached frontier scan index) here and let the frontier scan below recompute
-      // it from the (re-sorted) segments.
-      this.#contiguousEnd = 0;
-      this.#frontierIndex = 0;
-    }
+    // See #rebaseTo for the cost bound of a rebase.
+    if (rebasing) this.#rebaseTo(newBase, newExtent);
     this.#base = newBase;
 
     const relStart = offset - this.#base;
@@ -213,16 +195,64 @@ export class StreamAssembler {
     this.#srcMax = this.#srcMax === null ? srcEnd : Math.max(this.#srcMax, srcEnd);
     if (insertedAt < this.#frontierIndex) this.#frontierIndex = insertedAt;
 
+    this.#advanceFrontier();
+    return rebasing ? 'rebased' : 'added';
+  }
+
+  /**
+   * Pins the stream base to `offset` without storing bytes (an open/SYN segment).
+   * `'anchored'`: base was null, now `offset`. `'rebased'`: `offset` is below the current base,
+   * nothing has been consumed yet, and the resulting extent fits `maxBuffer` — the base moves
+   * down and stored data shifts accordingly. `'ignored'`: any other case (offset at/above base,
+   * consumed > 0, or the rebase extent would exceed the cap). Never stores a segment; does not
+   * change `byteCount`, `segmentCount`, or `srcSpan`.
+   */
+  anchor(offset: number): 'anchored' | 'rebased' | 'ignored' {
+    if (this.#base === null) {
+      this.#base = offset;
+      return 'anchored';
+    }
+    if (offset >= this.#base || this.#consumed > 0) return 'ignored';
+    const newExtent = (this.#highestEndAbs ?? this.#base) - offset;
+    if (newExtent > this.#maxBuffer) return 'ignored';
+    this.#rebaseTo(offset, newExtent);
+    this.#advanceFrontier();
+    return 'rebased';
+  }
+
+  // Cost bound: a rebase is an O(extent) copy of #data plus the O(n) segment-array
+  // insertion/frontier rescan in add()'s caller path, so an adversarial strictly-descending
+  // arrival order (each segment rebasing the base further down) is worst-case quadratic in the
+  // number of segments. That's deliberately accepted rather than engineered away: #maxBuffer
+  // hard-bounds the extent factor, and callers abort-check per record upstream, so the quadratic
+  // blowup can only ever run over a bounded buffer for a bounded record count. If this ever shows
+  // up as a real cost, the fix is to stop reusing the linear #segments array for insertion and
+  // reach for an index that supports O(log n) insertion (e.g. a sorted tree/skip list) instead.
+  #rebaseTo(newBase: number, newExtent: number): void {
+    const shift = this.#base! - newBase;
+    const shiftedLen = Math.min(Math.max(this.#data.length + shift, newExtent), this.#maxBuffer);
+    const shifted = new Uint8Array(shiftedLen);
+    shifted.set(this.#data, shift);
+    this.#data = shifted;
+    // contiguousEnd is a filled-from-base frontier; a rebase moves the base, so reset it
+    // (and the cached frontier scan index) here and let #advanceFrontier recompute it from
+    // the (re-sorted) segments.
+    this.#contiguousEnd = 0;
+    this.#frontierIndex = 0;
+    this.#base = newBase;
+  }
+
+  #advanceFrontier(): void {
+    const base = this.#base!;
     let frontier = this.#contiguousEnd;
     let i = this.#frontierIndex;
     while (i < this.#segments.length) {
       const s = this.#segments[i]!;
-      if (s.start - this.#base > frontier) break;
-      if (s.end - this.#base > frontier) frontier = s.end - this.#base;
+      if (s.start - base > frontier) break;
+      if (s.end - base > frontier) frontier = s.end - base;
       i++;
     }
     this.#frontierIndex = i;
     this.#contiguousEnd = frontier;
-    return rebasing ? 'rebased' : 'added';
   }
 }

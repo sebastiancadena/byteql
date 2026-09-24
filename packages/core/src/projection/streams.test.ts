@@ -118,6 +118,46 @@ describe('StreamAssembler', () => {
   });
 });
 
+describe('StreamAssembler.anchor', () => {
+  it('sets the base without storing bytes', () => {
+    const a = new StreamAssembler(64);
+    expect(a.anchor(100)).toBe('anchored');
+    expect(a.base).toBe(100);
+    expect(a.segmentCount).toBe(0);
+    expect(a.srcSpan).toBeNull();
+    expect(a.hasGap()).toBe(false);
+  });
+
+  it('makes a missing first segment a gap', () => {
+    const a = new StreamAssembler(64);
+    a.anchor(100);
+    expect(a.add(105, bytes(9), 0, 1)).toBe('added');
+    expect(a.contiguousEnd).toBe(0);
+    expect(a.hasGap()).toBe(true);
+  });
+
+  it('rebases below unconsumed data, and ignores at-or-above-base and consumed cases', () => {
+    const a = new StreamAssembler(64);
+    a.add(10, bytes(3, 4), 30, 32);
+    expect(a.anchor(8)).toBe('rebased');
+    expect(a.base).toBe(8);
+    expect(a.hasGap()).toBe(true); // bytes 8..10 never arrived
+    expect(a.anchor(12)).toBe('ignored');
+    const b = new StreamAssembler(64);
+    b.add(10, bytes(1, 2), 0, 2);
+    b.consume(1);
+    expect(b.anchor(5)).toBe('ignored');
+    expect(b.base).toBe(10);
+  });
+
+  it('ignores an anchor whose rebase would exceed the cap', () => {
+    const a = new StreamAssembler(4);
+    a.add(10, bytes(1, 2), 0, 2);
+    expect(a.anchor(0)).toBe('ignored');
+    expect(a.base).toBe(10);
+  });
+});
+
 import { normalizeRanges } from './streams.js';
 
 describe('normalizeRanges', () => {
