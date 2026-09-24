@@ -117,6 +117,12 @@ const byteOrderAt = (view: DataView, offset: number): boolean | null => {
   return null;
 };
 
+/**
+ * Rounds `length` up to a 4-byte boundary. Arithmetic, not `(length + 3) & ~3`: a uint32
+ * captured length at or above 2^31 would go negative through 32-bit bitwise operators.
+ */
+export const padTo4 = (length: number): number => length + ((4 - (length % 4)) % 4);
+
 const hex8 = (value: number): string => `0x${value.toString(16).padStart(8, '0')}`;
 
 export async function createPcapngReader(
@@ -413,7 +419,7 @@ export async function createPcapngReader(
           );
           tsNs = null;
         }
-        const optionsStart = dataStart + (inclLen + ((4 - (inclLen % 4)) % 4));
+        const optionsStart = dataStart + padTo4(inclLen);
         const walk = walkOptions(view, optionsStart, length - 4, le, (code, start, size) => {
           if (code === OPT_COMMENT) comment ??= optionText(bytes, start, size);
         });

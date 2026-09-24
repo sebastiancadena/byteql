@@ -57,6 +57,11 @@ const TCP_PAYLOAD_BYTES = 1024;
  * (e.g. `_src_start`/`_src_end` for packet 1) off a small memory-tier run and assert a large
  * spill-tier run of "the same capture" reproduces it exactly, instead of hard-coding a value.
  *
+ * The PREFIX guarantee holds within one container only. `bytesTarget` counts each container's
+ * own framing (16-byte classic record headers against 32-byte-plus-padding pcapng EPBs), so the
+ * same `bytesTarget` and `seed` yield a different `packetCount` for `'pcap'` and `'pcapng'`:
+ * compare packet counts across containers only when they come from the same returned capture.
+ *
  * Reused verbatim by Task 12 — keep the signature and packet-shape rules stable.
  */
 export function generateCapture(

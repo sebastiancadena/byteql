@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { buildPcap } from './build-pcap.js';
 import { buildPcapngWithOffsets } from './build-pcapng.js';
 import { multiSectionPcapng } from './pcapng-fixtures.js';
-import { createPcapngReader, type PcapngItem, type PcapngReader } from '../src/pcapng.js';
+import { createPcapngReader, padTo4, type PcapngItem, type PcapngReader } from '../src/pcapng.js';
 
 const drain = async (reader: PcapngReader): Promise<PcapngItem[]> => {
   const items: PcapngItem[] = [];
@@ -151,5 +151,19 @@ describe('createPcapngReader', () => {
       code: 'NOT_PCAPNG',
     });
     await expect(createPcapngReader(memoryByteSource(bytes))).rejects.toBeInstanceOf(PackFatalError);
+  });
+});
+
+describe('padTo4', () => {
+  it('rounds up to a 4-byte boundary', () => {
+    expect([0, 1, 2, 3, 4, 5, 8].map(padTo4)).toEqual([0, 4, 4, 4, 4, 8, 8]);
+  });
+
+  it('stays exact for uint32 lengths at and above 2^31, where 32-bit bitwise padding goes negative', () => {
+    expect(padTo4(2 ** 31 - 1)).toBe(2 ** 31);
+    expect(padTo4(2 ** 31)).toBe(2 ** 31);
+    expect(padTo4(2 ** 31 + 1)).toBe(2 ** 31 + 4);
+    expect(padTo4(0xffff_fffd)).toBe(2 ** 32);
+    expect(((2 ** 31 + 1 + 3) & ~3) < 0).toBe(true);
   });
 });
