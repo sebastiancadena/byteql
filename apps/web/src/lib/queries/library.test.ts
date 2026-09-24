@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { QueryLibrary, STORAGE_ERROR_MESSAGE, type LibraryEvent } from './library.js';
+import {
+  QueryLibrary,
+  STORAGE_ERROR_MESSAGE,
+  STORAGE_READ_ERROR_MESSAGE,
+  type LibraryEvent,
+} from './library.js';
 import { parseQueryFile } from './sql-file.js';
 import { MemoryQueryStore } from './store.js';
 
@@ -221,5 +226,63 @@ describe('QueryLibrary storage failures and other tabs', () => {
 
     expect(library.savedFor('pcap').map((query) => query.name)).toEqual(['From B']);
     expect(events).toContainEqual({ type: 'changed' });
+  });
+});
+
+describe('QueryLibrary races between local mutations and reloads', () => {
+  function mockRemote(store: MemoryQueryStore) {
+    let remote: ((change: 'saved' | 'history' | 'settings') => void) | null = null;
+    vi.spyOn(store, 'subscribe').mockImplementation((listener) => {
+      remote = listener;
+      return () => undefined;
+    });
+    return (change: 'saved' | 'history' | 'settings') => remote!(change);
+  }
+
+  it('keeps a local save made right after a remote notification instead of losing it to a stale reload', async () => {
+    const store = new MemoryQueryStore();
+    const notify = mockRemote(store);
+    const { library } = await openLibrary(store);
+
+    notify('saved');
+    const saved = library.save({ format: 'pcap', name: 'A', sql: 'select 1' });
+    await library.flush();
+
+    expect(library.find(saved.id)).not.toBeNull();
+    expect((await store.listSaved()).map((query) => query.id)).toContain(saved.id);
+  });
+
+  it('does not let a stale remote settings reload resurrect a newer local turn-off', async () => {
+    const store = new MemoryQueryStore();
+    const notify = mockRemote(store);
+    const { library } = await openLibrary(store);
+    library.setPersistHistory(true);
+    await library.flush();
+
+    // The store still says persistHistory: true when the notification fires; the local turn-off
+    // happens right after, before the queued reload gets a chance to run.
+    notify('settings');
+    library.setPersistHistory(false);
+    await library.flush();
+
+    expect(library.settings.persistHistory).toBe(false);
+
+    library.recordRun(run());
+    await library.flush();
+    expect(await store.listHistory()).toEqual([]);
+  });
+
+  it('reports a storage error instead of silently dropping a failed reload', async () => {
+    const store = new MemoryQueryStore();
+    const notify = mockRemote(store);
+    const { library } = await openLibrary(store);
+    vi.spyOn(store, 'listSaved').mockRejectedValueOnce(new Error('boom'));
+    const events: LibraryEvent[] = [];
+    library.subscribe((event) => events.push(event));
+
+    notify('saved');
+    await library.flush();
+
+    expect(events).toContainEqual({ type: 'storage-error', message: STORAGE_READ_ERROR_MESSAGE });
   });
 });

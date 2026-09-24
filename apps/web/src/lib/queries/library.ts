@@ -5,6 +5,7 @@ import { MemoryQueryStore, trimHistory, type QueryStore, type StoreChange } from
 import type { HistoryEntry, QuerySettings, SavedQuery } from './types.js';
 
 export const STORAGE_ERROR_MESSAGE = "Couldn't save to browser storage.";
+export const STORAGE_READ_ERROR_MESSAGE = "Couldn't read browser storage.";
 
 export type LibraryEvent = { type: 'changed' } | { type: 'storage-error'; message: string };
 
@@ -45,6 +46,12 @@ export class QueryLibrary {
   #history: HistoryEntry[];
   #settings: QuerySettings;
   #queue: Promise<void> = Promise.resolve();
+  /**
+   * Bumped by every method that mutates `#saved`/`#history` in memory. A queued reload captures
+   * this at queue time; if it has moved by the time the reload actually runs, a local mutation
+   * raced it, so the reload requeues itself instead of overwriting that mutation with stale data.
+   */
+  #mutationCount = 0;
 
   private constructor(
     store: QueryStore,
@@ -98,6 +105,7 @@ export class QueryLibrary {
       createdAt: at,
       updatedAt: at,
     };
+    this.#mutationCount += 1;
     this.#saved = [...this.#saved, query];
     this.#persist(() => this.#store.putSaved(query));
     this.#changed();
@@ -113,6 +121,7 @@ export class QueryLibrary {
       ...(patch.sql !== undefined ? { sql: patch.sql } : {}),
       updatedAt: Math.max(this.#now(), current.updatedAt + 1),
     };
+    this.#mutationCount += 1;
     this.#saved = this.#saved.map((query) => (query.id === id ? next : query));
     this.#persist(() => this.#store.putSaved(next));
     this.#changed();
@@ -122,6 +131,7 @@ export class QueryLibrary {
   remove(id: string): SavedQuery | null {
     const current = this.find(id);
     if (!current) return null;
+    this.#mutationCount += 1;
     this.#saved = this.#saved.filter((query) => query.id !== id);
     this.#persist(() => this.#store.deleteSaved(id));
     this.#changed();
@@ -129,6 +139,7 @@ export class QueryLibrary {
   }
 
   restore(query: SavedQuery): void {
+    this.#mutationCount += 1;
     this.#saved = sortSaved([...this.#saved.filter((existing) => existing.id !== query.id), query]);
     this.#persist(() => this.#store.putSaved(query));
     this.#changed();
@@ -136,6 +147,7 @@ export class QueryLibrary {
 
   recordRun(run: RunRecord): void {
     if (run.sql.trim() === '') return;
+    this.#mutationCount += 1;
     const newest = this.#history.find((entry) => entry.format === run.format);
     const ranAt = this.#now();
     const entry: HistoryEntry =
@@ -154,12 +166,17 @@ export class QueryLibrary {
       [entry, ...this.#history.filter((existing) => existing.id !== entry.id)],
       limit,
     );
-    if (this.#settings.persistHistory) this.#persist(() => this.#store.putHistory(entry, limit));
+    // Re-checked at write time (not just now, at call time): persistence may have flipped off
+    // while this write was queued behind others.
+    this.#persist(() =>
+      this.#settings.persistHistory ? this.#store.putHistory(entry, limit) : Promise.resolve(),
+    );
     this.#changed();
   }
 
   setPersistHistory(persist: boolean): void {
     if (this.#settings.persistHistory === persist) return;
+    this.#mutationCount += 1;
     const settings = { ...this.#settings, persistHistory: persist };
     this.#settings = settings;
     if (persist) {
@@ -167,7 +184,11 @@ export class QueryLibrary {
       const limit = settings.historyLimit;
       this.#persist(async () => {
         await this.#store.setSettings(settings);
-        for (const entry of entries) await this.#store.putHistory(entry, limit);
+        for (const entry of entries) {
+          // Stop as soon as a later turn-off overtakes this write-through loop.
+          if (!this.#settings.persistHistory) break;
+          await this.#store.putHistory(entry, limit);
+        }
       });
     } else {
       // "Off" never means "hidden but still on disk".
@@ -180,6 +201,7 @@ export class QueryLibrary {
   }
 
   clearHistory(): void {
+    this.#mutationCount += 1;
     this.#history = [];
     this.#persist(() => this.#store.clearHistory());
     this.#changed();
@@ -229,8 +251,19 @@ export class QueryLibrary {
   }
 
   #reload(change: StoreChange): void {
+    this.#queueReload(change, this.#mutationCount);
+  }
+
+  #queueReload(change: StoreChange, seenAt: number): void {
     this.#queue = this.#queue
       .then(async () => {
+        if (this.#mutationCount !== seenAt) {
+          // A local mutation raced this reload while it waited in the queue: what we'd read now
+          // could already be stale again. Requeue behind that mutation's write instead of
+          // applying a read that might undo it; repeat until nothing intervenes.
+          this.#queueReload(change, this.#mutationCount);
+          return;
+        }
         if (change === 'saved') {
           this.#saved = await this.#store.listSaved();
         } else if (change === 'settings') {
@@ -242,7 +275,9 @@ export class QueryLibrary {
         }
         this.#changed();
       })
-      .catch(() => undefined);
+      .catch(() => {
+        this.#emit({ type: 'storage-error', message: STORAGE_READ_ERROR_MESSAGE });
+      });
   }
 
   #changed(): void {

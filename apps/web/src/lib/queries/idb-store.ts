@@ -88,7 +88,16 @@ export class IndexedDbQueryStore implements QueryStore {
   }
 
   putHistory(entry: HistoryEntry, limit: number): Promise<void> {
-    return this.#write('history', (transaction) => {
+    // One transaction over both stores so the persistHistory check and the write are atomic:
+    // a concurrent turn-off (its own settings+history transaction) can never land in between.
+    const transaction = this.#db.transaction(['settings', 'history'], 'readwrite');
+    const done = transactionDone(transaction);
+    let wrote = false;
+    const settingsRequest = transaction.objectStore('settings').get(SETTINGS_KEY);
+    settingsRequest.onsuccess = () => {
+      const stored = settingsRequest.result as Partial<QuerySettings> | undefined;
+      if (!(stored?.persistHistory ?? DEFAULT_SETTINGS.persistHistory)) return;
+      wrote = true;
       const store = transaction.objectStore('history');
       store.put({ ...entry });
       // Queued after the put, so the cursor already sees the new entry.
@@ -101,6 +110,9 @@ export class IndexedDbQueryStore implements QueryStore {
         if (kept > limit) cursor.delete();
         cursor.continue();
       };
+    };
+    return done.then(() => {
+      if (wrote) this.#channel?.postMessage({ change: 'history' });
     });
   }
 

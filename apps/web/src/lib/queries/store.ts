@@ -16,7 +16,11 @@ export interface QueryStore {
   deleteSaved(id: string): Promise<void>;
   /** All history entries, newest first (`ranAt`). */
   listHistory(): Promise<HistoryEntry[]>;
-  /** Inserts or replaces by `id`, then removes the oldest entries beyond `limit`. */
+  /**
+   * No-op unless the *stored* settings have `persistHistory === true` (checked atomically with
+   * the write, so a concurrent turn-off can never be raced). Otherwise inserts or replaces by
+   * `id`, then removes the oldest entries beyond `limit`.
+   */
   putHistory(entry: HistoryEntry, limit: number): Promise<void>;
   clearHistory(): Promise<void>;
   getSettings(): Promise<QuerySettings>;
@@ -61,6 +65,7 @@ export class MemoryQueryStore implements QueryStore {
   }
 
   async putHistory(entry: HistoryEntry, limit: number): Promise<void> {
+    if (!this.#settings.persistHistory) return;
     this.#history = trimHistory(
       [{ ...entry }, ...this.#history.filter((existing) => existing.id !== entry.id)],
       limit,

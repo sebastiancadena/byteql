@@ -62,6 +62,7 @@ export function describeQueryStoreContract(label: string, create: () => Promise<
     });
 
     it('lists history newest first and trims the oldest beyond the limit', async () => {
+      await store.setSettings({ persistHistory: true, historyLimit: 100 });
       await store.putHistory(historyEntry({ id: 'h1', ranAt: 1 }), 2);
       await store.putHistory(historyEntry({ id: 'h2', ranAt: 2, format: 'midi' }), 2);
       await store.putHistory(historyEntry({ id: 'h3', ranAt: 3 }), 2);
@@ -69,6 +70,7 @@ export function describeQueryStoreContract(label: string, create: () => Promise<
     });
 
     it('replaces a history entry with the same id instead of adding one', async () => {
+      await store.setSettings({ persistHistory: true, historyLimit: 100 });
       await store.putHistory(historyEntry({ id: 'h1', ranAt: 1 }), 10);
       await store.putHistory(historyEntry({ id: 'h1', ranAt: 5, status: 'error', rowCount: null }), 10);
       expect(await store.listHistory()).toEqual([
@@ -77,6 +79,7 @@ export function describeQueryStoreContract(label: string, create: () => Promise<
     });
 
     it('clears history without touching saved queries', async () => {
+      await store.setSettings({ persistHistory: true, historyLimit: 100 });
       await store.putSaved(savedQuery());
       await store.putHistory(historyEntry(), 10);
       await store.clearHistory();
@@ -87,6 +90,11 @@ export function describeQueryStoreContract(label: string, create: () => Promise<
     it('stores settings', async () => {
       await store.setSettings({ persistHistory: true, historyLimit: 5 });
       expect(await store.getSettings()).toEqual({ persistHistory: true, historyLimit: 5 });
+    });
+
+    it('writes nothing to history while stored persistence is off', async () => {
+      await store.putHistory(historyEntry(), 10);
+      expect(await store.listHistory()).toEqual([]);
     });
   });
 }
