@@ -2014,7 +2014,7 @@ describe('Inspector Workbench', () => {
       expect(controller.runQuery).not.toHaveBeenCalled();
     });
 
-    it.todo('forgets the loaded saved query when the format changes', async () => {
+    it('forgets the loaded saved query when the format changes', async () => {
       const controller = new FakeController(readyState());
       const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
       const format = readyState().format!.id;
@@ -2030,6 +2030,52 @@ describe('Inspector Workbench', () => {
 
       expect(screen.queryByRole('button', { name: 'Update "Kept"' })).toBeNull();
       expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
+    });
+
+    it('records the run that settled, not a stale one', async () => {
+      // Empty SQL and no result make the Workbench auto-run the pack's overview query on ready.
+      const controller = new FakeController({ ...readyState(), sql: '', result: null });
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      const format = readyState().format!.id;
+      // Settle explicitly (runQuery publishes nothing) so the test controls every outcome.
+      controller.runQuery.mockImplementation(async () => undefined);
+      render(Workbench, { controller, queryLibrary });
+      await vi.waitFor(() => expect(controller.runQuery).toHaveBeenCalledWith(queries[0]!.sql));
+
+      // The automatic overview query is not a user run and is never recorded.
+      controller.publish({ ...controller.state, resultSettleCount: controller.state.resultSettleCount + 1 });
+      await tick();
+      expect(queryLibrary.historyFor(format)).toEqual([]);
+
+      const view = EditorView.findFromDOM(document.querySelector('.sql-editor') as HTMLElement)!;
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'select stale' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Run query' }));
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'select fresh' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Run query' }));
+      controller.publish({
+        ...controller.state,
+        queryError: 'Binder Error: nope',
+        resultSettleCount: controller.state.resultSettleCount + 1,
+      });
+      await tick();
+
+      expect(queryLibrary.historyFor(format)).toEqual([
+        expect.objectContaining({ sql: 'select fresh', status: 'error', rowCount: null }),
+      ]);
+    });
+
+    it('shows library notices with Undo in the query notices', async () => {
+      const controller = new FakeController(readyState());
+      const queryLibrary = await QueryLibrary.open(new MemoryQueryStore());
+      queryLibrary.save({ format: readyState().format!.id, name: 'Gone', sql: 'select 1' });
+      render(Workbench, { controller, queryLibrary });
+
+      await fireEvent.click(await screen.findByRole('button', { name: 'Actions for Gone' }));
+      await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
+      const notice = screen.getByRole('status', { name: 'Query library notice' });
+      expect(notice.textContent).toContain('Deleted Gone');
+      await fireEvent.click(within(notice).getByRole('button', { name: 'Undo' }));
+      expect(await screen.findByRole('button', { name: 'Gone' })).toBeTruthy();
     });
   });
 });

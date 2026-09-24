@@ -1,5 +1,5 @@
 <script lang="ts">
-  /* global Blob, DragEvent, Event, File, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, document, localStorage, window */
+  /* global Blob, DragEvent, Event, File, HTMLElement, HTMLInputElement, KeyboardEvent, MediaQueryList, MediaQueryListEvent, Storage, clearTimeout, document, localStorage, setTimeout, window */
 
   import type { ResultSort, ResultSortCapability } from '@byteql/db';
   import { resultColumnLabel } from '@byteql/db/result-columns';
@@ -10,6 +10,7 @@
   import { createCoverageMemo, provenanceOfRow, type RowProvenance } from '../lib/hex/coverage.js';
   import { wrapFilterSql } from '../lib/hex/filter-sql.js';
   import type { QueryLibrary } from '../lib/queries/library.js';
+  import type { LibraryNotice } from '../lib/queries/notice.js';
   import type { SavedQuery } from '../lib/queries/types.js';
   import type { SampleId } from '../lib/session/samples.js';
   import { resultSortDisabledReason } from '../lib/session/result-sort-availability.js';
@@ -93,6 +94,21 @@
     if (!saved || saved.format !== session.format?.id) return null;
     return saved;
   });
+  let libraryNotice = $state<LibraryNotice | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  function showLibraryNotice(notice: LibraryNotice): void {
+    clearTimeout(noticeTimer);
+    libraryNotice = notice;
+    noticeTimer = setTimeout(() => (libraryNotice = null), 8000);
+  }
+  $effect(() => {
+    const library = queryLibrary;
+    if (!library) return;
+    return library.subscribe((event) => {
+      if (event.type === 'storage-error') showLibraryNotice({ message: event.message });
+    });
+  });
+  $effect(() => () => clearTimeout(noticeTimer));
   let actionError = $state<string | null>(null);
   let coverageMessage = $state<string | null>(null);
   /**
@@ -685,11 +701,39 @@
     void tick().then(() => sqlEditor?.focus());
   }
 
+  /**
+   * The user run awaiting its outcome. Plain (not reactive): it is only read when the settle
+   * count moves. The automatic overview query bypasses `run`, so it is never recorded.
+   */
+  let pendingRun: { format: string; sql: string; settleCount: number } | null = null;
+
   function run(sql: string): void {
     if (!sql.trim()) return;
     draftSql = sql;
+    pendingRun =
+      queryLibrary && session.format
+        ? { format: session.format.id, sql, settleCount: session.resultSettleCount }
+        : null;
     perform(() => controller.runQuery(sql));
   }
+
+  $effect(() => {
+    const settled = session.resultSettleCount;
+    const pending = pendingRun;
+    const library = queryLibrary;
+    if (!pending || !library || settled <= pending.settleCount) return;
+    pendingRun = null;
+    const failed = session.queryError !== null;
+    const result = session.result;
+    untrack(() =>
+      library.recordRun({
+        format: pending.format,
+        sql: pending.sql,
+        status: failed ? 'error' : 'ok',
+        rowCount: !failed && result?.complete ? result.loadedRows : null,
+      }),
+    );
+  });
 
   // While the drawer is a modal surface, Tab stays inside it and Escape closes it; on close,
   // focus returns to whatever opened it.
@@ -702,6 +746,12 @@
   function loadQueryFromCatalog(sql: string, saved: SavedQuery | null = null): void {
     closeDrawer();
     loadQuery(sql, saved);
+  }
+
+  function saveRecent(sql: string): void {
+    closeDrawer();
+    loadQuery(sql, null);
+    saveOpen = true;
   }
 
   const canSave = $derived(queryLibrary !== null && session.format !== null && draftSql.trim() !== '');
@@ -973,6 +1023,10 @@
         onquery={loadQueryFromCatalog}
         onbrowse={browseFromCatalog}
         onselectsource={selectSourceFromCatalog}
+        library={queryLibrary}
+        onloadquery={loadQueryFromCatalog}
+        onsaverecent={saveRecent}
+        onnotice={showLibraryNotice}
       />
     </div>
 
@@ -1108,6 +1162,22 @@
             {#if coverageMessage}
               <div class="format-notice" role="status" aria-label="Coverage notice">
                 {coverageMessage}
+              </div>
+            {/if}
+
+            {#if libraryNotice}
+              <div class="format-notice" role="status" aria-label="Query library notice">
+                <span>{libraryNotice.message}</span>
+                {#if libraryNotice.undo}
+                  <button
+                    class="button button-secondary button-compact"
+                    type="button"
+                    onclick={() => {
+                      libraryNotice?.undo?.();
+                      libraryNotice = null;
+                    }}>Undo</button
+                  >
+                {/if}
               </div>
             {/if}
 
