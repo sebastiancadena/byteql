@@ -549,3 +549,34 @@ streams:`,
     ]);
   });
 });
+
+describe('stream lifecycle: neutral values on a spec with no lifecycle fields', () => {
+  // 0.3 columns are implicitly nullable, so closed_by is a plain utf8 (nullable is not legal
+  // pre-0.4) — a stream declaring none of open/close/reset still gets neutral lifecycle values.
+  const neutralYaml = yaml.replace(
+    "      status: { expr: '_.status', type: utf8 }",
+    `      status: { expr: '_.status', type: utf8 }
+      opened: { expr: '_.opened', type: bool }
+      closed_by: { expr: '_.closed_by', type: utf8 }
+      generation: { expr: '_.generation', type: uint32 }
+      conflict_count: { expr: '_.conflict_count', type: uint32 }`,
+  );
+
+  it('gives a flow neutral lifecycle values when the stream declares no lifecycle fields', () => {
+    const compiled = compileProjection(parseProjectionSpec(neutralYaml), registry, streamRegistries);
+    const issues = new IssueCollector();
+    const session = createProjectionSession(compiled, { issues });
+    session.project(
+      { records: [{ n: 0, body: { bytes: chunk(7, 0, [1, 65]), start: 0 } }] },
+      { resolve: () => ({ start: 0, end: 4 }) },
+    );
+    const flows = table(session.finish(), 'flows');
+    expect(flows.rowCount).toBe(1);
+    expect([
+      flows.arrow.getChild('opened')!.get(0),
+      flows.arrow.getChild('closed_by')!.get(0),
+      flows.arrow.getChild('generation')!.get(0),
+      flows.arrow.getChild('conflict_count')!.get(0),
+    ]).toEqual([false, null, 1, 0]);
+  });
+});
