@@ -1090,6 +1090,13 @@ export interface StreamRuntimeEntry {
   opened: boolean;
   openOffset: number | null;
   closedBy: 'close' | 'reset' | null;
+  // Fix B (FIN-beyond-data gap, ROADMAP #5 review): the highest offset any `close` signal has
+  // carried on this entry — latched, never reset and never lowered (unlike closedBy, `reset`
+  // never touches this field; see contributeToStream). Null until the first `close`.
+  // flushStreams compares it against the reassembled data end (base + contiguousEnd, or the
+  // anchor base when there is no data) to report 'gap' when the FIN arrived past the last byte
+  // actually captured, even though the assembler itself sees no internal gap.
+  closeOffset: number | null;
   // 1-based; bumped by Task 5's generation-splitting logic. Distinct generations of the same
   // (stream, key) each get their own entry, all retained in `ordered` for flush.
   generation: number;
@@ -1162,6 +1169,7 @@ const createFlowEntry = (
     opened: false,
     openOffset: null,
     closedBy: null,
+    closeOffset: null,
     generation,
     conflictCount: 0,
     belowBaseReported: false,
@@ -1629,6 +1637,11 @@ const contributeToStream = (
   // reset always wins, even over an already-'reset' entry
   if (reset) entry.closedBy = 'reset';
   else if (close && entry.closedBy === null) entry.closedBy = 'close';
+  // Fix B (FIN-beyond-data gap): the highest offset any `close` signal has carried on this entry,
+  // latched — never reset, never lowered by a smaller/later close. flushStreams compares it
+  // against the reassembled data end to catch a FIN that closes the connection past the last byte
+  // actually captured (see flushStreams's STREAM_GAP branch).
+  if (close) entry.closeOffset = entry.closeOffset === null ? offset : Math.max(entry.closeOffset, offset);
 
   if (isControl) {
     // No payload bytes to fold into the assembler: record the control segment (so
@@ -2036,6 +2049,27 @@ export const flushStreams = (emitContext: EmitContext): void => {
             code: 'STREAM_GAP',
             recoverable: true,
             message: `stream ${JSON.stringify(stream.name)}: a gap remains unresolved at flush`,
+            sourceStart: span.start,
+            sourceEnd: span.end,
+          });
+        } else if (
+          // Fix B (ROADMAP #5 review): a FIN beyond the reassembled data is a gap too, even
+          // though the assembler itself sees no internal hole — the capture is simply missing
+          // the tail. Compared in the same extended-offset space as everything else: the
+          // assembler's base plus its contiguous fill, or the anchor base alone when no data was
+          // ever accepted. Skipped (no data AND no anchor) when that space can't be computed at
+          // all, which only happens for a close signal on a generation that never opened or
+          // received any data.
+          entry.closeOffset !== null &&
+          entry.assembler.base !== null &&
+          entry.closeOffset > entry.assembler.base + entry.assembler.contiguousEnd
+        ) {
+          entry.status = 'gap';
+          emitContext.issues?.report({
+            stage: 'reassembling',
+            code: 'STREAM_GAP',
+            recoverable: true,
+            message: `stream ${JSON.stringify(stream.name)}: closed past the last byte actually reassembled`,
             sourceStart: span.start,
             sourceEnd: span.end,
           });

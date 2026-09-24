@@ -447,3 +447,20 @@ describe('stream wraparound', () => {
     expect(segs.col('offset')).toEqual([0n, 6n]);
   });
 });
+
+describe('stream lifecycle: close beyond reassembled data (fix B)', () => {
+  it('reports a gap when close arrives past the last byte actually reassembled', () => {
+    // open anchors the base at 10; no data ever arrives, so the reassembled data end is the base
+    // itself (10). A close at 210 is 200 bytes past that — a gap, even though the assembler sees
+    // no internal hole (nothing was ever buffered to have a hole in).
+    const { finished, issues } = project([chunk(7, OPEN, 10), chunk(7, CLOSE, 210)]);
+    expect(rows(finished, 'flows').col('status')).toEqual(['gap']);
+    expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_GAP']);
+  });
+
+  it('does not report a gap when close lands exactly at the reassembled data end', () => {
+    // open at 10, message [2,'a','b'] fills offsets 10..13, close at 13: exactly the data end.
+    const { finished } = project([chunk(7, OPEN, 10), chunk(7, 0, 10, [2, 97, 98]), chunk(7, CLOSE, 13)]);
+    expect(rows(finished, 'flows').col('status')).toEqual(['ok']);
+  });
+});

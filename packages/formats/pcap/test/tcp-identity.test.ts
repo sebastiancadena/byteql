@@ -111,6 +111,20 @@ describe('tcp connection identity (lifecycle)', () => {
     expect(result.issues.map((i) => i.code)).toEqual(['STREAM_GAP']);
   });
 
+  it('fix B: reports a gap when FIN closes past the last byte actually captured', async () => {
+    // SYN at 1000 anchors the base at 1001 (ISN+1); no data ever arrives; FIN|ACK at 1501 is 500
+    // bytes past that base, in the extended-offset space fix B compares against. The assembler
+    // itself sees no internal hole (nothing was ever buffered), so only fix B's close-vs-data-end
+    // check catches this.
+    const { table, result } = await run([
+      seg({ seq: 1000, flags: SYN }),
+      seg({ seq: 1501, flags: FIN | ACK }),
+    ]);
+    const flow = clientFlows(table('streams'))[0]!;
+    expect(flow.status).toBe('gap');
+    expect(result.issues.map((i) => i.code)).toEqual(['STREAM_GAP']);
+  });
+
   it('control segments map packets to connections through stream_segments', async () => {
     const { table } = await run([seg({ seq: 1000, flags: SYN }), seg({ seq: 1001, flags: FIN | ACK })]);
     const segs = table('stream_segments').toArray();
