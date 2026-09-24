@@ -19,7 +19,8 @@ or in `PRD.md` §12.
   `RecordSource` drain-before-finish contract.
 - **Phase 1, slice 1 of 3 (pcap pack): shipped.** `packages/formats/pcap` — vendored + patched
   Kaitai network `.ksy` (`network/PROVENANCE.md`, `PATCHES.md`), classic-pcap streaming framer,
-  the 10-parser dissect registry (ethernet → ipv4/ipv6 → tcp/udp → dns/icmp/icmpv6/tls), the
+  the 10-parser dissect registry (ethernet → ipv4/ipv6 → tcp/udp → dns/icmp/icmpv6/tls; 12 since
+  the SLL/SLL2 follow-up), the
   `pcap.tables.yaml` projection spec (8-table union + dissect graph), and the `FormatPack`
   façade wired into the web app's probe registry, canned queries, and e2e (`pcap.spec.ts`).
   Full-workspace gate (`pnpm -r check`, unit tests incl. MIDI regression, `check:bundle`, e2e)
@@ -129,12 +130,16 @@ or in `PRD.md` §12.
   (`http2-16-ssl.pcapng`), and the scale bench gained `--container pcapng`. Documented
   limitations: no compressed captures (`.pcapng.gz`/`.pcapng.zst`), Decryption Secrets Blocks and
   Name Resolution Blocks are skipped and not used, only `opt_comment` is decoded from packet
-  options, and no resync after broken block-length framing. The three new `packets` columns
-  cost classic pcap about 4% on the 1 GB bench (median 58.8 s/GB against 56.4 s/GB before, still
-  under 60 s). Deployed to byteql.dev 2026-09-23 at `c032a48`. Design and implementation notes:
-  `docs/superpowers/specs/2026-09-23-pcapng-intake-design.md`; its **"Deferred follow-ups"**
-  section is the resumable list of what was left for later (parse headroom, a hostile block-size
-  cap, SLL/SLL2 link types, the bench script's `PATH` bug, and small test/doc gaps).
+  options, and no resync after broken block-length framing. Deployed to byteql.dev 2026-09-23 at
+  `c032a48`. Design and implementation notes:
+  `docs/superpowers/specs/2026-09-23-pcapng-intake-design.md`.
+- **pcapng follow-ups: done 2026-09-23** (the spec's **"Deferred follow-ups"** 1–5; the opt-in
+  scope extensions in item 6 remain). `packages/core/src/arrow/build.ts` builds int, int64,
+  and utf8 vectors directly instead of through `vectorFromArray`, cutting classic 1 GB parse
+  from a median of 59.1 s/GB to 42.6 s/GB with goldens unchanged. Both pcap readers cap a
+  record or parsed block at `PCAP_MAX_RECORD_BYTES` (16 MiB): `OVERSIZED_RECORD` for classic,
+  `MALFORMED_BLOCK` for pcapng. Linux cooked capture (SLL 113, SLL2 276) is dissected through
+  to `ip` and below.
 - **Next (per `ROADMAP.md`):** saved queries. The unaided external Phase 0 test is still open
   supporting work.
 
@@ -214,8 +219,8 @@ its vitest suites run without a browser).
   format packs through their built `dist/`, so after changing a pack run
   `pnpm --filter @byteql/<pack> build` (or `pnpm build`) before e2e, or the app sees the stale pack
 - Privacy/bundle audit: `pnpm --filter @byteql/web check:bundle`
-- Scale bench: `node apps/web/scripts/run-scale-bench.mjs --gb 1 [--container pcap|pcapng]` (needs
-  `apps/web/node_modules/.bin` on `PATH`); run samples one at a time
+- Scale bench: `node apps/web/scripts/run-scale-bench.mjs --gb 1 [--container pcap|pcapng]`; run
+  samples one at a time
 - Deploy (manual, no CI): `pnpm release:pages` from the repo root — check, bundle audit, Pages
   artifact prep and verification, then `wrangler pages deploy` to the `byteql` project
 - Markdown: `rumdl fmt <file>` (MD013 line-length warnings up to ~100 chars are accepted repo

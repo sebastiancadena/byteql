@@ -19,7 +19,6 @@ import {
   makeData,
   tableFromIPC,
   tableToIPC,
-  util,
   vectorFromArray,
   type DataType,
 } from 'apache-arrow';
@@ -131,28 +130,17 @@ const requireInt64 = (value: number | bigint, table: string, column: string): bi
 const requireUint64 = (value: number | bigint, table: string, column: string): bigint =>
   requireFixed64(value, MIN_UINT64, MAX_UINT64_EXCLUSIVE, table, column);
 
-// Range-checks every value of a declared 64-bit column (numbers AND bigints — arrow would
-// silently two's-complement-wrap an out-of-range bigint otherwise) and converts it to the
-// exact bigint arrow consumes.
-const valuesForType = (
-  values: readonly unknown[],
-  type: ArrowTypeName,
-  table: string,
-  column: string,
-): readonly unknown[] => {
-  if (type !== 'int64' && type !== 'uint64') return values;
-  const check = type === 'int64' ? requireInt64 : requireUint64;
-  return values.map((value) => {
-    if (value === null || value === undefined) return value;
-    if (typeof value !== 'number' && typeof value !== 'bigint') {
-      throw new Error(
-        `ARROW_UNSAFE_INT64: ${table}.${column} received ${JSON.stringify(
-          value,
-        )}, expected a number, bigint, or null for a 64-bit integer column`,
-      );
-    }
-    return check(value, table, column);
-  });
+const isNull = (value: unknown): boolean => value === null || value === undefined;
+
+/** Validity bitmap (LSB-first, one bit per row) and null count for `values`. */
+const validityOf = (values: readonly unknown[]): { bitmap: Uint8Array; nullCount: number } => {
+  const bitmap = new Uint8Array((values.length + 7) >> 3);
+  let nullCount = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    if (isNull(values[index])) nullCount += 1;
+    else bitmap[index >> 3]! |= 1 << (index & 7);
+  }
+  return { bitmap, nullCount };
 };
 
 // Convert a projected timestamp_us value into exact int64 microseconds, with no float
@@ -175,23 +163,133 @@ const toTimestampMicros = (value: unknown, table: string, column: string): bigin
 const timestampMicrosecondVector = (values: readonly unknown[], table: string, column: string): Vector => {
   const length = values.length;
   const data = new BigInt64Array(length);
-  const validity = new Array<boolean>(length);
-  let nullCount = 0;
   for (let index = 0; index < length; index += 1) {
-    const micros = toTimestampMicros(values[index], table, column);
-    const valid = micros !== null;
-    validity[index] = valid;
-    if (!valid) nullCount += 1;
-    data[index] = micros ?? 0n;
+    data[index] = toTimestampMicros(values[index], table, column) ?? 0n;
   }
+  const { bitmap, nullCount } = validityOf(values);
   const vectorData = makeData({
     type: new TimestampMicrosecond(),
     length,
     nullCount,
-    nullBitmap: util.packBools(validity),
+    nullBitmap: bitmap,
     data,
   });
   return new Vector([vectorData]);
+};
+
+// Direct construction for the hot column types. `vectorFromArray` routes every value through a
+// generic builder (null check, bitmap write, buffer reserve, one TextEncoder call per string),
+// which dominated row projection's cost. These build the same buffers in one pass and store the
+// same values: typed-array assignment is exactly what the builder's own `setValue` does, so
+// numeric coercion and wrapping are unchanged.
+
+type FixedIntArray =
+  | Int8ArrayConstructor
+  | Uint8ArrayConstructor
+  | Int16ArrayConstructor
+  | Uint16ArrayConstructor
+  | Int32ArrayConstructor
+  | Uint32ArrayConstructor;
+
+const FIXED_INT_ARRAYS: Partial<Record<ArrowTypeName, FixedIntArray>> = {
+  int8: Int8Array,
+  uint8: Uint8Array,
+  int16: Int16Array,
+  uint16: Uint16Array,
+  int32: Int32Array,
+  uint32: Uint32Array,
+};
+
+const fixedIntVector = (
+  values: readonly unknown[],
+  type: ArrowTypeName,
+  ArrayType: FixedIntArray,
+): Vector => {
+  const length = values.length;
+  const data = new ArrayType(length);
+  for (let index = 0; index < length; index += 1) {
+    const value = values[index];
+    if (!isNull(value)) data[index] = value as number;
+  }
+  const { bitmap, nullCount } = validityOf(values);
+  return new Vector([
+    makeData({
+      type: arrowType(type) as Int8,
+      length,
+      nullCount,
+      nullBitmap: bitmap,
+      data: data as Int8Array,
+    }),
+  ]);
+};
+
+const fixed64Vector = (
+  values: readonly unknown[],
+  type: 'int64' | 'uint64',
+  table: string,
+  column: string,
+): Vector => {
+  const length = values.length;
+  const data = type === 'int64' ? new BigInt64Array(length) : new BigUint64Array(length);
+  const [min, maxExclusive] =
+    type === 'int64' ? [MIN_INT64, MAX_INT64_EXCLUSIVE] : [MIN_UINT64, MAX_UINT64_EXCLUSIVE];
+  for (let index = 0; index < length; index += 1) {
+    const value = values[index];
+    if (isNull(value)) continue;
+    if (typeof value !== 'number' && typeof value !== 'bigint') {
+      throw new Error(
+        `ARROW_UNSAFE_INT64: ${table}.${column} received ${JSON.stringify(
+          value,
+        )}, expected a number, bigint, or null for a 64-bit integer column`,
+      );
+    }
+    data[index] = requireFixed64(value, min, maxExclusive, table, column);
+  }
+  const { bitmap, nullCount } = validityOf(values);
+  return new Vector([
+    makeData({
+      type: arrowType(type) as Int64,
+      length,
+      nullCount,
+      nullBitmap: bitmap,
+      data: data as BigInt64Array,
+    }),
+  ]);
+};
+
+const utf8Encoder = new TextEncoder();
+
+const utf8Vector = (values: readonly unknown[]): Vector => {
+  const length = values.length;
+  const valueOffsets = new Int32Array(length + 1);
+  let bytes = new Uint8Array(Math.max(64, length * 8));
+  let used = 0;
+  for (let index = 0; index < length; index += 1) {
+    const value = values[index];
+    if (!isNull(value)) {
+      const text = String(value);
+      // UTF-8 needs at most 3 bytes per UTF-16 code unit.
+      const worst = text.length * 3;
+      if (used + worst > bytes.length) {
+        const grown = new Uint8Array(Math.max(bytes.length * 2, used + worst));
+        grown.set(bytes.subarray(0, used));
+        bytes = grown;
+      }
+      used += utf8Encoder.encodeInto(text, bytes.subarray(used)).written;
+    }
+    valueOffsets[index + 1] = used;
+  }
+  const { bitmap, nullCount } = validityOf(values);
+  return new Vector([
+    makeData({
+      type: new Utf8(),
+      length,
+      nullCount,
+      nullBitmap: bitmap,
+      valueOffsets,
+      data: bytes.subarray(0, used),
+    }),
+  ]);
 };
 
 export const columnVector = (
@@ -199,12 +297,17 @@ export const columnVector = (
   type: ArrowTypeName,
   table: string,
   column: string,
-): Vector =>
-  type === 'timestamp_us'
-    ? timestampMicrosecondVector(values, table, column)
-    : type === 'src_ranges'
-      ? vectorFromArray(srcRangesValues(values, table, column), SRC_RANGES_ARROW_TYPE)
-      : vectorFromArray(valuesForType(values, type, table, column), arrowType(type));
+): Vector => {
+  if (type === 'timestamp_us') return timestampMicrosecondVector(values, table, column);
+  if (type === 'src_ranges') {
+    return vectorFromArray(srcRangesValues(values, table, column), SRC_RANGES_ARROW_TYPE);
+  }
+  if (type === 'int64' || type === 'uint64') return fixed64Vector(values, type, table, column);
+  if (type === 'utf8') return utf8Vector(values);
+  const fixedInt = FIXED_INT_ARRAYS[type];
+  if (fixedInt) return fixedIntVector(values, type, fixedInt);
+  return vectorFromArray(values, arrowType(type));
+};
 
 export const projectedTableToArrow = (table: ProjectedTable): Table => {
   for (const [name, values] of Object.entries(table.columns)) {

@@ -198,7 +198,11 @@ fatal.
   block's space, or block fields that do not fit their block (`MALFORMED_BLOCK`). A malformed
   IDB still occupies its positional index in the section, so later packets that reference it
   report `UNKNOWN_INTERFACE` rather than binding to the wrong interface. A Section Header Block
-  shorter than its 28-byte minimum stops instead, since every later block depends on it.
+  shorter than its 28-byte minimum stops instead, since every later block depends on it. A
+  parsed block (SHB, IDB, EPB, OPB, SPB) longer than `PCAP_MAX_RECORD_BYTES` (16 MiB) is
+  `MALFORMED_BLOCK` too: only its trailer is read, never its body, so a hostile length cannot
+  force a file-sized allocation; an oversized SHB stops. Classic pcap applies the same cap to a
+  record's `incl_len`, reported as `OVERSIZED_RECORD` and skipped by its declared length.
 - **Keep the block, drop its options:** an option whose length runs past the options area
   (`MALFORMED_OPTION`); the packet or interface is still emitted with defaults for the options
   not decoded.
@@ -323,13 +327,12 @@ per-packet columns, before shipping it.
   cannot go negative.
 - pcapng framing issues carry no record ordinal (`errors.record` is null), matching classic
   framing issues.
-- Parsed blocks are read whole with no size cap, the same as classic pcap's `incl_len` handling
-  — a hostile giant block forces one large allocation. This is a hardening candidate, not fixed
-  here.
+- Parsed blocks were read whole with no size cap, the same as classic pcap's `incl_len` handling.
+  Fixed by follow-up 2 (a 16 MiB cap).
 - `packages/formats/pcap/dist` must be rebuilt (`pnpm --filter @byteql/pcap build`) before web
   e2e sees pack changes.
-- `scripts/run-scale-bench.mjs` spawns `playwright` without a shell and needs
-  `apps/web/node_modules/.bin` on `PATH`.
+- `scripts/run-scale-bench.mjs` spawned `playwright` without a shell and needed
+  `apps/web/node_modules/.bin` on `PATH`. Fixed by follow-up 4.
 
 **Documented limitations (unchanged from the design's scope decisions):** no compressed captures
 (`.pcapng.gz`/`.pcapng.zst`); Decryption Secrets Blocks and Name Resolution Blocks are skipped,
@@ -339,41 +342,36 @@ framing.
 ## Deferred follow-ups
 
 Deployed to byteql.dev on 2026-09-23 at `c032a48`. The items below were found during
-implementation and review and deliberately left for later. Each one is self-contained: it names
-where the work lives and how to know it is done, so it can be picked up in a fresh session. Take
-them through the normal design → plan → implementation flow; none is scheduled in `ROADMAP.md`
-yet.
+implementation and review and deliberately left for later. Items 1–5 were done on 2026-09-23 on
+`feature/pcapng-follow-ups`; item 6 stays open until users ask.
 
-1. **Restore classic-pcap parse headroom.** The three new `packets` columns cost classic pcap
-   about 4.4% at 1 GB (median 58.8 s/GB against 56.4 s/GB), leaving about 2% under the 60 s
-   target (see "Implementation notes"). The remaining cost is per column in `packages/core`: row
-   projection in `src/projection/project.ts` and the Arrow builders in `src/arrow/build.ts`
-   (`timestamp_us`, for example, converts every value to a bigint). Profile before choosing a
-   fix. Done when a ≥3-sample interleaved A/B
-   (`node apps/web/scripts/run-scale-bench.mjs --gb 1`, run one at a time) shows the classic
-   median back at or below about 56.5 s/GB, with every golden unchanged.
-2. **Cap block and record sizes for hostile input.** Both readers read a parsed block or record
-   whole: `packages/formats/pcap/src/pcapng.ts` (SHB, IDB, EPB, OPB, SPB) and the classic
-   `incl_len` body in `src/container.ts`. A hostile file can therefore declare one block as large
-   as the file and force an allocation of that size. Choose a documented cap, well above any
-   real snaplen (262,144 is the common maximum), and report oversized blocks as
-   `MALFORMED_BLOCK` (pcapng) or `TRUNCATED_RECORD`-style errors (classic) instead of reading
-   them. Done when a fixture that declares an oversized block within the file size yields an
-   `errors` row and no large allocation, and the conformance fuzz still passes.
-3. **Dissect more link types.** Only Ethernet (1) and raw IP (101 → 228/229) reach the `ip`
-   table. Captures from `tcpdump -i any` or `dumpcap -i any` use Linux cooked capture, SLL (113)
-   or SLL2 (276). They project `packets` and `interfaces` rows but no `ip`, `tcp`, or other rows.
-   Add wrappers and `dissect` entries in `pcap.tables.yaml` for both. This applies to both
-   containers.
-4. **Make the benchmark script find Playwright.** `apps/web/scripts/run-scale-bench.mjs` calls
-   `spawnSync('playwright', …)` without a shell, so it fails with `ENOENT` unless
-   `apps/web/node_modules/.bin` is on `PATH`. Resolve the binary explicitly, or run it through
-   `pnpm exec`.
-5. **Small test and doc gaps.** `apps/web/e2e/support/capture.ts`: the `generateCapture`
-   docstring should say that `packetCount` differs by container at the same `bytesTarget`. No
-   test drives a pcapng `inclLen` near 2^31 through the non-bitwise pad in `src/pcapng.ts`. The
-   arithmetic is provably equivalent to the old expression, so a unit test of the pad expression
-   alone would be enough.
+1. **Restore classic-pcap parse headroom — done.** A Node CPU profile of a 200 MB classic
+   capture put about 30% of parse time in apache-arrow's generic `vectorFromArray` builders (a
+   null check, bitmap write, and buffer reserve per value, plus one `TextEncoder` call per
+   string). `packages/core/src/arrow/build.ts` now builds int8–uint32, int64/uint64, and utf8
+   vectors directly into typed arrays with one validity pass, storing exactly what the builder
+   stores (an equivalence test checks it against `vectorFromArray`); bool and binary still use the
+   builder. Node parse of the 200 MB capture went from about 6.9 s to 4.6 s. Interleaved 1 GB
+   classic A/B against `main` (3 samples each, run one at a time): main 59.2 / 59.1 / 58.7 s/GB
+   (median 59.1), branch 42.6 / 42.8 / 42.5 s/GB (median 42.6), a 28% cut and well under the
+   56.5 s/GB goal. One 1 GB pcapng sample on the branch measured 41.9 s/GB. Every golden is
+   unchanged.
+2. **Cap block and record sizes for hostile input — done.** `PCAP_MAX_RECORD_BYTES` (16 MiB, 64
+   times the 262,144 snaplen common maximum) in `src/container.ts` caps both readers. A classic
+   record with a larger `incl_len` that still fits the file is reported as `OVERSIZED_RECORD` and
+   skipped by its declared length. A larger parsed pcapng block is `MALFORMED_BLOCK`: only its
+   trailer is read, an oversized IDB keeps its positional index, and an oversized SHB stops the
+   read. Tests over a sparse `ByteSource` declare a 32 MiB record or block inside the file and
+   check that no read exceeds the chunk size.
+3. **Dissect more link types — done.** Byteql-authored `ksy/linux_sll.ksy` (113) and
+   `ksy/linux_sll2.ksy` (276) and their wrappers route the `protocol` field to the IPv4 and IPv6
+   parsers, for both containers. The registry now has 12 parsers. New goldens:
+   `linux-sll.pcap` and `linux-sll2.pcapng`. The SLL fields themselves are not projected into a
+   table.
+4. **Make the benchmark script find Playwright — done.** The script resolves
+   `apps/web/node_modules/.bin/playwright` itself.
+5. **Small test and doc gaps — done.** `generateCapture`'s docstring states the per-container
+   packet count, and the pad is `padTo4` in `src/pcapng.ts`, unit-tested at and above 2^31.
 6. **Scope extensions, if users ask.** These were excluded by the design: compressed captures
    (`.pcapng.gz`, `.pcapng.zst`); surfacing Decryption Secrets Blocks (TLS key logs) and Name
    Resolution Blocks as tables; decoding packet options other than `opt_comment` (`epb_flags`,

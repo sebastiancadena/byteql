@@ -221,7 +221,7 @@ overview) — it never affects Arrow output or goldens.
 
 A parser is a `RecordParser`: it takes a byte range and returns the projection root (or root
 fragment) for a nested structure — pcap's `dissect:` chain calls one per protocol layer
-(ethernet → ipv4/ipv6 → tcp/udp → dns/tls/icmp/icmpv6).
+(ethernet or Linux SLL/SLL2 → ipv4/ipv6 → tcp/udp → dns/tls/icmp/icmpv6).
 
 `@byteql/core/kaitai` provides the two helpers every Kaitai-backed parser needs, so pack
 wrappers shrink to field maps instead of re-implementing parse/offset glue:

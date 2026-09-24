@@ -1,4 +1,17 @@
-import { Bool, Int8, Int16, Int32, Int64, Uint8, Uint16, Uint32, Uint64, Utf8 } from 'apache-arrow';
+import {
+  Bool,
+  Int8,
+  Int16,
+  Int32,
+  Int64,
+  Uint8,
+  Uint16,
+  Uint32,
+  Uint64,
+  Utf8,
+  vectorFromArray,
+  type DataType,
+} from 'apache-arrow';
 import { describe, expect, it } from 'vitest';
 
 import type { ProjectedTable } from '../projection/project.js';
@@ -257,5 +270,50 @@ describe('src_ranges vectors', () => {
     ],
   ])('rejects an invariant violation: %s', (_label, value) => {
     expect(() => columnVector([value], 'src_ranges', 't', '_src_ranges')).toThrow(/SRC_RANGES_INVALID/);
+  });
+});
+
+describe('direct vector construction', () => {
+  // The fixed-width and utf8 fast paths must store exactly what apache-arrow's generic builder
+  // stores for the same input, including typed-array wrapping and null handling.
+  const reference: [string, DataType, unknown[]][] = [
+    ['int8', new Int8(), [0, -128, 127, 200, null, -1.9, undefined]],
+    ['uint8', new Uint8(), [0, 255, 256, -1, null]],
+    ['int16', new Int16(), [-32768, 32767, 40000, null]],
+    ['uint16', new Uint16(), [0, 65535, 65536, null, 7]],
+    ['int32', new Int32(), [-(2 ** 31), 2 ** 31 - 1, 2 ** 31, null]],
+    ['uint32', new Uint32(), [0, 2 ** 32 - 1, 2 ** 32, -1, null]],
+    ['utf8', new Utf8(), ['', 'ascii', 'ñandú', '🦊 fox', null, 'x'.repeat(300), '\ud800 lone', undefined]],
+  ];
+
+  it.each(reference)('%s matches vectorFromArray', (type, arrowType, values) => {
+    const direct = columnVector(values, type as 'int8', 't', 'c');
+    const expected = vectorFromArray(
+      values.map((v) => v ?? null),
+      arrowType,
+    );
+    expect(String(direct.type)).toBe(String(expected.type));
+    expect(direct.nullCount).toBe(expected.nullCount);
+    expect([...direct]).toEqual([...expected]);
+  });
+
+  it('int64 and uint64 store exact bigints and nulls', () => {
+    const int64 = columnVector([-(2n ** 63n), 2n ** 63n - 1n, 5, null], 'int64', 't', 'c');
+    expect([...int64]).toEqual([-(2n ** 63n), 2n ** 63n - 1n, 5n, null]);
+    expect(int64.nullCount).toBe(1);
+    const uint64 = columnVector([2n ** 64n - 1n, null, 0], 'uint64', 't', 'c');
+    expect([...uint64]).toEqual([2n ** 64n - 1n, null, 0n]);
+  });
+
+  it('rejects a non-numeric value in a 64-bit column', () => {
+    expect(() => columnVector(['7'], 'int64', 't', 'c')).toThrow(
+      'ARROW_UNSAFE_INT64: t.c received "7", expected a number, bigint, or null for a 64-bit integer column',
+    );
+  });
+
+  it('builds zero-length columns', () => {
+    for (const type of ['int8', 'uint32', 'int64', 'utf8'] as const) {
+      expect(columnVector([], type, 't', 'c').length).toBe(0);
+    }
   });
 });

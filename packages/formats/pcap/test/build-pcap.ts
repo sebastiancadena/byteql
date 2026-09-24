@@ -187,6 +187,46 @@ export function ethFrame({ etherType, payload }: EthFrameOptions): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
+// Linux cooked capture (ksy/linux_sll.ksy, ksy/linux_sll2.ksy)
+// ---------------------------------------------------------------------------
+
+export interface SllFrameOptions {
+  /** The Ethernet type of the payload, e.g. 0x0800 for IPv4, 0x86dd for IPv6. */
+  protocol: number;
+  payload: Uint8Array;
+}
+
+const SLL_ARPHRD_ETHER = 1;
+const SLL_PACKET_OUTGOING = 4;
+
+/** Linux cooked capture v1 (linktype 113): 16-byte header, then the payload. */
+export function sllFrame({ protocol, payload }: SllFrameOptions): Uint8Array {
+  const bytes = new Uint8Array(16 + payload.length);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(0, SLL_PACKET_OUTGOING, false);
+  view.setUint16(2, SLL_ARPHRD_ETHER, false);
+  view.setUint16(4, 6, false); // addr_len
+  bytes.set(ETH_SRC_MAC, 6);
+  view.setUint16(14, protocol, false);
+  bytes.set(payload, 16);
+  return bytes;
+}
+
+/** Linux cooked capture v2 (linktype 276): 20-byte header, then the payload. */
+export function sll2Frame({ protocol, payload }: SllFrameOptions): Uint8Array {
+  const bytes = new Uint8Array(20 + payload.length);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(0, protocol, false);
+  view.setUint32(4, 2, false); // interface_index
+  view.setUint16(8, SLL_ARPHRD_ETHER, false);
+  bytes[10] = SLL_PACKET_OUTGOING;
+  bytes[11] = 6; // addr_len
+  bytes.set(ETH_SRC_MAC, 12);
+  bytes.set(payload, 20);
+  return bytes;
+}
+
+// ---------------------------------------------------------------------------
 // IPv4 (network/ipv4_packet.ksy)
 // ---------------------------------------------------------------------------
 

@@ -84,6 +84,14 @@ const RECORD_HEADER_SIZE = 16;
 /** Default chunk size the incremental framer reads from its `ByteSource`. */
 export const PCAP_CHUNK_BYTES = 8 * 1024 * 1024;
 
+/**
+ * Largest record body (classic) or parsed block (pcapng) either reader will read. Both read a
+ * record whole, so without a cap a hostile file could declare one record as large as the file and
+ * force an allocation of that size. 16 MiB is 64 times the largest snaplen in common use
+ * (262,144); anything larger is reported and skipped by its declared length, never read.
+ */
+export const PCAP_MAX_RECORD_BYTES = 16 * 1024 * 1024;
+
 /** The four magic-number spellings pcap global headers may open with. */
 const MAGIC_BE_US = 0xa1b2c3d4;
 const MAGIC_BE_NS = 0xa1b23c4d;
@@ -141,6 +149,7 @@ export interface PcapFramer {
 export async function createPcapFramer(
   source: ByteSource,
   chunkBytes: number = PCAP_CHUNK_BYTES,
+  maxRecordBytes: number = PCAP_MAX_RECORD_BYTES,
 ): Promise<PcapFramer> {
   const headBytes = await source.read(0, GLOBAL_HEADER_SIZE);
   if (headBytes.length < GLOBAL_HEADER_SIZE) {
@@ -167,12 +176,18 @@ export async function createPcapFramer(
   let stopped = false;
 
   const next = async (): Promise<PcapPacket | null> => {
-    if (stopped) return null;
-    if (cursor >= source.size) {
-      stopped = true;
-      return null;
+    for (;;) {
+      if (stopped) return null;
+      if (cursor >= source.size) {
+        stopped = true;
+        return null;
+      }
+      const packet = await frame();
+      if (packet !== 'skipped') return packet;
     }
+  };
 
+  const frame = async (): Promise<PcapPacket | 'skipped' | null> => {
     const recordStart = cursor;
     const headerEnd = recordStart + RECORD_HEADER_SIZE;
     if (headerEnd > source.size) {
@@ -206,6 +221,18 @@ export async function createPcapFramer(
       });
       stopped = true;
       return null;
+    }
+    if (inclLen > maxRecordBytes) {
+      // The framing is intact (the declared body fits the file), so skip the body unread and
+      // keep going rather than allocating it.
+      issues.push({
+        code: 'OVERSIZED_RECORD',
+        message: `record ${index}: declared ${inclLen} body bytes, more than the ${maxRecordBytes}-byte limit; skipped`,
+        sourceStart: recordStart,
+        sourceEnd: bodyEnd,
+      });
+      cursor = bodyEnd;
+      return 'skipped';
     }
 
     const bodyRead = await window.ensure(bodyStart, inclLen);

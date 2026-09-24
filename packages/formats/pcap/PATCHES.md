@@ -144,6 +144,16 @@ so there is nothing to copy or patch. `ksy/icmpv6.ksy` lives only under
 shape (an `echo_msg` subtype for echo request/reply) but adds a `code` field
 alongside `icmp_type`, matching RFC 4443.
 
+## `linux_sll.ksy` and `linux_sll2.ksy`
+
+Byteql-authored, not vendored: the vendored upstream `network/` set has no
+Linux cooked-capture spec. They describe the 16-byte (v1, linktype 113) and
+20-byte (v2, linktype 276) pseudo link-layer headers that `tcpdump -i any`
+and `dumpcap -i any` write, following tcpdump.org's `LINKTYPE_LINUX_SLL` and
+`LINKTYPE_LINUX_SLL2` pages. Both expose `protocol` (an Ethernet type) and a
+`size-eos` `body`, so `pcap.tables.yaml` routes them to `ipv4_packet` and
+`ipv6_packet` exactly as it routes `ethernet_frame`'s `ether_type`.
+
 ## Re-vendoring
 
 If `network/` is ever re-fetched from a newer upstream commit, re-apply these

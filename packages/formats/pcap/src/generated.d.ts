@@ -26,6 +26,30 @@ declare module '*EthernetFrame.js' {
   export default generatedModule;
 }
 
+declare module '*LinuxSll.js' {
+  export class LinuxSll {
+    constructor(stream: unknown);
+    _read(): void;
+    protocol: number;
+    body: Uint8Array;
+    _debug: { body: GeneratedDebugRange };
+  }
+  const generatedModule: { LinuxSll: typeof LinuxSll };
+  export default generatedModule;
+}
+
+declare module '*LinuxSll2.js' {
+  export class LinuxSll2 {
+    constructor(stream: unknown);
+    _read(): void;
+    protocol: number;
+    body: Uint8Array;
+    _debug: { body: GeneratedDebugRange };
+  }
+  const generatedModule: { LinuxSll2: typeof LinuxSll2 };
+  export default generatedModule;
+}
+
 declare module '*Ipv4Packet.js' {
   export class Ipv4Packet {
     constructor(stream: unknown);
