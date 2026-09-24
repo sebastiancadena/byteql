@@ -128,8 +128,9 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
 1. Duplicate-column correctness. **Done, 2026-09-16.**
 2. Truthful multi-range provenance. **Done, 2026-09-22.**
 3. Pcapng intake. **Done, 2026-09-23.**
+4. Saved queries and opt-in local history. **Done, 2026-09-24.**
 
-Saved queries are the next usability feature after that cycle.
+Hardening TCP connection identity (priority 5) is next.
 
 ## Evidence boundary
 

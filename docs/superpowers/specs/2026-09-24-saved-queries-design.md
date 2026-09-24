@@ -288,3 +288,25 @@ What differed from the design above, and what was discovered while implementing 
   MIDI pack's fixtures, so this feature's own e2e fixtures resolve first.
 - Measured at completion: the web unit suite has 994 passing tests; e2e is 157/158, the one
   failure a pre-existing panel-resize flake that reproduces with this work reverted.
+- The privacy e2e has no reload step: a reload itself makes document/asset requests, which would
+  break the post-readiness zero-request assertion the same way any other navigation would.
+- Export goes through a small `lib/queries/download.ts` helper (`saveTextFile`: a save handle
+  when available, otherwise a Blob object URL), not the result-export destination code — the two
+  have different retry/cleanup needs and nothing to share beyond "write a local file".
+- Cross-tab: when another tab turns history on, this tab does not adopt its live history; the
+  library only reloads stored history on the `settings`/`history` `BroadcastChannel` notification
+  while ITS OWN `persistHistory` is already true. A tab that currently has persistence off picks
+  up the other tab's history the next time it reloads the page (`QueryLibrary.open` re-reads
+  stored history whenever the stored setting is on).
+- `QueryStore.clearHistoryIfOff()` sweeps stored history whenever the *stored* settings have
+  persistence off, atomically with the check (mirroring `putHistory`'s atomicity). `QueryLibrary`
+  calls it once on `open()` when the just-read settings have persistence off, so a stale write
+  left by a failed turn-off clear is removed the next time the app opens, not just the next time
+  persistence is toggled off again; a failed sweep is swallowed (open must still succeed — there
+  are no listeners yet to tell). `setPersistHistory(false)` also now runs its `clearHistory()` in
+  a `finally`, so a failed `setSettings` write still gets a cleanup attempt.
+- `parseQueryFile` treats a no-`-- name:`-marker file as a genuinely empty export only when every
+  line is blank or a `--` comment (which covers the header and `-- format:` lines by construction,
+  since both start with `--`); anything else with no markers is imported whole, as one query.
+  Non-blank, non-comment text before the first marker in a file that DOES have markers is reported
+  as one `rejected` block with the new `'unnamed'` reason, rather than being silently dropped.
