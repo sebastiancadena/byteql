@@ -191,10 +191,13 @@ export class QueryLibrary {
         }
       });
     } else {
-      // "Off" never means "hidden but still on disk".
+      // Settings first, then clear: once "off" is stored, a concurrent putHistory either
+      // already saw "off" (and skipped itself) or commits before this clear runs and gets
+      // removed by it. Clearing first would leave a window where "off" isn't stored yet, so a
+      // concurrent putHistory could still land and outlive the clear.
       this.#persist(async () => {
-        await this.#store.clearHistory();
         await this.#store.setSettings(settings);
+        await this.#store.clearHistory();
       });
     }
     this.#changed();
@@ -264,15 +267,27 @@ export class QueryLibrary {
           this.#queueReload(change, this.#mutationCount);
           return;
         }
+        let apply: () => void;
         if (change === 'saved') {
-          this.#saved = await this.#store.listSaved();
+          const saved = await this.#store.listSaved();
+          apply = () => (this.#saved = saved);
         } else if (change === 'settings') {
-          this.#settings = await this.#store.getSettings();
+          const settings = await this.#store.getSettings();
+          apply = () => (this.#settings = settings);
         } else if (this.#settings.persistHistory) {
-          this.#history = await this.#store.listHistory();
+          const history = await this.#store.listHistory();
+          apply = () => (this.#history = history);
         } else {
           return;
         }
+        if (this.#mutationCount !== seenAt) {
+          // The read above is genuinely async (e.g. an IndexedDB request): a local mutation could
+          // have landed while it was in flight, meaning what it just fetched may already be
+          // stale. Requeue instead of overwriting memory with it.
+          this.#queueReload(change, this.#mutationCount);
+          return;
+        }
+        apply();
         this.#changed();
       })
       .catch(() => {

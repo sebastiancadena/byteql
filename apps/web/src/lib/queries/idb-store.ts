@@ -88,8 +88,11 @@ export class IndexedDbQueryStore implements QueryStore {
   }
 
   putHistory(entry: HistoryEntry, limit: number): Promise<void> {
-    // One transaction over both stores so the persistHistory check and the write are atomic:
-    // a concurrent turn-off (its own settings+history transaction) can never land in between.
+    // One transaction over both stores so the persistHistory check and the write are atomic: no
+    // other transaction can observe or change `settings` between the read and the write here.
+    // Turn-off is two separate transactions (settings, then history), so this put still either
+    // sees stored "off" already and skips itself, or commits before turn-off's settings write and
+    // is then removed by turn-off's following clear — never left stored after "off" is stored.
     const transaction = this.#db.transaction(['settings', 'history'], 'readwrite');
     const done = transactionDone(transaction);
     let wrote = false;

@@ -8,6 +8,7 @@ import {
 } from './library.js';
 import { parseQueryFile } from './sql-file.js';
 import { MemoryQueryStore } from './store.js';
+import type { SavedQuery } from './types.js';
 
 async function openLibrary(store = new MemoryQueryStore()) {
   let clock = 1_000;
@@ -119,6 +120,46 @@ describe('QueryLibrary history', () => {
     expect(await store.listHistory()).toEqual([]);
     expect(library.historyFor('pcap')).toHaveLength(1);
     expect(library.settings.persistHistory).toBe(false);
+  });
+
+  it('turns persistence off by storing "off" before clearing, so a losing write can never outlive it', async () => {
+    const { library, store } = await openLibrary();
+    library.setPersistHistory(true);
+    await library.flush();
+
+    const order: string[] = [];
+    const setSettings = store.setSettings.bind(store);
+    const clearHistory = store.clearHistory.bind(store);
+    vi.spyOn(store, 'setSettings').mockImplementation(async (settings) => {
+      order.push('setSettings');
+      await setSettings(settings);
+    });
+    vi.spyOn(store, 'clearHistory').mockImplementation(async () => {
+      order.push('clearHistory');
+      await clearHistory();
+    });
+
+    library.setPersistHistory(false);
+    await library.flush();
+
+    expect(order).toEqual(['setSettings', 'clearHistory']);
+  });
+
+  it('emits a storage error but keeps "off" stored when the history clear fails during turn-off', async () => {
+    const { library, store } = await openLibrary();
+    library.setPersistHistory(true);
+    library.recordRun(run());
+    await library.flush();
+
+    vi.spyOn(store, 'clearHistory').mockRejectedValueOnce(new Error('boom'));
+    const events: LibraryEvent[] = [];
+    library.subscribe((event) => events.push(event));
+
+    library.setPersistHistory(false);
+    await library.flush();
+
+    expect(events).toContainEqual({ type: 'storage-error', message: STORAGE_ERROR_MESSAGE });
+    expect((await store.getSettings()).persistHistory).toBe(false);
   });
 
   it('restores persisted history on open only when persistence is on', async () => {
@@ -284,5 +325,31 @@ describe('QueryLibrary races between local mutations and reloads', () => {
     await library.flush();
 
     expect(events).toContainEqual({ type: 'storage-error', message: STORAGE_READ_ERROR_MESSAGE });
+  });
+
+  it('does not let a local mutation made while a reload read is in flight be lost when that stale read resolves', async () => {
+    const store = new MemoryQueryStore();
+    const notify = mockRemote(store);
+    const { library } = await openLibrary(store);
+
+    let resolveRead: ((value: SavedQuery[]) => void) | null = null;
+    vi.spyOn(store, 'listSaved').mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    notify('saved');
+    await Promise.resolve(); // let the reload's read start and capture resolveRead
+
+    const saved = library.save({ format: 'pcap', name: 'A', sql: 'select 1' });
+    // The stale read resolves with data captured before the local save; the fix must not let it
+    // overwrite memory once it finally settles.
+    resolveRead!([]);
+    await library.flush();
+
+    expect(library.find(saved.id)).not.toBeNull();
+    expect(library.savedFor('pcap').map((query) => query.id)).toContain(saved.id);
   });
 });
