@@ -9,6 +9,7 @@ import type { IssueCollector } from '../issues.js';
 import type { CompiledDissect, CompiledProjection, CompiledProjectionTable } from './compile.js';
 import type { ParsedRecord } from './parsers.js';
 import type { ArrowTypeName } from './spec.js';
+// Cycle with stream-runtime.ts: safe only while neither module evaluates the other's exports at top level.
 import { contributeToStream, type InheritedProvenance, type StreamsRuntime } from './stream-runtime.js';
 import { buildMatcher, walkMatcher } from './walk.js';
 

@@ -4,6 +4,7 @@
 import { traverseAnchor } from './anchors.js';
 import { evaluateExpression, type CompiledExpression, type ExpressionContext } from './expression.js';
 import type { CompiledProjection, CompiledStream } from './compile.js';
+// Cycle with emit.ts: safe only while neither module evaluates the other's exports at top level.
 import {
   emitRow,
   fireDissect,
