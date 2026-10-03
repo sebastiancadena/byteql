@@ -39,4 +39,12 @@ export type WorkerResponse =
   | ({ type: 'progress'; taskId: number } & ParseProgress)
   | ({ type: 'batch'; taskId: number } & BatchMessage)
   | ({ type: 'finish'; taskId: number } & StreamedParseResult)
-  | { type: 'error'; taskId: number; message: string };
+  | {
+      type: 'error';
+      taskId: number;
+      message: string;
+      /** Failure code, e.g. `UNRECOGNIZED_FORMAT` (diagnostic: the client reads only `message`). */
+      code?: string;
+      /** Stage the task failed in, e.g. `framing` or `parsing` (diagnostic, like `code`). */
+      stage?: string;
+    };
