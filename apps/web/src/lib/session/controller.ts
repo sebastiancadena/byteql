@@ -262,7 +262,7 @@ export class SessionController {
     this.assertUsable();
     // A row index means a position in the committed display, which is exactly what a pending sort
     // is about to change.
-    if (this.sorter.pending) return;
+    if (this.busy.sortPending()) return;
     this.store.dispatch({ type: 'rowSelected', row });
   }
 
@@ -272,7 +272,7 @@ export class SessionController {
 
   selectByteRange(range: { file: string; start: number; end: number } | null): void {
     this.assertUsable();
-    if (this.sorter.pending) return;
+    if (this.busy.sortPending()) return;
     this.store.dispatch({ type: 'byteRangeSelected', range });
   }
 
