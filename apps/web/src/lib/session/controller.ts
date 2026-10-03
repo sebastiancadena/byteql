@@ -911,7 +911,6 @@ export class SessionController {
     let ingest: IngestSession;
     try {
       ingest = await this.database.beginIngest({
-        schemas: 'discover',
         tier,
         generation,
         ...(rotationBytes !== undefined ? { rotationBytes } : {}),

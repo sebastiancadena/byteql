@@ -1233,7 +1233,6 @@ describe('createBrowserDatabase', () => {
     const query = await database.startQuery('select * from events');
 
     const ingest = await database.beginIngest({
-      schemas: [eventsSchema],
       tier: 'memory',
       generation: 9,
     });
@@ -1396,9 +1395,7 @@ describe('createBrowserDatabase', () => {
     expect(duckdbMocks.connection.close).toHaveBeenCalledOnce();
     expect(duckdbMocks.database.terminate).toHaveBeenCalledOnce();
     await expect(database.startQuery('SELECT 1;')).rejects.toThrow('disposed');
-    await expect(
-      database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 1 }),
-    ).rejects.toThrow('disposed');
+    await expect(database.beginIngest({ tier: 'memory', generation: 1 })).rejects.toThrow('disposed');
     await expect(database.cancelQuery()).resolves.toBe(false);
   });
 
@@ -1458,7 +1455,7 @@ describe('createBrowserDatabase', () => {
     duckdbMocks.database.instantiate.mockImplementationOnce(() => initialization.promise);
     const database = await createBrowserDatabase();
 
-    const session = await database.beginIngest({ schemas: [eventsSchema], tier: 'memory', generation: 1 });
+    const session = await database.beginIngest({ tier: 'memory', generation: 1 });
     const append = session.appendBatch('events', ipcBatch(1));
     await vi.waitFor(() => expect(duckdbMocks.database.instantiate).toHaveBeenCalledOnce());
     const disposal = database.dispose();
@@ -1836,7 +1833,6 @@ describe('createBrowserDatabase', () => {
     it('appends into generation-scoped staging tables, create-then-append', async () => {
       const database = await createBrowserDatabase();
       const session = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 7,
       });
@@ -1874,7 +1870,6 @@ describe('createBrowserDatabase', () => {
       const database = await createBrowserDatabase();
 
       const first = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 7,
       });
@@ -1883,7 +1878,6 @@ describe('createBrowserDatabase', () => {
       duckdbMocks.connection.query.mockClear();
 
       const second = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 8,
       });
@@ -1900,39 +1894,10 @@ describe('createBrowserDatabase', () => {
       expect(await database.listTables()).toEqual(['events']);
     });
 
-    it('tables never appended still finalize as empty tables from their schema', async () => {
-      const database = await createBrowserDatabase();
-
-      const session = await database.beginIngest({
-        schemas: [eventsSchema, errorsSchema],
-        tier: 'memory',
-        generation: 8,
-      });
-      await session.appendBatch('events', ipcBatch(1));
-
-      const summaries = await session.finalize();
-
-      const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
-      const createIndex = calls.indexOf(
-        'CREATE TABLE "__ingest_8_errors" ("code" VARCHAR, "seen_at" TIMESTAMP);',
-      );
-      const renameIndex = calls.indexOf('ALTER TABLE "__ingest_8_errors" RENAME TO "errors";');
-      expect(createIndex).toBeGreaterThanOrEqual(0);
-      expect(renameIndex).toBeGreaterThan(createIndex);
-      expect(summaries).toEqual(
-        expect.arrayContaining([
-          { name: 'events', rowCount: 1 },
-          { name: 'errors', rowCount: 0 },
-        ]),
-      );
-      expect(await database.listTables()).toEqual(expect.arrayContaining(['events', 'errors']));
-    });
-
     it('abort drops only its own staging and leaves committed finals untouched', async () => {
       const database = await createBrowserDatabase();
 
       const committed = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 7,
       });
@@ -1941,7 +1906,6 @@ describe('createBrowserDatabase', () => {
       duckdbMocks.connection.query.mockClear();
 
       const session = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 8,
       });
@@ -1957,15 +1921,14 @@ describe('createBrowserDatabase', () => {
       expect(await database.listTables()).toEqual(['events']);
     });
 
-    it('rejects appends to undeclared tables and after finalize', async () => {
+    it('rejects appends to invalid table identifiers and after finalize', async () => {
       const database = await createBrowserDatabase();
       const session = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 9,
       });
 
-      await expect(session.appendBatch('unknown', ipcBatch(1))).rejects.toThrow('Undeclared');
+      await expect(session.appendBatch('bad-name', ipcBatch(1))).rejects.toThrow('Invalid table identifier');
       expect(duckdbMocks.connection.insertArrowFromIPCStream).not.toHaveBeenCalled();
 
       await session.appendBatch('events', ipcBatch(1));
@@ -1978,7 +1941,6 @@ describe('createBrowserDatabase', () => {
       const database = await createBrowserDatabase();
 
       const first = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 7,
       });
@@ -1986,7 +1948,6 @@ describe('createBrowserDatabase', () => {
       await first.finalize();
 
       const second = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 8,
       });
@@ -2006,7 +1967,6 @@ describe('createBrowserDatabase', () => {
     it('preserves both the finalize and rollback failures', async () => {
       const database = await createBrowserDatabase();
       const session = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 1,
       });
@@ -2033,7 +1993,6 @@ describe('createBrowserDatabase', () => {
       const database = await createBrowserDatabase();
 
       const session = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 8,
       });
@@ -2061,7 +2020,6 @@ describe('createBrowserDatabase', () => {
       const database = await createBrowserDatabase();
 
       const session = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 8,
       });
@@ -2080,43 +2038,16 @@ describe('createBrowserDatabase', () => {
       await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow(/failed/i);
     });
 
-    it('rejects invalid or duplicate schema table identifiers before creating a session', async () => {
-      const database = await createBrowserDatabase();
-
-      await expect(
-        database.beginIngest({
-          schemas: [{ name: 'bad-name', columns: [] }],
-          tier: 'memory',
-          generation: 1,
-        }),
-      ).rejects.toThrow('Invalid table identifier');
-
-      await expect(
-        database.beginIngest({
-          schemas: [
-            { name: 'Events', columns: [] },
-            { name: 'events', columns: [] },
-          ],
-          tier: 'memory',
-          generation: 1,
-        }),
-      ).rejects.toThrow('Duplicate table identifier');
-
-      expect(duckdbMocks.database.instantiate).not.toHaveBeenCalled();
-    });
-
     it('rejects beginIngest while another ingest session is open', async () => {
       const database = await createBrowserDatabase();
-      await database.beginIngest({ schemas: [eventsSchema], tier: 'memory', generation: 1 });
+      await database.beginIngest({ tier: 'memory', generation: 1 });
 
-      await expect(
-        database.beginIngest({ schemas: [eventsSchema], tier: 'memory', generation: 2 }),
-      ).rejects.toThrow(/already open/i);
+      await expect(database.beginIngest({ tier: 'memory', generation: 2 })).rejects.toThrow(/already open/i);
     });
 
-    it('discover mode registers tables lazily and does not reject undeclared names', async () => {
+    it('registers tables lazily on first append', async () => {
       const database = await createBrowserDatabase();
-      const session = await database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 3 });
+      const session = await database.beginIngest({ tier: 'memory', generation: 3 });
 
       await session.appendBatch('events', ipcBatch(2));
       await session.appendBatch('events', ipcBatch(1));
@@ -2148,9 +2079,9 @@ describe('createBrowserDatabase', () => {
       expect(summaries).toHaveLength(2);
     });
 
-    it('discover mode finalizes exactly the discovered set with no empty tables', async () => {
+    it('finalizes exactly the appended set with no empty tables when no backfill is given', async () => {
       const database = await createBrowserDatabase();
-      const session = await database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 4 });
+      const session = await database.beginIngest({ tier: 'memory', generation: 4 });
       await session.appendBatch('events', ipcBatch(2));
 
       const summaries = await session.finalize();
@@ -2162,13 +2093,13 @@ describe('createBrowserDatabase', () => {
       );
     });
 
-    it('discover mode backfills schema tables that never received an append as empty tables', async () => {
-      // Regression (C1): zero-row tables never appended in discover mode used to simply not
+    it('backfills schema tables that never received an append as empty tables', async () => {
+      // Regression (C1): zero-row tables that were never appended used to simply not
       // exist after finalize, so a query assuming every pack table exists (e.g. a UNION ALL
       // overview) hit a Catalog Error. Passing the pack's full schema list to finalize backfills
-      // any table discover-mode never saw an appendBatch for, as an empty table.
+      // any table the session never saw an appendBatch for, as an empty table.
       const database = await createBrowserDatabase();
-      const session = await database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 6 });
+      const session = await database.beginIngest({ tier: 'memory', generation: 6 });
       await session.appendBatch('events', ipcBatch(2));
 
       const summaries = await session.finalize([eventsSchema, errorsSchema]);
@@ -2195,9 +2126,9 @@ describe('createBrowserDatabase', () => {
         name: 'bytes',
         columns: [{ name: 'value', type: 'uint8', nullable: false }],
       };
-      const session = await database.beginIngest({ schemas: [uint8Schema], tier: 'memory', generation: 7 });
+      const session = await database.beginIngest({ tier: 'memory', generation: 7 });
 
-      const summaries = await session.finalize();
+      const summaries = await session.finalize([uint8Schema]);
 
       const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
       const createTable = calls.find((sql) => sql.includes('CREATE TABLE "__ingest_7_bytes"'));
@@ -2209,18 +2140,16 @@ describe('createBrowserDatabase', () => {
       it('rejects with SPILL_UNSUPPORTED when spillSupported is false', async () => {
         const database = await createBrowserDatabase({ spillSupported: false });
 
-        await expect(
-          database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
-        ).rejects.toMatchObject({ code: 'SPILL_UNSUPPORTED' });
+        await expect(database.beginIngest({ tier: 'spill', generation: 1 })).rejects.toMatchObject({
+          code: 'SPILL_UNSUPPORTED',
+        });
       });
 
       it('defaults spillSupported from navigator.storage.getDirectory availability', async () => {
         vi.stubGlobal('navigator', { storage: { getDirectory: vi.fn() } });
         try {
           const database = await createBrowserDatabase();
-          await expect(
-            database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
-          ).resolves.toBeDefined();
+          await expect(database.beginIngest({ tier: 'spill', generation: 1 })).resolves.toBeDefined();
         } finally {
           vi.unstubAllGlobals();
         }
@@ -2230,9 +2159,9 @@ describe('createBrowserDatabase', () => {
         vi.stubGlobal('navigator', {});
         try {
           const database = await createBrowserDatabase();
-          await expect(
-            database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
-          ).rejects.toMatchObject({ code: 'SPILL_UNSUPPORTED' });
+          await expect(database.beginIngest({ tier: 'spill', generation: 1 })).rejects.toMatchObject({
+            code: 'SPILL_UNSUPPORTED',
+          });
         } finally {
           vi.unstubAllGlobals();
         }
@@ -2244,7 +2173,6 @@ describe('createBrowserDatabase', () => {
         const batch2 = ipcBatch(3);
         const rotationBytes = batch1.byteLength + 1;
         const session = await database.beginIngest({
-          schemas: 'discover',
           tier: 'spill',
           generation: 9,
           rotationBytes,
@@ -2284,7 +2212,6 @@ describe('createBrowserDatabase', () => {
         const database = await createBrowserDatabase({ spillSupported: true });
 
         const previous = await database.beginIngest({
-          schemas: 'discover',
           tier: 'spill',
           generation: 5,
         });
@@ -2298,7 +2225,6 @@ describe('createBrowserDatabase', () => {
         const batch2 = ipcBatch(3);
         const rotationBytes = batch1.byteLength + 1;
         const session = await database.beginIngest({
-          schemas: 'discover',
           tier: 'spill',
           generation: 9,
           rotationBytes,
@@ -2346,7 +2272,7 @@ describe('createBrowserDatabase', () => {
         // the controller can show a clear message instead of a raw DB/OS error string.
         const database = await createBrowserDatabase({ spillSupported: true });
         const quotaError = new DOMException('The quota has been exceeded.', 'QuotaExceededError');
-        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 12 });
+        const session = await database.beginIngest({ tier: 'spill', generation: 12 });
         await session.appendBatch('events', ipcBatch(1)); // stays staged as a residual
 
         duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
@@ -2360,35 +2286,12 @@ describe('createBrowserDatabase', () => {
         await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow(/failed/i);
       });
 
-      it('a table with zero rows in spill tier finalizes as an empty TABLE, not a view', async () => {
-        const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({
-          schemas: [eventsSchema, errorsSchema],
-          tier: 'spill',
-          generation: 4,
-        });
-        await session.appendBatch('events', ipcBatch(1));
-
-        const summaries = await session.finalize();
-
-        const calls = duckdbMocks.connection.query.mock.calls.map(([sql]) => sql);
-        expect(calls).not.toEqual(expect.arrayContaining([expect.stringMatching(/^CREATE VIEW "errors"/)]));
-        const createIndex = calls.indexOf(
-          'CREATE TABLE "__ingest_4_errors" ("code" VARCHAR, "seen_at" TIMESTAMP);',
-        );
-        const renameIndex = calls.indexOf('ALTER TABLE "__ingest_4_errors" RENAME TO "errors";');
-        expect(createIndex).toBeGreaterThanOrEqual(0);
-        expect(renameIndex).toBeGreaterThan(createIndex);
-        expect(summaries).toEqual(expect.arrayContaining([{ name: 'errors', rowCount: 0 }]));
-        expect(await database.listTables()).toEqual(expect.arrayContaining(['events', 'errors']));
-      });
-
-      it('discover mode backfills a never-appended schema table as an empty TABLE in the spill tier', async () => {
+      it('backfills a never-appended schema table as an empty TABLE in the spill tier', async () => {
         // Same C1 regression as the memory-tier case above, exercised in the spill tier: a
-        // discover-mode table the pack declares but that never rotated or staged any residual
+        // table the pack declares but that never rotated or staged any residual
         // bytes must still exist as an empty table, not a dangling view over nothing.
         const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 11 });
+        const session = await database.beginIngest({ tier: 'spill', generation: 11 });
         await session.appendBatch('events', ipcBatch(1));
 
         const summaries = await session.finalize([eventsSchema, errorsSchema]);
@@ -2409,18 +2312,16 @@ describe('createBrowserDatabase', () => {
         const database = await createBrowserDatabase({ spillSupported: true });
 
         const spillSession = await database.beginIngest({
-          schemas: [eventsSchema, errorsSchema],
           tier: 'spill',
           generation: 4,
         });
         await spillSession.appendBatch('events', ipcBatch(1));
         // errors is never appended, so it finalizes as an empty TABLE fallback, not a view.
-        await spillSession.finalize();
+        await spillSession.finalize([eventsSchema, errorsSchema]);
         duckdbMocks.connection.query.mockClear();
         duckdbMocks.database.registerOPFSFileName.mockClear();
 
         const memorySession = await database.beginIngest({
-          schemas: [eventsSchema, errorsSchema],
           tier: 'memory',
           generation: 10,
         });
@@ -2445,7 +2346,6 @@ describe('createBrowserDatabase', () => {
         const database = await createBrowserDatabase({ spillSupported: true });
 
         const committed = await database.beginIngest({
-          schemas: 'discover',
           tier: 'spill',
           generation: 5,
         });
@@ -2454,7 +2354,6 @@ describe('createBrowserDatabase', () => {
         deleteSpillGenerationMock.mockClear();
 
         const session = await database.beginIngest({
-          schemas: 'discover',
           tier: 'spill',
           generation: 9,
         });
@@ -2479,7 +2378,6 @@ describe('createBrowserDatabase', () => {
         });
 
         const session = await database.beginIngest({
-          schemas: 'discover',
           tier: 'spill',
           generation: 9,
           rotationBytes: 1,
@@ -2497,7 +2395,7 @@ describe('createBrowserDatabase', () => {
 
       it('dispose best-effort deletes the current generation spill directory', async () => {
         const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 6 });
+        const session = await database.beginIngest({ tier: 'spill', generation: 6 });
         await session.appendBatch('events', ipcBatch(1));
         await session.finalize();
         deleteSpillGenerationMock.mockClear();
@@ -2509,7 +2407,7 @@ describe('createBrowserDatabase', () => {
 
       it('dispose resolves even if best-effort spill cleanup fails', async () => {
         const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 6 });
+        const session = await database.beginIngest({ tier: 'spill', generation: 6 });
         await session.appendBatch('events', ipcBatch(1));
         await session.finalize();
         deleteSpillGenerationMock.mockRejectedValueOnce(new Error('opfs down'));
@@ -2523,7 +2421,7 @@ describe('createBrowserDatabase', () => {
         // never finalized or aborted — left that generation's already-rotated OPFS parquet chunks
         // around until the next launch's orphan sweep instead of being reclaimed immediately.
         const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 15 });
+        const session = await database.beginIngest({ tier: 'spill', generation: 15 });
         await session.appendBatch('events', ipcBatch(1));
         deleteSpillGenerationMock.mockClear();
 
@@ -2534,7 +2432,7 @@ describe('createBrowserDatabase', () => {
 
       it('dispose does not reclaim any spill generation for an in-flight memory-tier ingest', async () => {
         const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({ schemas: 'discover', tier: 'memory', generation: 2 });
+        const session = await database.beginIngest({ tier: 'memory', generation: 2 });
         await session.appendBatch('events', ipcBatch(1));
         deleteSpillGenerationMock.mockClear();
 
@@ -2545,7 +2443,7 @@ describe('createBrowserDatabase', () => {
 
       it('abort after a failed spill finalize also deletes the new generation spill directory', async () => {
         const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 9 });
+        const session = await database.beginIngest({ tier: 'spill', generation: 9 });
         await session.appendBatch('events', ipcBatch(1));
         duckdbMocks.connection.query.mockImplementation(async (sql: string) => {
           if (sql.startsWith('CREATE VIEW')) {
@@ -2569,7 +2467,7 @@ describe('createBrowserDatabase', () => {
     describe('per-file ingest boundaries', () => {
       it('beginFile on the spill tier rotates residual staged rows before switching files', async () => {
         const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 9 });
+        const session = await database.beginIngest({ tier: 'spill', generation: 9 });
         // Small batch stays well under the default rotation threshold, so it remains a residual
         // staged row rather than triggering appendBatch's own rotation.
         await session.appendBatch('events', ipcBatch(2));
@@ -2590,7 +2488,7 @@ describe('createBrowserDatabase', () => {
 
       it('a quota error rotating residual staging at beginFile rejects SPILL_QUOTA_EXCEEDED and aborts the session', async () => {
         const database = await createBrowserDatabase({ spillSupported: true });
-        const session = await database.beginIngest({ schemas: 'discover', tier: 'spill', generation: 9 });
+        const session = await database.beginIngest({ tier: 'spill', generation: 9 });
         // Small batch stays well under the default rotation threshold, so it remains a residual
         // staged row that beginFile's boundary rotation must flush.
         await session.appendBatch('events', ipcBatch(2));
@@ -2612,7 +2510,6 @@ describe('createBrowserDatabase', () => {
       it('discardCurrentFile on the memory tier deletes by _src_file with an escaped literal', async () => {
         const database = await createBrowserDatabase();
         const session = await database.beginIngest({
-          schemas: [eventsSchema],
           tier: 'memory',
           generation: 1,
         });
@@ -2636,7 +2533,6 @@ describe('createBrowserDatabase', () => {
         const batch2 = ipcBatch(3);
         const rotationBytes = batch1.byteLength + 1;
         const session = await database.beginIngest({
-          schemas: 'discover',
           tier: 'spill',
           generation: 9,
           rotationBytes,
@@ -2667,7 +2563,6 @@ describe('createBrowserDatabase', () => {
       it('discardCurrentFile without beginFile is a no-op', async () => {
         const database = await createBrowserDatabase();
         const session = await database.beginIngest({
-          schemas: [eventsSchema],
           tier: 'memory',
           generation: 1,
         });
@@ -2690,7 +2585,6 @@ describe('createBrowserDatabase', () => {
       // startup orphan sweep on next launch, or session dispose).
       const database = await createBrowserDatabase({ spillSupported: true });
       const spillSession = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'spill',
         generation: 3,
       });
@@ -2699,7 +2593,6 @@ describe('createBrowserDatabase', () => {
       deleteSpillGenerationMock.mockClear();
 
       const memorySession = await database.beginIngest({
-        schemas: [eventsSchema],
         tier: 'memory',
         generation: 4,
       });
@@ -2711,7 +2604,7 @@ describe('createBrowserDatabase', () => {
 
     it('a memory-tier finalize with no prior spill generation does not call deleteSpillGeneration', async () => {
       const database = await createBrowserDatabase();
-      const session = await database.beginIngest({ schemas: [eventsSchema], tier: 'memory', generation: 1 });
+      const session = await database.beginIngest({ tier: 'memory', generation: 1 });
       await session.appendBatch('events', ipcBatch(1));
 
       await session.finalize();

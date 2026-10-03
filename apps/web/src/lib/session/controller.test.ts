@@ -1692,7 +1692,6 @@ describe('SessionController', () => {
     const opening = controller.openFile(file);
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     expect(database.beginIngest).toHaveBeenCalledWith({
-      schemas: 'discover',
       tier: 'memory',
       generation: 1,
     });

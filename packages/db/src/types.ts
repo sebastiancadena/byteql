@@ -58,8 +58,6 @@ export interface TableSummary {
 }
 
 export interface IngestOptions {
-  /** An explicit schema list, or 'discover' to register tables lazily on first appendBatch. */
-  schemas: readonly TableSchema[] | 'discover';
   tier: 'memory' | 'spill';
   generation: number;
   /** Spill tier only; defaults to ROTATION_THRESHOLD_BYTES (Task 7). */
@@ -69,11 +67,11 @@ export interface IngestOptions {
 export interface IngestSession {
   appendBatch(table: string, ipc: Uint8Array): Promise<void>;
   /**
-   * `backfillSchemas` (discover-mode only) names tables the caller knows the format pack
-   * declares but that may never have received an `appendBatch` call — e.g. a capture with no
-   * `tcp` packets. Any such table is created as an empty table from its schema, exactly like a
-   * never-appended declared-mode table, so it exists for queries (e.g. a UNION ALL overview)
-   * that assume every pack table exists. Ignored in declared mode (already covered).
+   * Tables register lazily on first `appendBatch`. `backfillSchemas` names tables the caller
+   * knows the format pack declares but that may never have received an `appendBatch` call — e.g.
+   * a capture with no `tcp` packets. Any such table is created as an empty table from its
+   * schema, so it exists for queries (e.g. a UNION ALL overview) that assume every pack table
+   * exists.
    */
   finalize(backfillSchemas?: readonly TableSchema[]): Promise<readonly TableSummary[]>;
   /**

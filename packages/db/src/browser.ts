@@ -119,29 +119,7 @@ const duckdbColumnType = (type: string): string => {
 
 const stagingTableName = (generation: number, table: string): string => `__ingest_${generation}_${table}`;
 
-/** Validates ingest schema table names: identifier syntax and case-insensitive uniqueness. */
-const validateIngestSchemas = (schemas: readonly TableSchema[]): ReadonlyMap<string, TableSchema> => {
-  const schemasByName = new Map<string, TableSchema>();
-  const canonicalNames = new Set<string>();
-  for (const schema of schemas) {
-    if (!IDENTIFIER.test(schema.name)) {
-      throw new Error(`Invalid table identifier: ${JSON.stringify(schema.name)}`);
-    }
-    const canonicalName = schema.name.toLowerCase();
-    if (canonicalNames.has(canonicalName)) {
-      throw new Error(`Duplicate table identifier: ${JSON.stringify(schema.name)}`);
-    }
-    canonicalNames.add(canonicalName);
-    schemasByName.set(schema.name, schema);
-  }
-  return schemasByName;
-};
-
 type IngestState = 'open' | 'finalized' | 'aborted' | 'failed';
-
-type SchemaMode =
-  | { readonly kind: 'declared'; readonly schemas: ReadonlyMap<string, TableSchema> }
-  | { readonly kind: 'discover' };
 
 type EnqueueFn = <T>(operation: (connection: AsyncDuckDBConnection) => Promise<T>) => Promise<T>;
 
@@ -169,7 +147,6 @@ class IngestSessionImpl implements IngestSession {
 
   constructor(
     private readonly generation: number,
-    private readonly schemaMode: SchemaMode,
     private readonly tier: 'memory' | 'spill',
     private readonly rotationBytes: number,
     private readonly opfs: OpfsFileRegistrar,
@@ -183,7 +160,7 @@ class IngestSessionImpl implements IngestSession {
 
   /** The set of tables this session is responsible for finalizing/aborting. */
   private sessionTables(): readonly string[] {
-    return this.schemaMode.kind === 'declared' ? [...this.schemaMode.schemas.keys()] : [...this.created];
+    return [...this.created];
   }
 
   /** Copies a staging table's currently-staged rows to the next parquet chunk and empties it. */
@@ -218,11 +195,7 @@ class IngestSessionImpl implements IngestSession {
     if (this.state !== 'open') {
       throw new Error(`Ingest session is ${this.state}; cannot append to ${JSON.stringify(table)}.`);
     }
-    if (this.schemaMode.kind === 'declared') {
-      if (!this.schemaMode.schemas.has(table)) {
-        throw new Error(`Undeclared ingest table: ${JSON.stringify(table)}`);
-      }
-    } else if (!IDENTIFIER.test(table)) {
+    if (!IDENTIFIER.test(table)) {
       throw new Error(`Invalid table identifier: ${JSON.stringify(table)}`);
     }
 
@@ -397,18 +370,13 @@ class IngestSessionImpl implements IngestSession {
         });
       }
 
-      const declaredSchemas = this.schemaMode.kind === 'declared' ? this.schemaMode.schemas : null;
-      // Discover mode only: a pack schema for a table this session never saw an `appendBatch`
-      // for (e.g. no `tcp` packets in this capture). Backfilled so the table still exists —
-      // callers (like a UNION ALL overview query) assume every pack table exists, not just the
-      // ones this particular file happened to populate.
+      // A pack schema for a table this session never saw an `appendBatch` for (e.g. no `tcp`
+      // packets in this capture). Backfilled so the table still exists — callers (like a UNION ALL
+      // overview query) assume every pack table exists, not just the ones this particular file
+      // happened to populate.
       const backfillByName = new Map((backfillSchemas ?? []).map((schema) => [schema.name, schema]));
-      const schemaFor = (table: string): TableSchema | undefined =>
-        declaredSchemas?.get(table) ?? backfillByName.get(table);
-      const finalizeTables: readonly string[] =
-        this.schemaMode.kind === 'declared'
-          ? this.sessionTables()
-          : [...new Set([...this.created, ...backfillByName.keys()])];
+      const schemaFor = (table: string): TableSchema | undefined => backfillByName.get(table);
+      const finalizeTables: readonly string[] = [...new Set([...this.created, ...backfillByName.keys()])];
 
       const summaries = await this.enqueue(async (connection) => {
         await connection.query('BEGIN TRANSACTION;');
@@ -434,9 +402,8 @@ class IngestSessionImpl implements IngestSession {
               finalKinds.set(table, 'view');
             } else {
               if (!this.created.has(table)) {
-                // A table that was never appended to: either a declared schema no rows arrived
-                // for, a discover-mode table backfilled from `backfillSchemas`, or a spill-tier
-                // table with zero rotated/residual chunks. Falls back to an empty TABLE rather
+                // A table that was never appended to: either a table backfilled from
+                // `backfillSchemas`, or a spill-tier table with zero rotated/residual chunks. Falls back to an empty TABLE rather
                 // than a view over nothing.
                 const schema = schemaFor(table);
                 if (!schema) {
@@ -1015,14 +982,8 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
       }
       await this.closeActiveQuery();
 
-      const schemaMode: SchemaMode =
-        options.schemas === 'discover'
-          ? { kind: 'discover' }
-          : { kind: 'declared', schemas: validateIngestSchemas(options.schemas) };
-
       const session: IngestSessionImpl = new IngestSessionImpl(
         options.generation,
-        schemaMode,
         options.tier,
         options.rotationBytes ?? ROTATION_THRESHOLD_BYTES,
         this.database,
