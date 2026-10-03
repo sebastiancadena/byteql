@@ -1510,6 +1510,30 @@ describe('SessionController', () => {
     expect(query.materializeCalls).toEqual([QUERY_RESULT_MEMORY_BYTES]);
   });
 
+  it.each([
+    ['declares none', {}],
+    ['declares only disabled ones', { audio: { enabled: false, reason: 'Not playable.' } }],
+  ])('does not materialize viewer input when the format %s', async (_label, capabilities) => {
+    const controller = new SessionController({ database, parser, csvClient, prepareDestination, stopViewer });
+    const opening = controller.openFile(midiFile('capture.mid', 1));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 30_000 }];
+    parser.calls[0]!.finish({ ...streamedResult('events', 30_000), capabilities });
+    await resolveFilesAppend(sessions[0]!);
+    await opening;
+    const query = new FakeQuerySession();
+    query.completeAfterPage = true;
+    vi.mocked(database.startQuery).mockImplementationOnce(async () => {
+      querySessions.push(query);
+      return query;
+    });
+
+    await controller.runQuery('select * from events');
+
+    expect(controller.getState().result).toMatchObject({ complete: true, completeTable: null });
+    expect(query.materializeCalls).toEqual([]);
+  });
+
   it('does not expose a complete table to viewers when materialization exceeds the budget', async () => {
     const query = new FakeQuerySession();
     query.completeAfterPage = true;

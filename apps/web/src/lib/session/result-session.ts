@@ -16,7 +16,7 @@ import {
   resultPageFailureMessage,
 } from './session-errors.js';
 import type { SessionStore } from './session-store.js';
-import type { PagedResultState } from './state.js';
+import type { PagedResultState, SessionState } from './state.js';
 
 export interface ResultSessionHooks {
   /** Whether a sort currently holds the result; paging demand is refused while one does. */
@@ -406,9 +406,13 @@ export class ResultSession {
    *
    * Viewers read the query's own ordering, which is the user's to control through SQL; a header
    * sort is a view of the result, and must not silently re-order what a viewer plays.
+   *
+   * Only an enabled format capability can put a viewer on screen, so a format without one never
+   * pays for the materialization budget.
    */
   private async baseViewerInput(active: QuerySession, generation: number): Promise<Table | null> {
     if (this.baseViewerMaterialized) return this.baseViewerTable;
+    if (!viewerCapabilityEnabled(this.store.state)) return null;
     let table: Table | null;
     try {
       table = await active.materialize(QUERY_RESULT_MEMORY_BYTES);
@@ -431,6 +435,11 @@ export class ResultSession {
       this.isCurrentQuery(this.store.sessionGeneration, generation)
     );
   }
+}
+
+/** Whether the opened format enables any capability a trusted viewer could need. */
+function viewerCapabilityEnabled(state: SessionState): boolean {
+  return Object.values(state.capabilities ?? {}).some((capability) => capability.enabled);
 }
 
 async function closeQuery(active: QuerySession, cancel: boolean): Promise<void> {
