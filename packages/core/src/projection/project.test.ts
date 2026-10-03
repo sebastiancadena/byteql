@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ProjectionCompileError } from './expression.js';
-import { compileProjection, projectTree } from './project.js';
+import { compileProjection } from './project.js';
+import { projectTree } from './project-tree.test-helper.js';
 import type { ProjectionSpec } from './spec.js';
 
 const projection = (table: ProjectionSpec['tables'][number]): ProjectionSpec => ({

@@ -1,4 +1,5 @@
 import jsep from 'jsep';
+import { missingProperty, readOwnDataPropertyBoxed } from './own-property.js';
 import type {
   BinaryExpression,
   CallExpression,
@@ -411,27 +412,16 @@ export const getExpressionContextReferences = (
 
 const hasOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key);
 
-const missingProperty = Symbol('missing property');
-
-const readOwnDataProperty = (value: unknown, key: string): unknown | typeof missingProperty => {
-  if (value === null || value === undefined) return missingProperty;
-
-  const boxed = Object(value) as object;
-  const descriptor = Object.getOwnPropertyDescriptor(boxed, key);
-  if (!descriptor || !('value' in descriptor)) return missingProperty;
-  return descriptor.value;
-};
-
 const snakeToCamel = (key: string): string =>
   key.replace(/_([a-z0-9])/gu, (_match, character: string) => character.toUpperCase());
 
 const readMember = (value: unknown, key: string, context: ExpressionContext): unknown => {
-  const exact = readOwnDataProperty(value, key);
+  const exact = readOwnDataPropertyBoxed(value, key);
   if (exact !== missingProperty) return exact ?? null;
 
   const camelKey = snakeToCamel(key);
   if (camelKey !== key) {
-    const camel = readOwnDataProperty(value, camelKey);
+    const camel = readOwnDataPropertyBoxed(value, camelKey);
     if (camel !== missingProperty) return camel ?? null;
   }
 
@@ -452,7 +442,7 @@ const readIdentifier = (name: string, context: ExpressionContext): unknown => {
 
   const state = context.state;
   if (!state || !hasOwn(state, name)) return null;
-  const value = readOwnDataProperty(state, name);
+  const value = readOwnDataPropertyBoxed(state, name);
   return value === missingProperty ? null : (value ?? null);
 };
 
@@ -654,7 +644,7 @@ const builtins = {
     if (typeof value === 'string' || Array.isArray(value) || value instanceof Uint8Array) {
       return value.length;
     }
-    const length = readOwnDataProperty(value, 'length');
+    const length = readOwnDataPropertyBoxed(value, 'length');
     return length !== missingProperty && typeof length === 'number' ? length : null;
   },
   u24be: (value: unknown): unknown => {
@@ -694,9 +684,9 @@ const evaluateCall = (node: CallExpression, context: ExpressionContext): unknown
       return null;
     }
 
-    const length = readOwnDataProperty(indexes, 'length');
+    const length = readOwnDataPropertyBoxed(indexes, 'length');
     if (typeof length !== 'number' || argument >= length) return null;
-    const value = readOwnDataProperty(indexes, String(argument));
+    const value = readOwnDataPropertyBoxed(indexes, String(argument));
     return value === missingProperty ? null : (value ?? null);
   }
 

@@ -138,9 +138,6 @@ export class StreamAssembler {
   #frontierIndex = 0;
   /** Highest absolute segment end seen so far (absolute offset space), null when no segments. */
   #highestEndAbs: number | null = null;
-  /** Lowest/highest absolute srcStart/srcEnd seen so far, null when no segments. */
-  #srcMin: number | null = null;
-  #srcMax: number | null = null;
 
   constructor(maxBuffer: number) {
     this.#maxBuffer = maxBuffer;
@@ -164,10 +161,6 @@ export class StreamAssembler {
   }
   get highestEnd(): number {
     return this.#highestEndAbs === null ? 0 : this.#highestEndAbs - (this.#base ?? 0);
-  }
-  get srcSpan(): { start: number; end: number } | null {
-    if (this.#srcMin === null || this.#srcMax === null) return null;
-    return { start: this.#srcMin, end: this.#srcMax };
   }
 
   hasGap(): boolean {
@@ -245,11 +238,7 @@ export class StreamAssembler {
    * `_src_ranges` provenance per stored piece stays correct. A prefix below the locked
    * (`#consumed > 0`) base is trimmed and reported rather than rejecting the whole call.
    */
-  // `srcEnd` is accepted (every caller passes it, matching srcStart/bytes.length symmetrically)
-  // but unused in the body: an accepted range's end is always srcStart + bytes.length, computed
-  // fresh per stored piece in #store below.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site symmetry, see above
-  add(offset: number, bytes: Uint8Array, srcStart: number, srcEnd: number): AssemblerAddOutcome {
+  add(offset: number, bytes: Uint8Array, srcStart: number): AssemblerAddOutcome {
     this.#maybeCompact();
     let trimmedBelowBase = false;
     if (this.#base !== null && this.#consumed > 0 && offset < this.#base) {
@@ -323,7 +312,6 @@ export class StreamAssembler {
         piece.start,
         bytes.subarray(piece.start - offset, piece.end - offset),
         srcStart + (piece.start - offset),
-        srcStart + (piece.end - offset),
       );
     }
     this.#advanceFrontier();
@@ -352,11 +340,11 @@ export class StreamAssembler {
 
   /**
    * Stores one fresh (already known not to overlap any existing segment), non-empty piece:
-   * grows/copies `#data`, inserts a sorted `StoredSegment`, and updates the byte/src-span
-   * counters and `#highestEndAbs`. Assumes `#base` is already final for this `add` call — the
+   * grows/copies `#data`, inserts a sorted `StoredSegment`, and updates the byte
+   * counter and `#highestEndAbs`. Assumes `#base` is already final for this `add` call — the
    * caller settles the base (including any rebase) before calling this.
    */
-  #store(start: number, bytes: Uint8Array, srcStart: number, srcEnd: number): void {
+  #store(start: number, bytes: Uint8Array, srcStart: number): void {
     const end = start + bytes.length;
     const relStart = start - this.#dataStart;
     if (relStart + bytes.length > this.#data.length) {
@@ -371,7 +359,7 @@ export class StreamAssembler {
     }
     this.#data.set(bytes, relStart);
 
-    const segment: StoredSegment = { start, end, srcStart, srcEnd };
+    const segment: StoredSegment = { start, end, srcStart, srcEnd: srcStart + bytes.length };
     let insertedAt: number;
     const lastSegment = this.#segments[this.#segments.length - 1];
     if (lastSegment === undefined || start > lastSegment.start) {
@@ -389,8 +377,6 @@ export class StreamAssembler {
     }
     this.#byteCount += bytes.length;
     this.#highestEndAbs = this.#highestEndAbs === null ? end : Math.max(this.#highestEndAbs, end);
-    this.#srcMin = this.#srcMin === null ? srcStart : Math.min(this.#srcMin, srcStart);
-    this.#srcMax = this.#srcMax === null ? srcEnd : Math.max(this.#srcMax, srcEnd);
     if (insertedAt < this.#frontierIndex) this.#frontierIndex = insertedAt;
   }
 
@@ -400,7 +386,7 @@ export class StreamAssembler {
    * nothing has been consumed yet, and the resulting extent fits `maxBuffer` — the base moves
    * down and stored data shifts accordingly. `'ignored'`: any other case (offset at/above base,
    * consumed > 0, or the rebase extent would exceed the cap). Never stores a segment; does not
-   * change `byteCount`, `segmentCount`, or `srcSpan`.
+   * change `byteCount`, `segmentCount`, or the source ranges.
    */
   anchor(offset: number): 'anchored' | 'rebased' | 'ignored' {
     if (this.#base === null) {

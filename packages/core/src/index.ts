@@ -63,14 +63,7 @@ export type {
   StreamKeyResult,
   StreamRegistries,
 } from './projection/streams.js';
-export {
-  compileProjection,
-  createStreamsRuntime,
-  flushStreams,
-  ProjectionFieldError,
-  projectTree,
-  streamSegmentsOutputTypes,
-} from './projection/project.js';
+export { compileProjection, ProjectionFieldError } from './projection/project.js';
 export type {
   CompiledChainLink,
   CompiledDissect,

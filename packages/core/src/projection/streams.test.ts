@@ -6,8 +6,8 @@ const bytes = (...values: number[]) => Uint8Array.from(values);
 describe('StreamAssembler', () => {
   it('assembles in-order contributions into a contiguous view', () => {
     const a = new StreamAssembler(64);
-    expect(a.add(100, bytes(1, 2), 10, 12).status).toBe('added');
-    expect(a.add(102, bytes(3), 20, 21).status).toBe('added');
+    expect(a.add(100, bytes(1, 2), 10).status).toBe('added');
+    expect(a.add(102, bytes(3), 20).status).toBe('added');
     expect(a.base).toBe(100);
     expect([...a.contiguousView()]).toEqual([1, 2, 3]);
     expect(a.byteCount).toBe(3);
@@ -17,47 +17,47 @@ describe('StreamAssembler', () => {
 
   it('reorders an out-of-order later segment', () => {
     const a = new StreamAssembler(64);
-    a.add(0, bytes(1), 0, 1);
-    expect(a.add(3, bytes(9), 30, 31).status).toBe('added'); // gap 1..3
+    a.add(0, bytes(1), 0);
+    expect(a.add(3, bytes(9), 30).status).toBe('added'); // gap 1..3
     expect(a.contiguousEnd).toBe(1);
     expect(a.hasGap()).toBe(true);
-    expect(a.add(1, bytes(2, 3), 10, 12).status).toBe('added'); // fills the gap
+    expect(a.add(1, bytes(2, 3), 10).status).toBe('added'); // fills the gap
     expect([...a.contiguousView()]).toEqual([1, 2, 3, 9]);
     expect(a.hasGap()).toBe(false);
   });
 
   it('rebases downward while nothing is consumed', () => {
     const a = new StreamAssembler(64);
-    a.add(10, bytes(3, 4), 30, 32);
-    expect(a.add(8, bytes(1, 2), 10, 12).status).toBe('rebased');
+    a.add(10, bytes(3, 4), 30);
+    expect(a.add(8, bytes(1, 2), 10).status).toBe('rebased');
     expect(a.base).toBe(8);
     expect([...a.contiguousView()]).toEqual([1, 2, 3, 4]);
   });
 
   it('trims a below-base prefix once consumed instead of failing', () => {
     const a = new StreamAssembler(64);
-    a.add(10, bytes(1, 2), 0, 2);
+    a.add(10, bytes(1, 2), 0);
     a.consume(1);
-    expect(a.add(8, bytes(9, 9, 1, 2, 3), 20, 25)).toEqual({
+    expect(a.add(8, bytes(9, 9, 1, 2, 3), 20)).toEqual({
       status: 'added',
       conflicted: false,
       trimmedBelowBase: true,
     });
     expect([...a.contiguousView()]).toEqual([2, 3]);
-    expect(a.add(4, bytes(7, 7), 30, 32).status).toBe('dropped');
+    expect(a.add(4, bytes(7, 7), 30).status).toBe('dropped');
   });
 
   it('drops exact and subsumed duplicates, and keeps first bytes on a partial conflict', () => {
     const a = new StreamAssembler(64);
-    a.add(0, bytes(1, 2, 3), 0, 3);
-    expect(a.add(0, bytes(1, 2, 3), 50, 53)).toEqual({
+    a.add(0, bytes(1, 2, 3), 0);
+    expect(a.add(0, bytes(1, 2, 3), 50)).toEqual({
       status: 'duplicate',
       conflicted: false,
       trimmedBelowBase: false,
     });
-    expect(a.add(1, bytes(2), 60, 61).status).toBe('duplicate'); // subsumed
+    expect(a.add(1, bytes(2), 60).status).toBe('duplicate'); // subsumed
     expect(a.byteCount).toBe(3);
-    expect(a.add(2, bytes(9, 4), 70, 72)).toEqual({
+    expect(a.add(2, bytes(9, 4), 70)).toEqual({
       status: 'added',
       conflicted: true,
       trimmedBelowBase: false,
@@ -68,9 +68,9 @@ describe('StreamAssembler', () => {
 
   it('stores only the fresh parts of a segment bridging two stored segments', () => {
     const a = new StreamAssembler(64);
-    a.add(0, bytes(1), 0, 1);
-    a.add(2, bytes(3), 10, 11);
-    expect(a.add(0, bytes(1, 2, 3, 4), 20, 24).status).toBe('added');
+    a.add(0, bytes(1), 0);
+    a.add(2, bytes(3), 10);
+    expect(a.add(0, bytes(1, 2, 3, 4), 20).status).toBe('added');
     expect([...a.contiguousView()]).toEqual([1, 2, 3, 4]);
     expect(a.segmentsOverlapping(0, 4).map((s) => [s.start, s.end, s.srcStart, s.srcEnd])).toEqual([
       [0, 1, 0, 1],
@@ -82,8 +82,8 @@ describe('StreamAssembler', () => {
 
   it('reports a fully covered, different retransmission as a conflict', () => {
     const a = new StreamAssembler(64);
-    a.add(0, bytes(1, 2), 0, 2);
-    expect(a.add(0, bytes(1, 9), 5, 7)).toEqual({
+    a.add(0, bytes(1, 2), 0);
+    expect(a.add(0, bytes(1, 9), 5)).toEqual({
       status: 'conflict',
       conflicted: true,
       trimmedBelowBase: false,
@@ -93,9 +93,9 @@ describe('StreamAssembler', () => {
 
   it('checks the cap against fresh parts only', () => {
     const a = new StreamAssembler(4);
-    a.add(0, bytes(1, 2, 3, 4), 0, 4);
-    expect(a.add(0, bytes(1, 2, 3, 4), 9, 13).status).toBe('duplicate'); // no growth, no truncation
-    expect(a.add(2, bytes(3, 4, 5), 20, 23).status).toBe('truncated');
+    a.add(0, bytes(1, 2, 3, 4), 0);
+    expect(a.add(0, bytes(1, 2, 3, 4), 9).status).toBe('duplicate'); // no growth, no truncation
+    expect(a.add(2, bytes(3, 4, 5), 20).status).toBe('truncated');
   });
 
   it('never stores overlapping segments (randomized)', () => {
@@ -110,7 +110,6 @@ describe('StreamAssembler', () => {
           start,
           Uint8Array.from({ length }, () => rand(3)),
           1000 + i * 100,
-          1000 + i * 100 + length,
         );
         const segs = a.segmentsOverlapping(-1e9, 1e9);
         for (let k = 1; k < segs.length; k += 1)
@@ -121,35 +120,39 @@ describe('StreamAssembler', () => {
 
   it('reports truncated when a segment would exceed the cap (including via rebase)', () => {
     const a = new StreamAssembler(4);
-    expect(a.add(0, bytes(1, 2, 3, 4, 5), 0, 5).status).toBe('truncated');
+    expect(a.add(0, bytes(1, 2, 3, 4, 5), 0).status).toBe('truncated');
     const b = new StreamAssembler(4);
-    b.add(4, bytes(1, 2), 0, 2);
-    expect(b.add(0, bytes(9), 10, 11).status).toBe('truncated'); // extent 0..6 after rebase
+    b.add(4, bytes(1, 2), 0);
+    expect(b.add(0, bytes(9), 10).status).toBe('truncated'); // extent 0..6 after rebase
   });
 
   it('consume advances the framing watermark and pendingBytes tracks the remainder', () => {
     const a = new StreamAssembler(64);
-    a.add(0, bytes(1, 2, 3, 4), 0, 4);
+    a.add(0, bytes(1, 2, 3, 4), 0);
     a.consume(3);
     expect(a.consumed).toBe(3);
     expect([...a.contiguousView()]).toEqual([4]);
     expect(a.pendingBytes()).toBe(1);
   });
 
-  it('maps a relative range back to its contributing segments and overall srcSpan', () => {
+  it('maps a relative range back to its contributing segments and exact source ranges', () => {
     const a = new StreamAssembler(64);
-    a.add(0, bytes(1, 2), 100, 102);
-    a.add(2, bytes(3, 4), 200, 202);
-    a.add(4, bytes(5), 300, 301);
+    a.add(0, bytes(1, 2), 100);
+    a.add(2, bytes(3, 4), 200);
+    a.add(4, bytes(5), 300);
     expect(a.segmentsOverlapping(1, 3).map((s) => s.srcStart)).toEqual([100, 200]);
-    expect(a.srcSpan).toEqual({ start: 100, end: 301 });
+    expect(a.segmentsOverlapping(0, 5).map((s) => [s.srcStart, s.srcEnd])).toEqual([
+      [100, 102],
+      [200, 202],
+      [300, 301],
+    ]);
   });
 
   it('survives and stays correct with 150k ascending sparse segments', () => {
     const a = new StreamAssembler(1_048_576);
     let lastResult: ReturnType<typeof a.add> | undefined;
     for (let i = 0; i < 150_000; i++) {
-      lastResult = a.add(i * 2, bytes(1), i, i + 1);
+      lastResult = a.add(i * 2, bytes(1), i);
     }
     expect(lastResult?.status).toBe('added');
     expect(a.segmentCount).toBe(150_000);
@@ -157,19 +160,18 @@ describe('StreamAssembler', () => {
     expect(a.highestEnd).toBe(299_999);
     expect(a.hasGap()).toBe(true);
     expect(a.contiguousEnd).toBe(1);
-    expect(a.srcSpan).toEqual({ start: 0, end: 150_000 });
   });
 
   it('keeps duplicate and overlap detection correct after many appends and a rebase', () => {
     const a = new StreamAssembler(64);
-    expect(a.add(10, bytes(1, 2), 0, 2).status).toBe('added'); // [10,12)
-    expect(a.add(14, bytes(3), 10, 11).status).toBe('added'); // [14,15)
-    expect(a.add(8, bytes(9, 8), 20, 22).status).toBe('rebased'); // [8,10) — rebase, base becomes 8
+    expect(a.add(10, bytes(1, 2), 0).status).toBe('added'); // [10,12)
+    expect(a.add(14, bytes(3), 10).status).toBe('added'); // [14,15)
+    expect(a.add(8, bytes(9, 8), 20).status).toBe('rebased'); // [8,10) — rebase, base becomes 8
 
     // Exact duplicate of the first segment (now stored as absolute [10,12)).
-    expect(a.add(10, bytes(1, 2), 99, 99).status).toBe('duplicate');
+    expect(a.add(10, bytes(1, 2), 99).status).toBe('duplicate');
     // Starts inside [14,15) territory (mismatched, kept) but has a fresh byte at 13.
-    expect(a.add(13, bytes(5, 6), 30, 32)).toEqual({
+    expect(a.add(13, bytes(5, 6), 30)).toEqual({
       status: 'added',
       conflicted: true,
       trimmedBelowBase: false,
@@ -187,7 +189,7 @@ describe('StreamAssembler', () => {
   it('does not retain the caller buffer: mutating it after add leaves reassembly intact', () => {
     const a = new StreamAssembler(1024);
     const buf = bytes(1, 2, 3, 4);
-    a.add(0, buf, 100, 104);
+    a.add(0, buf, 100);
     buf.fill(0xff);
     expect([...a.contiguousView()]).toEqual([1, 2, 3, 4]);
   });
@@ -206,12 +208,7 @@ describe('StreamAssembler releases consumed bytes', () => {
     const size = 4096;
     const count = (3 * MIB) / size;
     for (let i = 0; i < count; i++) {
-      const outcome = a.add(
-        1000 + i * size,
-        chunk(i, size),
-        50_000 + i * (size + 60),
-        50_000 + i * (size + 60) + size,
-      );
+      const outcome = a.add(1000 + i * size, chunk(i, size), 50_000 + i * (size + 60));
       expect(outcome.status).toBe('added');
       const view = a.contiguousView();
       expect(view.length).toBe(size);
@@ -243,16 +240,16 @@ describe('StreamAssembler releases consumed bytes', () => {
     const a = new StreamAssembler(MIB);
     const size = 65_536;
     for (let i = 0; i < 32; i++) {
-      expect(a.add(i * size, chunk(i, size), i * size, (i + 1) * size).status).toBe('added');
+      expect(a.add(i * size, chunk(i, size), i * size).status).toBe('added');
       a.consume(size);
     }
     // 2 MiB consumed; now a backlog that is never consumed.
     const backlogStart = 32 * size;
     for (let i = 0; i < 16; i++) {
-      expect(a.add(backlogStart + i * size, chunk(i, size), 0, size).status).toBe('added');
+      expect(a.add(backlogStart + i * size, chunk(i, size), 0).status).toBe('added');
     }
     expect(a.pendingBytes()).toBe(MIB);
-    expect(a.add(backlogStart + MIB, chunk(0, 1), 0, 1).status).toBe('truncated');
+    expect(a.add(backlogStart + MIB, chunk(0, 1), 0).status).toBe('truncated');
     // A sparse segment far ahead of the consumed point counts against the cap too.
     const b = new StreamAssembler(MIB);
     b.add(0, chunk(0, size), 0, size);
@@ -273,7 +270,7 @@ describe('StreamAssembler releases consumed bytes', () => {
       cursor += size;
     }
     const src = (i: number) => 1_000_000 - i * 40_000; // later stream bytes sit at earlier file offsets
-    const add = (i: number) => a.add(500 + starts[i]!, chunk(i, sizes[i]!), src(i), src(i) + sizes[i]!);
+    const add = (i: number) => a.add(500 + starts[i]!, chunk(i, sizes[i]!), src(i));
     // Deliver 0, 2, 1 (out of order), then consume a message that straddles segments 1 and 2.
     add(0);
     add(2);
@@ -309,18 +306,17 @@ describe('StreamAssembler releases consumed bytes', () => {
     expect(a.contiguousEnd).toBe(cursor);
     expect(a.pendingBytes()).toBe(cursor - consumed);
     expect(a.segmentCount).toBe(sizes.length);
-    expect(a.srcSpan).toEqual({ start: src(7), end: src(0) + sizes[0]! });
 
     // Everything consumed is still inside the maxBuffer history window: a retransmission of
     // early consumed bytes is still compared — identical is a duplicate, different a conflict.
-    expect(a.add(500 + starts[1]!, chunk(1, sizes[1]!), 1, 1 + sizes[1]!).status).toBe('duplicate');
-    expect(a.add(500 + starts[1]!, chunk(0xee, 10), 1, 11)).toEqual({
+    expect(a.add(500 + starts[1]!, chunk(1, sizes[1]!), 1).status).toBe('duplicate');
+    expect(a.add(500 + starts[1]!, chunk(0xee, 10), 1)).toEqual({
       status: 'conflict',
       conflicted: true,
       trimmedBelowBase: false,
     });
     // Bytes below the stream origin are still trimmed and reported as below-base.
-    expect(a.add(400, chunk(0, 100), 0, 100)).toEqual({
+    expect(a.add(400, chunk(0, 100), 0)).toEqual({
       status: 'dropped',
       conflicted: false,
       trimmedBelowBase: true,
@@ -328,7 +324,7 @@ describe('StreamAssembler releases consumed bytes', () => {
     // Overlap with retained, unconsumed bytes still reconciles first-bytes-win.
     const tail = 500 + cursor - 4;
     const retransmit = Uint8Array.of(0xee, 0xee, 0xee, 0xee, 1, 2);
-    expect(a.add(tail, retransmit, 9, 15)).toEqual({
+    expect(a.add(tail, retransmit, 9)).toEqual({
       status: 'added',
       conflicted: true,
       trimmedBelowBase: false,
@@ -348,7 +344,7 @@ describe('StreamAssembler consumed-history window', () => {
   const streamThrough = () => {
     const a = new StreamAssembler(window);
     for (let i = 0; i < 100; i++) {
-      expect(a.add(i * size, fill(i, size), 1000 + i * size, 1000 + (i + 1) * size).status).toBe('added');
+      expect(a.add(i * size, fill(i, size), 1000 + i * size).status).toBe('added');
       a.consume(size);
     }
     return a;
@@ -358,7 +354,7 @@ describe('StreamAssembler consumed-history window', () => {
   it('keeps the just-consumed message segments for provenance even when compaction is due', () => {
     const a = new StreamAssembler(window);
     for (let i = 0; i < 100; i++) {
-      a.add(i * size, fill(i, size), 1000 + i * size, 1000 + (i + 1) * size);
+      a.add(i * size, fill(i, size), 1000 + i * size);
       const start = a.consumed;
       a.consume(size);
       expect(a.segmentsOverlapping(start, start + size)).toEqual([
@@ -370,31 +366,31 @@ describe('StreamAssembler consumed-history window', () => {
   it('still detects a conflicting retransmission of consumed bytes within the window', () => {
     const a = streamThrough();
     const inWindow = total - window + 8; // consumed, but within maxBuffer of the consumed point
-    expect(a.add(inWindow, fill(0xee, 16), 0, 16)).toEqual({
+    expect(a.add(inWindow, fill(0xee, 16), 0)).toEqual({
       status: 'conflict',
       conflicted: true,
       trimmedBelowBase: false,
     });
     const owner = Math.floor(inWindow / size);
-    expect(a.add(inWindow, fill(owner, 16), 0, 16).status).toBe('duplicate');
+    expect(a.add(inWindow, fill(owner, 16), 0).status).toBe('duplicate');
   });
 
   it('reports a retransmission of released bytes beyond the window as below-base, not a duplicate', () => {
     const a = streamThrough();
-    a.add(total, fill(1, 1), 0, 1); // compaction is lazy: the next add releases old history
-    expect(a.add(0, fill(0, 16), 0, 16)).toEqual({
+    a.add(total, fill(1, 1), 0); // compaction is lazy: the next add releases old history
+    expect(a.add(0, fill(0, 16), 0)).toEqual({
       status: 'dropped',
       conflicted: false,
       trimmedBelowBase: true,
     });
-    expect(a.add(size, fill(0xee, 16), 0, 16)).toEqual({
+    expect(a.add(size, fill(0xee, 16), 0)).toEqual({
       status: 'dropped',
       conflicted: false,
       trimmedBelowBase: true,
     });
     // A retransmission straddling the release floor keeps its comparable part.
     // (The floor trails the consumed point by at least the window; it starts above 0.)
-    const straddle = a.add(0, fill(0xee, total - window + size), 0, total - window + size);
+    const straddle = a.add(0, fill(0xee, total - window + size), 0);
     expect(straddle.trimmedBelowBase).toBe(true);
     expect(straddle.conflicted).toBe(true);
   });
@@ -406,21 +402,20 @@ describe('StreamAssembler.anchor', () => {
     expect(a.anchor(100)).toBe('anchored');
     expect(a.base).toBe(100);
     expect(a.segmentCount).toBe(0);
-    expect(a.srcSpan).toBeNull();
     expect(a.hasGap()).toBe(false);
   });
 
   it('makes a missing first segment a gap', () => {
     const a = new StreamAssembler(64);
     a.anchor(100);
-    expect(a.add(105, bytes(9), 0, 1).status).toBe('added');
+    expect(a.add(105, bytes(9), 0).status).toBe('added');
     expect(a.contiguousEnd).toBe(0);
     expect(a.hasGap()).toBe(true);
   });
 
   it('rebases below unconsumed data, and ignores at-or-above-base and consumed cases', () => {
     const a = new StreamAssembler(64);
-    a.add(10, bytes(3, 4), 30, 32);
+    a.add(10, bytes(3, 4), 30);
     expect(a.anchor(8)).toBe('rebased');
     expect(a.base).toBe(8);
     expect(a.hasGap()).toBe(true); // bytes 8..10 never arrived
@@ -434,7 +429,7 @@ describe('StreamAssembler.anchor', () => {
 
   it('ignores an anchor whose rebase would exceed the cap', () => {
     const a = new StreamAssembler(4);
-    a.add(10, bytes(1, 2), 0, 2);
+    a.add(10, bytes(1, 2), 0);
     expect(a.anchor(0)).toBe('ignored');
     expect(a.base).toBe(10);
   });

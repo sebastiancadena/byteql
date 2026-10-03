@@ -1075,12 +1075,12 @@ export interface StreamRuntimeEntry {
   // Set only when a contribution is rejected as 'truncated' while the assembler still holds
   // zero stored segments — i.e. the flow's very FIRST contribution was already, by itself,
   // larger than max_buffer. That contribution's assembler.add() call returns before ever
-  // storing a segment, so assembler.srcSpan stays null forever (segments never gets a single
+  // storing a segment, so the flow never stores a segment (segments never gets a single
   // entry) and flushStreams would otherwise fall back to the meaningless {0, 0}. Reachability:
   // a first add() can only ever return 'added' or 'truncated' — 'duplicate'/'overlap' both
   // require an existing stored segment to collide with, and 'below_base' requires an already-set
-  // base to fall under — so this is the only path that can leave srcSpan null while a flow entry
-  // still exists. Once any segment IS stored, srcSpan is populated for good (segments only grow),
+  // base to fall under — so this is the only path that can leave a flow entry with no stored
+  // segment. Once any segment IS stored, the span comes from the segments (segments only grow),
   // so this field only ever needs to remember the rejected FIRST contribution.
   fallbackSpan: SourceRange | null;
   // Lifecycle (v0.5): true once an `open` signal has been observed for this generation — sticky,
@@ -1260,7 +1260,6 @@ const emitRow = (
   if (parentKey) row[parentKey.name] = parentKey.value;
   if (extraColumns) Object.assign(row, extraColumns);
   for (const column of table.columns) {
-    if (column.name === table.key || column.name === '_src_start' || column.name === '_src_end') continue;
     // Only the column `expr` is strict — `when` above always uses the plain `context` (row-time
     // evaluation there still returns null, never throws).
     const columnContext = emitContext.strictFields
@@ -1298,7 +1297,6 @@ export const tableOutputTypes = (table: CompiledProjectionTable): Record<string,
   if (table.parentKey) types[table.parentKey.column] = 'int64';
   if (table.streamFed) types.stream_id = 'int64';
   for (const column of table.columns) {
-    if (column.name === table.key || column.name === '_src_start' || column.name === '_src_end') continue;
     types[column.name] = column.type;
   }
   types._src_start = 'uint64';
@@ -1659,7 +1657,7 @@ const contributeToStream = (
 
   if (entry.status === 'truncated' || entry.status === 'error') return; // inactive: drop silently
 
-  const outcome = entry.assembler.add(offset, payload.bytes, srcStart, srcEnd);
+  const outcome = entry.assembler.add(offset, payload.bytes, srcStart);
   const flow = `stream ${JSON.stringify(stream.name)} flow ${JSON.stringify(keyResult.key)}`;
   if (outcome.conflicted) {
     entry.conflictCount += 1;
@@ -1686,8 +1684,8 @@ const contributeToStream = (
   if (outcome.status === 'duplicate' || outcome.status === 'conflict' || outcome.status === 'dropped') return;
   if (outcome.status === 'truncated') {
     entry.status = 'truncated';
-    // See fallbackSpan's doc: this is the only way a flow entry can end up with a null
-    // assembler.srcSpan at flush — capture this (the first and only) contribution's real file
+    // See fallbackSpan's doc: this is the only way a flow entry can end up with no
+    // stored segment span at flush — capture this (the first and only) contribution's real file
     // range now, since it will never be recorded as a stored segment.
     if (entry.assembler.segmentCount === 0) entry.fallbackSpan = { start: srcStart, end: srcEnd };
     emitContext.issues?.report({
@@ -2151,46 +2149,4 @@ export const flushStreams = (emitContext: EmitContext): void => {
       }
     }
   }
-};
-
-export const projectTree = (
-  compiled: CompiledProjection,
-  root: unknown,
-  provenance: ProvenanceResolver,
-): ProjectedTable[] => {
-  const columnsByTable = new Map<string, Record<string, unknown[]>>(
-    compiled.tables.map((table) => [
-      table.name,
-      Object.fromEntries(Object.keys(tableOutputTypes(table)).map((name) => [name, []])),
-    ]),
-  );
-  for (const segmentsTable of compiled.segmentsTables) {
-    columnsByTable.set(
-      segmentsTable.name,
-      Object.fromEntries(
-        Object.keys(streamSegmentsOutputTypes(segmentsTable.feedKeyColumn)).map((name) => [name, []]),
-      ),
-    );
-  }
-  const sink: RowSink = {
-    push(tableName, row) {
-      const columns = columnsByTable.get(tableName)!;
-      for (const name of Object.keys(columns)) columns[name]!.push(row[name] ?? null);
-    },
-  };
-  const runtimes = createRuntimes(compiled);
-  const streams = createStreamsRuntime(compiled);
-  projectInto(compiled, root, provenance, sink, runtimes, null, undefined, streams);
-  flushStreams({ compiled, runtimes, sink, streams });
-  const tables = compiled.tables.map((table) => {
-    const columns = columnsByTable.get(table.name)!;
-    const types = tableOutputTypes(table);
-    return { name: table.name, columns, types, rowCount: columns[table.key]!.length };
-  });
-  const segmentsTables = compiled.segmentsTables.map((segmentsTable) => {
-    const columns = columnsByTable.get(segmentsTable.name)!;
-    const types = streamSegmentsOutputTypes(segmentsTable.feedKeyColumn);
-    return { name: segmentsTable.name, columns, types, rowCount: columns.segment_id!.length };
-  });
-  return [...tables, ...segmentsTables];
 };
