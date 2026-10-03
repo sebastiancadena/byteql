@@ -16,6 +16,7 @@ import type { ExportFiles } from '../export-files.js';
 import { writeParquet } from '../export-parquet.js';
 import type { ParquetArtifact } from '../export-types.js';
 import { parquetColumnNames } from '../result-columns.js';
+import { quoteString } from '../sql.js';
 import type { QuerySession } from '../types.js';
 
 export interface ExportProbeReport {
@@ -55,7 +56,6 @@ export interface ExportArtifactReadback {
   configurationLocked: boolean;
 }
 
-const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 const PAGE_ROWS = 8192;
 
 const normalizeReadbackValue = (value: unknown): string | number | boolean | null => {
@@ -106,10 +106,10 @@ export async function readExportArtifact(input: ExportArtifactInput): Promise<Ex
     }
     const relation =
       input.format === 'parquet'
-        ? `parquet_scan(${quote(path)})`
-        : `read_csv(${quote(path)}, header = true, auto_detect = false, ` +
+        ? `parquet_scan(${quoteString(path)})`
+        : `read_csv(${quoteString(path)}, header = true, auto_detect = false, ` +
           `columns = {${input
-            .csvColumns!.map(({ name, type }) => `${quote(name)}: ${quote(safeCsvType(type))}`)
+            .csvColumns!.map(({ name, type }) => `${quoteString(name)}: ${quoteString(safeCsvType(type))}`)
             .join(', ')}}, nullstr = '', allow_quoted_nulls = false)`;
     const described = await connection.query(`DESCRIBE SELECT * FROM ${relation}`);
     const table = await connection.query(`SELECT * FROM ${relation}`);
@@ -344,7 +344,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       // rejected overwrite must leave its bytes identical even if MVP loses error text.
       await db.registerOPFSFileName(deniedPath);
       registered.add(deniedPath);
-      await conn.query(`COPY (SELECT 41 AS sentinel) TO ${quote(deniedPath)} (FORMAT PARQUET)`);
+      await conn.query(`COPY (SELECT 41 AS sentinel) TO ${quoteString(deniedPath)} (FORMAT PARQUET)`);
       await db.dropFile(deniedPath);
       registered.delete(deniedPath);
       const sentinel = new Uint8Array(
@@ -366,7 +366,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       sample('ready');
       let denied = false;
       try {
-        await conn.query(`COPY (SELECT 42 AS sentinel) TO ${quote(deniedPath)} (FORMAT PARQUET)`);
+        await conn.query(`COPY (SELECT 42 AS sentinel) TO ${quoteString(deniedPath)} (FORMAT PARQUET)`);
       } catch (error) {
         denied = true;
         report.diagnostics.push(`Outside allowlist: ${String(error)}`);
@@ -390,7 +390,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       );
       // Warm up the same writer before resource measurements.
       const warmup = await register('warmup.parquet');
-      await conn.query(`COPY (SELECT 1 a) TO ${quote(warmup)} (FORMAT PARQUET, COMPRESSION SNAPPY)`);
+      await conn.query(`COPY (SELECT 1 a) TO ${quoteString(warmup)} (FORMAT PARQUET, COMPRESSION SNAPPY)`);
       await release('warmup.parquet');
       await owned.removeEntry('warmup.parquet');
       sample('warmup');
@@ -425,7 +425,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
         await writable.close();
         await conn.insertArrowFromIPCStream(ipc.slice(), { name: '__export_page', create: true });
         const shard = await register(`${page}.parquet`);
-        await conn.query(`COPY __export_page TO ${quote(shard)} (FORMAT PARQUET, COMPRESSION SNAPPY)`);
+        await conn.query(`COPY __export_page TO ${quoteString(shard)} (FORMAT PARQUET, COMPRESSION SNAPPY)`);
         await conn.query('DROP TABLE __export_page');
         await release(`${page}.parquet`);
         shards.push(shard);
@@ -435,15 +435,15 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       sample('shards-complete');
       for (let page = 0; page < shards.length; page++) await register(`${page}.parquet`);
       const output = await register('result.parquet');
-      await conn.query(`COPY (SELECT * FROM parquet_scan([${shards.map(quote).join(',')}]))
-        TO ${quote(output)} (FORMAT PARQUET, COMPRESSION SNAPPY)`);
+      await conn.query(`COPY (SELECT * FROM parquet_scan([${shards.map(quoteString).join(',')}]))
+        TO ${quoteString(output)} (FORMAT PARQUET, COMPRESSION SNAPPY)`);
       sample('final-copy');
       await release('result.parquet');
       report.releasedFileReadable = (await file('result.parquet')).size > 0;
       for (let page = 0; page < shards.length; page++) await release(`${page}.parquet`);
       await countDisk();
       await register('result.parquet');
-      const reader = await conn.send(`SELECT * FROM parquet_scan(${quote(output)})`, true);
+      const reader = await conn.send(`SELECT * FROM parquet_scan(${quoteString(output)})`, true);
       let expectedPage = -1;
       let expected: Table | undefined;
       let mismatch = false;
@@ -482,7 +482,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       const productionSequencePath = `${prefix}production-sequence/result.parquet`;
       await registerOPFSPath(productionSequencePath);
       const productionReader = await conn.send(
-        `SELECT * FROM parquet_scan(${quote(productionSequencePath)})`,
+        `SELECT * FROM parquet_scan(${quoteString(productionSequencePath)})`,
         true,
       );
       let productionRows = 0;
@@ -546,7 +546,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       const typedPath = `${prefix}production-types/result.parquet`;
       await registerOPFSPath(typedPath);
       const originalTypes = await conn.query('DESCRIBE __typed_original');
-      const readTypes = await conn.query(`DESCRIBE SELECT * FROM parquet_scan(${quote(typedPath)})`);
+      const readTypes = await conn.query(`DESCRIBE SELECT * FROM parquet_scan(${quoteString(typedPath)})`);
       report.parquetTypes = Array.from({ length: readTypes.numRows }, (_, i) =>
         String(readTypes.getChild('column_type')!.get(i)),
       );
@@ -554,9 +554,9 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
         (type, i) => type === originalTypes.getChild('column_type')!.get(i),
       );
       const diff = await conn.query(`SELECT count(*) FROM (
-        (SELECT * FROM __typed_original EXCEPT ALL SELECT * FROM parquet_scan(${quote(typedPath)}))
+        (SELECT * FROM __typed_original EXCEPT ALL SELECT * FROM parquet_scan(${quoteString(typedPath)}))
         UNION ALL
-        (SELECT * FROM parquet_scan(${quote(typedPath)}) EXCEPT ALL SELECT * FROM __typed_original))`);
+        (SELECT * FROM parquet_scan(${quoteString(typedPath)}) EXCEPT ALL SELECT * FROM __typed_original))`);
       report.exactTypes = identicalTypes && Number(diff.getChildAt(0)!.get(0)) === 0;
       report.productionWriter.exactTypes = report.exactTypes;
       if (!report.exactTypes)
@@ -578,7 +578,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       artifacts.push(productionEmpty);
       const emptyPath = `${prefix}production-empty/result.parquet`;
       await registerOPFSPath(emptyPath);
-      const emptyRead = await conn.query(`SELECT * FROM parquet_scan(${quote(emptyPath)})`);
+      const emptyRead = await conn.query(`SELECT * FROM parquet_scan(${quoteString(emptyPath)})`);
       const expectedEmptyFields = empty.schema.fields.map((field) => ({
         name: field.name,
         type: field.type.toString(),
@@ -606,8 +606,9 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       // COPY must still be running when cancelled; send() makes the statement cooperative.
       const cancelPath = await register('cancel.parquet');
       sample('before-cancellation');
-      const cancellation = conn.send(`COPY (SELECT a.* FROM parquet_scan(${quote(output)}) a, range(1000))
-        TO ${quote(cancelPath)} (FORMAT PARQUET, COMPRESSION SNAPPY)`);
+      const cancellation =
+        conn.send(`COPY (SELECT a.* FROM parquet_scan(${quoteString(output)}) a, range(1000))
+        TO ${quoteString(cancelPath)} (FORMAT PARQUET, COMPRESSION SNAPPY)`);
       await new Promise((resolve) => setTimeout(resolve, 20));
       report.cancellationAccepted = await conn.cancelSent();
       let interrupted = false;
@@ -619,7 +620,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
         interrupted = /interrupt|cancel/i.test(String(error));
         report.diagnostics.push(`Cancellation: ${String(error)}`);
       }
-      const preserved = await conn.query(`SELECT count(*) FROM parquet_scan(${quote(output)})`);
+      const preserved = await conn.query(`SELECT count(*) FROM parquet_scan(${quoteString(output)})`);
       report.cancellationPreservesResult =
         report.cancellationAccepted && interrupted && Number(preserved.getChildAt(0)!.get(0)) === rows;
       sample('done');

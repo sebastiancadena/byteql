@@ -18,3 +18,12 @@ export class ByteqlDbError extends Error {
 /** Whether `error` is a {@link ByteqlDbError} carrying one of the given codes. */
 export const hasDbErrorCode = (error: unknown, ...codes: readonly ByteqlDbErrorCode[]): boolean =>
   error instanceof ByteqlDbError && codes.includes(error.code);
+
+/**
+ * Whether `error` means the origin-private file system is unavailable here: the browser does not
+ * offer it (`NotSupportedError`) or refuses it to this context (`SecurityError`).
+ */
+export const isStorageUnavailableError = (error: unknown): boolean => {
+  const name = error instanceof Error ? error.name : (error as { name?: unknown } | null)?.name;
+  return name === 'NotSupportedError' || name === 'SecurityError';
+};

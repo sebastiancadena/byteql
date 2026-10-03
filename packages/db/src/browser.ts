@@ -56,6 +56,7 @@ import {
 } from './result-sort.js';
 import { createExportFiles } from './export-files.js';
 import { writeSortedResult } from './sort-result.js';
+import { quoteIdentifier, quoteString } from './sql.js';
 import type { FileStatisticsAccess, FileStatisticsSummary } from './testing/file-statistics.js';
 import { hardenConnection, openLocalConnection, PRODUCTION_ALLOWED_DIRECTORIES } from './hardening.js';
 
@@ -75,10 +76,6 @@ export interface BrowserDatabaseOptions {
 
 const defaultSpillSupported = (): boolean =>
   typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory;
-
-const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
-
-const quoteStringLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
 /**
  * Issues exactly one type-correct drop for a recorded final. DuckDB (even pinned 1.33.1-dev57.0)
@@ -195,7 +192,7 @@ class IngestSessionImpl implements IngestSession {
     const path = spillPath(this.generation, table, index);
     const stagingName = stagingTableName(this.generation, table);
     await this.opfs.registerOPFSFileName(path);
-    await connection.query(`COPY ${quoteIdentifier(stagingName)} TO '${path}' (FORMAT parquet);`);
+    await connection.query(`COPY ${quoteIdentifier(stagingName)} TO ${quoteString(path)} (FORMAT parquet);`);
     await connection.query(`DELETE FROM ${quoteIdentifier(stagingName)};`);
     this.chunkIndex.set(table, index + 1);
     this.chunkPaths.set(table, [...(this.chunkPaths.get(table) ?? []), path]);
@@ -347,7 +344,7 @@ class IngestSessionImpl implements IngestSession {
           this.stagedBytes.set(table, 0);
         } else {
           await connection.query(
-            `DELETE FROM ${quoteIdentifier(stagingName)} WHERE _src_file = ${quoteStringLiteral(file)};`,
+            `DELETE FROM ${quoteIdentifier(stagingName)} WHERE _src_file = ${quoteString(file)};`,
           );
         }
       }
@@ -429,7 +426,7 @@ class IngestSessionImpl implements IngestSession {
             const chunks = this.chunkPaths.get(table) ?? [];
             if (this.tier === 'spill' && this.created.has(table) && chunks.length > 0) {
               // Explicit path array from the tracked chunk names — never a glob (spike finding).
-              const pathList = chunks.map((path) => `'${path}'`).join(', ');
+              const pathList = chunks.map(quoteString).join(', ');
               await connection.query(
                 `CREATE VIEW ${quoteIdentifier(table)} AS SELECT * FROM parquet_scan([${pathList}]);`,
               );
@@ -884,16 +881,46 @@ interface PendingQueryToken {
   cancelSignalPromise: Promise<boolean> | null;
 }
 
-interface ActiveExportToken {
-  readonly controller: AbortController;
-  promise: Promise<ParquetArtifact>;
+/** Holds the one running operation of a kind (a sort, an export) that may be aborted on its own. */
+interface ExclusiveSlot<T> {
+  active: { readonly controller: AbortController; readonly promise: Promise<T> } | null;
 }
 
-interface ActiveSortToken {
-  readonly base: QuerySessionImpl;
-  readonly controller: AbortController;
-  promise: Promise<QueryResultView>;
-}
+/**
+ * Runs `operation` as the slot's active operation. The caller's `signal` is forwarded into a
+ * private controller, so {@link abortExclusive} can also abort it without owning the caller's
+ * signal; `isCurrent` reports whether this run still owns the slot. The slot clears itself, and
+ * the forwarding listener is removed, once the operation settles.
+ */
+const runExclusive = <T>(
+  slot: ExclusiveSlot<T>,
+  signal: AbortSignal,
+  operation: (signal: AbortSignal, isCurrent: () => boolean) => Promise<T>,
+): Promise<T> => {
+  const controller = new AbortController();
+  const forwardAbort = (): void => controller.abort(signal.reason);
+  if (signal.aborted) forwardAbort();
+  else signal.addEventListener('abort', forwardAbort, { once: true });
+
+  let token: NonNullable<ExclusiveSlot<T>['active']> | null = null;
+  const promise = operation(controller.signal, () => slot.active === token).finally(() => {
+    signal.removeEventListener('abort', forwardAbort);
+    if (slot.active === token) slot.active = null;
+  });
+  token = { controller, promise };
+  slot.active = token;
+  return promise;
+};
+
+/** Aborts the slot's active operation, if any, and joins its settlement whatever the outcome. */
+const abortExclusive = async <T>(slot: ExclusiveSlot<T>, message: string): Promise<void> => {
+  const token = slot.active;
+  if (!token) return;
+  if (!token.controller.signal.aborted) {
+    token.controller.abort(new DOMException(message, 'AbortError'));
+  }
+  await token.promise.catch(() => undefined);
+};
 
 class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   private connection: AsyncDuckDBConnection | null = null;
@@ -907,8 +934,8 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   private terminatePromise: Promise<void> | null = null;
   private pendingQuery: PendingQueryToken | null = null;
   private activeQuery: QuerySessionImpl | null = null;
-  private activeExport: ActiveExportToken | null = null;
-  private activeSort: ActiveSortToken | null = null;
+  private readonly exportSlot: ExclusiveSlot<ParquetArtifact> = { active: null };
+  private readonly sortSlot: ExclusiveSlot<QueryResultView> = { active: null };
   /** Every live derived view, mapped to the base it was derived from. */
   private readonly derivedViews = new Map<QueryResultView, QuerySessionImpl>();
   /**
@@ -1141,7 +1168,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
     if (!resultSortRuntimeSupported(this.bundle.mainModule)) {
       return Promise.reject(new ResultSortError('SORT_UNAVAILABLE', SORT_UNAVAILABLE_RUNTIME));
     }
-    if (this.activeSort) {
+    if (this.sortSlot.active) {
       return Promise.reject(new ResultSortError('SORT_FAILED', 'A result sort is already active.'));
     }
     try {
@@ -1150,57 +1177,36 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
       return Promise.reject(error);
     }
 
-    const controller = new AbortController();
-    const forwardAbort = (): void => controller.abort(options.signal.reason);
-    if (options.signal.aborted) forwardAbort();
-    else options.signal.addEventListener('abort', forwardAbort, { once: true });
-
-    const operation = this.enqueue(async () => {
-      controller.signal.throwIfAborted();
-      // Checked again inside the queue: the base can be retired while this call waits its turn.
-      this.assertSortableBase(base);
-      const view = await writeSortedResult(
-        {
-          database: this.database,
-          connect: () => this.database.connect(),
-          createFiles: createExportFiles,
-          // Built on demand, not in advance: allocating persistence eagerly creates its OPFS
-          // directory, and the writer only disposes a store it actually pulled through here, so a
-          // failure before that point would leave the directory behind with nothing owning it.
-          createStore: () => this.createSortedPageStore(),
-          onCleanupFailure: (retry) => this.cleanupRetries.add(retry),
-        },
-        base,
-        { ...options, signal: controller.signal },
-      );
-      if (
-        controller.signal.aborted ||
-        this.disposeRequested ||
-        this.activeSort !== token ||
-        this.activeQuery !== base
-      ) {
-        // The family this view belongs to was replaced while the writer was finishing. Publishing
-        // it now would show rows from a result the app has already moved on from. The abort is
-        // rechecked here rather than trusted to the writer: this boundary must hold even for a
-        // writer that ignores its signal.
-        await view.dispose().catch(() => undefined);
-        throw new DOMException('The result sort was replaced.', 'AbortError');
-      }
-      return this.registerDerivedView(view, base as QuerySessionImpl);
-    });
-
-    const token: ActiveSortToken = {
-      base: base as QuerySessionImpl,
-      controller,
-      promise: operation,
-    };
-    const promise = operation.finally(() => {
-      options.signal.removeEventListener('abort', forwardAbort);
-      if (this.activeSort === token) this.activeSort = null;
-    });
-    token.promise = promise;
-    this.activeSort = token;
-    return promise;
+    return runExclusive(this.sortSlot, options.signal, (signal, isCurrent) =>
+      this.enqueue(async () => {
+        signal.throwIfAborted();
+        // Checked again inside the queue: the base can be retired while this call waits its turn.
+        this.assertSortableBase(base);
+        const view = await writeSortedResult(
+          {
+            database: this.database,
+            connect: () => this.database.connect(),
+            createFiles: createExportFiles,
+            // Built on demand, not in advance: allocating persistence eagerly creates its OPFS
+            // directory, and the writer only disposes a store it actually pulled through here, so a
+            // failure before that point would leave the directory behind with nothing owning it.
+            createStore: () => this.createSortedPageStore(),
+            onCleanupFailure: (retry) => this.cleanupRetries.add(retry),
+          },
+          base,
+          { ...options, signal },
+        );
+        if (signal.aborted || this.disposeRequested || !isCurrent() || this.activeQuery !== base) {
+          // The family this view belongs to was replaced while the writer was finishing. Publishing
+          // it now would show rows from a result the app has already moved on from. The abort is
+          // rechecked here rather than trusted to the writer: this boundary must hold even for a
+          // writer that ignores its signal.
+          await view.dispose().catch(() => undefined);
+          throw new DOMException('The result sort was replaced.', 'AbortError');
+        }
+        return this.registerDerivedView(view, base as QuerySessionImpl);
+      }),
+    );
   }
 
   exportParquet(result: QueryResultView, options: ParquetExportOptions): Promise<ParquetArtifact> {
@@ -1212,31 +1218,17 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
     } catch (error) {
       return Promise.reject(error);
     }
-    if (this.activeExport) {
+    if (this.exportSlot.active) {
       return Promise.reject(new Error('A result export is already active.'));
     }
 
-    const controller = new AbortController();
-    const forwardAbort = () => controller.abort(options.signal.reason);
-    if (options.signal.aborted) forwardAbort();
-    else options.signal.addEventListener('abort', forwardAbort, { once: true });
-
-    const operation = this.enqueue(async () => {
-      controller.signal.throwIfAborted();
-      this.assertExportableResult(result);
-      return writeParquet(defaultParquetWriterDependencies(this.database), result, {
-        ...options,
-        signal: controller.signal,
-      });
-    });
-    const token: ActiveExportToken = { controller, promise: operation };
-    const promise = operation.finally(() => {
-      options.signal.removeEventListener('abort', forwardAbort);
-      if (this.activeExport === token) this.activeExport = null;
-    });
-    token.promise = promise;
-    this.activeExport = token;
-    return promise;
+    return runExclusive(this.exportSlot, options.signal, (signal) =>
+      this.enqueue(async () => {
+        signal.throwIfAborted();
+        this.assertExportableResult(result);
+        return writeParquet(defaultParquetWriterDependencies(this.database), result, { ...options, signal });
+      }),
+    );
   }
 
   async listTables(): Promise<readonly string[]> {
@@ -1378,13 +1370,8 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
     return token.cancelSignalPromise;
   }
 
-  private async abortActiveExport(): Promise<void> {
-    const token = this.activeExport;
-    if (!token) return;
-    if (!token.controller.signal.aborted) {
-      token.controller.abort(new DOMException('Result export was cancelled.', 'AbortError'));
-    }
-    await token.promise.catch(() => undefined);
+  private abortActiveExport(): Promise<void> {
+    return abortExclusive(this.exportSlot, 'Result export was cancelled.');
   }
 
   /** The base a sort may derive from: the current, complete, unreplaced result and no other. */
@@ -1447,13 +1434,8 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   }
 
   /** Aborts any pending sort and joins its settlement. Never enqueues behind the sort itself. */
-  private async abortActiveSort(): Promise<void> {
-    const token = this.activeSort;
-    if (!token) return;
-    if (!token.controller.signal.aborted) {
-      token.controller.abort(new DOMException('The result sort was cancelled.', 'AbortError'));
-    }
-    await token.promise.catch(() => undefined);
+  private abortActiveSort(): Promise<void> {
+    return abortExclusive(this.sortSlot, 'The result sort was cancelled.');
   }
 
   /** Disposes every view derived from a base that is being retired, then retries queued releases. */
@@ -1481,7 +1463,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   }
 
   private assertExportableResult(result: QueryResultView): void {
-    if (this.pendingQuery || this.activeSort) {
+    if (this.pendingQuery || this.sortSlot.active) {
       throw new Error('Cannot export a query result that is not current or has been superseded.');
     }
     const derivedFrom = this.derivedViews.get(result);

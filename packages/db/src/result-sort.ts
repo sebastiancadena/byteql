@@ -2,6 +2,7 @@ import { DataType, type Schema } from 'apache-arrow';
 
 import { isSupportedParquetType } from './export-types.js';
 import { resultColumnLabel } from './result-columns.js';
+import { quoteString } from './sql.js';
 
 /**
  * Private ordinal carried alongside every snapshot page. It records each row's position in the
@@ -94,8 +95,6 @@ export function resultSortEligibility(schema: Schema): ResultSortEligibility {
   }
   return { supported: true };
 }
-
-const quoteString = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
 /**
  * Builds the ordering statement. Nothing user-controlled reaches the SQL text: column names are

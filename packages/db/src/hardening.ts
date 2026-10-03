@@ -1,5 +1,7 @@
 import type { AsyncDuckDB, AsyncDuckDBConnection, DuckDBBundle } from '@duckdb/duckdb-wasm';
 
+import { quoteString } from './sql.js';
+
 // DuckDB-WASM loads parquet dynamically. ByteQL mirrors both signed platform variants under this
 // same-origin repository; letting LOAD use DuckDB's default would leak a request to
 // extensions.duckdb.org during startup. Set the repository before LOAD, then disable all further
@@ -12,15 +14,13 @@ export const PRODUCTION_ALLOWED_DIRECTORIES: readonly string[] = [
   'opfs://byteql-exports/',
 ];
 
-const quoteStringLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
 const loadLocalParquetStatement = (moduleUrl: string): string => {
   const platform = moduleUrl.includes('mvp') ? 'wasm_mvp' : 'wasm_eh';
   const extension = new URL(
     `${LOCAL_EXTENSION_REPOSITORY_PATH}/v1.5.4/${platform}/parquet.duckdb_extension.wasm`,
     location.origin,
   ).href;
-  return `LOAD '${extension.replaceAll("'", "''")}';`;
+  return `LOAD ${quoteString(extension)};`;
 };
 
 /** @internal Resolves a (possibly gzip-compressed) bundled WASM module to an instantiable URL. */
@@ -91,7 +91,7 @@ export const hardenConnection = async (
   connection: AsyncDuckDBConnection,
   options: { readonly allowedDirectories: readonly string[] },
 ): Promise<void> => {
-  const allowed = options.allowedDirectories.map(quoteStringLiteral).join(', ');
+  const allowed = options.allowedDirectories.map(quoteString).join(', ');
   const statements = [
     `SET allowed_directories = [${allowed}];`,
     'SET enable_external_access = false;',

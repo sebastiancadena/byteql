@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ByteqlDbError, hasDbErrorCode } from './errors.js';
+import { ByteqlDbError, hasDbErrorCode, isStorageUnavailableError } from './errors.js';
 
 describe('ByteqlDbError', () => {
   it('carries its code, message and cause', () => {
@@ -19,5 +19,15 @@ describe('ByteqlDbError', () => {
     expect(hasDbErrorCode(typed, 'SPILL_UNSUPPORTED')).toBe(false);
     expect(hasDbErrorCode(new Error('SPILL_QUOTA_EXCEEDED: x'), 'SPILL_QUOTA_EXCEEDED')).toBe(false);
     expect(hasDbErrorCode(undefined, 'SPILL_QUOTA_EXCEEDED')).toBe(false);
+  });
+});
+
+describe('isStorageUnavailableError', () => {
+  it('recognizes the two names that mean local storage is unavailable, on any error shape', () => {
+    expect(isStorageUnavailableError(new DOMException('x', 'NotSupportedError'))).toBe(true);
+    expect(isStorageUnavailableError(new DOMException('x', 'SecurityError'))).toBe(true);
+    expect(isStorageUnavailableError({ name: 'SecurityError' })).toBe(true);
+    expect(isStorageUnavailableError(new DOMException('x', 'QuotaExceededError'))).toBe(false);
+    expect(isStorageUnavailableError(null)).toBe(false);
   });
 });

@@ -10,6 +10,7 @@ import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from '../resu
 import { resultColumnLabel } from '../result-columns.js';
 import { resultSortRuntimeSupported } from '../result-sort.js';
 import { writeSortedResult } from '../sort-result.js';
+import { quoteString } from '../sql.js';
 import type { QuerySession } from '../types.js';
 
 const PAGE_ROWS = 8_192;
@@ -48,8 +49,6 @@ export interface ResultSortProbeReport {
   readyAtEpochMs: number | null;
   diagnostics: string[];
 }
-
-const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
 /** The exact Arrow 17 writer -> IPC -> Arrow 21 reader bridge the query path uses. */
 const convert = async (connection: AsyncDuckDBConnection, sql: string): Promise<Table[]> => {
@@ -182,7 +181,7 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     // the allowlist rather than to a path that never worked.
     await database.registerOPFSFileName(deniedPath);
     registered.add(deniedPath);
-    await primary.query(`COPY (SELECT 41 AS sentinel) TO ${quote(deniedPath)} (FORMAT PARQUET)`);
+    await primary.query(`COPY (SELECT 41 AS sentinel) TO ${quoteString(deniedPath)} (FORMAT PARQUET)`);
     await dropPath(deniedPath);
     const sentinel = new Uint8Array(
       await (await (await deniedOwned.getFileHandle('sentinel.parquet')).getFile()).arrayBuffer(),
@@ -206,7 +205,7 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     // --- Privacy: no OPFS path outside the allowlist, no external URL. ---
     let deniedOpfs = false;
     try {
-      await primary.query(`COPY (SELECT 42 AS sentinel) TO ${quote(deniedPath)} (FORMAT PARQUET)`);
+      await primary.query(`COPY (SELECT 42 AS sentinel) TO ${quoteString(deniedPath)} (FORMAT PARQUET)`);
     } catch (error) {
       deniedOpfs = true;
       report.diagnostics.push(`Denied OPFS path: ${String(error)}`);
@@ -603,10 +602,10 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     const baselinePath = await registerPath('runtime-baseline.parquet');
     try {
       await primary.query(
-        `COPY (SELECT * FROM ${baselineValues}) TO ${quote(baselinePath)} (FORMAT PARQUET)`,
+        `COPY (SELECT * FROM ${baselineValues}) TO ${quoteString(baselinePath)} (FORMAT PARQUET)`,
       );
       const scanned = await primary.query(
-        `SELECT v FROM parquet_scan(${quote(baselinePath)}) ORDER BY v ASC NULLS LAST`,
+        `SELECT v FROM parquet_scan(${quoteString(baselinePath)}) ORDER BY v ASC NULLS LAST`,
       );
       report.runtimeOrderBy.parquet = scanned.numRows === 2;
     } catch (error) {
