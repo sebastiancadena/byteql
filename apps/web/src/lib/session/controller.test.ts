@@ -43,7 +43,7 @@ import {
   type ParseWorkerScope,
 } from '../../workers/parse.worker.js';
 import { SessionController } from './controller.js';
-import { drainQueryResult } from '../testing/query-result.js';
+import { activeResultView, drainQueryResult, queryResultDiagnostics } from '../testing/query-result.js';
 import type { SampleId } from './samples.js';
 import { initialSessionState } from './state.js';
 
@@ -2438,6 +2438,34 @@ describe('SessionController', () => {
       expect(base.disposed).toBe(0);
       expect(base.cancelled).toBe(0);
       expect(Array.from(controller.getState().result!.window.getChildAt(0)!)).toEqual([1, 2, 3]);
+    });
+
+    it('keeps the diagnostics shim reading the live result bookkeeping', async () => {
+      // The e2e harness reads controller internals through a cast; a rename must fail here too.
+      const { controller, base } = await sortableController();
+      expect(activeResultView(controller)).toBe(base);
+      expect(queryResultDiagnostics(controller)).toMatchObject({
+        loadedRows: 2,
+        sortPending: false,
+        derivedViewCount: 0,
+        viewCaches: [{ kind: 'base' }],
+      });
+
+      const pending = deferred<QueryResultView>();
+      const view = sortedView([1, 2, 3]);
+      vi.mocked(database.createSortedView).mockReturnValue(pending.promise);
+      const sorting = controller.sortResults({ columnIndex: 0, direction: 'asc' });
+      expect(queryResultDiagnostics(controller).sortPending).toBe(true);
+      pending.resolve(view);
+      await sorting;
+
+      expect(activeResultView(controller)).toBe(view);
+      expect(queryResultDiagnostics(controller)).toMatchObject({
+        loadedRows: 3,
+        sortPending: false,
+        derivedViewCount: 1,
+        viewCaches: [{ kind: 'base' }, { kind: 'display' }],
+      });
     });
 
     it('drains the remaining rows first, so the order covers the whole result', async () => {
