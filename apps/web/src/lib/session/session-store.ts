@@ -57,7 +57,7 @@ export class SessionStore {
     }
   }
 
-  /** Marks the session disposed. Listeners are dropped later, by `release`, so final events still reach them. */
+  /** Marks the session disposed; listeners stay until `release`, so final events still reach them. */
   markDisposed(): void {
     this.isDisposed = true;
   }
