@@ -385,7 +385,7 @@ export const contributeToStream = (
       stage: 'reassembling',
       code: 'STREAM_BELOW_BASE',
       recoverable: true,
-      message: `${flow}: bytes before the reassembled start arrived after framing began and were dropped`,
+      message: `${flow}: bytes before the reassembled start, or older than the retained max_buffer history, arrived after framing began and were dropped`,
       sourceStart: srcStart,
       sourceEnd: srcEnd,
     });
