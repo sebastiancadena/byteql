@@ -5,7 +5,7 @@ into relational tables you query with DuckDB SQL, entirely in the browser, with 
 back to its exact source bytes. Product requirements, differentiators, and the projection DSL live in
 `PRD.md` — read §9 (architecture) and Appendix A (DSL) first.
 
-## Status (2026-09-24)
+## Status (2026-10-03)
 
 Priority order lives in `ROADMAP.md` (adopted 2026-09-15); it supersedes any "next" ordering here
 or in `PRD.md` §12.
