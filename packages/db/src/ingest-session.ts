@@ -117,6 +117,39 @@ export class IngestSessionImpl implements IngestSession {
     }
   }
 
+  /**
+   * Rotates `table`'s staged rows like {@link rotateChunk}, rethrowing a storage-quota failure
+   * tagged `SPILL_QUOTA_EXCEEDED` so the controller shows its clear "ran out of space" message
+   * instead of a raw DB/OS error string. With `onAbort`, a quota failure also terminalizes the
+   * session first — `onAbort` fires, the session is aborted, and its staging tables are dropped —
+   * leaving the caller to reclaim the generation once the queued operation settles.
+   */
+  private async rotateOrAbort(
+    connection: AsyncDuckDBConnection,
+    table: string,
+    onAbort?: () => void,
+  ): Promise<void> {
+    try {
+      await this.rotateChunk(connection, table);
+    } catch (error) {
+      if (!isQuotaError(error)) {
+        throw error;
+      }
+      if (onAbort) {
+        onAbort();
+        this.state = 'aborted';
+        await this.dropStaging(connection);
+      }
+      throw new ByteqlDbError(
+        'SPILL_QUOTA_EXCEEDED',
+        `SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`,
+        {
+          cause: error,
+        },
+      );
+    }
+  }
+
   /** Best-effort drop of every staging table this session owns, outside a transaction. */
   private async dropStaging(connection: AsyncDuckDBConnection): Promise<void> {
     for (const table of this.sessionTables()) {
@@ -167,23 +200,9 @@ export class IngestSessionImpl implements IngestSession {
         if (staged < this.rotationBytes) {
           return;
         }
-        try {
-          await this.rotateChunk(connection, table);
-        } catch (error) {
-          if (!isQuotaError(error)) {
-            throw error;
-          }
+        await this.rotateOrAbort(connection, table, () => {
           quotaAborted = true;
-          this.state = 'aborted';
-          await this.dropStaging(connection);
-          throw new ByteqlDbError(
-            'SPILL_QUOTA_EXCEEDED',
-            `SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`,
-            {
-              cause: error,
-            },
-          );
-        }
+        });
       });
     } catch (error) {
       if (quotaAborted) {
@@ -208,23 +227,9 @@ export class IngestSessionImpl implements IngestSession {
         await this.enqueue(async (connection) => {
           for (const table of this.sessionTables()) {
             if (this.created.has(table) && (this.stagedBytes.get(table) ?? 0) > 0) {
-              try {
-                await this.rotateChunk(connection, table);
-              } catch (error) {
-                if (!isQuotaError(error)) {
-                  throw error;
-                }
+              await this.rotateOrAbort(connection, table, () => {
                 quotaAborted = true;
-                this.state = 'aborted';
-                await this.dropStaging(connection);
-                throw new ByteqlDbError(
-                  'SPILL_QUOTA_EXCEEDED',
-                  `SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`,
-                  {
-                    cause: error,
-                  },
-                );
-              }
+              });
             }
           }
         });
@@ -287,22 +292,9 @@ export class IngestSessionImpl implements IngestSession {
         await this.enqueue(async (connection) => {
           for (const table of this.sessionTables()) {
             if (this.created.has(table) && (this.stagedBytes.get(table) ?? 0) > 0) {
-              try {
-                await this.rotateChunk(connection, table);
-              } catch (error) {
-                if (!isQuotaError(error)) {
-                  throw error;
-                }
-                // Same tagging as appendBatch's mid-ingest rotation (Trivia 2), so the controller
-                // shows its clear "ran out of space" message instead of a raw DB/OS error string.
-                throw new ByteqlDbError(
-                  'SPILL_QUOTA_EXCEEDED',
-                  `SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`,
-                  {
-                    cause: error,
-                  },
-                );
-              }
+              // Same tagging as appendBatch's mid-ingest rotation (Trivia 2), but no abort: the
+              // session is already finalized, and a failure here marks it failed for abort().
+              await this.rotateOrAbort(connection, table);
             }
           }
         });
