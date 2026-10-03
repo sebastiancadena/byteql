@@ -193,6 +193,150 @@ describe('StreamAssembler', () => {
   });
 });
 
+describe('StreamAssembler releases consumed bytes', () => {
+  const MIB = 1_048_576;
+  const chunk = (index: number, size: number) => {
+    const out = new Uint8Array(size);
+    out.fill(index & 0xff);
+    return out;
+  };
+
+  it('reassembles a 3 MiB in-order flow under a 1 MiB cap when every message is consumed', () => {
+    const a = new StreamAssembler(MIB);
+    const size = 4096;
+    const count = (3 * MIB) / size;
+    for (let i = 0; i < count; i++) {
+      const outcome = a.add(
+        1000 + i * size,
+        chunk(i, size),
+        50_000 + i * (size + 60),
+        50_000 + i * (size + 60) + size,
+      );
+      expect(outcome.status).toBe('added');
+      const view = a.contiguousView();
+      expect(view.length).toBe(size);
+      expect(view[0]).toBe(i & 0xff);
+      const start = a.consumed;
+      // Offsets stay relative to the stream origin, not to wherever the buffer was compacted to.
+      expect(start).toBe(i * size);
+      expect(a.segmentsOverlapping(start, start + size)).toEqual([
+        {
+          start,
+          end: start + size,
+          srcStart: 50_000 + i * (size + 60),
+          srcEnd: 50_000 + i * (size + 60) + size,
+        },
+      ]);
+      a.consume(size);
+    }
+    expect(a.base).toBe(1000);
+    expect(a.consumed).toBe(3 * MIB);
+    expect(a.contiguousEnd).toBe(3 * MIB);
+    expect(a.byteCount).toBe(3 * MIB);
+    expect(a.segmentCount).toBe(count);
+    expect(a.pendingBytes()).toBe(0);
+    expect(a.hasGap()).toBe(false);
+  });
+
+  it('still truncates when the unconsumed backlog exceeds the cap after compaction', () => {
+    const a = new StreamAssembler(MIB);
+    const size = 65_536;
+    for (let i = 0; i < 32; i++) {
+      expect(a.add(i * size, chunk(i, size), i * size, (i + 1) * size).status).toBe('added');
+      a.consume(size);
+    }
+    // 2 MiB consumed; now a backlog that is never consumed.
+    const backlogStart = 32 * size;
+    for (let i = 0; i < 16; i++) {
+      expect(a.add(backlogStart + i * size, chunk(i, size), 0, size).status).toBe('added');
+    }
+    expect(a.pendingBytes()).toBe(MIB);
+    expect(a.add(backlogStart + MIB, chunk(0, 1), 0, 1).status).toBe('truncated');
+    // A sparse segment far ahead of the consumed point counts against the cap too.
+    const b = new StreamAssembler(MIB);
+    b.add(0, chunk(0, size), 0, size);
+    b.consume(size);
+    expect(b.add(size + MIB - 1, chunk(0, 1), 0, 1).status).toBe('added');
+    expect(b.add(size + MIB, chunk(0, 1), 0, 1).status).toBe('truncated');
+  });
+
+  it('keeps provenance, overlap reconciliation, and gap tracking identical across compaction', () => {
+    // Odd-sized out-of-order segments; the compacted assembler must answer exactly as the
+    // stream-relative arithmetic says an uncompacted one would.
+    const a = new StreamAssembler(200_000);
+    const sizes = [7000, 13_001, 9999, 25_000, 4321, 30_000, 17_777, 8888];
+    const starts: number[] = [];
+    let cursor = 0;
+    for (const size of sizes) {
+      starts.push(cursor);
+      cursor += size;
+    }
+    const src = (i: number) => 1_000_000 - i * 40_000; // later stream bytes sit at earlier file offsets
+    const add = (i: number) => a.add(500 + starts[i]!, chunk(i, sizes[i]!), src(i), src(i) + sizes[i]!);
+    // Deliver 0, 2, 1 (out of order), then consume a message that straddles segments 1 and 2.
+    add(0);
+    add(2);
+    expect(a.hasGap()).toBe(true);
+    add(1);
+    expect(a.hasGap()).toBe(false);
+    const message = 7000 + 13_001 + 5000; // ends 5000 bytes into segment 2
+    a.consume(message);
+    // Segments 3..7, consuming in message-sized steps that never align with segment edges.
+    for (let i = 3; i < sizes.length; i++) add(i);
+    let consumed = message;
+    const step = 11_111;
+    while (consumed + step <= cursor) {
+      const expected = [] as { start: number; end: number; srcStart: number; srcEnd: number }[];
+      for (let i = 0; i < sizes.length; i++) {
+        if (starts[i]! < consumed + step && consumed < starts[i]! + sizes[i]!) {
+          expected.push({
+            start: starts[i]!,
+            end: starts[i]! + sizes[i]!,
+            srcStart: src(i),
+            srcEnd: src(i) + sizes[i]!,
+          });
+        }
+      }
+      expect(a.segmentsOverlapping(consumed, consumed + step)).toEqual(expected);
+      const view = a.contiguousView();
+      const owner = starts.findLastIndex((s) => s <= consumed);
+      expect(view[0]).toBe(owner & 0xff);
+      a.consume(step);
+      consumed += step;
+    }
+    expect(a.base).toBe(500);
+    expect(a.contiguousEnd).toBe(cursor);
+    expect(a.pendingBytes()).toBe(cursor - consumed);
+    expect(a.segmentCount).toBe(sizes.length);
+    expect(a.srcSpan).toEqual({ start: src(7), end: src(0) + sizes[0]! });
+
+    // A retransmission of long-consumed (released) bytes is a duplicate, not fresh data.
+    expect(a.add(500 + starts[1]!, chunk(1, sizes[1]!), 1, 1 + sizes[1]!)).toEqual({
+      status: 'duplicate',
+      conflicted: false,
+      trimmedBelowBase: false,
+    });
+    // Bytes below the stream origin are still trimmed and reported as below-base.
+    expect(a.add(400, chunk(0, 100), 0, 100)).toEqual({
+      status: 'dropped',
+      conflicted: false,
+      trimmedBelowBase: true,
+    });
+    // Overlap with retained, unconsumed bytes still reconciles first-bytes-win.
+    const tail = 500 + cursor - 4;
+    const retransmit = Uint8Array.of(0xee, 0xee, 0xee, 0xee, 1, 2);
+    expect(a.add(tail, retransmit, 9, 15)).toEqual({
+      status: 'added',
+      conflicted: true,
+      trimmedBelowBase: false,
+    });
+    expect(a.contiguousEnd).toBe(cursor + 2);
+    expect(a.segmentsOverlapping(cursor, cursor + 2)).toEqual([
+      { start: cursor, end: cursor + 2, srcStart: 13, srcEnd: 15 },
+    ]);
+  });
+});
+
 describe('StreamAssembler.anchor', () => {
   it('sets the base without storing bytes', () => {
     const a = new StreamAssembler(64);

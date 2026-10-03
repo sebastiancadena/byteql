@@ -85,6 +85,11 @@ concurrent flows of a capture. A per-stream cap was the deliberate Phase-2 desig
 consideration, not a contract violation. A future fix (trim consumed bytes, or a global
 residency budget with LRU stream eviction) is a design change, not a minimal fix.
 
+**Update (2026-10-03):** the per-flow half is fixed — the assembler now releases consumed bytes
+(amortized compaction) and `max_buffer` caps only unconsumed bytes, so a flow carrying more than
+1 MiB no longer goes `truncated` or holds 1 MiB until `finish()`. There is still no global cap
+across concurrent flows.
+
 ### Zone-1 DSL/engine semantics gaps (P2–P3, design decisions, not minimal fixes)
 
 - **Z1-1** — `==`/`!=` against the `null` literal always evaluates to null (the

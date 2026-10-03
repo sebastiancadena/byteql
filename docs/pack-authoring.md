@@ -240,6 +240,10 @@ streams:
       - { when: _.offset == 0, parser: tls_client_hello, table: tls }
 ```
 
+- `max_buffer` — the most bytes a flow may hold buffered but not yet framed into messages (the
+  backlog past the last cut message, including bytes waiting behind a gap). Bytes already cut into
+  messages are released and don't count, so a long, healthy connection never hits the cap; a flow
+  whose backlog exceeds it goes `truncated` (`STREAM_TRUNCATED`).
 - `offset_bits` — an integer in `[8, 48]`. Raw offsets are modular in 2^N; the engine unwraps
   them into an ever-increasing extended offset per generation (RFC 1982 serial arithmetic) before
   handing them to the assembler, so a sequence number crossing 2^N no longer looks like a huge

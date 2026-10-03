@@ -290,11 +290,13 @@ describe('stream runtime robustness', () => {
   });
 
   it('truncates at the buffer cap, keeping completed messages', () => {
-    // max_buffer 64: first a complete message, then a segment stretching past the cap
-    const big = Array.from({ length: 63 }, (_, i) => i % 251);
+    // max_buffer 64: first a complete message, then a segment stretching past the cap. The cap
+    // counts only unconsumed bytes, so the consumed 2-byte message doesn't count against it —
+    // the 65 outstanding bytes of the second segment alone do.
+    const big = Array.from({ length: 65 }, (_, i) => i % 251);
     const { finished, issues } = project([
       chunk(7, 0, [1, 65]),
-      chunk(7, 2, big), // extent 2+63 = 65 > 64
+      chunk(7, 2, big), // outstanding 65 > 64
     ]);
     expect(issues.issues()).toEqual([expect.objectContaining({ code: 'STREAM_TRUNCATED' })]);
     const flows = table(finished, 'flows');

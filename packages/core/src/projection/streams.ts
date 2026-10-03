@@ -93,12 +93,34 @@ export const unwrapOffset = (raw: number, bits: number, reference: number | null
   return candidate;
 };
 
+/**
+ * Smallest released prefix worth compacting away. Compaction also waits until the released
+ * prefix is at least half of the buffered extent, so each compaction copies no more live bytes
+ * than it frees: the total copy cost stays linear in the bytes consumed (amortized O(1) per byte)
+ * and the in-order append path never pays for it.
+ */
+const COMPACT_MIN_BYTES = 65_536;
+
 export class StreamAssembler {
   readonly #maxBuffer: number;
+  /**
+   * The stream origin (absolute offset space): every stream-relative value this class exposes
+   * (`consumed`, `contiguousEnd`, `highestEnd`, `segmentsOverlapping`) is measured from it. It
+   * moves only by a rebase, which is allowed only while nothing is consumed, so once framing
+   * has begun it is fixed for the flow's life — compaction never moves it.
+   */
   #base: number | null = null;
+  /**
+   * Absolute offset of `#data[0]`. Equal to `#base` until the first compaction; afterwards it
+   * is the consumed point at that compaction (bytes below it are released: dropped from
+   * `#data`, and segments wholly below it are dropped from `#segments`).
+   */
+  #dataStart = 0;
   #data = new Uint8Array(0);
   /** Sorted by start; absolute offset space. */
   #segments: StoredSegment[] = [];
+  /** Stored segments released by compaction, so `segmentCount` still counts every stored one. */
+  #releasedSegments = 0;
   #consumed = 0;
   #contiguousEnd = 0; // relative to #base
   #byteCount = 0;
@@ -117,8 +139,9 @@ export class StreamAssembler {
   get base(): number | null {
     return this.#base;
   }
+  /** Every segment ever stored, including ones compaction has since released. */
   get segmentCount(): number {
-    return this.#segments.length;
+    return this.#releasedSegments + this.#segments.length;
   }
   get byteCount(): number {
     return this.#byteCount;
@@ -144,17 +167,53 @@ export class StreamAssembler {
     return this.#contiguousEnd - this.#consumed;
   }
   contiguousView(): Uint8Array {
-    return this.#data.subarray(this.#consumed, this.#contiguousEnd);
+    const shift = (this.#base ?? 0) - this.#dataStart;
+    return this.#data.subarray(this.#consumed + shift, this.#contiguousEnd + shift);
   }
   consume(length: number): void {
     this.#consumed += length;
+    // Compaction trigger (amortized): release the consumed prefix once it is both at least
+    // COMPACT_MIN_BYTES and at least half of the buffered extent — see COMPACT_MIN_BYTES.
+    const base = this.#base;
+    if (base === null || this.#highestEndAbs === null) return;
+    const consumedAbs = base + this.#consumed;
+    const released = consumedAbs - this.#dataStart;
+    const extent = this.#highestEndAbs - this.#dataStart;
+    if (released >= COMPACT_MIN_BYTES && released * 2 >= extent) this.#compact(consumedAbs);
+  }
+
+  /**
+   * Releases everything below `consumedAbs` (the absolute consumed point): drops segments that
+   * end at or before it, slides `#data` so it starts there, and keeps every stream-relative
+   * value unchanged (the origin `#base` does not move). A segment straddling the point is kept
+   * whole — its metadata still maps message pieces exactly — but its released bytes are gone,
+   * which is safe because `add` discards incoming bytes below `#dataStart` before reconciling.
+   */
+  #compact(consumedAbs: number): void {
+    const drop = this.#firstEndingAfter(consumedAbs);
+    if (drop > 0) {
+      this.#segments.splice(0, drop);
+      this.#releasedSegments += drop;
+      this.#frontierIndex = Math.max(0, this.#frontierIndex - drop);
+    }
+    const released = consumedAbs - this.#dataStart;
+    const live = Math.max(0, this.#highestEndAbs! - consumedAbs);
+    const keep = Math.max(0, Math.min(this.#data.length - released, live));
+    this.#data.copyWithin(0, released, released + keep);
+    this.#dataStart = consumedAbs;
   }
 
   segmentsOverlapping(start: number, end: number): AssemblerSegment[] {
     const base = this.#base ?? 0;
-    return this.#segments
-      .filter((s) => s.start - base < end && start < s.end - base)
-      .map((s) => ({ start: s.start - base, end: s.end - base, srcStart: s.srcStart, srcEnd: s.srcEnd }));
+    const result: AssemblerSegment[] = [];
+    // Segments are sorted and non-overlapping (ends non-decreasing): binary-search the first
+    // candidate instead of filtering every stored segment per message.
+    for (let i = this.#firstEndingAfter(base + start); i < this.#segments.length; i += 1) {
+      const s = this.#segments[i]!;
+      if (s.start - base >= end) break;
+      result.push({ start: s.start - base, end: s.end - base, srcStart: s.srcStart, srcEnd: s.srcEnd });
+    }
+    return result;
   }
 
   /**
@@ -175,6 +234,16 @@ export class StreamAssembler {
       const cut = Math.min(this.#base - offset, bytes.length);
       trimmedBelowBase = true;
       if (cut === bytes.length) return { status: 'dropped', conflicted: false, trimmedBelowBase };
+      offset += cut;
+      srcStart += cut;
+      bytes = bytes.subarray(cut);
+    }
+    // Bytes in [#base, #dataStart) were stored, consumed, and released by compaction: a
+    // retransmission of them is a duplicate. Their stored bytes are gone, so a mismatch there
+    // can no longer be detected (conflict detection covers only retained bytes).
+    if (offset < this.#dataStart && this.#base !== null && this.#dataStart > this.#base) {
+      const cut = Math.min(this.#dataStart - offset, bytes.length);
+      if (cut === bytes.length) return { status: 'duplicate', conflicted: false, trimmedBelowBase };
       offset += cut;
       srcStart += cut;
       bytes = bytes.subarray(cut);
@@ -213,10 +282,17 @@ export class StreamAssembler {
     const rebasing = this.#base !== null && freshStart < this.#base; // consumed === 0 here
     const newBase = this.#base === null ? freshStart : Math.min(this.#base, freshStart);
     const newExtent = Math.max(freshEnd, this.#highestEndAbs ?? freshEnd) - newBase;
-    if (newExtent > this.#maxBuffer) return { status: 'truncated', conflicted, trimmedBelowBase };
+    // max_buffer caps OUTSTANDING bytes: everything buffered past the consumed point. Consumed
+    // bytes don't count (compaction releases them), so the cap bounds a flow's backlog, not its
+    // lifetime total. With nothing consumed this is exactly the extent from the (new) base.
+    const outstanding = newExtent - this.#consumed;
+    if (outstanding > this.#maxBuffer) return { status: 'truncated', conflicted, trimmedBelowBase };
     // See #rebaseTo for the cost bound of a rebase.
     if (rebasing) this.#rebaseTo(newBase, newExtent);
-    else this.#base = newBase;
+    else if (this.#base === null) {
+      this.#base = newBase;
+      this.#dataStart = newBase;
+    }
 
     for (const piece of fresh) {
       this.#store(
@@ -243,9 +319,9 @@ export class StreamAssembler {
   }
 
   #matchesStored(start: number, end: number, bytes: Uint8Array, offset: number): boolean {
-    const base = this.#base!;
+    const dataStart = this.#dataStart;
     for (let p = start; p < end; p += 1) {
-      if (this.#data[p - base] !== bytes[p - offset]) return false;
+      if (this.#data[p - dataStart] !== bytes[p - offset]) return false;
     }
     return true;
   }
@@ -258,10 +334,13 @@ export class StreamAssembler {
    */
   #store(start: number, bytes: Uint8Array, srcStart: number, srcEnd: number): void {
     const end = start + bytes.length;
-    const relStart = start - this.#base!;
+    const relStart = start - this.#dataStart;
     if (relStart + bytes.length > this.#data.length) {
       const needed = relStart + bytes.length;
-      const grown = new Uint8Array(Math.min(Math.max(needed, this.#data.length * 2), this.#maxBuffer));
+      // Outstanding bytes are capped at #maxBuffer, but #data also holds the not-yet-compacted
+      // consumed prefix in front of them, so the growth ceiling includes that prefix.
+      const ceiling = this.#maxBuffer + Math.max(0, (this.#base ?? 0) + this.#consumed - this.#dataStart);
+      const grown = new Uint8Array(Math.max(needed, Math.min(this.#data.length * 2, ceiling)));
       grown.set(this.#data);
       this.#data = grown;
     }
@@ -301,6 +380,7 @@ export class StreamAssembler {
   anchor(offset: number): 'anchored' | 'rebased' | 'ignored' {
     if (this.#base === null) {
       this.#base = offset;
+      this.#dataStart = offset;
       return 'anchored';
     }
     if (offset >= this.#base || this.#consumed > 0) return 'ignored';
@@ -334,6 +414,7 @@ export class StreamAssembler {
     this.#contiguousEnd = 0;
     this.#frontierIndex = 0;
     this.#base = newBase;
+    this.#dataStart = newBase; // nothing consumed, so nothing was ever compacted
   }
 
   #advanceFrontier(): void {
