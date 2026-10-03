@@ -2,6 +2,7 @@ import { tableToIpc, type ParseIssue, type TableOverview } from '@byteql/core';
 import {
   QUERY_INITIAL_ROWS,
   QUERY_PAGE_ROWS,
+  hasDbErrorCode,
   QUERY_RESULT_MEMORY_BYTES,
   sweepQueryPageOrphans,
   sweepSpillOrphans,
@@ -982,7 +983,7 @@ export class SessionController {
             if (isAbortError(error)) throw error;
             const message = errorMessage(error, 'The local file could not be parsed.');
             // Environment-level failures (quota, unsupported spill) doom the whole batch.
-            if (message.includes('SPILL_QUOTA_EXCEEDED') || message.includes('SPILL_UNSUPPORTED')) {
+            if (hasDbErrorCode(error, 'SPILL_QUOTA_EXCEEDED', 'SPILL_UNSUPPORTED')) {
               throw error;
             }
             if (!this.isCurrent(generation)) {
@@ -1076,10 +1077,10 @@ export class SessionController {
 
   private openFailureMessage(error: unknown, tierThresholdBytes: number): string {
     const raw = errorMessage(error, 'The local file could not be parsed.');
-    if (raw.includes('SPILL_UNSUPPORTED')) {
+    if (hasDbErrorCode(error, 'SPILL_UNSUPPORTED')) {
       return `This browser cannot analyze files over ${bytesToMb(tierThresholdBytes)} MB.`;
     }
-    if (raw.includes('SPILL_QUOTA_EXCEEDED')) {
+    if (hasDbErrorCode(error, 'SPILL_QUOTA_EXCEEDED')) {
       return 'Local storage ran out of space while analyzing this file. Free up space and try again.';
     }
     return raw;
@@ -1658,15 +1659,15 @@ export class SessionController {
   }
 
   private isRetryablePageError(error: unknown): boolean {
-    return errorMessage(error, '').includes('RESULT_SPILL_QUOTA_EXCEEDED');
+    return hasDbErrorCode(error, 'RESULT_SPILL_QUOTA_EXCEEDED');
   }
 
   private resultPageFailureMessage(error: unknown, fallback: string): string {
     const raw = errorMessage(error, fallback);
-    if (raw.includes('RESULT_SPILL_QUOTA_EXCEEDED')) {
+    if (hasDbErrorCode(error, 'RESULT_SPILL_QUOTA_EXCEEDED')) {
       return 'Local result storage is full. Free local storage, then retry loading rows.';
     }
-    if (raw.includes('RESULT_SPILL_UNSUPPORTED')) {
+    if (hasDbErrorCode(error, 'RESULT_SPILL_UNSUPPORTED')) {
       return 'This browser cannot retain more local result pages. Narrow the SQL and run the query again.';
     }
     return `${raw} Run the query again to load more rows.`;

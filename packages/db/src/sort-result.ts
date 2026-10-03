@@ -3,6 +3,7 @@ import { tableToIPC, type Table } from 'apache-arrow';
 import type { RecordBatch as DuckdbRecordBatch, Schema as DuckdbSchema } from 'apache-arrow-duckdb';
 
 import { convertDuckdbTable } from './arrow-bridge.js';
+import { hasDbErrorCode } from './errors.js';
 import type { ExportFiles } from './export-files.js';
 import type { QueryPageStore } from './query-pages.js';
 import {
@@ -56,7 +57,7 @@ const asSortError = (error: unknown): unknown => {
       cause: error,
     });
   }
-  if (isQuotaError(error) || String((error as Error)?.message ?? '').includes('QUOTA_EXCEEDED')) {
+  if (isQuotaError(error) || hasDbErrorCode(error, 'SPILL_QUOTA_EXCEEDED', 'RESULT_SPILL_QUOTA_EXCEEDED')) {
     return new ResultSortError(
       'SORT_STORAGE_FULL',
       'Local storage ran out of space while sorting. Free up space and try again.',

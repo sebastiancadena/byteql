@@ -1,5 +1,6 @@
 import { type Table, tableFromIPC, tableToIPC } from 'apache-arrow';
 
+import { ByteqlDbError } from './errors.js';
 import { isQuotaError } from './spill-files.js';
 
 export const QUERY_RESULT_MEMORY_BYTES = 64 * 1024 * 1024;
@@ -64,12 +65,19 @@ const assertGeneratedNumber = (value: number, label: string): void => {
 };
 
 const quotaExceeded = (cause: unknown): Error =>
-  new Error('RESULT_SPILL_QUOTA_EXCEEDED: failed to persist a query result page in OPFS.', {
-    cause,
-  });
+  new ByteqlDbError(
+    'RESULT_SPILL_QUOTA_EXCEEDED',
+    'RESULT_SPILL_QUOTA_EXCEEDED: failed to persist a query result page in OPFS.',
+    {
+      cause,
+    },
+  );
 
 const spillUnsupported = (): Error =>
-  new Error('RESULT_SPILL_UNSUPPORTED: this browser cannot retain more query result pages locally.');
+  new ByteqlDbError(
+    'RESULT_SPILL_UNSUPPORTED',
+    'RESULT_SPILL_UNSUPPORTED: this browser cannot retain more query result pages locally.',
+  );
 
 const toStoredPage = (metadata: PageMetadata, table: Table): StoredQueryPage => ({
   ...metadata,

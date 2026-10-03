@@ -909,7 +909,7 @@ describe('createBrowserDatabase', () => {
     const database = await createBrowserDatabase();
     const session = await database.startQuery('select * from events');
 
-    await expect(session.fetchNext(2)).rejects.toThrow('RESULT_SPILL_QUOTA_EXCEEDED');
+    await expect(session.fetchNext(2)).rejects.toMatchObject({ code: 'RESULT_SPILL_QUOTA_EXCEEDED' });
     expect(session.pages()).toEqual([]);
     expect(session.status()).toMatchObject({ loadedRows: 0, complete: false, storedBytes: 0 });
 
@@ -2211,7 +2211,7 @@ describe('createBrowserDatabase', () => {
 
         await expect(
           database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
-        ).rejects.toThrow('SPILL_UNSUPPORTED');
+        ).rejects.toMatchObject({ code: 'SPILL_UNSUPPORTED' });
       });
 
       it('defaults spillSupported from navigator.storage.getDirectory availability', async () => {
@@ -2232,7 +2232,7 @@ describe('createBrowserDatabase', () => {
           const database = await createBrowserDatabase();
           await expect(
             database.beginIngest({ schemas: [eventsSchema], tier: 'spill', generation: 1 }),
-          ).rejects.toThrow('SPILL_UNSUPPORTED');
+          ).rejects.toMatchObject({ code: 'SPILL_UNSUPPORTED' });
         } finally {
           vi.unstubAllGlobals();
         }
@@ -2356,7 +2356,7 @@ describe('createBrowserDatabase', () => {
           return {} as Table;
         });
 
-        await expect(session.finalize()).rejects.toThrow('SPILL_QUOTA_EXCEEDED');
+        await expect(session.finalize()).rejects.toMatchObject({ code: 'SPILL_QUOTA_EXCEEDED' });
         await expect(session.appendBatch('events', ipcBatch(1))).rejects.toThrow(/failed/i);
       });
 

@@ -11,6 +11,7 @@ import {
 } from 'apache-arrow';
 import { Table as DuckdbTable, tableFromIPC as duckdbTableFromIPC } from 'apache-arrow-duckdb';
 import { describe, expect, it, vi } from 'vitest';
+import { ByteqlDbError } from './errors.js';
 
 import { duplicateResultTable } from '../test-support/result-columns.js';
 import { QueryPageStore } from './query-pages.js';
@@ -422,7 +423,10 @@ describe('writeSortedResult', () => {
       const store = new QueryPageStore({ persistence: null });
       environments.stores.push(store);
       vi.spyOn(store, 'put').mockRejectedValue(
-        new Error('RESULT_SPILL_QUOTA_EXCEEDED: failed to persist a page.'),
+        new ByteqlDbError(
+          'RESULT_SPILL_QUOTA_EXCEEDED',
+          'RESULT_SPILL_QUOTA_EXCEEDED: failed to persist a page.',
+        ),
       );
       return store;
     });

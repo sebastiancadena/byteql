@@ -45,6 +45,7 @@ import {
 import { deleteSpillChunks, deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 import { defaultParquetWriterDependencies, writeParquet } from './export-parquet.js';
 import type { ParquetArtifact, ParquetExportOptions } from './export-types.js';
+import { ByteqlDbError } from './errors.js';
 import {
   ResultSortError,
   resultSortRuntimeSupported,
@@ -267,9 +268,13 @@ class IngestSessionImpl implements IngestSession {
           quotaAborted = true;
           this.state = 'aborted';
           await this.dropStaging(connection);
-          throw new Error(`SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`, {
-            cause: error,
-          });
+          throw new ByteqlDbError(
+            'SPILL_QUOTA_EXCEEDED',
+            `SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`,
+            {
+              cause: error,
+            },
+          );
         }
       });
     } catch (error) {
@@ -304,9 +309,13 @@ class IngestSessionImpl implements IngestSession {
                 quotaAborted = true;
                 this.state = 'aborted';
                 await this.dropStaging(connection);
-                throw new Error(`SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`, {
-                  cause: error,
-                });
+                throw new ByteqlDbError(
+                  'SPILL_QUOTA_EXCEEDED',
+                  `SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`,
+                  {
+                    cause: error,
+                  },
+                );
               }
             }
           }
@@ -378,9 +387,13 @@ class IngestSessionImpl implements IngestSession {
                 }
                 // Same tagging as appendBatch's mid-ingest rotation (Trivia 2), so the controller
                 // shows its clear "ran out of space" message instead of a raw DB/OS error string.
-                throw new Error(`SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`, {
-                  cause: error,
-                });
+                throw new ByteqlDbError(
+                  'SPILL_QUOTA_EXCEEDED',
+                  `SPILL_QUOTA_EXCEEDED: failed to spill ${JSON.stringify(table)} to OPFS.`,
+                  {
+                    cause: error,
+                  },
+                );
               }
             }
           }
@@ -948,7 +961,10 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
       throw new Error('ByteQL database has been disposed.');
     }
     if (options.tier === 'spill' && !this.spillSupported) {
-      throw new Error('SPILL_UNSUPPORTED: OPFS storage is not available in this environment.');
+      throw new ByteqlDbError(
+        'SPILL_UNSUPPORTED',
+        'SPILL_UNSUPPORTED: OPFS storage is not available in this environment.',
+      );
     }
     if (!Number.isInteger(options.generation) || options.generation < 0) {
       throw new Error(

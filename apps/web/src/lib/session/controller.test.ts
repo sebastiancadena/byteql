@@ -54,7 +54,17 @@ const {
   queryPageRows,
   queryResultMemoryBytes,
   parquetColumnNamesMock,
+  ByteqlDbErrorMock,
 } = vi.hoisted(() => ({
+  // Stand-in for the real typed error (the factory below replaces the whole module).
+  ByteqlDbErrorMock: class extends Error {
+    constructor(
+      readonly code: string,
+      message: string,
+    ) {
+      super(message);
+    }
+  },
   sweepQueryPageOrphansMock: vi.fn().mockResolvedValue(undefined),
   sweepSpillOrphansMock: vi.fn().mockResolvedValue(undefined),
   queryInitialRows: 1_024,
@@ -63,6 +73,9 @@ const {
   parquetColumnNamesMock: vi.fn(),
 }));
 vi.mock('@byteql/db', () => ({
+  ByteqlDbError: ByteqlDbErrorMock,
+  hasDbErrorCode: (error: unknown, ...codes: string[]) =>
+    error instanceof ByteqlDbErrorMock && codes.includes(error.code),
   QUERY_INITIAL_ROWS: queryInitialRows,
   QUERY_PAGE_ROWS: queryPageRows,
   QUERY_RESULT_MEMORY_BYTES: queryResultMemoryBytes,
@@ -280,7 +293,8 @@ class FakeQuerySession implements QuerySession {
     if (this.fetchError) {
       const error = this.fetchError;
       this.fetchError = null;
-      if (!error.message.includes('RESULT_SPILL_QUOTA_EXCEEDED')) this.cancelled += 1;
+      if (!(error instanceof ByteqlDbErrorMock && error.code === 'RESULT_SPILL_QUOTA_EXCEEDED'))
+        this.cancelled += 1;
       throw error;
     }
     const nextPage = this.nextPages.shift() ?? null;
@@ -914,7 +928,10 @@ describe('SessionController', () => {
     const controller = await readyController();
     await controller.runQuery('select * from events');
     const query = querySessions[0]!;
-    query.fetchError = new Error('RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.');
+    query.fetchError = new ByteqlDbErrorMock(
+      'RESULT_SPILL_QUOTA_EXCEEDED',
+      'RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.',
+    );
     query.retryPage = page(1, 1_024, [1_024]);
 
     await controller.downloadResults({ format: 'csv', includeProvenance: true });
@@ -1341,7 +1358,10 @@ describe('SessionController', () => {
     await controller.runQuery('select * from events');
     const query = querySessions[0]!;
     const storedPage = page(1, 1_024, rangeValues(8_192, 1_024));
-    query.fetchError = new Error('RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.');
+    query.fetchError = new ByteqlDbErrorMock(
+      'RESULT_SPILL_QUOTA_EXCEEDED',
+      'RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.',
+    );
     query.retryPage = storedPage;
 
     await controller.loadMoreResults();
@@ -1382,7 +1402,10 @@ describe('SessionController', () => {
     const controller = await readyController();
     await controller.runQuery('select * from events');
     const query = querySessions[0]!;
-    query.fetchError = new Error('RESULT_SPILL_UNSUPPORTED: page budget exceeded.');
+    query.fetchError = new ByteqlDbErrorMock(
+      'RESULT_SPILL_UNSUPPORTED',
+      'RESULT_SPILL_UNSUPPORTED: page budget exceeded.',
+    );
 
     await controller.loadMoreResults();
 
@@ -1752,7 +1775,10 @@ describe('SessionController', () => {
 
   it('chooses the spill tier at the threshold and fails fast when unsupported', async () => {
     vi.mocked(database.beginIngest).mockRejectedValueOnce(
-      new Error('SPILL_UNSUPPORTED: OPFS storage is not available in this environment.'),
+      new ByteqlDbErrorMock(
+        'SPILL_UNSUPPORTED',
+        'SPILL_UNSUPPORTED: OPFS storage is not available in this environment.',
+      ),
     );
     const tierThresholdBytes = 2 * 1024 * 1024;
     const controller = new SessionController({
@@ -2006,7 +2032,12 @@ describe('SessionController', () => {
       rowCount: 1,
     });
     await vi.waitFor(() => expect(sessionB.appendCalls).toHaveLength(1));
-    sessionB.appendCalls[0]!.reject(new Error('SPILL_QUOTA_EXCEEDED: failed to spill "events" to OPFS.'));
+    sessionB.appendCalls[0]!.reject(
+      new ByteqlDbErrorMock(
+        'SPILL_QUOTA_EXCEEDED',
+        'SPILL_QUOTA_EXCEEDED: failed to spill "events" to OPFS.',
+      ),
+    );
     await expect(emit).rejects.toThrow('SPILL_QUOTA_EXCEEDED');
     await openingB;
     expect(sessionB.abortCalls).toBe(1);

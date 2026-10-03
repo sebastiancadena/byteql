@@ -1,3 +1,4 @@
+export { ByteqlDbError, hasDbErrorCode, type ByteqlDbErrorCode } from './errors.js';
 export { createBrowserDatabase, type BrowserDatabaseOptions } from './browser.js';
 export { createExportFiles, type ExportFiles } from './export-files.js';
 export { writeParquet, type ParquetWriterDependencies } from './export-parquet.js';
