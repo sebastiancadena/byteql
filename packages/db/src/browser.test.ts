@@ -121,7 +121,7 @@ const deleteSpillChunksMock = vi.mocked(deleteSpillChunks);
 const createQueryPagePersistenceMock = vi.mocked(createOpfsQueryPagePersistence);
 
 // The local parquet extension must be loaded before extension loading is disabled and the
-// configuration is locked below — see the same-origin repository comment in browser.ts.
+// configuration is locked below — see the same-origin repository comment in hardening.ts.
 const HARDENING_STATEMENTS = [
   "LOAD 'http://localhost/duckdb-extensions/v1.5.4/wasm_eh/parquet.duckdb_extension.wasm';",
   "SET allowed_directories = ['opfs://byteql-spill/', 'opfs://byteql-exports/'];",

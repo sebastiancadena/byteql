@@ -67,7 +67,7 @@ const convert = async (connection: AsyncDuckDBConnection, sql: string): Promise<
     if (next.done === true) break;
     const batch = normalizeDuckdbResultBatch(next.value, reader.schema);
     schema = batch.schema;
-    // Mirror the production reader (browser.ts): Arrow represents a schema-only stream with an
+    // Mirror the production reader (query-session.ts): Arrow represents a schema-only stream with an
     // internal zero-row placeholder batch. Handing that batch's own (possibly List-typed) buffers
     // straight to the Arrow 17 writer crashes on assembly; only its schema is authoritative here.
     if (batch.numRows === 0) continue;
