@@ -39,7 +39,10 @@ export interface AssemblerAddOutcome {
   status: AssemblerAddStatus;
   /** Some incoming bytes overlapped stored bytes and differed; the stored bytes were kept. */
   conflicted: boolean;
-  /** A prefix below the locked (consumed > 0) base was discarded. */
+  /**
+   * A prefix below the locked (consumed > 0) base, or below the retained-history floor (bytes
+   * consumed more than maxBuffer ago, released by compaction), was discarded.
+   */
   trimmedBelowBase: boolean;
 }
 
@@ -94,10 +97,16 @@ export const unwrapOffset = (raw: number, bits: number, reference: number | null
 };
 
 /**
- * Smallest released prefix worth compacting away. Compaction also waits until the released
- * prefix is at least half of the buffered extent, so each compaction copies no more live bytes
- * than it frees: the total copy cost stays linear in the bytes consumed (amortized O(1) per byte)
- * and the in-order append path never pays for it.
+ * Smallest releasable prefix worth compacting away. Compaction also waits until the releasable
+ * prefix is at least half of the buffered extent, so each compaction copies no more retained
+ * bytes than it frees: the total copy cost stays linear in the bytes consumed (amortized O(1)
+ * per byte) and the in-order append path never pays for it.
+ *
+ * Only consumed bytes more than `maxBuffer` behind the consumed point are releasable: the most
+ * recent `maxBuffer` bytes of consumed history stay stored, so a retransmission overlapping them
+ * is still compared byte for byte (first-bytes-win conflict detection is unchanged for any flow
+ * whose history fits in `maxBuffer`). Older retransmissions are trimmed and reported as
+ * below-base, never silently accepted as duplicates.
  */
 const COMPACT_MIN_BYTES = 65_536;
 
@@ -112,8 +121,9 @@ export class StreamAssembler {
   #base: number | null = null;
   /**
    * Absolute offset of `#data[0]`. Equal to `#base` until the first compaction; afterwards it
-   * is the consumed point at that compaction (bytes below it are released: dropped from
-   * `#data`, and segments wholly below it are dropped from `#segments`).
+   * is the release point of that compaction (bytes below it are released: dropped from `#data`,
+   * and segments wholly below it are dropped from `#segments`). It always trails the consumed
+   * point by at least `#maxBuffer`.
    */
   #dataStart = 0;
   #data = new Uint8Array(0);
@@ -170,37 +180,48 @@ export class StreamAssembler {
     const shift = (this.#base ?? 0) - this.#dataStart;
     return this.#data.subarray(this.#consumed + shift, this.#contiguousEnd + shift);
   }
+  // Compaction is lazy: consume() only advances the watermark, and the release runs at the start
+  // of the next add(). The caller reads the just-consumed message's provenance
+  // (segmentsOverlapping) after consume(), so nothing may be released in between. (The history
+  // window alone already keeps those segments, since a message is never longer than maxBuffer;
+  // laziness makes that independent of the window.)
   consume(length: number): void {
     this.#consumed += length;
-    // Compaction trigger (amortized): release the consumed prefix once it is both at least
-    // COMPACT_MIN_BYTES and at least half of the buffered extent — see COMPACT_MIN_BYTES.
-    const base = this.#base;
-    if (base === null || this.#highestEndAbs === null) return;
-    const consumedAbs = base + this.#consumed;
-    const released = consumedAbs - this.#dataStart;
-    const extent = this.#highestEndAbs - this.#dataStart;
-    if (released >= COMPACT_MIN_BYTES && released * 2 >= extent) this.#compact(consumedAbs);
   }
 
   /**
-   * Releases everything below `consumedAbs` (the absolute consumed point): drops segments that
-   * end at or before it, slides `#data` so it starts there, and keeps every stream-relative
-   * value unchanged (the origin `#base` does not move). A segment straddling the point is kept
-   * whole — its metadata still maps message pieces exactly — but its released bytes are gone,
-   * which is safe because `add` discards incoming bytes below `#dataStart` before reconciling.
+   * Compaction trigger (amortized, see COMPACT_MIN_BYTES): the release point trails the consumed
+   * point by `#maxBuffer`; compact once the releasable prefix is both at least COMPACT_MIN_BYTES
+   * and at least half of the buffered extent.
    */
-  #compact(consumedAbs: number): void {
-    const drop = this.#firstEndingAfter(consumedAbs);
+  #maybeCompact(): void {
+    if (this.#base === null || this.#highestEndAbs === null) return;
+    const releasePoint = this.#base + this.#consumed - this.#maxBuffer;
+    const releasable = releasePoint - this.#dataStart;
+    const extent = this.#highestEndAbs - this.#dataStart;
+    if (releasable >= COMPACT_MIN_BYTES && releasable * 2 >= extent) this.#compact(releasePoint);
+  }
+
+  /**
+   * Releases everything below `releasePoint` (absolute, at least `#maxBuffer` behind the
+   * consumed point): drops segments that end at or before it, slides `#data` so it starts
+   * there, and keeps every stream-relative value unchanged (the origin `#base` does not move).
+   * A segment straddling the point is kept whole — its metadata still maps pieces exactly — but
+   * its released bytes are gone, which is safe because `add` trims incoming bytes below
+   * `#dataStart` before reconciling.
+   */
+  #compact(releasePoint: number): void {
+    const drop = this.#firstEndingAfter(releasePoint);
     if (drop > 0) {
       this.#segments.splice(0, drop);
       this.#releasedSegments += drop;
       this.#frontierIndex = Math.max(0, this.#frontierIndex - drop);
     }
-    const released = consumedAbs - this.#dataStart;
-    const live = Math.max(0, this.#highestEndAbs! - consumedAbs);
-    const keep = Math.max(0, Math.min(this.#data.length - released, live));
+    const released = releasePoint - this.#dataStart;
+    const retained = Math.max(0, this.#highestEndAbs! - releasePoint);
+    const keep = Math.max(0, Math.min(this.#data.length - released, retained));
     this.#data.copyWithin(0, released, released + keep);
-    this.#dataStart = consumedAbs;
+    this.#dataStart = releasePoint;
   }
 
   segmentsOverlapping(start: number, end: number): AssemblerSegment[] {
@@ -229,6 +250,7 @@ export class StreamAssembler {
   // fresh per stored piece in #store below.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site symmetry, see above
   add(offset: number, bytes: Uint8Array, srcStart: number, srcEnd: number): AssemblerAddOutcome {
+    this.#maybeCompact();
     let trimmedBelowBase = false;
     if (this.#base !== null && this.#consumed > 0 && offset < this.#base) {
       const cut = Math.min(this.#base - offset, bytes.length);
@@ -238,12 +260,14 @@ export class StreamAssembler {
       srcStart += cut;
       bytes = bytes.subarray(cut);
     }
-    // Bytes in [#base, #dataStart) were stored, consumed, and released by compaction: a
-    // retransmission of them is a duplicate. Their stored bytes are gone, so a mismatch there
-    // can no longer be detected (conflict detection covers only retained bytes).
+    // Bytes in [#base, #dataStart) were consumed more than maxBuffer ago and released by
+    // compaction, so they can no longer be compared. They are trimmed and reported as below-base
+    // (the retained-history floor), never silently accepted as duplicates: a conflicting
+    // retransmission of old bytes must stay visible.
     if (offset < this.#dataStart && this.#base !== null && this.#dataStart > this.#base) {
       const cut = Math.min(this.#dataStart - offset, bytes.length);
-      if (cut === bytes.length) return { status: 'duplicate', conflicted: false, trimmedBelowBase };
+      trimmedBelowBase = true;
+      if (cut === bytes.length) return { status: 'dropped', conflicted: false, trimmedBelowBase };
       offset += cut;
       srcStart += cut;
       bytes = bytes.subarray(cut);
@@ -337,8 +361,9 @@ export class StreamAssembler {
     const relStart = start - this.#dataStart;
     if (relStart + bytes.length > this.#data.length) {
       const needed = relStart + bytes.length;
-      // Outstanding bytes are capped at #maxBuffer, but #data also holds the not-yet-compacted
-      // consumed prefix in front of them, so the growth ceiling includes that prefix.
+      // Outstanding bytes are capped at #maxBuffer, but #data also holds the consumed history in
+      // front of them (the maxBuffer window plus any not-yet-compacted prefix), so the growth
+      // ceiling includes it. #data never shrinks: a flow keeps its peak allocation until finish().
       const ceiling = this.#maxBuffer + Math.max(0, (this.#base ?? 0) + this.#consumed - this.#dataStart);
       const grown = new Uint8Array(Math.max(needed, Math.min(this.#data.length * 2, ceiling)));
       grown.set(this.#data);

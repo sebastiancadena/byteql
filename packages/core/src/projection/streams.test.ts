@@ -219,6 +219,8 @@ describe('StreamAssembler releases consumed bytes', () => {
       const start = a.consumed;
       // Offsets stay relative to the stream origin, not to wherever the buffer was compacted to.
       expect(start).toBe(i * size);
+      // The engine's order: consume first, then read the message's provenance.
+      a.consume(size);
       expect(a.segmentsOverlapping(start, start + size)).toEqual([
         {
           start,
@@ -227,7 +229,6 @@ describe('StreamAssembler releases consumed bytes', () => {
           srcEnd: 50_000 + i * (size + 60) + size,
         },
       ]);
-      a.consume(size);
     }
     expect(a.base).toBe(1000);
     expect(a.consumed).toBe(3 * MIB);
@@ -310,10 +311,12 @@ describe('StreamAssembler releases consumed bytes', () => {
     expect(a.segmentCount).toBe(sizes.length);
     expect(a.srcSpan).toEqual({ start: src(7), end: src(0) + sizes[0]! });
 
-    // A retransmission of long-consumed (released) bytes is a duplicate, not fresh data.
-    expect(a.add(500 + starts[1]!, chunk(1, sizes[1]!), 1, 1 + sizes[1]!)).toEqual({
-      status: 'duplicate',
-      conflicted: false,
+    // Everything consumed is still inside the maxBuffer history window: a retransmission of
+    // early consumed bytes is still compared — identical is a duplicate, different a conflict.
+    expect(a.add(500 + starts[1]!, chunk(1, sizes[1]!), 1, 1 + sizes[1]!).status).toBe('duplicate');
+    expect(a.add(500 + starts[1]!, chunk(0xee, 10), 1, 11)).toEqual({
+      status: 'conflict',
+      conflicted: true,
       trimmedBelowBase: false,
     });
     // Bytes below the stream origin are still trimmed and reported as below-base.
@@ -334,6 +337,66 @@ describe('StreamAssembler releases consumed bytes', () => {
     expect(a.segmentsOverlapping(cursor, cursor + 2)).toEqual([
       { start: cursor, end: cursor + 2, srcStart: 13, srcEnd: 15 },
     ]);
+  });
+});
+
+describe('StreamAssembler consumed-history window', () => {
+  const window = 32_768;
+  const size = 4096;
+  const fill = (value: number, length: number) => new Uint8Array(length).fill(value);
+  // 400 KiB through a 32 KiB cap, one message per segment, consumed as it arrives.
+  const streamThrough = () => {
+    const a = new StreamAssembler(window);
+    for (let i = 0; i < 100; i++) {
+      expect(a.add(i * size, fill(i, size), 1000 + i * size, 1000 + (i + 1) * size).status).toBe('added');
+      a.consume(size);
+    }
+    return a;
+  };
+  const total = 100 * size;
+
+  it('keeps the just-consumed message segments for provenance even when compaction is due', () => {
+    const a = new StreamAssembler(window);
+    for (let i = 0; i < 100; i++) {
+      a.add(i * size, fill(i, size), 1000 + i * size, 1000 + (i + 1) * size);
+      const start = a.consumed;
+      a.consume(size);
+      expect(a.segmentsOverlapping(start, start + size)).toEqual([
+        { start, end: start + size, srcStart: 1000 + start, srcEnd: 1000 + start + size },
+      ]);
+    }
+  });
+
+  it('still detects a conflicting retransmission of consumed bytes within the window', () => {
+    const a = streamThrough();
+    const inWindow = total - window + 8; // consumed, but within maxBuffer of the consumed point
+    expect(a.add(inWindow, fill(0xee, 16), 0, 16)).toEqual({
+      status: 'conflict',
+      conflicted: true,
+      trimmedBelowBase: false,
+    });
+    const owner = Math.floor(inWindow / size);
+    expect(a.add(inWindow, fill(owner, 16), 0, 16).status).toBe('duplicate');
+  });
+
+  it('reports a retransmission of released bytes beyond the window as below-base, not a duplicate', () => {
+    const a = streamThrough();
+    a.add(total, fill(1, 1), 0, 1); // compaction is lazy: the next add releases old history
+    expect(a.add(0, fill(0, 16), 0, 16)).toEqual({
+      status: 'dropped',
+      conflicted: false,
+      trimmedBelowBase: true,
+    });
+    expect(a.add(size, fill(0xee, 16), 0, 16)).toEqual({
+      status: 'dropped',
+      conflicted: false,
+      trimmedBelowBase: true,
+    });
+    // A retransmission straddling the release floor keeps its comparable part.
+    // (The floor trails the consumed point by at least the window; it starts above 0.)
+    const straddle = a.add(0, fill(0xee, total - window + size), 0, total - window + size);
+    expect(straddle.trimmedBelowBase).toBe(true);
+    expect(straddle.conflicted).toBe(true);
   });
 });
 

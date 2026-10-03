@@ -46,7 +46,7 @@ const run = async (packets: Uint8Array[]) => {
 describe('stream buffer cap counts only unconsumed bytes', () => {
   it('reassembles a TLS direction carrying well over max_buffer across many records', async () => {
     const hello = tlsClientHello({ sni: 'long.example' });
-    const recordCount = 90;
+    const recordCount = 160;
     const bodyLength = 16_000;
     const packets = [segment(443, 1000, SYN, new Uint8Array(0)), segment(443, 1001, PSH | ACK, hello)];
     let seq = 1001 + hello.length;
@@ -59,7 +59,7 @@ describe('stream buffer cap counts only unconsumed bytes', () => {
       seq += record.length;
     }
     const totalBytes = seq - 1001;
-    expect(totalBytes).toBeGreaterThan(MAX_BUFFER);
+    expect(totalBytes).toBeGreaterThan(2 * MAX_BUFFER + 65_536); // past the history window
 
     const { result, table } = await run(packets);
     const flows = table('streams').toArray();
@@ -73,37 +73,85 @@ describe('stream buffer cap counts only unconsumed bytes', () => {
         .toArray()
         .map((row) => row.sni),
     ).toEqual(['long.example']);
-    expect(result.issues.filter((issue) => issue.code === 'STREAM_TRUNCATED')).toEqual([]);
+    expect(result.issues).toEqual([]);
   });
 
-  it('reassembles a DNS-over-TCP direction carrying well over max_buffer', async () => {
-    const perSegment = 400;
-    const segmentCount = 100;
+  // Long names make each DNS-over-TCP message ~225 bytes, so a few thousand messages carry the
+  // flow well past 2 x max_buffer — beyond the consumed-history window, so compaction runs.
+  const longName = (i: number) => `${'a'.repeat(60)}${i % 10}.${'b'.repeat(63)}.${'c'.repeat(63)}.example`;
+  const dnsMessages = (count: number) =>
+    Array.from({ length: count }, (_, i) => dnsOverTcp({ txId: i & 0xffff, name: longName(i), type: 1 }));
+  const concat = (parts: Uint8Array[]) => {
+    const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+    let at = 0;
+    for (const part of parts) {
+      out.set(part, at);
+      at += part.length;
+    }
+    return out;
+  };
+  const span = (row: { _src_start: bigint; _src_end: bigint }) => Number(row._src_end - row._src_start);
+  const piecesLength = (ranges: { toArray(): { start: bigint; end: bigint }[] } | null) =>
+    (ranges?.toArray() ?? []).reduce((sum, piece) => sum + Number(piece.end - piece.start), 0);
+
+  it('emits one row with exact provenance per DNS message when every message has its own segment', async () => {
+    const messages = dnsMessages(12_000);
     const packets = [segment(53, 5000, SYN, new Uint8Array(0))];
     let seq = 5001;
-    let txId = 0;
-    for (let s = 0; s < segmentCount; s++) {
-      const messages: Uint8Array[] = [];
-      for (let m = 0; m < perSegment; m++) {
-        messages.push(dnsOverTcp({ txId: txId++ & 0xffff, name: 'bulk.example', type: 1 }));
-      }
-      const payload = new Uint8Array(messages.reduce((sum, message) => sum + message.length, 0));
-      let at = 0;
-      for (const message of messages) {
-        payload.set(message, at);
-        at += message.length;
-      }
-      packets.push(segment(53, seq, PSH | ACK, payload));
-      seq += payload.length;
+    for (const message of messages) {
+      packets.push(segment(53, seq, PSH | ACK, message));
+      seq += message.length;
     }
-    expect(seq - 5001).toBeGreaterThan(MAX_BUFFER);
+    expect(seq - 5001).toBeGreaterThan(2 * MAX_BUFFER + 65_536);
 
     const { result, table } = await run(packets);
+    expect(result.issues).toEqual([]);
     const flows = table('streams').toArray();
     expect(flows.map((flow) => [flow.status, flow.message_count, flow.pending_bytes])).toEqual([
-      ['ok', perSegment * segmentCount, 0],
+      ['ok', messages.length, 0],
     ]);
-    expect(table('dns').numRows).toBe(perSegment * segmentCount);
-    expect(result.issues.filter((issue) => issue.code === 'STREAM_TRUNCATED')).toEqual([]);
+    const rows = table('dns').toArray();
+    expect(rows).toHaveLength(messages.length);
+    rows.forEach((row, i) => {
+      expect(row._src_start).toBeLessThan(row._src_end);
+      expect(span(row)).toBe(messages[i]!.length);
+      expect(row._src_ranges).toBeNull(); // a single segment: the span alone is exact
+      expect(row.query_name).toBe(longName(i));
+    });
+  });
+
+  it('keeps exact multi-piece provenance for DNS messages straddling segments past the window', async () => {
+    const messages = dnsMessages(12_000);
+    const stream = concat(messages);
+    expect(stream.length).toBeGreaterThan(2 * MAX_BUFFER + 65_536);
+    // Fixed-size cuts that ignore message boundaries, so many messages straddle two segments.
+    const cut = 9001;
+    const packets = [segment(53, 5000, SYN, new Uint8Array(0))];
+    for (let at = 0; at < stream.length; at += cut) {
+      packets.push(segment(53, 5001 + at, PSH | ACK, stream.subarray(at, at + cut)));
+    }
+
+    const { result, table } = await run(packets);
+    expect(result.issues).toEqual([]);
+    expect(
+      table('streams')
+        .toArray()
+        .map((flow) => [flow.status, flow.message_count, flow.pending_bytes]),
+    ).toEqual([['ok', messages.length, 0]]);
+    const rows = table('dns').toArray();
+    expect(rows).toHaveLength(messages.length);
+    let straddling = 0;
+    rows.forEach((row, i) => {
+      expect(row._src_start).toBeLessThan(row._src_end);
+      if (row._src_ranges === null) {
+        expect(span(row)).toBe(messages[i]!.length);
+      } else {
+        straddling += 1;
+        // A bounding span over two pieces; the pieces alone hold exactly the message bytes.
+        expect(piecesLength(row._src_ranges)).toBe(messages[i]!.length);
+        expect(span(row)).toBeGreaterThan(messages[i]!.length);
+      }
+    });
+    expect(straddling).toBeGreaterThan(200);
   });
 });
