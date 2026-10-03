@@ -69,6 +69,7 @@ const { queryLibraryDispose, makeQueryLibrary, openQueryLibrary } = vi.hoisted((
 });
 
 vi.mock('@byteql/db', () => ({ createBrowserDatabase }));
+vi.mock('@byteql/db/testing', () => ({}));
 vi.mock('./lib/session/controller.js', () => ({ SessionController }));
 vi.mock('./lib/ui/fonts.js', () => ({ prepareUiFonts }));
 vi.mock('./lib/queries/library.js', () => ({ openQueryLibrary }));

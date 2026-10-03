@@ -2,7 +2,14 @@ import { readFile } from 'node:fs/promises';
 
 import { expect, test, type Page, type Request } from '@playwright/test';
 
-import { fixturePath, openAudioViewer, runSql, waitForAppReady } from './support/app.js';
+import {
+  drainQueryResult,
+  fixturePath,
+  metrics,
+  openAudioViewer,
+  runSql,
+  waitForAppReady,
+} from './support/app.js';
 
 interface RecordedRequest {
   url: string;
@@ -94,10 +101,9 @@ test('emits zero network events or local-data sentinels after application readin
   await expect(
     page.locator('.results-heading-meta').getByText('1,024 loaded · more available', { exact: true }),
   ).toBeVisible();
-  await page.evaluate(async () => window.__BYTEQL_E2E__!.drainQueryResult());
+  await drainQueryResult(page);
   await expect(page.locator('.results-heading-meta').getByText('20,000 rows', { exact: true })).toBeVisible();
-  const resultPaths = (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics()))
-    .resultOpfsPaths;
+  const resultPaths = (await metrics(page)).resultOpfsPaths;
   expect(resultPaths.length).toBeGreaterThan(1);
   expect(resultPaths.every((path) => /^byteql-results\/\d+\/\d+\.arrow$/u.test(path))).toBe(true);
 

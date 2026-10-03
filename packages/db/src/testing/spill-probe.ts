@@ -1,8 +1,7 @@
 import { AsyncDuckDB, VoidLogger, selectBundle } from '@duckdb/duckdb-wasm';
 
-// reuse LOCAL_BUNDLES by exporting it from browser.ts (internal export)
-import { LOCAL_BUNDLES } from './browser.js';
-import { hardenConnection, openLocalConnection } from './hardening.js';
+import { LOCAL_BUNDLES } from '../bundles.js';
+import { hardenConnection, openLocalConnection } from '../hardening.js';
 
 export interface SpillProbeReport {
   opfsAvailable: boolean;

@@ -1,10 +1,14 @@
 import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
-import type { ResultColumnsProbeReport } from '@byteql/db';
 
-import type { BrowserE2EControl } from '../src/lib/e2e-harness.js';
-
-import { openMidiSample, runSql, waitForAppReady } from './support/app.js';
+import {
+  metrics,
+  openMidiSample,
+  probeResultColumns,
+  runSql,
+  storedResult,
+  waitForAppReady,
+} from './support/app.js';
 
 for (const variant of ['mvp', 'eh'] as const) {
   test(`duplicate result columns in the ${variant} bundle`, async ({ page }, testInfo) => {
@@ -12,15 +16,7 @@ for (const variant of ['mvp', 'eh'] as const) {
     // This independent database probe must not depend on consumers migrated in later tasks.
     await page.goto('/');
     await waitForAppReady(page);
-    const report = await page.evaluate(
-      (bundle) =>
-        (
-          window.__byteqlE2E as unknown as {
-            probeResultColumns(variant: 'mvp' | 'eh'): Promise<ResultColumnsProbeReport>;
-          }
-        ).probeResultColumns(bundle),
-      variant,
-    );
+    const report = await probeResultColumns(page, variant);
     const path = testInfo.outputPath(`result-columns-${variant}.json`);
     await writeFile(path, JSON.stringify(report, null, 2));
     await testInfo.attach(`result-columns-${variant}.json`, { path, contentType: 'application/json' });
@@ -51,10 +47,8 @@ test('production query sessions preserve mixed duplicate columns and empty resul
       page.getByRole('columnheader', { name: `dup, column ${index + 1}, ${type}`, exact: true }),
     ).toBeVisible();
   }
-  const storedResult = () =>
-    page.evaluate(() => (window.__byteqlE2E as unknown as BrowserE2EControl).storedResult());
-  expect(await storedResult()).toMatchObject({ types: ['Int32', 'Utf8'], rows: [[10, 'ten']] });
-  expect(await page.evaluate(() => window.__byteqlE2E!.queryResultMetrics())).toMatchObject({
+  expect(await storedResult(page)).toMatchObject({ types: ['Int32', 'Utf8'], rows: [[10, 'ten']] });
+  expect(await metrics(page)).toMatchObject({
     loadedRows: 1,
     complete: true,
     sendCount: 1,
@@ -67,8 +61,8 @@ test('production query sessions preserve mixed duplicate columns and empty resul
       page.getByRole('columnheader', { name: `dup, column ${index + 1}, ${type}`, exact: true }),
     ).toBeVisible();
   }
-  expect(await storedResult()).toMatchObject({ types: ['Int32', 'Utf8'], rows: [] });
-  expect(await page.evaluate(() => window.__byteqlE2E!.queryResultMetrics())).toMatchObject({
+  expect(await storedResult(page)).toMatchObject({ types: ['Int32', 'Utf8'], rows: [] });
+  expect(await metrics(page)).toMatchObject({
     loadedRows: 0,
     complete: true,
     sendCount: 1,

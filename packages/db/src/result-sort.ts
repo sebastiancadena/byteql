@@ -44,7 +44,7 @@ export const SORT_UNAVAILABLE_RUNTIME =
  * statement succeeds on `eh`. That is a limitation of the runtime rather than of the snapshot
  * path — measured with the staging machinery removed entirely — so sorting is refused outright
  * there instead of failing unpredictably on particular data. See
- * `docs/result-column-sorting-compatibility.md`; `sort-probe.ts` guards the finding.
+ * `docs/result-column-sorting-compatibility.md`; `testing/sort-probe.ts` guards the finding.
  *
  * `mvp` is selected only for browsers without WebAssembly exception handling; everything current
  * gets `eh`.

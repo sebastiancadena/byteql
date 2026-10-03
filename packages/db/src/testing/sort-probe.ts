@@ -2,15 +2,15 @@ import { AsyncDuckDB, VoidLogger, type AsyncDuckDBConnection } from '@duckdb/duc
 import { Table, tableFromIPC, type Schema } from 'apache-arrow';
 import { RecordBatchStreamWriter, Schema as DuckdbSchema, Table as DuckdbTable } from 'apache-arrow-duckdb';
 
-import { LOCAL_BUNDLES } from './browser.js';
-import { absoluteBundle, hardenConnection, openLocalConnection } from './hardening.js';
-import type { ExportFiles } from './export-files.js';
-import { QueryPageStore } from './query-pages.js';
-import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from './result-arrow.js';
-import { resultColumnLabel } from './result-columns.js';
-import { resultSortRuntimeSupported } from './result-sort.js';
-import { writeSortedResult } from './sort-result.js';
-import type { QuerySession } from './types.js';
+import { LOCAL_BUNDLES } from '../bundles.js';
+import { absoluteBundle, hardenConnection, openLocalConnection } from '../hardening.js';
+import type { ExportFiles } from '../export-files.js';
+import { QueryPageStore } from '../query-pages.js';
+import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from '../result-arrow.js';
+import { resultColumnLabel } from '../result-columns.js';
+import { resultSortRuntimeSupported } from '../result-sort.js';
+import { writeSortedResult } from '../sort-result.js';
+import type { QuerySession } from '../types.js';
 
 const PAGE_ROWS = 8_192;
 const PROBE_ROWS = 20_000;

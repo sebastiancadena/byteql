@@ -10,13 +10,13 @@ import {
 } from 'apache-arrow';
 import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
 
-import { LOCAL_BUNDLES } from './browser.js';
-import { absoluteBundle, hardenConnection, openLocalConnection } from './hardening.js';
-import type { ExportFiles } from './export-files.js';
-import { writeParquet } from './export-parquet.js';
-import type { ParquetArtifact } from './export-types.js';
-import { parquetColumnNames } from './result-columns.js';
-import type { QuerySession } from './types.js';
+import { LOCAL_BUNDLES } from '../bundles.js';
+import { absoluteBundle, hardenConnection, openLocalConnection } from '../hardening.js';
+import type { ExportFiles } from '../export-files.js';
+import { writeParquet } from '../export-parquet.js';
+import type { ParquetArtifact } from '../export-types.js';
+import { parquetColumnNames } from '../result-columns.js';
+import type { QuerySession } from '../types.js';
 
 export interface ExportProbeReport {
   variant: 'mvp' | 'eh';

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { openAudioViewer, openFixture, openMidiSample, waitForAppReady } from './support/app.js';
+import { audioStats, openAudioViewer, openFixture, openMidiSample, waitForAppReady } from './support/app.js';
 
 test('loads and disposes the audio capability through the application boundary', async ({ page }) => {
   await openMidiSample(page);
@@ -9,11 +9,11 @@ test('loads and disposes the audio capability through the application boundary',
   await expect(page.getByRole('columnheader', { name: /seconds/u })).toBeVisible();
 
   await openAudioViewer(page);
-  await expect.poll(() => page.evaluate(() => window.__byteqlE2E?.audioStats().loadCalls ?? -1)).toBe(1);
-  expect(await page.evaluate(() => window.__byteqlE2E?.audioStats().loadedRows ?? -1)).toBeGreaterThan(0);
+  await expect.poll(() => audioStats(page).then((stats) => stats.loadCalls)).toBe(1);
+  expect(await audioStats(page).then((stats) => stats.loadedRows)).toBeGreaterThan(0);
 
   await page.getByRole('button', { name: 'Close audio viewer' }).click();
-  await expect.poll(() => page.evaluate(() => window.__byteqlE2E?.audioStats().disposeCalls ?? -1)).toBe(1);
+  await expect.poll(() => audioStats(page).then((stats) => stats.disposeCalls)).toBe(1);
 });
 
 test('applies tempo events from every track to playback seconds', async ({ page }) => {

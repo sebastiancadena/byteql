@@ -69,24 +69,6 @@ export interface SessionControllerOptions {
   tiering?: { tierThresholdBytes?: number; rotationBytes?: number };
 }
 
-/** Read-only, bounded-result diagnostics consumed only by the e2e build harness. */
-export interface QueryResultDiagnostics {
-  readonly loadedRows: number;
-  readonly complete: boolean;
-  readonly windowStart: number;
-  readonly windowRows: number;
-  readonly sendCount: number;
-  readonly decodedBytes: number;
-  /** Committed order changes so far, and the order currently on display. */
-  readonly orderRevision: number;
-  readonly sort: ResultSort | null;
-  readonly sortPending: boolean;
-  /** Views derived from the base that the controller still holds; the base itself is not one. */
-  readonly derivedViewCount: number;
-  /** Decoded-cache bytes per live store. The base and the display may be the same object. */
-  readonly viewCaches: readonly { kind: 'base' | 'display'; decodedBytes: number }[];
-}
-
 const disposedError = (): Error => new Error('The session controller is disposed.');
 
 const basename = (name: string): string => {
@@ -295,43 +277,6 @@ export class SessionController {
       return Promise.resolve();
     }
     return this.startResultDemand(() => this.publishWindow(result.generation, globalRow));
-  }
-
-  queryResultDiagnostics(): QueryResultDiagnostics {
-    const result = this.state.result;
-    const base = this.activeQuery;
-    const display = this.activeResultView;
-    const status = base?.status();
-    // Counted by object identity: before any sort the base IS the display, and reporting it twice
-    // would double the cache figures a memory check reads.
-    const views = new Set<QueryResultView>();
-    if (base) views.add(base);
-    if (display) views.add(display);
-    return {
-      loadedRows: result?.loadedRows ?? 0,
-      complete: result?.complete ?? false,
-      windowStart: result?.windowStart ?? 0,
-      windowRows: result?.window.numRows ?? 0,
-      sendCount: status?.sendCount ?? 0,
-      decodedBytes: status?.decodedBytes ?? 0,
-      orderRevision: result?.orderRevision ?? 0,
-      sort: result?.sort ?? null,
-      sortPending: this.activeSort !== null,
-      derivedViewCount: display && display !== base ? 1 : 0,
-      viewCaches: [...views].map((view) => ({
-        kind: view === base ? ('base' as const) : ('display' as const),
-        decodedBytes: view.status().decodedBytes,
-      })),
-    };
-  }
-
-  /** Repeatedly invokes the same demand path the result grid uses until it reaches EOF. */
-  async drainQueryResult(): Promise<void> {
-    while (this.state.result && !this.state.result.complete && !this.state.result.pageError) {
-      const loadedRows = this.state.result.loadedRows;
-      await this.loadMoreResults();
-      if (!this.state.result || this.state.result.loadedRows <= loadedRows) return;
-    }
   }
 
   retryResultPage(): Promise<void> {

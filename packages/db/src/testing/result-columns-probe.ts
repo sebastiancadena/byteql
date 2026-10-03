@@ -2,16 +2,16 @@ import { AsyncDuckDB, VoidLogger, type AsyncDuckDBConnection } from '@duckdb/duc
 import { tableFromIPC, tableToIPC, type Table } from 'apache-arrow';
 import type { RecordBatch as DuckdbRecordBatch, Schema as DuckdbSchema } from 'apache-arrow-duckdb';
 
-import { convertDuckdbTable } from './arrow-bridge.js';
-import { LOCAL_BUNDLES } from './browser.js';
+import { convertDuckdbTable } from '../arrow-bridge.js';
+import { LOCAL_BUNDLES } from '../bundles.js';
 import {
   absoluteBundle,
   hardenConnection,
   openLocalConnection,
   PRODUCTION_ALLOWED_DIRECTORIES,
-} from './hardening.js';
-import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from './result-arrow.js';
-import { resultColumnLabel } from './result-columns.js';
+} from '../hardening.js';
+import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from '../result-arrow.js';
+import { resultColumnLabel } from '../result-columns.js';
 
 export interface ResultColumnsProbeReport {
   variant: 'mvp' | 'eh';

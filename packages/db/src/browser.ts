@@ -6,13 +6,8 @@ import {
   selectBundle,
   type AsyncDuckDBConnection,
   type DuckDBBundle,
-  type DuckDBBundles,
   type Logger,
 } from '@duckdb/duckdb-wasm';
-import duckdbEhWasm from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url';
-import duckdbEhWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
-import duckdbMvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
-import duckdbMvpWasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
 import type { TableSchema } from '@byteql/core';
 import { tableFromIPC, type Schema, type Table } from 'apache-arrow';
 import {
@@ -22,6 +17,7 @@ import {
 } from 'apache-arrow-duckdb';
 
 import { convertDuckdbTable } from './arrow-bridge.js';
+import { LOCAL_BUNDLES } from './bundles.js';
 import {
   normalizeDuckdbResultBatch,
   normalizeDuckdbResultSchema,
@@ -30,7 +26,6 @@ import {
 import { RESULT_LABEL_METADATA_KEY } from './result-columns.js';
 import type {
   ByteqlDatabase,
-  FileStatisticsSummary,
   IngestOptions,
   IngestSession,
   QueryPage,
@@ -60,22 +55,11 @@ import {
 } from './result-sort.js';
 import { createExportFiles } from './export-files.js';
 import { writeSortedResult } from './sort-result.js';
+import type { FileStatisticsAccess, FileStatisticsSummary } from './testing/file-statistics.js';
 import { hardenConnection, openLocalConnection, PRODUCTION_ALLOWED_DIRECTORIES } from './hardening.js';
 
 /** Spill-tier rotation threshold: flush a table's staged batches to parquet past this size. */
 const ROTATION_THRESHOLD_BYTES = 96 * 1024 * 1024;
-
-/** @internal exported for reuse by the OPFS spill capability probe. */
-export const LOCAL_BUNDLES: DuckDBBundles = {
-  mvp: {
-    mainModule: duckdbMvpWasm,
-    mainWorker: duckdbMvpWorker,
-  },
-  eh: {
-    mainModule: duckdbEhWasm,
-    mainWorker: duckdbEhWorker,
-  },
-};
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -898,7 +882,7 @@ interface ActiveSortToken {
   promise: Promise<QueryResultView>;
 }
 
-class BrowserDatabase implements ByteqlDatabase {
+class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   private connection: AsyncDuckDBConnection | null = null;
   private initializePromise: Promise<void> | null = null;
   private operationTail: Promise<void> = Promise.resolve();

@@ -2,7 +2,6 @@
 
 declare global {
   const __BYTEQL_E2E__: boolean;
-  var __byteqlE2E: import('./lib/e2e-harness.js').BrowserE2EControl | undefined;
   /**
    * Set via `page.addInitScript()` before `page.goto()` — read once, synchronously, when
    * `createBrowserE2EHarness()` builds its `control.sessionOverrides`. See the comment at that

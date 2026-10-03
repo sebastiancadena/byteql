@@ -43,6 +43,7 @@ import {
   type ParseWorkerScope,
 } from '../../workers/parse.worker.js';
 import { SessionController } from './controller.js';
+import { drainQueryResult } from '../testing/query-result.js';
 import type { SampleId } from './samples.js';
 import { initialSessionState } from './state.js';
 
@@ -455,16 +456,6 @@ const fakeDatabase = (): {
     resultSortCapability: vi.fn(() => ({ supported: true as const })),
     cancelQuery: vi.fn().mockResolvedValue(false),
     listTables: vi.fn().mockResolvedValue([]),
-    collectFileStatistics: vi.fn().mockResolvedValue(undefined),
-    exportFileStatistics: vi.fn().mockResolvedValue({
-      totalFileReadsCold: 0,
-      totalFileReadsAhead: 0,
-      totalFileReadsCached: 0,
-      totalFileWrites: 0,
-      totalPageAccesses: 0,
-      totalPageLoads: 0,
-      blockSize: 0,
-    }),
     dispose: vi.fn().mockResolvedValue(undefined),
   };
   return { database, sessions, querySessions };
@@ -2467,7 +2458,7 @@ describe('SessionController', () => {
 
     it('never hands a sorted table to trusted viewers', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const original = controller.getState().result!.completeTable;
       expect(original).not.toBeNull();
       vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
@@ -2483,7 +2474,7 @@ describe('SessionController', () => {
 
     it('lets an in-flight window read finish first, then ignores reads made during the sort', async () => {
       const { controller, base } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const gate = deferred<void>();
       base.readGate = gate.promise;
       const inFlight = controller.loadResultWindow(2);
@@ -2527,7 +2518,7 @@ describe('SessionController', () => {
 
     it('cancels a sort without destroying the retained base or the visible order', async () => {
       const { controller, base } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const before = Array.from(controller.getState().result!.window.getChildAt(0)!);
       let observed: AbortSignal | null = null;
       vi.mocked(database.createSortedView).mockImplementation(
@@ -2571,7 +2562,7 @@ describe('SessionController', () => {
 
     it('keeps the previous order and reports the failure inline when the sort fails', async () => {
       const { controller, base } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.createSortedView).mockRejectedValue(new Error('local storage is full'));
 
       await controller.sortResults({ columnIndex: 0, direction: 'asc' }).catch(() => undefined);
@@ -2591,7 +2582,7 @@ describe('SessionController', () => {
 
     it('publishes the next query result after an order has been committed', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
       await controller.sortResults({ columnIndex: 0, direction: 'asc' });
       expect(controller.getState().result).toMatchObject({ orderRevision: 1 });
@@ -2614,7 +2605,7 @@ describe('SessionController', () => {
 
     it('refuses to sort a result left visible after a failed query', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.startQuery).mockRejectedValueOnce(new Error('syntax error'));
       await controller.runQuery('select bad');
 
@@ -2628,7 +2619,7 @@ describe('SessionController', () => {
 
     it('refuses to sort while a download owns the result', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const download = controller.downloadResults({ format: 'csv', includeProvenance: true });
       await vi.waitFor(() => expect(controller.getState().download).not.toBeNull());
 
@@ -2643,7 +2634,7 @@ describe('SessionController', () => {
 
     it('downloads the committed display order, without draining the derived view', async () => {
       const { controller, base } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
       await controller.sortResults({ columnIndex: 0, direction: 'asc' });
       const fetchesBefore = base.fetchCalls.length;
@@ -2672,7 +2663,7 @@ describe('SessionController', () => {
 
     it('refuses to start a download while a sort owns the result', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const gate = deferred<QueryResultView>();
       vi.mocked(database.createSortedView).mockReturnValue(gate.promise);
       const sorting = controller.sortResults({ columnIndex: 0, direction: 'asc' });
@@ -2688,7 +2679,7 @@ describe('SessionController', () => {
 
     it('releases a ready-to-save artifact built from the previous order', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
       await controller.downloadResults({ format: 'csv', includeProvenance: true });
       expect(controller.getState().download).not.toBeNull();
@@ -2715,7 +2706,7 @@ describe('SessionController', () => {
         { columnIndex: 0, label: 'value', name: 'captured_before_sort' },
       ]);
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
 
       await controller.downloadResults({ format: 'parquet', includeProvenance: true });
       expect(controller.getState().download).toMatchObject({ phase: 'ready-to-save' });
@@ -2751,7 +2742,7 @@ describe('SessionController', () => {
       ['disposal', (controller: SessionController) => controller.dispose()],
     ])('invalidates a pending sort when %s takes over', async (_label, takeOver) => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const gate = deferred<QueryResultView>();
       const view = sortedView([1, 2, 3]);
       vi.mocked(database.createSortedView).mockReturnValue(gate.promise);

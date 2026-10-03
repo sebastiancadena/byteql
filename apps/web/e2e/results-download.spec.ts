@@ -2,16 +2,18 @@ import { readFile } from 'node:fs/promises';
 
 import { expect, test, type Page } from '@playwright/test';
 
-import { beginDownload, metrics, openMidiSample, runSql, saveDownload, sortBy } from './support/app.js';
-
-interface SerializableResult {
-  /** SQL labels, which valid SQL may repeat: every value is read by POSITION, never by name. */
-  columns: string[];
-  /** The unique physical Arrow field names (`c0`, `c1`, …) behind those labels. */
-  physicalColumns: string[];
-  types: string[];
-  rows: Array<Array<string | number | boolean | null>>;
-}
+import {
+  beginDownload,
+  drainQueryResult,
+  exportFiles,
+  metrics,
+  openMidiSample,
+  readExportArtifact,
+  runSql,
+  saveDownload,
+  sortBy,
+  storedResult,
+} from './support/app.js';
 
 interface CsvColumn {
   name: string;
@@ -26,47 +28,13 @@ interface PickerState {
   aborts: number;
 }
 
-interface DownloadHarness {
-  queryResultMetrics(): Promise<{
-    loadedRows: number;
-    complete: boolean;
-    windowStart: number;
-    windowRows: number;
-    sendCount: number;
-    decodedBytes: number;
-    resultOpfsPaths: readonly string[];
-  }>;
-  storedResult(): Promise<SerializableResult>;
-  readExportArtifact(input: {
-    format: 'csv' | 'parquet';
-    bytes: number[];
-    csvColumns?: CsvColumn[];
-  }): Promise<{
-    // The independent reader names columns itself, so it reports no physical result names.
-    columns: string[];
-    types: string[];
-    rows: SerializableResult['rows'];
-    externalAccess: boolean;
-    configurationLocked: boolean;
-  }>;
-}
-
 async function readArtifact(
   page: Page,
   path: string,
   format: 'csv' | 'parquet',
   csvColumns?: CsvColumn[],
-): Promise<Awaited<ReturnType<DownloadHarness['readExportArtifact']>>> {
-  const bytes = [...(await readFile(path))];
-  return page.evaluate(
-    ({ format, bytes, csvColumns }) =>
-      (window.__BYTEQL_E2E__ as unknown as DownloadHarness).readExportArtifact({
-        format,
-        bytes,
-        csvColumns,
-      }),
-    { format, bytes, csvColumns },
-  );
+): ReturnType<typeof readExportArtifact> {
+  return readExportArtifact(page, { format, bytes: await readFile(path), csvColumns });
 }
 
 async function readArtifactBytes(path: string): Promise<number[]> {
@@ -180,9 +148,7 @@ test('fallback CSV saves every stored volatile value without rerunning SQL', asy
   await page.getByRole('button', { name: 'Download', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
 
-  const stored = await page.evaluate(() =>
-    (window.__BYTEQL_E2E__ as unknown as DownloadHarness).storedResult(),
-  );
+  const stored = await storedResult(page);
   expect(stored.rows).toHaveLength(20_000);
 
   const pending = page.waitForEvent('download');
@@ -208,33 +174,27 @@ test('direct picker CSV preserves a scrolled result after an unexecuted SQL edit
   await openMidiSample(page);
   await runSql(page, "select i, 'stored-' || i::varchar as value from range(20000) t(i)");
   await expect(page.locator('.results-heading-meta')).toContainText('1,024 loaded');
-  await page.evaluate(() => window.__BYTEQL_E2E__!.drainQueryResult());
+  await drainQueryResult(page);
   const scroll = page.locator('.grid-scroll');
   await scroll.hover();
   await page.mouse.wheel(0, 20_000);
   await expect.poll(() => scroll.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).not.toBeVisible();
-  const stored = await page.evaluate(() =>
-    (window.__BYTEQL_E2E__ as unknown as DownloadHarness).storedResult(),
-  );
+  const stored = await storedResult(page);
   await page.getByRole('textbox', { name: 'SQL query' }).fill('select 999 as edited_but_not_run');
 
   await beginDownload(page, 'csv');
   await expect(page.locator('.results-download-status')).toContainText('File saved.');
   const picked = await pickerState(page);
   expect(picked).toMatchObject({ closes: 1, aborts: 0 });
-  const exported = await page.evaluate(
-    ({ bytes }) =>
-      (window.__BYTEQL_E2E__ as unknown as DownloadHarness).readExportArtifact({
-        format: 'csv',
-        bytes,
-        csvColumns: [
-          { name: 'i', type: 'BIGINT' },
-          { name: 'value', type: 'VARCHAR' },
-        ],
-      }),
-    { bytes: await readPickedBytes(page) },
-  );
+  const exported = await readExportArtifact(page, {
+    format: 'csv',
+    bytes: await readPickedBytes(page),
+    csvColumns: [
+      { name: 'i', type: 'BIGINT' },
+      { name: 'value', type: 'VARCHAR' },
+    ],
+  });
   expect(exported.rows).toEqual(stored.rows);
   expect(exported.columns).toEqual(['i', 'value']);
 });
@@ -297,7 +257,7 @@ test('fallback Parquet readback preserves schema and page sequence after an SQL 
     "select i::integer as seq, (10000-i)::bigint as reverse, ('row-' || i::varchar) as label from range(12000) t(i)",
   );
   await expect(page.locator('.results-heading-meta')).toContainText('1,024 loaded');
-  await page.evaluate(() => window.__BYTEQL_E2E__!.drainQueryResult());
+  await drainQueryResult(page);
   const scroll = page.locator('.grid-scroll');
   await scroll.hover();
   await page.mouse.wheel(0, 20_000);
@@ -305,9 +265,7 @@ test('fallback Parquet readback preserves schema and page sequence after an SQL 
   await page.getByRole('textbox', { name: 'SQL query' }).fill('select -1 as replacement_not_run');
   await beginDownload(page, 'parquet');
   await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
-  const stored = await page.evaluate(() =>
-    (window.__BYTEQL_E2E__ as unknown as DownloadHarness).storedResult(),
-  );
+  const stored = await storedResult(page);
   const pending = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save file', exact: true }).click();
   const path = await saveDownload(await pending, testInfo, 'ordered-12000.parquet');
@@ -329,9 +287,7 @@ for (const format of ['csv', 'parquet'] as const) {
     await openMidiSample(page);
     await runSql(page, 'select i::integer as id, null::varchar as note from range(0) t(i)');
     await expect(page.locator('.results-heading-meta')).toContainText('0 rows');
-    const storedEmpty = await page.evaluate(() =>
-      (window.__BYTEQL_E2E__ as unknown as DownloadHarness).storedResult(),
-    );
+    const storedEmpty = await storedResult(page);
     expect(storedEmpty).toEqual({
       columns: ['id', 'note'],
       physicalColumns: ['c0', 'c1'],
@@ -368,9 +324,7 @@ for (const format of ['csv', 'parquet'] as const) {
     await page.getByRole('button', { name: 'Dismiss' }).click();
     await runSql(page, 'select _src_start, _src_end from events limit 3');
     await expect(page.locator('.results-heading-meta')).toContainText('3 rows');
-    const storedProvenance = await page.evaluate(() =>
-      (window.__BYTEQL_E2E__ as unknown as DownloadHarness).storedResult(),
-    );
+    const storedProvenance = await storedResult(page);
     expect(storedProvenance.columns).toEqual(['_src_start', '_src_end']);
     expect(storedProvenance.types).toEqual(['Uint64', 'Uint64']);
     expect(storedProvenance.rows).toHaveLength(3);
@@ -442,9 +396,7 @@ for (const format of ['csv', 'parquet'] as const) {
     expect(afterQuota.files).toHaveLength(2);
     await expect(readPickedBytes(page, afterQuota.files[1])).rejects.toThrow();
 
-    const stored = await page.evaluate(() =>
-      (window.__BYTEQL_E2E__ as unknown as DownloadHarness).storedResult(),
-    );
+    const stored = await storedResult(page);
     await page.getByRole('button', { name: 'Dismiss' }).click();
     await setPickerMode(page, 'ok');
     await beginDownload(page, format);
@@ -452,15 +404,11 @@ for (const format of ['csv', 'parquet'] as const) {
     const afterRetry = await pickerState(page);
     expect(afterRetry).toMatchObject({ closes: 1, aborts: 2 });
     expect(afterRetry.files).toHaveLength(3);
-    const retryReadback = await page.evaluate(
-      ({ bytes, format }) =>
-        (window.__BYTEQL_E2E__ as unknown as DownloadHarness).readExportArtifact({
-          format,
-          bytes,
-          csvColumns: format === 'csv' ? [{ name: 'replacement', type: 'INTEGER' }] : undefined,
-        }),
-      { bytes: await readPickedBytes(page, afterRetry.files[2]), format },
-    );
+    const retryReadback = await readExportArtifact(page, {
+      format,
+      bytes: await readPickedBytes(page, afterRetry.files[2]),
+      csvColumns: format === 'csv' ? [{ name: 'replacement', type: 'INTEGER' }] : undefined,
+    });
     expect(retryReadback).toMatchObject({ columns: ['replacement'], types: ['INTEGER'] });
     expect(retryReadback.rows).toEqual(stored.rows);
 
@@ -519,9 +467,7 @@ test('duplicate labels survive a replaced, quota-failed and cancelled download l
       page.getByRole('columnheader', { name: `dup, column ${index + 1}, ${type}`, exact: true }),
     ).toBeVisible();
   }
-  const stored = await page.evaluate(() =>
-    (window.__BYTEQL_E2E__ as unknown as DownloadHarness).storedResult(),
-  );
+  const stored = await storedResult(page);
   expect(stored).toEqual({
     columns: ['dup', 'dup', 'dup'],
     physicalColumns: ['c0', 'c1', 'c2'],
@@ -562,7 +508,7 @@ test('duplicate labels survive a replaced, quota-failed and cancelled download l
   );
   expect(await pickerState(page)).toMatchObject({ closes: 1, aborts: 3 });
   await page.getByRole('button', { name: 'Dismiss' }).click();
-  await expect.poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.exportFiles())).toEqual([]);
+  await expect.poll(() => exportFiles(page)).toEqual([]);
 });
 
 test('two tabs retain separate fallback artifacts and clean up only their own file', async ({
@@ -582,17 +528,17 @@ test('two tabs retain separate fallback artifacts and clean up only their own fi
   await beginDownload(other, 'csv');
   await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
   await expect(other.getByRole('button', { name: 'Save file', exact: true })).toBeVisible();
-  const both = await page.evaluate(() => window.__BYTEQL_E2E__!.exportFiles());
+  const both = await exportFiles(page);
   expect(both).toHaveLength(2);
   expect(new Set(both).size).toBe(2);
 
   await page.getByRole('button', { name: 'Dismiss' }).click();
-  await expect.poll(() => other.evaluate(() => window.__BYTEQL_E2E__!.exportFiles())).toHaveLength(1);
+  await expect.poll(() => exportFiles(other)).toHaveLength(1);
   const pending = other.waitForEvent('download');
   await other.getByRole('button', { name: 'Save file', exact: true }).click();
   expect(await (await pending).failure()).toBeNull();
   await other.getByRole('button', { name: 'Dismiss' }).click();
-  await expect.poll(() => other.evaluate(() => window.__BYTEQL_E2E__!.exportFiles())).toEqual([]);
+  await expect.poll(() => exportFiles(other)).toEqual([]);
 });
 
 test('CSV and Parquet follow the committed display order', async ({ page }, testInfo) => {
@@ -625,14 +571,7 @@ test('CSV and Parquet follow the committed display order', async ({ page }, test
   await beginDownload(page, 'parquet', true);
   await expect(page.locator('.results-download-status')).toContainText('File saved.');
   const parquet = await readPickedBytes(page);
-  const exported = await page.evaluate(
-    (bytes) =>
-      (window.__BYTEQL_E2E__ as unknown as DownloadHarness).readExportArtifact({
-        format: 'parquet',
-        bytes,
-      }),
-    parquet,
-  );
+  const exported = await readExportArtifact(page, { format: 'parquet', bytes: parquet });
   expect(exported.columns).toEqual(['value', 'identity']);
   // The private ordering column never reaches the file.
   expect(exported.columns).not.toContain('__byteql_export_ordinal');
@@ -677,5 +616,5 @@ test('a retained download from the previous order is released when the order cha
   // The prepared file described the previous order, so it is no longer offered.
   await page.getByRole('button', { name: 'Download results', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Save file', exact: true })).toBeHidden();
-  await expect.poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.exportFiles())).toEqual([]);
+  await expect.poll(() => exportFiles(page)).toEqual([]);
 });

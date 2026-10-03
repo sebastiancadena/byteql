@@ -1,22 +1,14 @@
 import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
-import type { ExportProbeReport } from '@byteql/db';
+import type { ExportProbeReport } from '@byteql/db/testing';
 
-import { openMidiSample } from './support/app.js';
+import { openMidiSample, probeResultsExport } from './support/app.js';
 
 for (const variant of ['mvp', 'eh'] as const) {
   test(`Parquet scalar families: ${variant}`, async ({ page }, testInfo) => {
     test.setTimeout(120_000);
     await openMidiSample(page);
-    const report = await page.evaluate(
-      ({ variant }) =>
-        (
-          window.__byteqlE2E as unknown as {
-            probeResultsExport(variant: 'mvp' | 'eh', rows: number): Promise<ExportProbeReport>;
-          }
-        ).probeResultsExport(variant, 1),
-      { variant },
-    );
+    const report = await probeResultsExport(page, variant, 1);
     const reportPath = testInfo.outputPath(`parquet-scalars-${variant}.json`);
     await writeFile(reportPath, JSON.stringify(report, null, 2));
     await testInfo.attach(`parquet-scalars-${variant}.json`, {
@@ -92,15 +84,7 @@ for (const variant of ['mvp', 'eh'] as const) {
       }, 100);
       let report: ExportProbeReport;
       try {
-        report = await page.evaluate(
-          ({ variant, rows }) =>
-            (
-              window.__byteqlE2E as unknown as {
-                probeResultsExport(variant: 'mvp' | 'eh', rows: number): Promise<ExportProbeReport>;
-              }
-            ).probeResultsExport(variant, rows),
-          { variant, rows },
-        );
+        report = await probeResultsExport(page, variant, rows);
       } finally {
         clearInterval(interval);
         await cdp.detach();
