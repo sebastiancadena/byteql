@@ -1,10 +1,11 @@
-import type { ParseIssue, TableOverview } from '@byteql/core';
+import type { ParseIssue } from '@byteql/core';
 import { hasDbErrorCode, type ByteqlDatabase, type IngestSession } from '@byteql/db';
 
 import type { ParseClientPort, ParseProgress, StreamedParseResult } from '../parse-worker-client.js';
 import { REGISTERED_PACKS } from '../packs.js';
 import {
   buildFilesTableIpc,
+  filesTableOverview,
   mergeTableOverviews,
   planBatch,
   type BatchEntry,
@@ -254,18 +255,7 @@ export class IntakeOrchestrator {
         const backfilledTables = first.schemas
           .filter((schema) => !populatedNames.has(schema.name))
           .map((schema) => ({ name: schema.name, rowCount: 0, columns: schema.columns }));
-        const filesOverview: TableOverview = {
-          name: '_files',
-          rowCount: filesRows.length,
-          columns: [
-            { name: 'file', type: 'Utf8', nullable: false },
-            { name: 'original_name', type: 'Utf8', nullable: false },
-            { name: 'size', type: 'Uint64', nullable: false },
-            { name: 'ingest_order', type: 'Int32', nullable: false },
-            { name: 'status', type: 'Utf8', nullable: false },
-            { name: 'error', type: 'Utf8', nullable: true },
-          ],
-        };
+        const filesOverview = filesTableOverview(filesRows.length);
         this.store.dispatch({
           type: 'ready',
           format: first.format,
