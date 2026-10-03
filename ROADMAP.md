@@ -138,6 +138,16 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
   [Deferred follow-ups](docs/superpowers/specs/2026-09-23-pcapng-intake-design.md#deferred-follow-ups).
 - **Refresh roadmap documentation — done (2026-09-22).** `PRD.md`, `README.md`, and
   `AGENTS.md` now point to this file for priority order.
+- **Architecture cleanup — done (2026-10-03); v0.6 design written.** Core, db, and web were
+  split along the seams the review found (see `AGENTS.md`), and the stream assembler now frees
+  consumed bytes. The spec v0.6 pack boundary is designed in
+  [the v0.6 design record](docs/superpowers/specs/2026-10-03-spec-v0.6-pack-boundary-design.md)
+  (slices S1-S10, with open questions); implementing it is the prerequisite for an EVTX pack
+  that needs zero edits to `packages/core`. Still open from the review: hot-path allocation work
+  in the engine; the `Workbench.svelte` split; e2e suite cleanup (split `panel-resize.spec.ts`,
+  replace fixed sleeps with polls, and fix the failures on `main` at `panel-resize.spec.ts:861`
+  and `saved-queries.spec.ts:122`); and the `mvp` DuckDB bundle decision, which is the project
+  owner's call.
 - **Cap or spill live TCP flow state.** Every SYN routed to a stream keeps its flow entry until
   `finish()` (~1.2 KB each measured), so a SYN-flood or port-scan capture of a few million SYNs can
   exhaust the parse worker's heap; a live-flow cap or spill is needed. Also classify Windows-style
