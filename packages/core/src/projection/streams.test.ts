@@ -396,6 +396,44 @@ describe('StreamAssembler consumed-history window', () => {
   });
 });
 
+describe('StreamAssembler rebase after growth to maxBuffer', () => {
+  // #data grows to exactly maxBuffer (60 bytes, then 30 more doubles past the cap and clamps to
+  // 100); a rebase 5 bytes down then has to fit the shifted bytes in a buffer still capped there.
+  const grownToCap = () => {
+    const a = new StreamAssembler(100);
+    const first = new Uint8Array(60).map((_, i) => i);
+    const second = new Uint8Array(30).map((_, i) => 60 + i);
+    expect(a.add(0, first, 1000).status).toBe('added');
+    expect(a.add(60, second, 2000).status).toBe('added');
+    return a;
+  };
+
+  it('rebases through add without overflowing the buffer', () => {
+    const a = grownToCap();
+    expect(a.add(-5, Uint8Array.of(200, 201, 202, 203, 204), 3000).status).toBe('rebased');
+    expect(a.base).toBe(-5);
+    expect(a.contiguousEnd).toBe(95);
+    const view = a.contiguousView();
+    expect(Array.from(view.subarray(0, 7))).toEqual([200, 201, 202, 203, 204, 0, 1]);
+    expect(view[94]).toBe(89);
+    expect(a.segmentsOverlapping(0, 95)).toEqual([
+      { start: 0, end: 5, srcStart: 3000, srcEnd: 3005 },
+      { start: 5, end: 65, srcStart: 1000, srcEnd: 1060 },
+      { start: 65, end: 95, srcStart: 2000, srcEnd: 2030 },
+    ]);
+  });
+
+  it('rebases through anchor without overflowing the buffer', () => {
+    const a = grownToCap();
+    expect(a.anchor(-5)).toBe('rebased');
+    expect(a.base).toBe(-5);
+    expect(a.hasGap()).toBe(true);
+    expect(a.add(-5, new Uint8Array(5), 0).status).toBe('added');
+    expect(a.contiguousEnd).toBe(95);
+    expect(a.contiguousView()[94]).toBe(89);
+  });
+});
+
 describe('StreamAssembler.anchor', () => {
   it('sets the base without storing bytes', () => {
     const a = new StreamAssembler(64);

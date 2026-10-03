@@ -415,9 +415,12 @@ export class StreamAssembler {
   // O(log n) insertion (e.g. a sorted tree/skip list) instead.
   #rebaseTo(newBase: number, newExtent: number): void {
     const shift = this.#base! - newBase;
-    const shiftedLen = Math.min(Math.max(this.#data.length + shift, newExtent), this.#maxBuffer);
+    // newExtent (<= maxBuffer, checked by both callers) covers every stored byte after the shift;
+    // spare capacity past it is kept only up to maxBuffer. #data may already be maxBuffer long,
+    // so copy only the prefix that fits — bytes past the stored extent are unused capacity.
+    const shiftedLen = Math.max(newExtent, Math.min(this.#data.length + shift, this.#maxBuffer));
     const shifted = new Uint8Array(shiftedLen);
-    shifted.set(this.#data, shift);
+    shifted.set(this.#data.subarray(0, shiftedLen - shift), shift);
     this.#data = shifted;
     // contiguousEnd is a filled-from-base frontier; a rebase moves the base, so reset it
     // (and the cached frontier scan index) here and let #advanceFrontier recompute it from
