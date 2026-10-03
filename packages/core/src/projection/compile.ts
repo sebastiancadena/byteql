@@ -686,82 +686,80 @@ export const compileProjection = (
   };
   for (const node of edges.keys()) detectCycle(node);
 
-  // Rule 7: for each chain link with a table, that table's parent_key.table must be reachable
-  // by walking from-ancestors of the dissect entry, so the key value exists at runtime.
-  // Ancestors are computed as a fixpoint over the (now acyclic) from -> parser graph: a parser
-  // id's ancestors are the union, over every entry whose chain contains it, of that entry's
-  // ancestors, plus that entry's `from` when it is a table (folded in by ancestorsOfEntry below).
-  // A chain link's own table is deliberately NOT added to its parser's ancestor set: at runtime,
-  // dissect entries keyed off a PARSER id run in fireDissect's `deeper` loop with the OUTER
-  // keysByTable, so they never observe the row key of a sibling link's table. Admitting a
-  // chain-fed table here would accept specs whose parent_key the runtime can only fill with
-  // null. The still-legitimate way to parent a table onto an intermediate table's per-row key is
-  // to chain `from: <table>` instead of `from: <parser>` — chains fired from emitRow extend
-  // keysByTable with that table's own key before dispatching, so that table (and its ancestors)
-  // are genuinely reachable.
-  // `tableAncestors`/`streamAncestors` extend the fixpoint through table-to-table and
-  // stream/message edges: a table's own ancestors accumulate onto whatever it feeds (mirroring
-  // rule 9's tableAvail below), and a stream thread its feeding entry's ancestors onto each of
-  // its message parser ids. This last hop matters because a message-rooted deeper dissect
-  // (`from: <message parser id>`) fires at runtime with the SAME keysByTable the stream
-  // contribution captured (see contributeToStream's `keysByTable` / the message drain loop's
-  // `completingKeys`), so whatever ancestors were reachable at the feed table are equally
-  // reachable from one of the stream's own message parsers.
-  const ancestorsByParser = new Map<string, Set<string>>();
-  const tableAncestors = new Map<string, Set<string>>();
-  const streamAncestors = new Map<string, Set<string>>();
-  const ancestorsOfEntry = (entry: CompiledDissect): ReadonlySet<string> => {
+  // Parent-key reachability (rules 7 and 9) is computed in one fixpoint pass over the (now
+  // acyclic) graph, then checked twice: rule 7 against each dissect entry's reachable set, and
+  // rule 9 (further below, after the stream checks) against each stream's reachable set.
+  //
+  // `reachableAtEntry(entry)` is the set of tables whose row key is observable when `entry`
+  // fires: its `from` table (when table-rooted) plus whatever that table inherited, or what its
+  // `from` parser id inherited. Every chain link folds its entry's set into what it feeds: its
+  // parser id, its table, or its stream. A chain link's own table is deliberately NOT added to
+  // its parser's set: at runtime, dissect entries keyed off a PARSER id run in fireDissect's
+  // `deeper` loop with the OUTER keysByTable, so they never observe the row key of a sibling
+  // link's table. Admitting a chain-fed table there would accept specs whose parent_key the
+  // runtime can only fill with null. The still-legitimate way to parent a table onto an
+  // intermediate table's per-row key is to chain `from: <table>` instead of `from: <parser>` —
+  // chains fired from emitRow extend keysByTable with that table's own key before dispatching,
+  // so that table (and its ancestors) are genuinely reachable.
+  //
+  // Streams hop their set onto each of their message parser ids: a message-rooted deeper
+  // dissect (`from: <message parser id>`) fires at runtime with the SAME keysByTable the stream
+  // contribution captured (see contributeToStream's `keysByTable` / emitStreamMessage's
+  // `completingKeys`), so whatever was reachable at the feed table is equally reachable from
+  // one of the stream's own message parsers. There is deliberately no second hop onto message
+  // tables: rule 9 reads only the per-stream sets, which are fed exclusively by the stream's
+  // feed table — a table without bounded provenance (a bounded feed table is rejected while
+  // compiling the dissect chains above), and therefore unreachable from any message parser or
+  // message table, so no stream hop can change its set. A hop onto message tables would only
+  // widen rule 7 for entries rooted at a message table, accepting specs it rejects today.
+  const reachableByParser = new Map<string, Set<string>>();
+  const reachableByTable = new Map<string, Set<string>>();
+  const reachableByStream = new Map<string, Set<string>>();
+  const reachableAtEntry = (entry: CompiledDissect): ReadonlySet<string> => {
     if (tableByName.has(entry.from)) {
       const own = new Set([entry.from]);
-      for (const ancestor of tableAncestors.get(entry.from) ?? []) own.add(ancestor);
+      for (const value of reachableByTable.get(entry.from) ?? []) own.add(value);
       return own;
     }
-    return ancestorsByParser.get(entry.from) ?? new Set();
+    return reachableByParser.get(entry.from) ?? new Set();
+  };
+  // Unions `values` into map[name]; true when the set grew.
+  const fold = (map: Map<string, Set<string>>, name: string, values: Iterable<string>): boolean => {
+    const existing = map.get(name) ?? new Set<string>();
+    const before = existing.size;
+    for (const value of values) existing.add(value);
+    map.set(name, existing);
+    return existing.size !== before;
   };
   let changed = true;
   while (changed) {
     changed = false;
     for (const entry of dissects) {
-      const entryAncestors = ancestorsOfEntry(entry);
+      const entryReachable = reachableAtEntry(entry);
       for (const link of entry.chain) {
         if (link.parserId !== null) {
-          const existing = ancestorsByParser.get(link.parserId) ?? new Set<string>();
-          const before = existing.size;
-          for (const ancestor of entryAncestors) existing.add(ancestor);
-          if (existing.size !== before) changed = true;
-          ancestorsByParser.set(link.parserId, existing);
-          if (link.table) {
-            const existingTable = tableAncestors.get(link.table.name) ?? new Set<string>();
-            const beforeTable = existingTable.size;
-            for (const ancestor of entryAncestors) existingTable.add(ancestor);
-            if (existingTable.size !== beforeTable) changed = true;
-            tableAncestors.set(link.table.name, existingTable);
-          }
+          if (fold(reachableByParser, link.parserId, entryReachable)) changed = true;
+          if (link.table && fold(reachableByTable, link.table.name, entryReachable)) changed = true;
         } else if (link.stream) {
-          const existing = streamAncestors.get(link.stream.name) ?? new Set<string>();
-          const before = existing.size;
-          for (const ancestor of entryAncestors) existing.add(ancestor);
-          if (existing.size !== before) changed = true;
-          streamAncestors.set(link.stream.name, existing);
+          if (fold(reachableByStream, link.stream.name, entryReachable)) changed = true;
         }
       }
     }
     for (const stream of streamByName.values()) {
-      const streamValues = streamAncestors.get(stream.name) ?? new Set<string>();
+      const streamReachable = reachableByStream.get(stream.name) ?? new Set<string>();
       for (const message of stream.messages) {
-        const existing = ancestorsByParser.get(message.parserId) ?? new Set<string>();
-        const before = existing.size;
-        for (const value of streamValues) existing.add(value);
-        if (existing.size !== before) changed = true;
-        ancestorsByParser.set(message.parserId, existing);
+        if (fold(reachableByParser, message.parserId, streamReachable)) changed = true;
       }
     }
   }
+
+  // Rule 7: for each chain link with a table, that table's parent_key.table must be reachable
+  // from the dissect entry, so the key value exists at runtime.
   for (const [entryIndex, entry] of dissects.entries()) {
-    const entryAncestors = ancestorsOfEntry(entry);
+    const entryReachable = reachableAtEntry(entry);
     for (const [linkIndex, link] of entry.chain.entries()) {
       if (!link.table?.parentKey) continue;
-      if (!entryAncestors.has(link.table.parentKey.table)) {
+      if (!entryReachable.has(link.table.parentKey.table)) {
         throw new ProjectionCompileError(
           'PROJECTION_PARENT_KEY_INVALID',
           `dissect.${entryIndex}.chain.${linkIndex}.table`,
@@ -825,69 +823,15 @@ export const compileProjection = (
     }
   }
 
-  // Rule 9: availability fixpoint. `avail(entry)` is the set of tables whose row key is
-  // observable at the point `entry` fires: itself (if table-rooted) plus whatever its upstream
-  // already made available. Parser/table/stream availability propagate through the same three
-  // maps described in the task brief; a message link's table then inherits its stream's
-  // availability, since messages fire once a stream's assembled buffer is framed off the feed
-  // table's row.
-  const parserAvail = new Map<string, Set<string>>();
-  const tableAvail = new Map<string, Set<string>>();
-  const streamAvail = new Map<string, Set<string>>();
-  const availOfEntry = (entry: CompiledDissect): ReadonlySet<string> => {
-    if (tableByName.has(entry.from)) {
-      const own = new Set([entry.from]);
-      for (const ancestor of tableAvail.get(entry.from) ?? []) own.add(ancestor);
-      return own;
-    }
-    return parserAvail.get(entry.from) ?? new Set();
-  };
-  let availChanged = true;
-  while (availChanged) {
-    availChanged = false;
-    for (const entry of dissects) {
-      const entryAvail = availOfEntry(entry);
-      for (const link of entry.chain) {
-        if (link.parserId !== null) {
-          const existing = parserAvail.get(link.parserId) ?? new Set<string>();
-          const before = existing.size;
-          for (const value of entryAvail) existing.add(value);
-          if (existing.size !== before) availChanged = true;
-          parserAvail.set(link.parserId, existing);
-          if (link.table) {
-            const existingTable = tableAvail.get(link.table.name) ?? new Set<string>();
-            const beforeTable = existingTable.size;
-            for (const value of entryAvail) existingTable.add(value);
-            if (existingTable.size !== beforeTable) availChanged = true;
-            tableAvail.set(link.table.name, existingTable);
-          }
-        } else if (link.stream) {
-          const existing = streamAvail.get(link.stream.name) ?? new Set<string>();
-          const before = existing.size;
-          for (const value of entryAvail) existing.add(value);
-          if (existing.size !== before) availChanged = true;
-          streamAvail.set(link.stream.name, existing);
-        }
-      }
-    }
-    for (const stream of streamByName.values()) {
-      const streamValues = streamAvail.get(stream.name) ?? new Set<string>();
-      for (const message of stream.messages) {
-        if (!message.table) continue;
-        const existingTable = tableAvail.get(message.table.name) ?? new Set<string>();
-        const beforeTable = existingTable.size;
-        for (const value of streamValues) existingTable.add(value);
-        if (existingTable.size !== beforeTable) availChanged = true;
-        tableAvail.set(message.table.name, existingTable);
-      }
-    }
-  }
+  // Rule 9: a message link's table parents onto a key observable when the stream's messages
+  // fire — the stream's reachable set from the fixpoint above, since messages fire once a
+  // stream's assembled buffer is framed off the feed table's row.
   for (const [streamIndex, entry] of (spec.streams ?? []).entries()) {
     const stream = streamByName.get(entry.name)!;
-    const streamValues = streamAvail.get(stream.name) ?? new Set<string>();
+    const streamReachable = reachableByStream.get(stream.name) ?? new Set<string>();
     for (const [messageIndex, message] of stream.messages.entries()) {
       if (!message.table?.parentKey) continue;
-      if (!streamValues.has(message.table.parentKey.table)) {
+      if (!streamReachable.has(message.table.parentKey.table)) {
         throw new ProjectionCompileError(
           'PROJECTION_PARENT_KEY_INVALID',
           `streams.${streamIndex}.messages.${messageIndex}.table`,
