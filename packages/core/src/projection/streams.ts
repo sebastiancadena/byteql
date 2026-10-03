@@ -153,6 +153,10 @@ export class StreamAssembler {
   get byteCount(): number {
     return this.#byteCount;
   }
+  /** Allocated reassembly-buffer bytes (diagnostic: tests assert it stays bounded). */
+  get bufferCapacity(): number {
+    return this.#data.length;
+  }
   get consumed(): number {
     return this.#consumed;
   }
@@ -213,7 +217,19 @@ export class StreamAssembler {
     const released = releasePoint - this.#dataStart;
     const retained = Math.max(0, this.#highestEndAbs! - releasePoint);
     const keep = Math.max(0, Math.min(this.#data.length - released, retained));
-    this.#data.copyWithin(0, released, released + keep);
+    // The buffer may be much larger than what it still holds (it grew for a backlog burst that has
+    // since been consumed): reallocate down instead of keeping the peak until finish(). The target
+    // leaves room to double the retained bytes (the in-order compaction trigger) plus one
+    // COMPACT_MIN_BYTES add, so an in-order flow does not immediately regrow past it. The copy is
+    // the same `keep` bytes copyWithin would move, so the amortized bound holds.
+    const target = 2 * retained + COMPACT_MIN_BYTES;
+    if (this.#data.length > target) {
+      const smaller = new Uint8Array(target);
+      smaller.set(this.#data.subarray(released, released + keep));
+      this.#data = smaller;
+    } else {
+      this.#data.copyWithin(0, released, released + keep);
+    }
     this.#dataStart = releasePoint;
   }
 
@@ -351,7 +367,8 @@ export class StreamAssembler {
       const needed = relStart + bytes.length;
       // Outstanding bytes are capped at #maxBuffer, but #data also holds the consumed history in
       // front of them (the maxBuffer window plus any not-yet-compacted prefix), so the growth
-      // ceiling includes it. #data never shrinks: a flow keeps its peak allocation until finish().
+      // ceiling includes it. #compact reallocates #data down when it is well over twice what it
+      // still holds, so a past backlog burst doesn't pin its peak allocation until finish().
       const ceiling = this.#maxBuffer + Math.max(0, (this.#base ?? 0) + this.#consumed - this.#dataStart);
       const grown = new Uint8Array(Math.max(needed, Math.min(this.#data.length * 2, ceiling)));
       grown.set(this.#data);

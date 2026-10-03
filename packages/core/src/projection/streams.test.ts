@@ -396,6 +396,46 @@ describe('StreamAssembler consumed-history window', () => {
   });
 });
 
+describe('StreamAssembler buffer capacity', () => {
+  it('gives back a backlog-sized buffer once a long in-order flow is consumed again', () => {
+    // TCP-sized segments through a 1 MiB cap: an in-order flow consumed as it arrives keeps at
+    // most the maxBuffer history window plus the not-yet-compacted prefix (2x the window at the
+    // compaction trigger, plus one compaction step of headroom). A burst of unconsumed backlog
+    // grows #data past that; once the flow is consumed again, compaction must hand the excess
+    // back rather than keep the peak until finish().
+    const M = 1_048_576;
+    const size = 1460;
+    const segment = new Uint8Array(size);
+    // Twice the window plus one compaction step of headroom.
+    const bound = 2 * M + 65_536;
+    const a = new StreamAssembler(M);
+    let offset = 0;
+    const inOrder = (count: number) => {
+      let peak = 0;
+      for (let i = 0; i < count; i++) {
+        expect(a.add(offset, segment, offset).status).toBe('added');
+        offset += size;
+        a.consume(size);
+        peak = Math.max(peak, a.bufferCapacity);
+      }
+      return peak;
+    };
+    inOrder(1024);
+    const backlog = Math.floor(M / size) - 1;
+    for (let i = 0; i < backlog; i++) {
+      expect(a.add(offset, segment, offset).status).toBe('added');
+      offset += size;
+    }
+    const burstCapacity = a.bufferCapacity;
+    expect(burstCapacity).toBeGreaterThan(bound);
+    a.consume(backlog * size);
+    inOrder(2048); // releases the burst
+    expect(inOrder(4096)).toBeLessThanOrEqual(bound);
+    expect(a.bufferCapacity).toBeLessThanOrEqual(bound);
+    expect(a.pendingBytes()).toBe(0);
+  });
+});
+
 describe('StreamAssembler rebase after growth to maxBuffer', () => {
   // #data grows to exactly maxBuffer (60 bytes, then 30 more doubles past the cap and clamps to
   // 100); a rebase 5 bytes down then has to fit the shifted bytes in a buffer still capped there.
