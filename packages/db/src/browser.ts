@@ -1,16 +1,6 @@
-/// <reference types="vite/client" />
-
-import {
-  AsyncDuckDB,
-  VoidLogger,
-  selectBundle,
-  type AsyncDuckDBConnection,
-  type DuckDBBundle,
-  type Logger,
-} from '@duckdb/duckdb-wasm';
+import type { AsyncDuckDB, AsyncDuckDBConnection, Logger } from '@duckdb/duckdb-wasm';
 import { Schema as DuckdbSchema } from 'apache-arrow-duckdb';
 
-import { LOCAL_BUNDLES } from './bundles.js';
 import type { ByteqlDatabase, IngestOptions, IngestSession, QueryResultView, QuerySession } from './types.js';
 import { createOpfsQueryPagePersistence, QueryPageStore } from './query-pages.js';
 import { deleteSpillGeneration } from './spill-files.js';
@@ -28,9 +18,9 @@ import {
 import { createExportFiles } from './export-files.js';
 import { writeSortedResult } from './sort-result.js';
 import type { FileStatisticsAccess, FileStatisticsSummary } from './file-statistics.js';
-import { hardenConnection, openLocalConnection, PRODUCTION_ALLOWED_DIRECTORIES } from './hardening.js';
 import { IngestSessionImpl, ROTATION_THRESHOLD_BYTES, type CatalogKind } from './ingest-session.js';
 import { QuerySessionImpl, type DuckdbQueryIterator } from './query-session.js';
+import { createDuckdbRuntime, type DuckdbRuntime } from './runtime.js';
 
 export interface BrowserDatabaseOptions {
   logger?: Logger;
@@ -91,15 +81,9 @@ const abortExclusive = async <T>(slot: ExclusiveSlot<T>, message: string): Promi
 };
 
 class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
-  private connection: AsyncDuckDBConnection | null = null;
-  private initializePromise: Promise<void> | null = null;
-  private operationTail: Promise<void> = Promise.resolve();
   /** Committed finals, keyed by name, with the catalog kind each was created as. */
   private finalNames: Map<string, CatalogKind> = new Map();
   private disposePromise: Promise<void> | null = null;
-  private disposeRequested = false;
-  private closePromise: Promise<void> | null = null;
-  private terminatePromise: Promise<void> | null = null;
   private pendingQuery: PendingQueryToken | null = null;
   private activeQuery: QuerySessionImpl | null = null;
   private readonly exportSlot: ExclusiveSlot<ParquetArtifact> = { active: null };
@@ -126,33 +110,20 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   private activeIngestSpillGeneration: number | null = null;
 
   constructor(
-    private readonly database: AsyncDuckDB,
-    private readonly bundle: DuckDBBundle,
+    private readonly runtime: DuckdbRuntime,
     private readonly spillSupported: boolean,
   ) {}
 
-  initialize(): Promise<void> {
-    if (this.disposeRequested) {
-      return Promise.reject(new Error('ByteQL database has been disposed.'));
-    }
-    this.initializePromise ??= this.initializeInternal();
-    return this.initializePromise;
+  private get database(): AsyncDuckDB {
+    return this.runtime.database;
   }
 
-  private async initializeInternal(): Promise<void> {
-    try {
-      const connection = await openLocalConnection(this.database, this.bundle, (opened) => {
-        this.connection = opened;
-      });
-      await hardenConnection(connection, { allowedDirectories: PRODUCTION_ALLOWED_DIRECTORIES });
-    } catch (error) {
-      await this.cleanupAfterInitializationFailure();
-      throw error;
-    }
+  initialize(): Promise<void> {
+    return this.runtime.initialize();
   }
 
   async beginIngest(options: IngestOptions): Promise<IngestSession> {
-    if (this.disposeRequested) {
+    if (this.runtime.disposed) {
       throw new Error('ByteQL database has been disposed.');
     }
     if (options.tier === 'spill' && !this.spillSupported) {
@@ -177,8 +148,8 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
       if (this.pendingQuery) {
         await this.cancelPendingQuery(this.pendingQuery);
       }
-      await this.operationTail;
-      if (this.disposeRequested) {
+      await this.runtime.idle();
+      if (this.runtime.disposed) {
         throw new Error('ByteQL database has been disposed.');
       }
       await this.closeActiveQuery();
@@ -188,7 +159,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
         options.tier,
         options.rotationBytes ?? ROTATION_THRESHOLD_BYTES,
         this.database,
-        (operation) => this.enqueue(operation),
+        (operation) => this.runtime.enqueue(operation),
         () => this.finalNames,
         (finals) => {
           this.finalNames = new Map(finals);
@@ -213,7 +184,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   }
 
   startQuery(sql: string): Promise<QuerySession> {
-    if (this.disposeRequested) {
+    if (this.runtime.disposed) {
       return Promise.reject(new Error('ByteQL database has been disposed.'));
     }
     if (this.pendingQuery) {
@@ -231,7 +202,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
     };
     this.pendingQuery = token;
 
-    const result = this.enqueue(async (connection) => {
+    const result = this.runtime.enqueue(async (connection) => {
       await sortCleanup;
       await exportCleanup;
       if (token.cancelRequested) throw new Error('Query result session is closed.');
@@ -248,7 +219,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
       let session: QuerySessionImpl | null = null;
       try {
         const persistence = await createOpfsQueryPagePersistence(this.queryGeneration++);
-        if (this.disposeRequested) {
+        if (this.runtime.disposed) {
           await persistence?.dispose().catch(() => undefined);
           throw new Error('ByteQL database has been disposed.');
         }
@@ -298,7 +269,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   }
 
   async cancelQuery(): Promise<boolean> {
-    if (this.disposeRequested) {
+    if (this.runtime.disposed) {
       return false;
     }
     await this.abortActiveSort();
@@ -313,7 +284,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   }
 
   resultSortCapability(): ResultSortCapability {
-    if (!resultSortRuntimeSupported(this.bundle.mainModule)) {
+    if (!resultSortRuntimeSupported(this.runtime.bundle.mainModule)) {
       return { supported: false, reason: SORT_UNAVAILABLE_RUNTIME };
     }
     // The same origin-private file system the spill tier needs also holds snapshot shards.
@@ -324,10 +295,10 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   }
 
   createSortedView(base: QuerySession, options: ResultSortOptions): Promise<QueryResultView> {
-    if (this.disposeRequested) {
+    if (this.runtime.disposed) {
       return Promise.reject(new Error('ByteQL database has been disposed.'));
     }
-    if (!resultSortRuntimeSupported(this.bundle.mainModule)) {
+    if (!resultSortRuntimeSupported(this.runtime.bundle.mainModule)) {
       return Promise.reject(new ResultSortError('SORT_UNAVAILABLE', SORT_UNAVAILABLE_RUNTIME));
     }
     if (this.sortSlot.active) {
@@ -340,7 +311,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
     }
 
     return runExclusive(this.sortSlot, options.signal, (signal, isCurrent) =>
-      this.enqueue(async () => {
+      this.runtime.enqueue(async () => {
         signal.throwIfAborted();
         // Checked again inside the queue: the base can be retired while this call waits its turn.
         this.assertSortableBase(base);
@@ -358,7 +329,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
           base,
           { ...options, signal },
         );
-        if (signal.aborted || this.disposeRequested || !isCurrent() || this.activeQuery !== base) {
+        if (signal.aborted || this.runtime.disposed || !isCurrent() || this.activeQuery !== base) {
           // The family this view belongs to was replaced while the writer was finishing. Publishing
           // it now would show rows from a result the app has already moved on from. The abort is
           // rechecked here rather than trusted to the writer: this boundary must hold even for a
@@ -372,7 +343,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   }
 
   exportParquet(result: QueryResultView, options: ParquetExportOptions): Promise<ParquetArtifact> {
-    if (this.disposeRequested) {
+    if (this.runtime.disposed) {
       return Promise.reject(new Error('ByteQL database has been disposed.'));
     }
     try {
@@ -385,7 +356,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
     }
 
     return runExclusive(this.exportSlot, options.signal, (signal) =>
-      this.enqueue(async () => {
+      this.runtime.enqueue(async () => {
         signal.throwIfAborted();
         this.assertExportableResult(result);
         return writeParquet(defaultParquetWriterDependencies(this.database), result, { ...options, signal });
@@ -401,7 +372,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
     if (this.pendingQuery || this.activeQuery) {
       return Promise.reject(new Error('A query result session owns the database connection.'));
     }
-    return this.enqueue(() => {
+    return this.runtime.enqueue(() => {
       if (this.pendingQuery || this.activeQuery) {
         throw new Error('A query result session owns the database connection.');
       }
@@ -413,7 +384,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
     if (this.pendingQuery || this.activeQuery) {
       return Promise.reject(new Error('A query result session owns the database connection.'));
     }
-    return this.enqueue(async () => {
+    return this.runtime.enqueue(async () => {
       if (this.pendingQuery || this.activeQuery) {
         throw new Error('A query result session owns the database connection.');
       }
@@ -436,7 +407,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
     if (this.disposePromise) {
       return this.disposePromise;
     }
-    this.disposeRequested = true;
+    this.runtime.markDisposed();
     this.disposePromise = this.disposeInternal();
     return this.disposePromise;
   }
@@ -469,7 +440,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
         errors.push(error);
       }
     }
-    await this.operationTail;
+    await this.runtime.idle();
     if (this.activeQuery) {
       try {
         await this.activeQuery.dispose();
@@ -477,21 +448,15 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
         errors.push(error);
       }
     }
-    if (this.initializePromise) {
-      try {
-        await this.initializePromise;
-      } catch {
-        // Initialization performs its own best-effort cleanup.
-      }
-    }
+    await this.runtime.settleInitialization();
 
     try {
-      await this.closeConnection();
+      await this.runtime.closeConnection();
     } catch (error) {
       errors.push(error);
     }
     try {
-      await this.terminateDatabase();
+      await this.runtime.terminate();
     } catch (error) {
       errors.push(error);
     }
@@ -638,78 +603,12 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
       throw new Error('Parquet export requires a complete query result session.');
     }
   }
-
-  private enqueue<T>(operation: (connection: AsyncDuckDBConnection) => Promise<T>): Promise<T> {
-    if (this.disposeRequested) {
-      return Promise.reject(new Error('ByteQL database has been disposed.'));
-    }
-
-    const result = this.operationTail.then(async () => {
-      if (this.disposeRequested) {
-        throw new Error('ByteQL database has been disposed.');
-      }
-      await this.initialize();
-      if (this.disposeRequested) {
-        throw new Error('ByteQL database has been disposed.');
-      }
-      return operation(this.getConnection());
-    });
-    this.operationTail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-
-  private getConnection(): AsyncDuckDBConnection {
-    if (!this.connection) {
-      throw new Error('ByteQL database is not initialized.');
-    }
-    return this.connection;
-  }
-
-  private async cleanupAfterInitializationFailure(): Promise<void> {
-    try {
-      await this.closeConnection();
-    } catch {
-      // Preserve the initialization error.
-    }
-    try {
-      await this.terminateDatabase();
-    } catch {
-      // Preserve the initialization error.
-    }
-  }
-
-  private closeConnection(): Promise<void> {
-    if (!this.connection) {
-      return Promise.resolve();
-    }
-    this.closePromise ??= this.connection.close();
-    return this.closePromise;
-  }
-
-  private terminateDatabase(): Promise<void> {
-    this.terminatePromise ??= this.database.terminate();
-    return this.terminatePromise;
-  }
 }
 
 export const createBrowserDatabase = async (
   options: BrowserDatabaseOptions = {},
 ): Promise<ByteqlDatabase> => {
-  const bundle = await selectBundle(LOCAL_BUNDLES);
-  if (!bundle.mainWorker) {
-    throw new Error('DuckDB-WASM did not select a browser worker.');
-  }
-
-  const worker = new Worker(bundle.mainWorker);
-  try {
-    const database = new AsyncDuckDB(options.logger ?? new VoidLogger(), worker);
-    const spillSupported = options.spillSupported ?? defaultSpillSupported();
-    return new BrowserDatabase(database, bundle, spillSupported);
-  } catch (error) {
-    worker.terminate();
-    throw error;
-  }
+  const runtime = await createDuckdbRuntime(options.logger);
+  const spillSupported = options.spillSupported ?? defaultSpillSupported();
+  return new BrowserDatabase(runtime, spillSupported);
 };
