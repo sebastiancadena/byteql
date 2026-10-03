@@ -60,24 +60,7 @@ import {
 } from './result-sort.js';
 import { createExportFiles } from './export-files.js';
 import { writeSortedResult } from './sort-result.js';
-
-// DuckDB-WASM loads parquet dynamically. ByteQL mirrors both signed platform variants under this
-// same-origin repository; letting LOAD use DuckDB's default would leak a request to
-// extensions.duckdb.org during startup. Set the repository before LOAD, then disable all further
-// extension loading below.
-const LOCAL_EXTENSION_REPOSITORY_PATH = '/duckdb-extensions';
-
-// Order matters: the spill whitelist must be set BEFORE external access is disabled
-// (DuckDB rejects changing allowed_directories once external access is off), then lock.
-// Task 1 spike rung 1 — allowed_directories works with external access disabled.
-const HARDENING_STATEMENTS = [
-  "SET allowed_directories = ['opfs://byteql-spill/', 'opfs://byteql-exports/'];",
-  'SET enable_external_access = false;',
-  'SET autoinstall_known_extensions = false;',
-  'SET autoload_known_extensions = false;',
-  'SET allow_community_extensions = false;',
-  'SET lock_configuration = true;',
-] as const;
+import { hardenConnection, openLocalConnection, PRODUCTION_ALLOWED_DIRECTORIES } from './hardening.js';
 
 /** Spill-tier rotation threshold: flush a table's staged batches to parquet past this size. */
 const ROTATION_THRESHOLD_BYTES = 96 * 1024 * 1024;
@@ -111,38 +94,6 @@ const defaultSpillSupported = (): boolean =>
 const quoteIdentifier = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
 
 const quoteStringLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
-const loadLocalParquetStatement = (moduleUrl: string): string => {
-  const platform = moduleUrl.includes('mvp') ? 'wasm_mvp' : 'wasm_eh';
-  const extension = new URL(
-    `${LOCAL_EXTENSION_REPOSITORY_PATH}/v1.5.4/${platform}/parquet.duckdb_extension.wasm`,
-    location.origin,
-  ).href;
-  return `LOAD '${extension.replaceAll("'", "''")}';`;
-};
-
-const prepareWasmModule = async (
-  moduleUrl: string,
-): Promise<{ readonly url: string; readonly release: () => void }> => {
-  if (!moduleUrl.endsWith('.wasm.gz')) {
-    return { url: moduleUrl, release: () => undefined };
-  }
-
-  const response = await fetch(moduleUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to load compressed DuckDB-WASM module: HTTP ${response.status}.`);
-  }
-  if (!response.body) {
-    throw new Error('Failed to load compressed DuckDB-WASM module: response body is unavailable.');
-  }
-
-  const decompressed = response.body.pipeThrough(new DecompressionStream('gzip'));
-  const blob = await new Response(decompressed, {
-    headers: { 'Content-Type': 'application/wasm' },
-  }).blob();
-  const url = URL.createObjectURL(blob);
-  return { url, release: () => URL.revokeObjectURL(url) };
-};
 
 /**
  * Issues exactly one type-correct drop for a recorded final. DuckDB (even pinned 1.33.1-dev57.0)
@@ -998,18 +949,10 @@ class BrowserDatabase implements ByteqlDatabase {
 
   private async initializeInternal(): Promise<void> {
     try {
-      const module = await prepareWasmModule(this.bundle.mainModule);
-      try {
-        await this.database.instantiate(module.url, this.bundle.pthreadWorker);
-      } finally {
-        module.release();
-      }
-      const connection = await this.database.connect();
-      this.connection = connection;
-      await connection.query(loadLocalParquetStatement(this.bundle.mainModule));
-      for (const statement of HARDENING_STATEMENTS) {
-        await connection.query(statement);
-      }
+      const connection = await openLocalConnection(this.database, this.bundle, (opened) => {
+        this.connection = opened;
+      });
+      await hardenConnection(connection, { allowedDirectories: PRODUCTION_ALLOWED_DIRECTORIES });
     } catch (error) {
       await this.cleanupAfterInitializationFailure();
       throw error;

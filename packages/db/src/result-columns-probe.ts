@@ -4,6 +4,12 @@ import type { RecordBatch as DuckdbRecordBatch, Schema as DuckdbSchema } from 'a
 
 import { convertDuckdbTable } from './arrow-bridge.js';
 import { LOCAL_BUNDLES } from './browser.js';
+import {
+  absoluteBundle,
+  hardenConnection,
+  openLocalConnection,
+  PRODUCTION_ALLOWED_DIRECTORIES,
+} from './hardening.js';
 import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from './result-arrow.js';
 import { resultColumnLabel } from './result-columns.js';
 
@@ -71,32 +77,11 @@ export async function probeResultColumns(variant: 'mvp' | 'eh'): Promise<ResultC
   const worker = new Worker(new URL(bundle.mainWorker!, location.href).href);
   const database = new AsyncDuckDB(new VoidLogger(), worker);
   let connection: AsyncDuckDBConnection | undefined;
-  let moduleBlob: string | undefined;
   try {
-    let moduleUrl = new URL(bundle.mainModule, location.href).href;
-    if (moduleUrl.endsWith('.gz')) {
-      const response = await fetch(moduleUrl);
-      if (!response.ok || !response.body) throw new Error('Local WASM fetch failed');
-      moduleUrl = moduleBlob = URL.createObjectURL(
-        await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).blob(),
-      );
-    }
-    await database.instantiate(moduleUrl);
-    connection = await database.connect();
-    const extension = new URL(
-      `/duckdb-extensions/v1.5.4/wasm_${variant}/parquet.duckdb_extension.wasm`,
-      location.origin,
-    ).href;
-    for (const statement of [
-      `LOAD '${extension.replaceAll("'", "''")}'`,
-      "SET allowed_directories = ['opfs://byteql-spill/', 'opfs://byteql-exports/']",
-      'SET enable_external_access = false',
-      'SET autoinstall_known_extensions = false',
-      'SET autoload_known_extensions = false',
-      'SET allow_community_extensions = false',
-      'SET lock_configuration = true',
-    ])
-      await connection.query(statement);
+    connection = await openLocalConnection(database, absoluteBundle(bundle), (opened) => {
+      connection = opened;
+    });
+    await hardenConnection(connection, { allowedDirectories: PRODUCTION_ALLOWED_DIRECTORIES });
 
     const fixtures = [
       {
@@ -198,7 +183,6 @@ export async function probeResultColumns(variant: 'mvp' | 'eh'): Promise<ResultC
       report.errors.push(`database cleanup: ${String(error)}`);
     }
     worker.terminate();
-    if (moduleBlob) URL.revokeObjectURL(moduleBlob);
   }
   return report;
 }

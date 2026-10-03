@@ -3,6 +3,7 @@ import { Table, tableFromIPC, type Schema } from 'apache-arrow';
 import { RecordBatchStreamWriter, Schema as DuckdbSchema, Table as DuckdbTable } from 'apache-arrow-duckdb';
 
 import { LOCAL_BUNDLES } from './browser.js';
+import { absoluteBundle, hardenConnection, openLocalConnection } from './hardening.js';
 import type { ExportFiles } from './export-files.js';
 import { QueryPageStore } from './query-pages.js';
 import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from './result-arrow.js';
@@ -173,22 +174,9 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
   };
 
   try {
-    let moduleUrl = new URL(bundle.mainModule, location.href).href;
-    if (moduleUrl.endsWith('.gz')) {
-      const response = await fetch(moduleUrl);
-      if (!response.ok || !response.body) throw new Error('Local WASM fetch failed');
-      moduleUrl = URL.createObjectURL(
-        await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).blob(),
-      );
-    }
-    await database.instantiate(moduleUrl);
-    primary = await database.connect();
-
-    const extension = new URL(
-      `/duckdb-extensions/v1.5.4/wasm_${variant}/parquet.duckdb_extension.wasm`,
-      location.origin,
-    ).href;
-    await primary.query(`LOAD ${quote(extension)}`);
+    primary = await openLocalConnection(database, absoluteBundle(bundle), (opened) => {
+      primary = opened;
+    });
 
     // Prove the denied path is writable BEFORE hardening, so a later refusal is attributable to
     // the allowlist rather than to a path that never worked.
@@ -202,16 +190,7 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     await database.registerOPFSFileName(deniedPath);
     registered.add(deniedPath);
 
-    for (const statement of [
-      "SET allowed_directories = ['opfs://byteql-exports/']",
-      'SET enable_external_access = false',
-      'SET autoinstall_known_extensions = false',
-      'SET autoload_known_extensions = false',
-      'SET allow_community_extensions = false',
-      'SET lock_configuration = true',
-    ]) {
-      await primary.query(statement);
-    }
+    await hardenConnection(primary, { allowedDirectories: ['opfs://byteql-exports/'] });
 
     const ready = performance.now();
     report.readyAtEpochMs = Date.now();

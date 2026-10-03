@@ -11,6 +11,7 @@ import {
 import { RecordBatchStreamWriter } from 'apache-arrow-duckdb';
 
 import { LOCAL_BUNDLES } from './browser.js';
+import { absoluteBundle, hardenConnection, openLocalConnection } from './hardening.js';
 import type { ExportFiles } from './export-files.js';
 import { writeParquet } from './export-parquet.js';
 import type { ParquetArtifact } from './export-types.js';
@@ -75,17 +76,6 @@ const safeCsvType = (type: string): string => {
   return type.toUpperCase();
 };
 
-const prepareReadbackModule = async (moduleUrl: string): Promise<{ url: string; release(): void }> => {
-  if (!moduleUrl.endsWith('.gz')) return { url: moduleUrl, release: () => undefined };
-  const response = await fetch(moduleUrl);
-  if (!response.ok || !response.body)
-    throw new Error('The local DuckDB readback module could not be loaded.');
-  const url = URL.createObjectURL(
-    await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).blob(),
-  );
-  return { url, release: () => URL.revokeObjectURL(url) };
-};
-
 /** E2E-only independent readback of bytes captured from the browser's download event. */
 export async function readExportArtifact(input: ExportArtifactInput): Promise<ExportArtifactReadback> {
   const owner = crypto.randomUUID();
@@ -102,28 +92,13 @@ export async function readExportArtifact(input: ExportArtifactInput): Promise<Ex
   if (!bundle.mainWorker) throw new Error('DuckDB-WASM did not select a readback worker.');
   const worker = new Worker(bundle.mainWorker);
   const database = new AsyncDuckDB(new VoidLogger(), worker);
-  const module = await prepareReadbackModule(bundle.mainModule);
   let connection: Awaited<ReturnType<AsyncDuckDB['connect']>> | null = null;
   let registered = false;
   try {
-    await database.instantiate(module.url, bundle.pthreadWorker);
-    connection = await database.connect();
-    const variant = bundle.mainModule.includes('mvp') ? 'mvp' : 'eh';
-    const extension = new URL(
-      `/duckdb-extensions/v1.5.4/wasm_${variant}/parquet.duckdb_extension.wasm`,
-      location.origin,
-    ).href;
-    await connection.query(`LOAD ${quote(extension)}`);
-    for (const statement of [
-      "SET allowed_directories = ['opfs://byteql-exports/']",
-      'SET enable_external_access = false',
-      'SET autoinstall_known_extensions = false',
-      'SET autoload_known_extensions = false',
-      'SET allow_community_extensions = false',
-      'SET lock_configuration = true',
-    ]) {
-      await connection.query(statement);
-    }
+    connection = await openLocalConnection(database, absoluteBundle(bundle), (opened) => {
+      connection = opened;
+    });
+    await hardenConnection(connection, { allowedDirectories: ['opfs://byteql-exports/'] });
     await database.registerOPFSFileName(path);
     registered = true;
     if (input.format === 'csv' && (!input.csvColumns || input.csvColumns.length === 0)) {
@@ -158,7 +133,6 @@ export async function readExportArtifact(input: ExportArtifactInput): Promise<Ex
     if (registered) await database.dropFile(path).catch(() => undefined);
     await database.terminate().catch(() => undefined);
     worker.terminate();
-    module.release();
     await exportsRoot.removeEntry(owner, { recursive: true }).catch(() => undefined);
   }
 }
@@ -229,7 +203,6 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
   const db = new AsyncDuckDB(new VoidLogger(), worker);
   const registered = new Set<string>();
   const artifacts: ParquetArtifact[] = [];
-  let moduleUrl = new URL(bundle.mainModule, location.href).href;
   const sample = (phase: string): void => {
     const heap =
       (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? null;
@@ -362,26 +335,11 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
   });
   let observer: PerformanceObserver | undefined;
   try {
-    if (moduleUrl.endsWith('.gz')) {
-      const response = await fetch(moduleUrl);
-      if (!response.ok || !response.body) throw new Error('Local WASM fetch failed');
-      moduleUrl = URL.createObjectURL(
-        await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).blob(),
-      );
-    }
-    await Promise.race([
-      db.instantiate(moduleUrl),
-      new Promise<never>((_, reject) => {
-        worker.addEventListener('error', (event) => reject(new Error(event.message)), { once: true });
-      }),
-    ]);
-    const conn = await db.connect();
+    const workerFailed = new Promise<never>((_, reject) => {
+      worker.addEventListener('error', (event) => reject(new Error(event.message)), { once: true });
+    });
+    const conn = await Promise.race([openLocalConnection(db, absoluteBundle(bundle)), workerFailed]);
     try {
-      const extension = new URL(
-        `/duckdb-extensions/v1.5.4/wasm_${variant}/parquet.duckdb_extension.wasm`,
-        location.origin,
-      ).href;
-      await conn.query(`LOAD ${quote(extension)}`);
       // First prove this exact, owned path works before hardening. After locking, a
       // rejected overwrite must leave its bytes identical even if MVP loses error text.
       await db.registerOPFSFileName(deniedPath);
@@ -394,15 +352,7 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
       );
       await db.registerOPFSFileName(deniedPath);
       registered.add(deniedPath);
-      for (const statement of [
-        "SET allowed_directories = ['opfs://byteql-exports/']",
-        'SET enable_external_access = false',
-        'SET autoinstall_known_extensions = false',
-        'SET autoload_known_extensions = false',
-        'SET allow_community_extensions = false',
-        'SET lock_configuration = true',
-      ])
-        await conn.query(statement);
+      await hardenConnection(conn, { allowedDirectories: ['opfs://byteql-exports/'] });
       const ready = performance.now();
       report.readyAtEpochMs = Date.now();
       observer = new PerformanceObserver((list) => {
@@ -698,7 +648,6 @@ export async function probeResultsExport(variant: 'mvp' | 'eh', rows: number): P
     await db.terminate();
     worker.terminate();
     URL.revokeObjectURL(workerUrl);
-    if (moduleUrl !== bundle.mainModule) URL.revokeObjectURL(moduleUrl);
     try {
       await directory.removeEntry(owner, { recursive: true });
       await deniedDirectory.removeEntry(owner, { recursive: true });
