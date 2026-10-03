@@ -222,13 +222,7 @@ export class ShardWorkspace {
     }
     if (cancelError !== null) {
       if (primary !== null) {
-        throw new AggregateError(
-          [primary, cancelError],
-          `${this.options.label} statement cancellation failed.`,
-          {
-            cause: cancelError,
-          },
-        );
+        throw combineErrors(primary, [cancelError], `${this.options.label} statement cancellation failed.`);
       }
       throw cancelError;
     }
