@@ -6,11 +6,8 @@ import {
   sweepSpillOrphans,
   type ByteqlDatabase,
   type IngestSession,
-  type QueryResultView,
-  type QuerySession,
   type ResultSort,
   type ResultSortCapability,
-  type ResultSortProgress,
 } from '@byteql/db';
 import { parquetColumnNames } from '@byteql/db/result-columns';
 import { Table } from 'apache-arrow';
@@ -42,18 +39,17 @@ import {
   type PlannedFile,
 } from './batch.js';
 import { SAMPLES, type SampleDefinition, type SampleId } from './samples.js';
-import { ResultSession, releaseView } from './result-session.js';
+import { ResultSession } from './result-session.js';
 import {
   errorMessage,
   isAbortError,
   isRetryablePageError,
   resultPageFailureMessage,
 } from './session-errors.js';
+import { ResultSorter } from './result-sorter.js';
 import { SessionStore } from './session-store.js';
-import { type PagedResultState, type SessionState, type SourceFile } from './state.js';
-import { readResultWindow } from './result-view.js';
-import { resultSortDisabledReason } from './result-sort-availability.js';
-import { hasActiveDownload, resultSortInteractionBlocked, sameResultSchema } from './result-sort.js';
+import { type SessionState, type SourceFile } from './state.js';
+import { createResultBusy, type ResultBusy } from './result-sort.js';
 import { TIER_THRESHOLD_BYTES, chooseTier } from './tiering.js';
 
 export interface SessionControllerOptions {
@@ -76,12 +72,6 @@ const basename = (name: string): string => {
   return safe || 'local file';
 };
 
-/** Whether two committed orders are the same request, so asking again would change nothing. */
-const sameResultSort = (left: ResultSort | null, right: ResultSort | null): boolean =>
-  left === null || right === null
-    ? left === right
-    : left.columnIndex === right.columnIndex && left.direction === right.direction;
-
 const bytesToMb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
 
 type ExportDestinationOutcome =
@@ -102,17 +92,8 @@ export class SessionController {
   private readonly sampleUrlOverrides: Partial<Record<SampleId, readonly string[]>> | undefined;
   private readonly sampleCache = new Map<string, Uint8Array>();
   private readonly results: ResultSession;
-  private sortRequestId = 0;
-  private activeSort: {
-    id: number;
-    queryGeneration: number;
-    sessionGeneration: number;
-    fromRevision: number;
-    base: QuerySession;
-    previousView: QueryResultView;
-    controller: AbortController;
-    settlement: Promise<void>;
-  } | null = null;
+  private readonly sorter: ResultSorter;
+  private readonly busy: ResultBusy;
   private exportGeneration = 0;
   private activeExport: ExportOperation | null = null;
   private retainedExport: { generation: number; destination: ExportDestination } | null = null;
@@ -141,8 +122,15 @@ export class SessionController {
     this.sampleUrlOverrides = options.sampleUrlOverrides;
     this.stopViewer = options.stopViewer ?? (() => undefined);
     this.tiering = options.tiering;
+    this.busy = createResultBusy(
+      () => this.store.state,
+      () => this.sorter.pending,
+    );
     this.results = new ResultSession(this.store, this.database, {
-      sortPending: () => this.activeSort !== null,
+      sortPending: () => this.busy.sortPending(),
+      supersedeExport: () => this.supersedeExport(),
+    });
+    this.sorter = new ResultSorter(this.store, this.database, this.results, this.busy, {
       supersedeExport: () => this.supersedeExport(),
     });
   }
@@ -213,7 +201,7 @@ export class SessionController {
     const session = this.store.sessionGeneration;
     // Invalidated before the generation moves, so a sort in flight can never publish against the
     // query that replaces it.
-    const sortCleanup = this.supersedeSort();
+    const sortCleanup = this.sorter.supersede();
     const query = this.results.nextQuery();
     const exportCleanup = this.supersedeExport();
     this.store.dispatch({ type: 'queryStarted', sql });
@@ -256,287 +244,13 @@ export class SessionController {
    */
   async sortResults(sort: ResultSort | null): Promise<void> {
     this.assertUsable();
-    const base = this.results.base;
-    const previousView = this.results.view;
-    const result = this.store.state.result;
-    // Freshness and busy-ness are checked first when a result is on screen, so a stale result
-    // says why it is stale rather than claiming no query has run.
-    if (result && resultSortInteractionBlocked(this.store.state)) {
-      throw new Error(this.sortBlockedReason());
-    }
-    if (!base || !previousView || !result) {
-      throw new Error('Run a query before sorting its results.');
-    }
-    if (sort !== null) {
-      const reason = resultSortDisabledReason(this.store.state, this.database.resultSortCapability());
-      if (reason !== null) throw new Error(reason);
-    }
-    // Asking for the order already on display is not a no-op that needs a progress indicator and a
-    // selection reset; it is nothing at all.
-    if (sameResultSort(result.sort, sort)) return;
-
-    const controller = new AbortController();
-    const token = {
-      id: ++this.sortRequestId,
-      queryGeneration: this.results.generation,
-      sessionGeneration: this.store.sessionGeneration,
-      fromRevision: result.orderRevision,
-      base,
-      previousView,
-      controller,
-      settlement: Promise.resolve(),
-    };
-    this.activeSort = token;
-    // Published synchronously so no other action can slip in before the operation is visible.
-    this.publishSortProgress(token, {
-      phase: sort === null ? 'storing' : 'loading',
-      rows: result.loadedRows,
-      totalRows: result.complete ? result.loadedRows : null,
-      message: sort === null ? 'Restoring query order…' : 'Preparing sort…',
-      requestedSort: sort,
-    });
-
-    const settlement = this.runSort(token, sort);
-    token.settlement = settlement.then(
-      () => undefined,
-      () => undefined,
-    );
-    return settlement;
+    return this.sorter.sort(sort);
   }
 
   /** Stops a sort in flight without destroying the result it was derived from. */
   async cancelResultSort(): Promise<void> {
     this.assertUsable();
-    const token = this.activeSort;
-    if (!token) return;
-    if (!token.controller.signal.aborted) {
-      token.controller.abort(new DOMException('The sort was cancelled.', 'AbortError'));
-    }
-    this.publishSortProgress(token, {
-      phase: 'cancelling',
-      rows: this.store.state.sorting?.rows ?? 0,
-      totalRows: this.store.state.sorting?.totalRows ?? null,
-      message: 'Cancelling sort…',
-      requestedSort: this.store.state.sorting?.requestedSort ?? null,
-    });
-    await token.settlement;
-  }
-
-  private sortBlockedReason(): string {
-    if (!this.store.state.resultIsCurrent) return 'Run the query again before sorting its results.';
-    // The same predicate the blocking check uses: a prepared-but-unsaved file does not block a
-    // sort, so it must not be reported as the reason one was refused.
-    if (hasActiveDownload(this.store.state)) return 'Finish or cancel the download before sorting.';
-    if (this.activeSort !== null) return 'A sort is already running.';
-    return 'The results cannot be sorted right now.';
-  }
-
-  private async runSort(token: NonNullable<SessionController['activeSort']>, sort: ResultSort | null) {
-    const { base } = token;
-    let candidate: QueryResultView | null = null;
-    let adopted = false;
-    try {
-      // A terminal retained download artifact is released here: once the order changes, a
-      // ready-to-save file built from the old one is no longer what the user asked for.
-      await this.supersedeExport();
-      this.assertCurrentSort(token);
-      const pendingDemand = this.results.demand;
-      if (pendingDemand) await pendingDemand.catch(() => undefined);
-      this.assertCurrentSort(token);
-      if (this.store.state.result?.pageError) {
-        throw new Error('Retry or rerun the query before sorting results.');
-      }
-
-      if (sort !== null) {
-        await this.drainForSort(token);
-        candidate = await this.database.createSortedView(base, {
-          sort,
-          signal: token.controller.signal,
-          onProgress: (progress) => this.publishSortPhase(token, progress, sort),
-        });
-      } else {
-        candidate = base;
-      }
-      this.assertCurrentSort(token);
-
-      const first = await readResultWindow(candidate, 0);
-      this.assertCurrentSort(token);
-      const current = this.store.state.result;
-      if (
-        !current ||
-        !first.complete ||
-        !sameResultSchema(first.schema, current.schema) ||
-        first.loadedRows !== current.loadedRows
-      ) {
-        throw new Error('The sorted result did not match the query result.');
-      }
-
-      const next: PagedResultState = {
-        generation: token.queryGeneration,
-        schema: first.schema,
-        loadedRows: first.loadedRows,
-        complete: true,
-        loadingMore: false,
-        windowStart: first.windowStart,
-        window: first.window,
-        completeTable: this.results.viewerTable,
-        elapsedMs: first.elapsedMs,
-        pageError: null,
-        pageErrorRetryable: false,
-        orderRevision: token.fromRevision + 1,
-        sort,
-      };
-      // One synchronous turn: adopt the view and publish the order together, so nothing can read a
-      // view that does not match the revision on display.
-      const previousView = this.results.adoptView(candidate);
-      adopted = true;
-      this.activeSort = null;
-      this.store.dispatch({
-        type: 'resultOrderCommitted',
-        queryGeneration: token.queryGeneration,
-        requestId: token.id,
-        fromRevision: token.fromRevision,
-        result: next,
-      });
-      await releaseView(previousView, base, candidate);
-    } catch (error) {
-      if (!adopted) await releaseView(candidate, base, null);
-      if (this.activeSort === token) this.activeSort = null;
-      this.reportSortOutcome(token, error);
-    } finally {
-      if (this.activeSort === token) this.activeSort = null;
-    }
-  }
-
-  /** Loads the rest of the result, between page fetches, so the sort covers every row. */
-  private async drainForSort(token: NonNullable<SessionController['activeSort']>): Promise<void> {
-    const { base } = token;
-    while (!base.status().complete) {
-      this.assertCurrentSort(token);
-      try {
-        await base.fetchNext(QUERY_PAGE_ROWS);
-      } catch (error) {
-        const retryable = isRetryablePageError(error);
-        const message = resultPageFailureMessage(error, 'More query rows could not be loaded.');
-        if (this.isCurrentSort(token)) {
-          this.store.dispatch({ type: 'queryPageFailed', message, retryable });
-        }
-        throw new Error(message, { cause: error });
-      }
-      this.assertCurrentSort(token);
-      // Counts move forward while the previously visible window stays exactly where it is.
-      this.results.refreshCounts(token.base, token.queryGeneration);
-      this.publishSortProgress(token, {
-        phase: 'loading',
-        rows: base.status().loadedRows,
-        totalRows: base.status().complete ? base.status().loadedRows : null,
-        message: `Loading remaining rows… ${base.status().loadedRows.toLocaleString()} loaded`,
-        requestedSort: this.store.state.sorting?.requestedSort ?? null,
-      });
-    }
-  }
-
-  private publishSortPhase(
-    token: NonNullable<SessionController['activeSort']>,
-    progress: ResultSortProgress,
-    sort: ResultSort | null,
-  ): void {
-    if (!this.isCurrentSort(token)) return;
-    const total = progress.totalRows.toLocaleString();
-    const message =
-      progress.phase === 'staging'
-        ? `Preparing sort… ${progress.rows.toLocaleString()} of ${total} rows`
-        : progress.phase === 'sorting'
-          ? `Sorting all ${total} rows…`
-          : `Saving sorted rows… ${progress.rows.toLocaleString()} of ${total}`;
-    this.publishSortProgress(token, {
-      phase: progress.phase,
-      rows: progress.rows,
-      totalRows: progress.totalRows,
-      message,
-      requestedSort: sort,
-    });
-  }
-
-  private publishSortProgress(
-    token: NonNullable<SessionController['activeSort']>,
-    update: {
-      phase: 'loading' | 'staging' | 'sorting' | 'storing' | 'cancelling' | 'failed';
-      rows: number;
-      totalRows: number | null;
-      message: string;
-      requestedSort: ResultSort | null;
-    },
-  ): void {
-    this.store.dispatch({
-      type: 'resultSortUpdated',
-      queryGeneration: token.queryGeneration,
-      requestId: token.id,
-      sorting: {
-        requestId: token.id,
-        queryGeneration: token.queryGeneration,
-        fromRevision: token.fromRevision,
-        requestedSort: update.requestedSort,
-        phase: update.phase,
-        rows: update.rows,
-        totalRows: update.totalRows,
-        message: update.message,
-      },
-    });
-  }
-
-  /** A cancellation is not a failure; anything else becomes an inline sort error. */
-  private reportSortOutcome(token: NonNullable<SessionController['activeSort']>, error: unknown): void {
-    if (this.store.state.result?.generation !== token.queryGeneration) return;
-    if (this.store.sessionGeneration !== token.sessionGeneration || this.store.disposed) return;
-    if (isAbortError(error)) {
-      this.store.dispatch({
-        type: 'resultSortEnded',
-        queryGeneration: token.queryGeneration,
-        requestId: token.id,
-      });
-      return;
-    }
-    this.publishSortProgress(token, {
-      phase: 'failed',
-      rows: 0,
-      totalRows: null,
-      message: errorMessage(error, 'The results could not be sorted.'),
-      requestedSort: this.store.state.sorting?.requestedSort ?? null,
-    });
-  }
-
-  private isCurrentSort(token: NonNullable<SessionController['activeSort']>): boolean {
-    return (
-      !this.store.disposed &&
-      this.activeSort === token &&
-      !token.controller.signal.aborted &&
-      this.store.sessionGeneration === token.sessionGeneration &&
-      this.results.generation === token.queryGeneration &&
-      this.results.base === token.base &&
-      this.store.state.result?.generation === token.queryGeneration
-    );
-  }
-
-  private assertCurrentSort(token: NonNullable<SessionController['activeSort']>): void {
-    if (!this.isCurrentSort(token)) {
-      throw new DOMException('The sort was replaced.', 'AbortError');
-    }
-  }
-
-  /**
-   * Invalidates any pending sort and joins its cleanup. Unlike a user cancellation, this belongs
-   * to closing the whole result family, so the base may be cancelled by the caller afterwards.
-   */
-  private supersedeSort(): Promise<void> {
-    const token = this.activeSort;
-    this.activeSort = null;
-    if (!token) return Promise.resolve();
-    // Invalidated synchronously, before any await, so the success continuation cannot publish.
-    if (!token.controller.signal.aborted) {
-      token.controller.abort(new DOMException('The sort was replaced.', 'AbortError'));
-    }
-    return token.settlement;
+    return this.sorter.cancel();
   }
 
   downloadResults(options: ExportOptions): Promise<void> {
@@ -553,7 +267,7 @@ export class SessionController {
       if (!this.store.state.resultIsCurrent) {
         throw new Error('Run the query again before downloading results.');
       }
-      if (this.activeSort !== null) {
+      if (this.busy.sortPending()) {
         throw new Error('Finish or cancel the sort before downloading results.');
       }
       if (resultState.pageError) {
@@ -680,7 +394,7 @@ export class SessionController {
   async cancel(): Promise<void> {
     this.assertUsable();
     const stoppedResult = this.store.state.result && !this.store.state.result.complete;
-    const sortCleanup = this.supersedeSort();
+    const sortCleanup = this.sorter.supersede();
     this.store.nextSession();
     this.results.nextQuery();
     const exportCleanup = this.supersedeExport().then(() => sortCleanup);
@@ -710,7 +424,7 @@ export class SessionController {
     this.assertUsable();
     // A row index means a position in the committed display, which is exactly what a pending sort
     // is about to change.
-    if (this.activeSort !== null) return;
+    if (this.sorter.pending) return;
     this.store.dispatch({ type: 'rowSelected', row });
   }
 
@@ -720,14 +434,14 @@ export class SessionController {
 
   selectByteRange(range: { file: string; start: number; end: number } | null): void {
     this.assertUsable();
-    if (this.activeSort !== null) return;
+    if (this.sorter.pending) return;
     this.store.dispatch({ type: 'byteRangeSelected', range });
   }
 
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal;
     this.store.markDisposed();
-    const sortCleanup = this.supersedeSort();
+    const sortCleanup = this.sorter.supersede();
     this.store.nextSession();
     this.results.nextQuery();
     const exportCleanup = this.supersedeExport().then(() => sortCleanup);
@@ -771,7 +485,7 @@ export class SessionController {
   }
 
   private async openBatch(entries: readonly BatchEntry[]): Promise<void> {
-    const sortCleanup = this.supersedeSort();
+    const sortCleanup = this.sorter.supersede();
     const generation = this.store.nextSession();
     this.results.nextQuery();
     const exportCleanup = this.supersedeExport();

@@ -2,6 +2,7 @@ import type { QueryResultView, ResultSort } from '@byteql/db';
 
 import type { SessionController } from '../session/controller.js';
 import type { ResultSession } from '../session/result-session.js';
+import type { ResultSorter } from '../session/result-sorter.js';
 
 /** Read-only, bounded-result diagnostics consumed only by the e2e build harness and tests. */
 export interface QueryResultDiagnostics {
@@ -27,7 +28,7 @@ export interface QueryResultDiagnostics {
  */
 interface ControllerResultInternals {
   readonly results: ResultSession;
-  readonly activeSort: unknown;
+  readonly sorter: ResultSorter;
 }
 
 const internals = (controller: SessionController): ControllerResultInternals =>
@@ -39,7 +40,7 @@ export const activeResultView = (controller: SessionController): QueryResultView
 
 export const queryResultDiagnostics = (controller: SessionController): QueryResultDiagnostics => {
   const result = controller.getState().result;
-  const { results, activeSort } = internals(controller);
+  const { results, sorter } = internals(controller);
   const base = results.base;
   const display = results.view;
   const status = base?.status();
@@ -57,7 +58,7 @@ export const queryResultDiagnostics = (controller: SessionController): QueryResu
     decodedBytes: status?.decodedBytes ?? 0,
     orderRevision: result?.orderRevision ?? 0,
     sort: result?.sort ?? null,
-    sortPending: activeSort !== null,
+    sortPending: sorter.pending,
     derivedViewCount: display && display !== base ? 1 : 0,
     viewCaches: [...views].map((view) => ({
       kind: view === base ? ('base' as const) : ('display' as const),
