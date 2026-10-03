@@ -1,6 +1,7 @@
-import type { QueryResultView, QuerySession, ResultSort } from '@byteql/db';
+import type { QueryResultView, ResultSort } from '@byteql/db';
 
 import type { SessionController } from '../session/controller.js';
+import type { ResultSession } from '../session/result-session.js';
 
 /** Read-only, bounded-result diagnostics consumed only by the e2e build harness and tests. */
 export interface QueryResultDiagnostics {
@@ -25,8 +26,7 @@ export interface QueryResultDiagnostics {
  * it without the production controller carrying test-only accessors.
  */
 interface ControllerResultInternals {
-  readonly activeQuery: QuerySession | null;
-  readonly activeResultView: QueryResultView | null;
+  readonly results: ResultSession;
   readonly activeSort: unknown;
 }
 
@@ -35,11 +35,13 @@ const internals = (controller: SessionController): ControllerResultInternals =>
 
 /** The view the grid is currently reading (the sorted view once an order is committed). */
 export const activeResultView = (controller: SessionController): QueryResultView | null =>
-  internals(controller).activeResultView;
+  internals(controller).results.view;
 
 export const queryResultDiagnostics = (controller: SessionController): QueryResultDiagnostics => {
   const result = controller.getState().result;
-  const { activeQuery: base, activeResultView: display, activeSort } = internals(controller);
+  const { results, activeSort } = internals(controller);
+  const base = results.base;
+  const display = results.view;
   const status = base?.status();
   // Counted by object identity: before any sort the base IS the display, and reporting it twice
   // would double the cache figures a memory check reads.

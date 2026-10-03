@@ -1,9 +1,7 @@
 import { tableToIpc, type ParseIssue, type TableOverview } from '@byteql/core';
 import {
-  QUERY_INITIAL_ROWS,
   QUERY_PAGE_ROWS,
   hasDbErrorCode,
-  QUERY_RESULT_MEMORY_BYTES,
   sweepQueryPageOrphans,
   sweepSpillOrphans,
   type ByteqlDatabase,
@@ -44,6 +42,13 @@ import {
   type PlannedFile,
 } from './batch.js';
 import { SAMPLES, type SampleDefinition, type SampleId } from './samples.js';
+import { ResultSession, releaseView } from './result-session.js';
+import {
+  errorMessage,
+  isAbortError,
+  isRetryablePageError,
+  resultPageFailureMessage,
+} from './session-errors.js';
 import { SessionStore } from './session-store.js';
 import { type PagedResultState, type SessionState, type SourceFile } from './state.js';
 import { readResultWindow } from './result-view.js';
@@ -71,12 +76,6 @@ const basename = (name: string): string => {
   return safe || 'local file';
 };
 
-const errorMessage = (error: unknown, fallback: string): string =>
-  error instanceof Error && error.message ? error.message : fallback;
-
-const isAbortError = (error: unknown): boolean =>
-  error instanceof DOMException ? error.name === 'AbortError' : false;
-
 /** Whether two committed orders are the same request, so asking again would change nothing. */
 const sameResultSort = (left: ResultSort | null, right: ResultSort | null): boolean =>
   left === null || right === null
@@ -102,14 +101,7 @@ export class SessionController {
   private readonly initializationAbort = new AbortController();
   private readonly sampleUrlOverrides: Partial<Record<SampleId, readonly string[]>> | undefined;
   private readonly sampleCache = new Map<string, Uint8Array>();
-  private queryGeneration = 0;
-  private activeQuery: QuerySession | null = null;
-  /**
-   * The view the grid is currently reading. Starts as the base result and becomes a derived
-   * sorted view once an order is committed; the base stays in `activeQuery` throughout, because
-   * restoring the original order means reading it again, not running the query again.
-   */
-  private activeResultView: QueryResultView | null = null;
+  private readonly results: ResultSession;
   private sortRequestId = 0;
   private activeSort: {
     id: number;
@@ -121,11 +113,6 @@ export class SessionController {
     controller: AbortController;
     settlement: Promise<void>;
   } | null = null;
-  /** The base result materialized once for trusted viewers, in ORIGINAL query order. */
-  private baseViewerTable: Table | null = null;
-  private baseViewerMaterialized = false;
-  private resultDemand: Promise<void> | null = null;
-  private resultFetchSuspendedBy: number | null = null;
   private exportGeneration = 0;
   private activeExport: ExportOperation | null = null;
   private retainedExport: { generation: number; destination: ExportDestination } | null = null;
@@ -154,6 +141,10 @@ export class SessionController {
     this.sampleUrlOverrides = options.sampleUrlOverrides;
     this.stopViewer = options.stopViewer ?? (() => undefined);
     this.tiering = options.tiering;
+    this.results = new ResultSession(this.store, this.database, {
+      sortPending: () => this.activeSort !== null,
+      supersedeExport: () => this.supersedeExport(),
+    });
   }
 
   initialize(): Promise<void> {
@@ -223,10 +214,10 @@ export class SessionController {
     // Invalidated before the generation moves, so a sort in flight can never publish against the
     // query that replaces it.
     const sortCleanup = this.supersedeSort();
-    const query = ++this.queryGeneration;
+    const query = this.results.nextQuery();
     const exportCleanup = this.supersedeExport();
     this.store.dispatch({ type: 'queryStarted', sql });
-    return this.executeQuery(
+    return this.results.execute(
       sql,
       session,
       query,
@@ -236,39 +227,17 @@ export class SessionController {
 
   loadMoreResults(): Promise<void> {
     this.assertUsable();
-    const result = this.store.state.result;
-    if (
-      !result ||
-      result.complete ||
-      result.pageError ||
-      this.resultFetchSuspendedBy !== null ||
-      this.activeSort !== null
-    ) {
-      return Promise.resolve();
-    }
-    return this.startResultDemand(() => this.fetchMoreResults(result.generation));
+    return this.results.loadMore();
   }
 
   loadResultWindow(globalRow: number): Promise<void> {
     this.assertUsable();
-    const result = this.store.state.result;
-    if (
-      !result ||
-      this.activeSort !== null ||
-      !Number.isSafeInteger(globalRow) ||
-      globalRow < 0 ||
-      globalRow >= result.loadedRows
-    ) {
-      return Promise.resolve();
-    }
-    return this.startResultDemand(() => this.publishWindow(result.generation, globalRow));
+    return this.results.loadWindow(globalRow);
   }
 
   retryResultPage(): Promise<void> {
     this.assertUsable();
-    const result = this.store.state.result;
-    if (!result?.pageErrorRetryable || this.activeSort !== null) return Promise.resolve();
-    return this.startResultDemand(() => this.retryPendingResult(result.generation));
+    return this.results.retryPage();
   }
 
   /** What the UI needs to decide whether to offer sorting at all, before any result exists. */
@@ -287,8 +256,8 @@ export class SessionController {
    */
   async sortResults(sort: ResultSort | null): Promise<void> {
     this.assertUsable();
-    const base = this.activeQuery;
-    const previousView = this.activeResultView;
+    const base = this.results.base;
+    const previousView = this.results.view;
     const result = this.store.state.result;
     // Freshness and busy-ness are checked first when a result is on screen, so a stale result
     // says why it is stale rather than claiming no query has run.
@@ -309,7 +278,7 @@ export class SessionController {
     const controller = new AbortController();
     const token = {
       id: ++this.sortRequestId,
-      queryGeneration: this.queryGeneration,
+      queryGeneration: this.results.generation,
       sessionGeneration: this.store.sessionGeneration,
       fromRevision: result.orderRevision,
       base,
@@ -371,7 +340,7 @@ export class SessionController {
       // ready-to-save file built from the old one is no longer what the user asked for.
       await this.supersedeExport();
       this.assertCurrentSort(token);
-      const pendingDemand = this.resultDemand;
+      const pendingDemand = this.results.demand;
       if (pendingDemand) await pendingDemand.catch(() => undefined);
       this.assertCurrentSort(token);
       if (this.store.state.result?.pageError) {
@@ -410,7 +379,7 @@ export class SessionController {
         loadingMore: false,
         windowStart: first.windowStart,
         window: first.window,
-        completeTable: this.baseViewerTable,
+        completeTable: this.results.viewerTable,
         elapsedMs: first.elapsedMs,
         pageError: null,
         pageErrorRetryable: false,
@@ -419,8 +388,7 @@ export class SessionController {
       };
       // One synchronous turn: adopt the view and publish the order together, so nothing can read a
       // view that does not match the revision on display.
-      const previousView = this.activeResultView;
-      this.activeResultView = candidate;
+      const previousView = this.results.adoptView(candidate);
       adopted = true;
       this.activeSort = null;
       this.store.dispatch({
@@ -430,9 +398,9 @@ export class SessionController {
         fromRevision: token.fromRevision,
         result: next,
       });
-      await this.releaseView(previousView, base, candidate);
+      await releaseView(previousView, base, candidate);
     } catch (error) {
-      if (!adopted) await this.releaseView(candidate, base, null);
+      if (!adopted) await releaseView(candidate, base, null);
       if (this.activeSort === token) this.activeSort = null;
       this.reportSortOutcome(token, error);
     } finally {
@@ -448,8 +416,8 @@ export class SessionController {
       try {
         await base.fetchNext(QUERY_PAGE_ROWS);
       } catch (error) {
-        const retryable = this.isRetryablePageError(error);
-        const message = this.resultPageFailureMessage(error, 'More query rows could not be loaded.');
+        const retryable = isRetryablePageError(error);
+        const message = resultPageFailureMessage(error, 'More query rows could not be loaded.');
         if (this.isCurrentSort(token)) {
           this.store.dispatch({ type: 'queryPageFailed', message, retryable });
         }
@@ -457,7 +425,7 @@ export class SessionController {
       }
       this.assertCurrentSort(token);
       // Counts move forward while the previously visible window stays exactly where it is.
-      this.refreshResultCounts(token);
+      this.results.refreshCounts(token.base, token.queryGeneration);
       this.publishSortProgress(token, {
         phase: 'loading',
         rows: base.status().loadedRows,
@@ -466,23 +434,6 @@ export class SessionController {
         requestedSort: this.store.state.sorting?.requestedSort ?? null,
       });
     }
-  }
-
-  /** Publishes new row counts without disturbing the window the reader is looking at. */
-  private refreshResultCounts(token: NonNullable<SessionController['activeSort']>): void {
-    const current = this.store.state.result;
-    if (!current || current.generation !== token.queryGeneration) return;
-    const status = token.base.status();
-    this.store.dispatch({
-      type: 'queryWindowUpdated',
-      result: {
-        ...current,
-        loadedRows: status.loadedRows,
-        complete: status.complete,
-        loadingMore: false,
-        elapsedMs: status.elapsedMs,
-      },
-    });
   }
 
   private publishSortPhase(
@@ -555,34 +506,14 @@ export class SessionController {
     });
   }
 
-  /**
-   * Releases a view the display no longer owns.
-   *
-   * The base is excluded explicitly rather than by reading `activeQuery`, which a caller may
-   * already have cleared: disposing the base here would close the whole result family behind the
-   * back of whoever owns that decision.
-   */
-  private async releaseView(
-    view: QueryResultView | null,
-    base: QueryResultView | null,
-    keep: QueryResultView | null,
-  ): Promise<void> {
-    if (!view || view === base || view === keep) return;
-    try {
-      await view.dispose();
-    } catch {
-      // The database keeps the release as a retry; the committed order stands either way.
-    }
-  }
-
   private isCurrentSort(token: NonNullable<SessionController['activeSort']>): boolean {
     return (
       !this.store.disposed &&
       this.activeSort === token &&
       !token.controller.signal.aborted &&
       this.store.sessionGeneration === token.sessionGeneration &&
-      this.queryGeneration === token.queryGeneration &&
-      this.activeQuery === token.base &&
+      this.results.generation === token.queryGeneration &&
+      this.results.base === token.base &&
       this.store.state.result?.generation === token.queryGeneration
     );
   }
@@ -611,12 +542,12 @@ export class SessionController {
   downloadResults(options: ExportOptions): Promise<void> {
     this.assertUsable();
     const resultState = this.store.state.result;
-    const base = this.activeQuery;
-    const view = this.activeResultView;
+    const base = this.results.base;
+    const view = this.results.view;
     let columns: number[];
     let capturedNames: string[] | null;
     try {
-      if (!resultState || !base || !view || resultState.generation !== this.queryGeneration) {
+      if (!resultState || !base || !view || resultState.generation !== this.results.generation) {
         throw new Error('Run a query before downloading results.');
       }
       if (!this.store.state.resultIsCurrent) {
@@ -663,7 +594,7 @@ export class SessionController {
       settlement: Promise.resolve(),
     };
     this.activeExport = operation;
-    this.resultFetchSuspendedBy = generation;
+    this.results.suspendFetches(generation);
     this.updateDownload(operation, {
       phase: 'picking',
       rows: resultState.loadedRows,
@@ -751,11 +682,11 @@ export class SessionController {
     const stoppedResult = this.store.state.result && !this.store.state.result.complete;
     const sortCleanup = this.supersedeSort();
     this.store.nextSession();
-    ++this.queryGeneration;
+    this.results.nextQuery();
     const exportCleanup = this.supersedeExport().then(() => sortCleanup);
     this.cancelParser();
     this.stopActiveViewer();
-    const cancellation = exportCleanup.then(() => this.closeActiveQuery({ cancel: true }));
+    const cancellation = exportCleanup.then(() => this.results.close({ cancel: true }));
     if (stoppedResult) {
       this.store.dispatch({
         type: 'queryPageFailed',
@@ -798,7 +729,7 @@ export class SessionController {
     this.store.markDisposed();
     const sortCleanup = this.supersedeSort();
     this.store.nextSession();
-    ++this.queryGeneration;
+    this.results.nextQuery();
     const exportCleanup = this.supersedeExport().then(() => sortCleanup);
     this.initializationAbort.abort();
     this.store.release();
@@ -813,7 +744,7 @@ export class SessionController {
     }
     this.disposal = (async () => {
       await exportCleanup;
-      await this.closeActiveQuery({ cancel: true });
+      await this.results.close({ cancel: true });
       await this.disposeCsvClient();
       await Promise.resolve()
         .then(() => this.database.dispose())
@@ -842,13 +773,13 @@ export class SessionController {
   private async openBatch(entries: readonly BatchEntry[]): Promise<void> {
     const sortCleanup = this.supersedeSort();
     const generation = this.store.nextSession();
-    ++this.queryGeneration;
+    this.results.nextQuery();
     const exportCleanup = this.supersedeExport();
     this.cancelParser();
     this.stopActiveViewer();
     const queryCancellation = exportCleanup
       .then(() => sortCleanup)
-      .then(() => this.closeActiveQuery({ cancel: true }));
+      .then(() => this.results.close({ cancel: true }));
     this.bytesIngested = 0;
     this.lastProgress = null;
 
@@ -1088,12 +1019,12 @@ export class SessionController {
       operation.destination = destination;
       this.assertCurrentExport(operation);
 
-      this.resultFetchSuspendedBy = operation.generation;
+      this.results.suspendFetches(operation.generation);
       this.updateDownload(operation, {
         phase: 'loading',
         message: 'Loading remaining rows…',
       });
-      const pendingDemand = this.resultDemand;
+      const pendingDemand = this.results.demand;
       if (pendingDemand) await pendingDemand.catch(() => undefined);
       this.assertCurrentExport(operation);
       if (this.store.state.result?.pageError) {
@@ -1113,7 +1044,7 @@ export class SessionController {
           throw new Error(this.publishExportPageFailure(operation, error), { cause: error });
         }
         this.assertCurrentExport(operation);
-        this.refreshExportedResult(operation);
+        this.results.refreshCounts(operation.result, operation.resultGeneration, operation.orderRevision);
         const status = operation.result.status();
         this.updateDownload(operation, {
           phase: 'loading',
@@ -1123,7 +1054,7 @@ export class SessionController {
         });
       }
 
-      this.refreshExportedResult(operation);
+      this.results.refreshCounts(operation.result, operation.resultGeneration, operation.orderRevision);
       const totalRows = operation.result.status().loadedRows;
       this.updateDownload(operation, {
         phase: 'encoding',
@@ -1237,7 +1168,7 @@ export class SessionController {
         });
       }
     } finally {
-      if (this.resultFetchSuspendedBy === operation.generation) this.resultFetchSuspendedBy = null;
+      this.results.resumeFetches(operation.generation);
       if (this.activeExport === operation) this.activeExport = null;
       if (!keepDestination && this.retainedExport?.generation === operation.generation) {
         this.retainedExport = null;
@@ -1320,35 +1251,13 @@ export class SessionController {
     });
   }
 
-  private refreshExportedResult(operation: ExportOperation): void {
-    const current = this.store.state.result;
-    if (
-      !current ||
-      current.generation !== operation.resultGeneration ||
-      current.orderRevision !== operation.orderRevision
-    ) {
-      return;
-    }
-    const status = operation.result.status();
-    this.store.dispatch({
-      type: 'queryWindowUpdated',
-      result: {
-        ...current,
-        loadedRows: status.loadedRows,
-        complete: status.complete,
-        loadingMore: false,
-        elapsedMs: status.elapsedMs,
-      },
-    });
-  }
-
   private publishExportPageFailure(operation: ExportOperation, error: unknown): string {
-    const message = this.resultPageFailureMessage(error, 'More query rows could not be loaded.');
+    const message = resultPageFailureMessage(error, 'More query rows could not be loaded.');
     if (!this.isCurrentExport(operation)) return message;
     this.store.dispatch({
       type: 'queryPageFailed',
       message,
-      retryable: this.isRetryablePageError(error),
+      retryable: isRetryablePageError(error),
     });
     return message;
   }
@@ -1371,9 +1280,9 @@ export class SessionController {
       !this.store.disposed &&
       this.exportGeneration === operation.generation &&
       this.activeExport === operation &&
-      this.activeQuery === operation.base &&
-      this.activeResultView === operation.result &&
-      this.queryGeneration === operation.resultGeneration &&
+      this.results.base === operation.base &&
+      this.results.view === operation.result &&
+      this.results.generation === operation.resultGeneration &&
       this.store.state.result?.generation === operation.resultGeneration &&
       this.store.state.result.orderRevision === operation.orderRevision
     );
@@ -1418,250 +1327,6 @@ export class SessionController {
     return this.csvDisposal;
   }
 
-  private async executeQuery(
-    sql: string,
-    session: number,
-    query: number,
-    exportCleanup: Promise<void>,
-  ): Promise<void> {
-    const priorResult = this.store.state.result;
-    try {
-      await exportCleanup;
-      await this.closeActiveQuery({ cancel: true });
-      if (!this.isCurrentQuery(session, query)) return;
-      if (priorResult && !priorResult.complete && this.store.state.result === priorResult) {
-        this.store.dispatch({
-          type: 'queryPageFailed',
-          message: 'Run the prior query again to load more rows.',
-          retryable: false,
-        });
-      }
-
-      const active = await this.database.startQuery(sql);
-      if (!this.isCurrentQuery(session, query)) {
-        await this.closeQuery(active, true);
-        return;
-      }
-      this.activeQuery = active;
-      this.activeResultView = active;
-      this.baseViewerTable = null;
-      this.baseViewerMaterialized = false;
-
-      await active.fetchNext(QUERY_INITIAL_ROWS);
-      if (!this.isCurrentQuery(session, query) || this.activeQuery !== active) return;
-      const status = active.status();
-      const result = await this.buildResultState(active, query, Math.max(0, status.loadedRows - 1));
-      if (!result || !this.isCurrentQuery(session, query) || this.activeQuery !== active) return;
-      this.store.dispatch({ type: 'querySucceeded', result });
-    } catch (error) {
-      if (!this.isCurrentQuery(session, query)) return;
-      await this.closeActiveQuery({ cancel: true });
-      if (isAbortError(error)) {
-        this.store.dispatch({ type: 'cancelled' });
-        return;
-      }
-      this.store.dispatch({ type: 'queryFailed', message: errorMessage(error, 'The query failed.') });
-    }
-  }
-
-  private startResultDemand(operation: () => Promise<void>): Promise<void> {
-    if (this.resultDemand) return this.resultDemand;
-    const demand = operation();
-    const settled = demand.finally(() => {
-      if (this.resultDemand === settled) this.resultDemand = null;
-    });
-    this.resultDemand = settled;
-    return settled;
-  }
-
-  private async fetchMoreResults(generation: number): Promise<void> {
-    const active = this.activeQuery;
-    const current = this.store.state.result;
-    if (!active || !current || current.generation !== generation) return;
-    const anchor = Math.max(0, current.loadedRows - 1);
-    this.store.dispatch({
-      type: 'queryWindowUpdated',
-      result: {
-        ...current,
-        loadingMore: true,
-        pageError: null,
-        pageErrorRetryable: false,
-      },
-    });
-
-    try {
-      await active.fetchNext(QUERY_PAGE_ROWS);
-      if (!this.isActiveResult(active, generation)) return;
-      await this.publishWindow(generation, anchor);
-    } catch (error) {
-      if (!this.isActiveResult(active, generation)) return;
-      const retryable = this.isRetryablePageError(error);
-      this.store.dispatch({
-        type: 'queryPageFailed',
-        message: this.resultPageFailureMessage(error, 'More query rows could not be loaded.'),
-        retryable,
-      });
-    }
-  }
-
-  private async retryPendingResult(generation: number): Promise<void> {
-    const active = this.activeQuery;
-    const current = this.store.state.result;
-    if (!active || !current || current.generation !== generation) return;
-    const anchor = Math.max(0, current.loadedRows - 1);
-    this.store.dispatch({
-      type: 'queryWindowUpdated',
-      result: {
-        ...current,
-        loadingMore: true,
-        pageError: null,
-        pageErrorRetryable: false,
-      },
-    });
-
-    try {
-      await active.retryPending();
-      if (!this.isActiveResult(active, generation)) return;
-      await this.publishWindow(generation, anchor);
-    } catch (error) {
-      if (!this.isActiveResult(active, generation)) return;
-      const retryable = this.isRetryablePageError(error);
-      this.store.dispatch({
-        type: 'queryPageFailed',
-        message: this.resultPageFailureMessage(error, 'The query result page could not be stored.'),
-        retryable,
-      });
-    }
-  }
-
-  private async publishWindow(generation: number, anchorRow: number): Promise<void> {
-    const active = this.activeQuery;
-    if (!active || !this.isActiveResult(active, generation)) return;
-    try {
-      const result = await this.buildResultState(active, generation, anchorRow);
-      if (!result || !this.isActiveResult(active, generation)) return;
-      this.store.dispatch({ type: 'queryWindowUpdated', result });
-    } catch (error) {
-      if (!this.isActiveResult(active, generation)) return;
-      this.store.dispatch({
-        type: 'queryPageFailed',
-        message: this.resultPageFailureMessage(error, 'The requested query rows could not be loaded.'),
-        retryable: false,
-      });
-      const exportCleanup = this.supersedeExport();
-      void exportCleanup
-        .then(() => {
-          if (!this.isActiveResult(active, generation)) return;
-          return this.closeActiveQuery({ cancel: true });
-        })
-        .catch(() => undefined);
-    }
-  }
-
-  private async buildResultState(
-    active: QuerySession,
-    generation: number,
-    anchorRow: number,
-  ): Promise<PagedResultState | null> {
-    const view = this.activeResultView;
-    if (
-      !view ||
-      !this.isCurrentQuery(this.store.sessionGeneration, generation) ||
-      this.activeQuery !== active
-    ) {
-      return null;
-    }
-    const existing = this.store.state.result?.generation === generation ? this.store.state.result : null;
-    const revision = existing?.orderRevision ?? 0;
-    const read = await readResultWindow(view, anchorRow);
-    // Fence the VIEW and the committed order, not just the query: a window read from the order
-    // that was on display when this started must not be published over a newer one. The revision
-    // is only comparable within one generation — a result from an OLDER query says nothing about
-    // the order of the one being published now.
-    const displayed = this.store.state.result;
-    const revisionMoved = displayed?.generation === generation && displayed.orderRevision !== revision;
-    if (
-      !this.isCurrentQuery(this.store.sessionGeneration, generation) ||
-      this.activeQuery !== active ||
-      this.activeResultView !== view ||
-      revisionMoved
-    ) {
-      return null;
-    }
-
-    const completeTable = read.complete ? await this.baseViewerInput(active, generation) : null;
-    if (
-      !this.isCurrentQuery(this.store.sessionGeneration, generation) ||
-      this.activeQuery !== active ||
-      this.activeResultView !== view
-    ) {
-      return null;
-    }
-
-    return {
-      generation,
-      schema: read.schema,
-      loadedRows: read.loadedRows,
-      complete: read.complete,
-      loadingMore: false,
-      windowStart: read.windowStart,
-      window: read.window,
-      completeTable,
-      elapsedMs: read.elapsedMs,
-      pageError: existing?.pageError ?? null,
-      pageErrorRetryable: existing?.pageErrorRetryable ?? false,
-      orderRevision: revision,
-      sort: existing?.sort ?? null,
-    };
-  }
-
-  /**
-   * The complete table trusted viewers consume, materialized at most once per base result and
-   * always in ORIGINAL query order.
-   *
-   * Viewers read the query's own ordering, which is the user's to control through SQL; a header
-   * sort is a view of the result, and must not silently re-order what a viewer plays.
-   */
-  private async baseViewerInput(active: QuerySession, generation: number): Promise<Table | null> {
-    if (this.baseViewerMaterialized) return this.baseViewerTable;
-    let table: Table | null;
-    try {
-      table = await active.materialize(QUERY_RESULT_MEMORY_BYTES);
-    } catch {
-      // A result too large for the viewer budget simply has no viewer input.
-      table = null;
-    }
-    if (!this.isCurrentQuery(this.store.sessionGeneration, generation) || this.activeQuery !== active) {
-      return null;
-    }
-    this.baseViewerTable = table;
-    this.baseViewerMaterialized = true;
-    return table;
-  }
-
-  private isActiveResult(active: QuerySession, generation: number): boolean {
-    return (
-      this.activeQuery === active &&
-      this.store.state.result?.generation === generation &&
-      this.isCurrentQuery(this.store.sessionGeneration, generation)
-    );
-  }
-
-  private isRetryablePageError(error: unknown): boolean {
-    return hasDbErrorCode(error, 'RESULT_SPILL_QUOTA_EXCEEDED');
-  }
-
-  private resultPageFailureMessage(error: unknown, fallback: string): string {
-    const raw = errorMessage(error, fallback);
-    if (hasDbErrorCode(error, 'RESULT_SPILL_QUOTA_EXCEEDED')) {
-      return 'Local result storage is full. Free local storage, then retry loading rows.';
-    }
-    if (hasDbErrorCode(error, 'RESULT_SPILL_UNSUPPORTED')) {
-      return 'This browser cannot retain more local result pages. Narrow the SQL and run the query again.';
-    }
-    return `${raw} Run the query again to load more rows.`;
-  }
-
   private progress(generation: number, progress: ParseProgress): void {
     if (!this.isCurrent(generation)) return;
     this.lastProgress = progress;
@@ -1699,44 +1364,6 @@ export class SessionController {
     }
   }
 
-  private async closeActiveQuery({ cancel }: { cancel: boolean }): Promise<void> {
-    const active = this.activeQuery;
-    const view = this.activeResultView;
-    this.activeQuery = null;
-    this.activeResultView = null;
-    this.baseViewerTable = null;
-    this.baseViewerMaterialized = false;
-    if (active && this.store.state.result?.generation === this.queryGeneration) {
-      // Tell the reducer this family is closing BEFORE its resources go, so the rows left on
-      // screen stop offering actions that would reach for them.
-      this.store.dispatch({ type: 'resultUnavailable', queryGeneration: this.store.state.result.generation });
-    }
-    await this.releaseView(view, active, null);
-    try {
-      if (!active) {
-        if (cancel)
-          await Promise.resolve()
-            .then(() => this.database.cancelQuery())
-            .catch(() => false);
-        return;
-      }
-      let workActive = true;
-      try {
-        workActive = !active.status().complete;
-      } catch {
-        // A closing/terminal cursor still needs best-effort cancellation before disposal.
-      }
-      await this.closeQuery(active, cancel && workActive);
-    } finally {
-      this.resultDemand = null;
-    }
-  }
-
-  private async closeQuery(active: QuerySession, cancel: boolean): Promise<void> {
-    if (cancel) await active.cancel().catch(() => false);
-    await active.dispose().catch(() => undefined);
-  }
-
   private stopActiveViewer(): void {
     try {
       this.stopViewer();
@@ -1747,10 +1374,6 @@ export class SessionController {
 
   private isCurrent(generation: number): boolean {
     return this.store.isCurrent(generation);
-  }
-
-  private isCurrentQuery(session: number, query: number): boolean {
-    return this.isCurrent(session) && query === this.queryGeneration;
   }
 
   private assertUsable(): void {
