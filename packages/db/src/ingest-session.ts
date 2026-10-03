@@ -2,6 +2,7 @@ import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm';
 import type { TableSchema } from '@byteql/core';
 import { tableFromIPC } from 'apache-arrow';
 
+import type { Catalog, CatalogKind } from './catalog.js';
 import { ByteqlDbError } from './errors.js';
 import { deleteSpillChunks, deleteSpillGeneration, isQuotaError, spillPath } from './spill-files.js';
 import { quoteIdentifier, quoteString } from './sql.js';
@@ -11,24 +12,6 @@ import type { IngestSession, TableSummary } from './types.js';
 export const ROTATION_THRESHOLD_BYTES = 96 * 1024 * 1024;
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/** The DuckDB catalog kind a committed final was created as; drives which typed DROP applies. */
-export type CatalogKind = 'table' | 'view';
-
-/**
- * Issues exactly one type-correct drop for a recorded final. DuckDB (even pinned 1.33.1-dev57.0)
- * throws a Catalog Error on `DROP VIEW IF EXISTS t` when `t` is a table (and vice versa), so the
- * blind "drop both" pattern is never safe against a real database — only a single, kind-correct
- * drop is.
- */
-const dropFinal = async (
-  connection: AsyncDuckDBConnection,
-  name: string,
-  kind: CatalogKind,
-): Promise<void> => {
-  const keyword = kind === 'view' ? 'DROP VIEW IF EXISTS' : 'DROP TABLE IF EXISTS';
-  await connection.query(`${keyword} ${quoteIdentifier(name)};`);
-};
 
 const ARROW_TYPE_TO_DUCKDB_TYPE: Readonly<Record<string, string>> = {
   int8: 'TINYINT',
@@ -66,6 +49,18 @@ export interface OpfsFileRegistrar {
   registerOPFSFileName(path: string): Promise<void>;
 }
 
+export interface IngestSessionOptions {
+  readonly generation: number;
+  readonly tier: 'memory' | 'spill';
+  readonly rotationBytes: number;
+  readonly opfs: OpfsFileRegistrar;
+  readonly enqueue: EnqueueFn;
+  /** The committed catalog this session's finalize swaps its tables into. */
+  readonly catalog: Catalog;
+  /** Fires once the session finalizes, fails, or aborts, so the database can admit the next one. */
+  readonly onSettled: () => void;
+}
+
 export class IngestSessionImpl implements IngestSession {
   private state: IngestState = 'open';
   private readonly created = new Set<string>();
@@ -83,18 +78,23 @@ export class IngestSessionImpl implements IngestSession {
   private readonly currentFileChunks = new Map<string, string[]>();
   private readonly currentFileRows = new Map<string, number>();
 
-  constructor(
-    private readonly generation: number,
-    private readonly tier: 'memory' | 'spill',
-    private readonly rotationBytes: number,
-    private readonly opfs: OpfsFileRegistrar,
-    private readonly enqueue: EnqueueFn,
-    private readonly getFinalTableNames: () => ReadonlyMap<string, CatalogKind>,
-    private readonly setFinalTableNames: (finals: ReadonlyMap<string, CatalogKind>) => void,
-    private readonly getSpillGeneration: () => number | null,
-    private readonly setSpillGeneration: (generation: number | null) => void,
-    private readonly onSettled: () => void,
-  ) {}
+  private readonly generation: number;
+  private readonly tier: 'memory' | 'spill';
+  private readonly rotationBytes: number;
+  private readonly opfs: OpfsFileRegistrar;
+  private readonly enqueue: EnqueueFn;
+  private readonly catalog: Catalog;
+  private readonly onSettled: () => void;
+
+  constructor(options: IngestSessionOptions) {
+    this.generation = options.generation;
+    this.tier = options.tier;
+    this.rotationBytes = options.rotationBytes;
+    this.opfs = options.opfs;
+    this.enqueue = options.enqueue;
+    this.catalog = options.catalog;
+    this.onSettled = options.onSettled;
+  }
 
   /** The set of tables this session is responsible for finalizing/aborting. */
   private sessionTables(): readonly string[] {
@@ -316,14 +316,10 @@ export class IngestSessionImpl implements IngestSession {
       const schemaFor = (table: string): TableSchema | undefined => backfillByName.get(table);
       const finalizeTables: readonly string[] = [...new Set([...this.created, ...backfillByName.keys()])];
 
-      const summaries = await this.enqueue(async (connection) => {
+      const committed = await this.enqueue(async (connection) => {
         await connection.query('BEGIN TRANSACTION;');
         try {
-          for (const [name, kind] of this.getFinalTableNames()) {
-            // The old final name may be a view (a prior spill generation) or a table (a prior
-            // memory generation); its recorded kind says exactly which single drop applies.
-            await dropFinal(connection, name, kind);
-          }
+          await this.catalog.dropFinals(connection);
 
           const finalKinds = new Map<string, CatalogKind>();
           const summaries: TableSummary[] = [];
@@ -361,8 +357,7 @@ export class IngestSessionImpl implements IngestSession {
           }
 
           await connection.query('COMMIT;');
-          this.setFinalTableNames(finalKinds);
-          return summaries;
+          return { summaries, finalKinds };
         } catch (error) {
           try {
             await connection.query('ROLLBACK;');
@@ -375,26 +370,9 @@ export class IngestSessionImpl implements IngestSession {
         }
       });
 
-      if (this.tier === 'spill') {
-        const previousGeneration = this.getSpillGeneration();
-        this.setSpillGeneration(this.generation);
-        if (previousGeneration !== null) {
-          await deleteSpillGeneration(previousGeneration);
-        }
-      } else {
-        // I2: a memory-tier finalize's DROP (inside the transaction above) already replaced any
-        // previous spill-backed views with this generation's plain tables, so the old
-        // generation's OPFS parquet payload is now orphaned — reclaim it the same best-effort
-        // way the spill-tier branch does, rather than leaving it until the next launch's orphan
-        // sweep or session dispose. No spill generation backs the catalog anymore, so clear it.
-        const previousGeneration = this.getSpillGeneration();
-        if (previousGeneration !== null) {
-          this.setSpillGeneration(null);
-          await deleteSpillGeneration(previousGeneration);
-        }
-      }
+      await this.catalog.swap(committed.finalKinds, this.tier === 'spill' ? this.generation : null);
 
-      return summaries;
+      return committed.summaries;
     } catch (error) {
       this.state = 'failed';
       throw error;

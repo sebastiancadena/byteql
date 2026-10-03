@@ -18,7 +18,8 @@ import {
 import { createExportFiles } from './export-files.js';
 import { writeSortedResult } from './sort-result.js';
 import type { FileStatisticsAccess, FileStatisticsSummary } from './file-statistics.js';
-import { IngestSessionImpl, ROTATION_THRESHOLD_BYTES, type CatalogKind } from './ingest-session.js';
+import { Catalog } from './catalog.js';
+import { IngestSessionImpl, ROTATION_THRESHOLD_BYTES } from './ingest-session.js';
 import { QuerySessionImpl, type DuckdbQueryIterator } from './query-session.js';
 import { createDuckdbRuntime, type DuckdbRuntime } from './runtime.js';
 
@@ -81,8 +82,8 @@ const abortExclusive = async <T>(slot: ExclusiveSlot<T>, message: string): Promi
 };
 
 class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
-  /** Committed finals, keyed by name, with the catalog kind each was created as. */
-  private finalNames: Map<string, CatalogKind> = new Map();
+  /** Committed finals with their catalog kinds, and the spill generation backing them. */
+  private readonly catalog = new Catalog();
   private disposePromise: Promise<void> | null = null;
   private pendingQuery: PendingQueryToken | null = null;
   private activeQuery: QuerySessionImpl | null = null;
@@ -98,13 +99,11 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   private queryGeneration = 0;
   private ingestStarting = false;
   private activeIngest: IngestSessionImpl | null = null;
-  /** The generation currently backing committed spill views, or `null` before any spill finalize. */
-  private spillGeneration: number | null = null;
   /**
    * The in-flight (not yet finalized or aborted) spill-tier ingest's generation, or `null` when
    * no spill-tier ingest is currently open. Cleared alongside `activeIngest` once that session
    * settles — a settled session's spill directory is already handled either by `finalize()`
-   * (rolled into `spillGeneration`) or by `abort()`'s own cleanup. Tracked separately so
+   * (rolled into the catalog's spill generation) or by `abort()`'s own cleanup. Tracked separately so
    * `dispose()` can reclaim it immediately for a session that is neither (Trivia 3).
    */
   private activeIngestSpillGeneration: number | null = null;
@@ -154,27 +153,20 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
       }
       await this.closeActiveQuery();
 
-      const session: IngestSessionImpl = new IngestSessionImpl(
-        options.generation,
-        options.tier,
-        options.rotationBytes ?? ROTATION_THRESHOLD_BYTES,
-        this.database,
-        (operation) => this.runtime.enqueue(operation),
-        () => this.finalNames,
-        (finals) => {
-          this.finalNames = new Map(finals);
-        },
-        () => this.spillGeneration,
-        (generation) => {
-          this.spillGeneration = generation;
-        },
-        () => {
+      const session: IngestSessionImpl = new IngestSessionImpl({
+        generation: options.generation,
+        tier: options.tier,
+        rotationBytes: options.rotationBytes ?? ROTATION_THRESHOLD_BYTES,
+        opfs: this.database,
+        enqueue: (operation) => this.runtime.enqueue(operation),
+        catalog: this.catalog,
+        onSettled: () => {
           if (this.activeIngest === session) {
             this.activeIngest = null;
             this.activeIngestSpillGeneration = null;
           }
         },
-      );
+      });
       this.activeIngest = session;
       this.activeIngestSpillGeneration = options.tier === 'spill' ? options.generation : null;
       return session;
@@ -365,7 +357,7 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
   }
 
   async listTables(): Promise<readonly string[]> {
-    return [...this.finalNames.keys()];
+    return this.catalog.names();
   }
 
   collectFileStatistics(path: string, enable: boolean): Promise<void> {
@@ -461,9 +453,10 @@ class BrowserDatabase implements ByteqlDatabase, FileStatisticsAccess {
       errors.push(error);
     }
 
-    if (this.spillGeneration !== null) {
+    const spillGeneration = this.catalog.spillGeneration;
+    if (spillGeneration !== null) {
       // Best-effort: reclaim the current generation's OPFS spill directory on teardown.
-      await deleteSpillGeneration(this.spillGeneration).catch(() => undefined);
+      await deleteSpillGeneration(spillGeneration).catch(() => undefined);
     }
     if (this.activeIngestSpillGeneration !== null) {
       // Trivia (3): a spill-tier ingest still open at dispose (neither finalized nor aborted)

@@ -288,9 +288,9 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
         await liveDatabase?.cancelQuery();
         const files = await collectSpillFiles();
         // Every generation directory but the current one is deleted on finalize (see
-        // `IngestSessionImpl.finalize` in packages/db/src/ingest-session.ts), so `spillFiles()` already
-        // only ever lists the current generation's chunks in practice — filtering by table name
-        // is the only narrowing this needs.
+        // `Catalog.swap` in packages/db/src/catalog.ts), so `spillFiles()` already only ever
+        // lists the current generation's chunks in practice — filtering by table name is the
+        // only narrowing this needs.
         readStatsTargets = files.filter((path) => tables.some((table) => path.includes(`/${table}/`)));
         if (!liveDatabase) return;
         for (const relativePath of readStatsTargets) {
