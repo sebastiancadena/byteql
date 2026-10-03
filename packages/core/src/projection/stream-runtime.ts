@@ -678,20 +678,20 @@ export const flushStreams = (emitContext: EmitContext): void => {
       for (const match of traverseAnchor(stream.flowTable.rows, root)) {
         // Ancestor threading invariant: a flushed flow row has no enclosing parse tree at all.
         emitRow(
-          stream.flowTable,
-          runtime,
-          match,
-          root,
-          provenance,
-          emitContext.sink,
-          new Map(),
+          {
+            table: stream.flowTable,
+            runtime,
+            match,
+            root,
+            provenance,
+            keysByTable: new Map(),
+            baseOffset: span.start,
+            enclosingLength: null,
+            ancestors: [],
+            extraColumns: { _src_ranges: flowRanges },
+            forcedKey: entry.streamId, // the streamId reserved eagerly at first contribution
+          },
           emitContext,
-          span.start,
-          null,
-          [],
-          undefined,
-          { _src_ranges: flowRanges },
-          entry.streamId, // forcedKey: the streamId reserved eagerly at first contribution
         );
       }
 

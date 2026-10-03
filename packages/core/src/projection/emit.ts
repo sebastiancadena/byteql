@@ -94,37 +94,53 @@ export interface EmitContext {
   readonly strictFields?: boolean;
 }
 
-export const emitRow = (
-  table: CompiledProjectionTable,
-  runtime: TableRuntime,
-  match: AnchorMatch,
-  root: unknown,
-  provenance: ProvenanceResolver,
-  sink: RowSink,
-  keysByTable: ReadonlyMap<string, bigint>,
-  emitContext: EmitContext,
+// One row emission's inputs. Everything shared across a whole projection (compiled spec,
+// runtimes, sink, streams, issues) lives on EmitContext instead.
+export interface RowFrame {
+  readonly table: CompiledProjectionTable;
+  readonly runtime: TableRuntime;
+  readonly match: AnchorMatch;
+  readonly root: unknown;
+  readonly provenance: ProvenanceResolver;
+  readonly keysByTable: ReadonlyMap<string, bigint>;
   // Absolute file offset of the coordinate space `root` (and thus this row's dissect
   // payload expressions) are evaluated in: 0 for the file tree, or the enclosing payload's
   // absolute start for a child parse tree. See asPayloadRange / fireDissect.
-  baseOffset: number,
+  readonly baseOffset: number;
   // Byte length of the payload buffer `root` was parsed from, or null at the file root
   // (unchecked — see fireDissect's containment check). Threaded through unchanged to this
   // row's own outgoing dissects: `table`'s rows live inside the same buffer as `root`
   // itself, whether `table` is a root table (null) or was itself dissected out of a parent
   // payload (that payload's byte length).
-  enclosingLength: number | null,
+  readonly enclosingLength: number | null;
   // Ancestor threading invariant: parse-tree roots strictly ABOVE `root` (does not include
   // `root` itself) — projectInto's root-level call passes [], projectChildTable threads its
   // own `ancestors` through unchanged (see that function's doc), and flushStreams also passes
   // [] since a flushed flow row has no enclosing parse tree at all.
-  ancestors: readonly unknown[],
-  parentKey?: { name: string; value: bigint | null },
-  extraColumns?: Readonly<Record<string, unknown>>,
+  readonly ancestors: readonly unknown[];
+  readonly parentKey?: { name: string; value: bigint | null };
+  readonly extraColumns?: Readonly<Record<string, unknown>> | undefined;
   // Set by flushStreams to force a flow row onto its eagerly-reserved streamId (reserved at
   // first contribution, long before the flow row itself is emitted) instead of drawing a
   // fresh key from the table runtime.
-  forcedKey?: bigint,
-): void => {
+  readonly forcedKey?: bigint;
+}
+
+export const emitRow = (frame: RowFrame, emitContext: EmitContext): void => {
+  const {
+    table,
+    runtime,
+    match,
+    root,
+    provenance,
+    keysByTable,
+    baseOffset,
+    enclosingLength,
+    ancestors,
+    parentKey,
+    extraColumns,
+    forcedKey,
+  } = frame;
   for (const register of table.state) {
     const currentScope = match.indexes.slice(0, register.scope.wildcardCount);
     const previousScope = runtime.scopeIndexes.get(register.name);
@@ -167,7 +183,7 @@ export const emitRow = (
   const range = provenance.resolve(table.name, match);
   row._src_start = BigInt(range.start);
   row._src_end = BigInt(range.end);
-  sink.push(table.name, row);
+  emitContext.sink.push(table.name, row);
 
   const childKeys = new Map(keysByTable);
   childKeys.set(table.name, key);
@@ -401,19 +417,20 @@ export const projectChildTable = (
     // chain-fed table compose correctly. `payloadBytes.length` is likewise their enclosing
     // bound: `parsed.root` was built purely from this buffer.
     emitRow(
-      table,
-      runtime,
-      match,
-      parsed.root,
-      resolver,
-      emitContext.sink,
-      keysByTable,
+      {
+        table,
+        runtime,
+        match,
+        root: parsed.root,
+        provenance: resolver,
+        keysByTable,
+        baseOffset: absolutePayloadStart,
+        enclosingLength: payloadBytes.length,
+        ancestors,
+        parentKey: { name: table.parentKey!.column, value: parentKeyValue },
+        extraColumns,
+      },
       emitContext,
-      absolutePayloadStart,
-      payloadBytes.length,
-      ancestors,
-      { name: table.parentKey!.column, value: parentKeyValue },
-      extraColumns,
     );
   }
 };
@@ -448,17 +465,18 @@ export const projectInto = (
     // payloads are unchecked; only payloads nested inside another payload can be validated.
     // Ancestor threading invariant: a root-table row has no ancestors of its own.
     emitRow(
-      table,
-      runtimes.get(table.name)!,
-      match,
-      root,
-      provenance,
-      sink,
-      emptyKeys,
+      {
+        table,
+        runtime: runtimes.get(table.name)!,
+        match,
+        root,
+        provenance,
+        keysByTable: emptyKeys,
+        baseOffset: 0,
+        enclosingLength: null,
+        ancestors: [],
+      },
       emitContext,
-      0,
-      null,
-      [],
     );
   });
 };
