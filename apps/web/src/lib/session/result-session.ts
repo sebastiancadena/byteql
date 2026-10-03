@@ -8,6 +8,7 @@ import {
 } from '@byteql/db';
 import type { Table } from 'apache-arrow';
 
+import type { ResultBusy } from './result-sort.js';
 import { readResultWindow } from './result-view.js';
 import {
   errorMessage,
@@ -19,8 +20,6 @@ import type { SessionStore } from './session-store.js';
 import type { PagedResultState, SessionState } from './state.js';
 
 export interface ResultSessionHooks {
-  /** Whether a sort currently holds the result; paging demand is refused while one does. */
-  sortPending(): boolean;
   /** Releases any download of the result, for when the result family has to close. */
   supersedeExport(): Promise<void>;
 }
@@ -70,6 +69,8 @@ export class ResultSession {
   constructor(
     private readonly store: SessionStore,
     private readonly database: ByteqlDatabase,
+    /** Paging demand is refused while a sort holds the result. */
+    private readonly busy: ResultBusy,
     private readonly hooks: ResultSessionHooks,
   ) {}
 
@@ -170,7 +171,7 @@ export class ResultSession {
       result.complete ||
       result.pageError ||
       this.resultFetchSuspendedBy !== null ||
-      this.hooks.sortPending()
+      this.busy.sortPending()
     ) {
       return Promise.resolve();
     }
@@ -181,7 +182,7 @@ export class ResultSession {
     const result = this.store.state.result;
     if (
       !result ||
-      this.hooks.sortPending() ||
+      this.busy.sortPending() ||
       !Number.isSafeInteger(globalRow) ||
       globalRow < 0 ||
       globalRow >= result.loadedRows
@@ -193,7 +194,7 @@ export class ResultSession {
 
   retryPage(): Promise<void> {
     const result = this.store.state.result;
-    if (!result?.pageErrorRetryable || this.hooks.sortPending()) return Promise.resolve();
+    if (!result?.pageErrorRetryable || this.busy.sortPending()) return Promise.resolve();
     return this.startDemand(() => this.retryPendingResult(result.generation));
   }
 

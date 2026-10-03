@@ -41,6 +41,12 @@ const basename = (name: string): string => {
   return safe || 'local file';
 };
 
+/**
+ * The session façade the workbench drives. It owns lifecycle (initialization, samples, disposal)
+ * and the order in which a new file, query, cancellation, or disposal supersedes the work in
+ * flight; intake, paging, sorting, and downloads live in their own collaborators, which all
+ * publish through one `SessionStore` and its pure reducer.
+ */
 export class SessionController {
   private readonly store = new SessionStore();
   private readonly database: ByteqlDatabase;
@@ -73,8 +79,7 @@ export class SessionController {
       () => this.store.state,
       () => this.sorter.pending,
     );
-    this.results = new ResultSession(this.store, this.database, {
-      sortPending: () => this.busy.sortPending(),
+    this.results = new ResultSession(this.store, this.database, this.busy, {
       supersedeExport: () => this.exporter.supersede(),
     });
     this.exporter = new ResultExporter(this.store, this.database, this.results, this.busy, {
@@ -336,10 +341,6 @@ export class SessionController {
     } catch {
       // Viewer cleanup must not prevent parse, database, or worker cleanup.
     }
-  }
-
-  private isCurrent(generation: number): boolean {
-    return this.store.isCurrent(generation);
   }
 
   private assertUsable(): void {
