@@ -44,14 +44,8 @@ import {
   type PlannedFile,
 } from './batch.js';
 import { SAMPLES, type SampleDefinition, type SampleId } from './samples.js';
-import {
-  initialSessionState,
-  reduceSession,
-  type PagedResultState,
-  type SessionEvent,
-  type SessionState,
-  type SourceFile,
-} from './state.js';
+import { SessionStore } from './session-store.js';
+import { type PagedResultState, type SessionState, type SourceFile } from './state.js';
 import { readResultWindow } from './result-view.js';
 import { resultSortDisabledReason } from './result-sort-availability.js';
 import { hasActiveDownload, resultSortInteractionBlocked, sameResultSchema } from './result-sort.js';
@@ -95,8 +89,7 @@ type ExportDestinationOutcome =
   { status: 'fulfilled'; destination: ExportDestination } | { status: 'rejected'; error: unknown };
 
 export class SessionController {
-  private state: SessionState = initialSessionState;
-  private readonly subscribers = new Set<(state: SessionState) => void>();
+  private readonly store = new SessionStore();
   private readonly database: ByteqlDatabase;
   private readonly parser: ParseClientPort;
   private readonly csvClient: CsvClientPort;
@@ -109,7 +102,6 @@ export class SessionController {
   private readonly initializationAbort = new AbortController();
   private readonly sampleUrlOverrides: Partial<Record<SampleId, readonly string[]>> | undefined;
   private readonly sampleCache = new Map<string, Uint8Array>();
-  private sessionGeneration = 0;
   private queryGeneration = 0;
   private activeQuery: QuerySession | null = null;
   /**
@@ -141,7 +133,6 @@ export class SessionController {
   private retainedBlobs = new Map<string, Blob>();
   private batchFileIndex = 0;
   private batchFileCount = 0;
-  private disposed = false;
   private disposal: Promise<void> | null = null;
   /** Cumulative IPC bytes ingested this open, and the last parser-reported stage, for progress. */
   private bytesIngested = 0;
@@ -173,18 +164,11 @@ export class SessionController {
 
   subscribe(listener: (state: SessionState) => void): () => void {
     this.assertUsable();
-    this.subscribers.add(listener);
-    try {
-      listener(this.state);
-    } catch (error) {
-      this.subscribers.delete(listener);
-      throw error;
-    }
-    return () => this.subscribers.delete(listener);
+    return this.store.subscribe(listener);
   }
 
   getState(): SessionState {
-    return this.state;
+    return this.store.state;
   }
 
   openFiles(files: readonly File[]): Promise<void> {
@@ -213,7 +197,7 @@ export class SessionController {
     const entries: BatchEntry[] = [];
     for (const [index, file] of definition.files.entries()) {
       const bytes = await this.fetchSampleBytes(urls[index]!);
-      if (this.disposed) throw disposedError();
+      if (this.store.disposed) throw disposedError();
       const blob = new Blob([bytes as BlobPart]);
       entries.push({ name: file.name, size: blob.size, blob });
     }
@@ -232,16 +216,16 @@ export class SessionController {
 
   runQuery(sql: string): Promise<void> {
     this.assertUsable();
-    if (this.state.phase !== 'ready' && this.state.phase !== 'querying') {
+    if (this.store.state.phase !== 'ready' && this.store.state.phase !== 'querying') {
       return Promise.reject(new Error('A file must be ready before running a query.'));
     }
-    const session = this.sessionGeneration;
+    const session = this.store.sessionGeneration;
     // Invalidated before the generation moves, so a sort in flight can never publish against the
     // query that replaces it.
     const sortCleanup = this.supersedeSort();
     const query = ++this.queryGeneration;
     const exportCleanup = this.supersedeExport();
-    this.dispatch({ type: 'queryStarted', sql });
+    this.store.dispatch({ type: 'queryStarted', sql });
     return this.executeQuery(
       sql,
       session,
@@ -252,7 +236,7 @@ export class SessionController {
 
   loadMoreResults(): Promise<void> {
     this.assertUsable();
-    const result = this.state.result;
+    const result = this.store.state.result;
     if (
       !result ||
       result.complete ||
@@ -267,7 +251,7 @@ export class SessionController {
 
   loadResultWindow(globalRow: number): Promise<void> {
     this.assertUsable();
-    const result = this.state.result;
+    const result = this.store.state.result;
     if (
       !result ||
       this.activeSort !== null ||
@@ -282,7 +266,7 @@ export class SessionController {
 
   retryResultPage(): Promise<void> {
     this.assertUsable();
-    const result = this.state.result;
+    const result = this.store.state.result;
     if (!result?.pageErrorRetryable || this.activeSort !== null) return Promise.resolve();
     return this.startResultDemand(() => this.retryPendingResult(result.generation));
   }
@@ -305,17 +289,17 @@ export class SessionController {
     this.assertUsable();
     const base = this.activeQuery;
     const previousView = this.activeResultView;
-    const result = this.state.result;
+    const result = this.store.state.result;
     // Freshness and busy-ness are checked first when a result is on screen, so a stale result
     // says why it is stale rather than claiming no query has run.
-    if (result && resultSortInteractionBlocked(this.state)) {
+    if (result && resultSortInteractionBlocked(this.store.state)) {
       throw new Error(this.sortBlockedReason());
     }
     if (!base || !previousView || !result) {
       throw new Error('Run a query before sorting its results.');
     }
     if (sort !== null) {
-      const reason = resultSortDisabledReason(this.state, this.database.resultSortCapability());
+      const reason = resultSortDisabledReason(this.store.state, this.database.resultSortCapability());
       if (reason !== null) throw new Error(reason);
     }
     // Asking for the order already on display is not a no-op that needs a progress indicator and a
@@ -326,7 +310,7 @@ export class SessionController {
     const token = {
       id: ++this.sortRequestId,
       queryGeneration: this.queryGeneration,
-      sessionGeneration: this.sessionGeneration,
+      sessionGeneration: this.store.sessionGeneration,
       fromRevision: result.orderRevision,
       base,
       previousView,
@@ -361,19 +345,19 @@ export class SessionController {
     }
     this.publishSortProgress(token, {
       phase: 'cancelling',
-      rows: this.state.sorting?.rows ?? 0,
-      totalRows: this.state.sorting?.totalRows ?? null,
+      rows: this.store.state.sorting?.rows ?? 0,
+      totalRows: this.store.state.sorting?.totalRows ?? null,
       message: 'Cancelling sort…',
-      requestedSort: this.state.sorting?.requestedSort ?? null,
+      requestedSort: this.store.state.sorting?.requestedSort ?? null,
     });
     await token.settlement;
   }
 
   private sortBlockedReason(): string {
-    if (!this.state.resultIsCurrent) return 'Run the query again before sorting its results.';
+    if (!this.store.state.resultIsCurrent) return 'Run the query again before sorting its results.';
     // The same predicate the blocking check uses: a prepared-but-unsaved file does not block a
     // sort, so it must not be reported as the reason one was refused.
-    if (hasActiveDownload(this.state)) return 'Finish or cancel the download before sorting.';
+    if (hasActiveDownload(this.store.state)) return 'Finish or cancel the download before sorting.';
     if (this.activeSort !== null) return 'A sort is already running.';
     return 'The results cannot be sorted right now.';
   }
@@ -390,7 +374,7 @@ export class SessionController {
       const pendingDemand = this.resultDemand;
       if (pendingDemand) await pendingDemand.catch(() => undefined);
       this.assertCurrentSort(token);
-      if (this.state.result?.pageError) {
+      if (this.store.state.result?.pageError) {
         throw new Error('Retry or rerun the query before sorting results.');
       }
 
@@ -408,7 +392,7 @@ export class SessionController {
 
       const first = await readResultWindow(candidate, 0);
       this.assertCurrentSort(token);
-      const current = this.state.result;
+      const current = this.store.state.result;
       if (
         !current ||
         !first.complete ||
@@ -439,7 +423,7 @@ export class SessionController {
       this.activeResultView = candidate;
       adopted = true;
       this.activeSort = null;
-      this.dispatch({
+      this.store.dispatch({
         type: 'resultOrderCommitted',
         queryGeneration: token.queryGeneration,
         requestId: token.id,
@@ -467,7 +451,7 @@ export class SessionController {
         const retryable = this.isRetryablePageError(error);
         const message = this.resultPageFailureMessage(error, 'More query rows could not be loaded.');
         if (this.isCurrentSort(token)) {
-          this.dispatch({ type: 'queryPageFailed', message, retryable });
+          this.store.dispatch({ type: 'queryPageFailed', message, retryable });
         }
         throw new Error(message, { cause: error });
       }
@@ -479,17 +463,17 @@ export class SessionController {
         rows: base.status().loadedRows,
         totalRows: base.status().complete ? base.status().loadedRows : null,
         message: `Loading remaining rows… ${base.status().loadedRows.toLocaleString()} loaded`,
-        requestedSort: this.state.sorting?.requestedSort ?? null,
+        requestedSort: this.store.state.sorting?.requestedSort ?? null,
       });
     }
   }
 
   /** Publishes new row counts without disturbing the window the reader is looking at. */
   private refreshResultCounts(token: NonNullable<SessionController['activeSort']>): void {
-    const current = this.state.result;
+    const current = this.store.state.result;
     if (!current || current.generation !== token.queryGeneration) return;
     const status = token.base.status();
-    this.dispatch({
+    this.store.dispatch({
       type: 'queryWindowUpdated',
       result: {
         ...current,
@@ -533,7 +517,7 @@ export class SessionController {
       requestedSort: ResultSort | null;
     },
   ): void {
-    this.dispatch({
+    this.store.dispatch({
       type: 'resultSortUpdated',
       queryGeneration: token.queryGeneration,
       requestId: token.id,
@@ -552,10 +536,10 @@ export class SessionController {
 
   /** A cancellation is not a failure; anything else becomes an inline sort error. */
   private reportSortOutcome(token: NonNullable<SessionController['activeSort']>, error: unknown): void {
-    if (this.state.result?.generation !== token.queryGeneration) return;
-    if (this.sessionGeneration !== token.sessionGeneration || this.disposed) return;
+    if (this.store.state.result?.generation !== token.queryGeneration) return;
+    if (this.store.sessionGeneration !== token.sessionGeneration || this.store.disposed) return;
     if (isAbortError(error)) {
-      this.dispatch({
+      this.store.dispatch({
         type: 'resultSortEnded',
         queryGeneration: token.queryGeneration,
         requestId: token.id,
@@ -567,7 +551,7 @@ export class SessionController {
       rows: 0,
       totalRows: null,
       message: errorMessage(error, 'The results could not be sorted.'),
-      requestedSort: this.state.sorting?.requestedSort ?? null,
+      requestedSort: this.store.state.sorting?.requestedSort ?? null,
     });
   }
 
@@ -593,13 +577,13 @@ export class SessionController {
 
   private isCurrentSort(token: NonNullable<SessionController['activeSort']>): boolean {
     return (
-      !this.disposed &&
+      !this.store.disposed &&
       this.activeSort === token &&
       !token.controller.signal.aborted &&
-      this.sessionGeneration === token.sessionGeneration &&
+      this.store.sessionGeneration === token.sessionGeneration &&
       this.queryGeneration === token.queryGeneration &&
       this.activeQuery === token.base &&
-      this.state.result?.generation === token.queryGeneration
+      this.store.state.result?.generation === token.queryGeneration
     );
   }
 
@@ -626,7 +610,7 @@ export class SessionController {
 
   downloadResults(options: ExportOptions): Promise<void> {
     this.assertUsable();
-    const resultState = this.state.result;
+    const resultState = this.store.state.result;
     const base = this.activeQuery;
     const view = this.activeResultView;
     let columns: number[];
@@ -635,7 +619,7 @@ export class SessionController {
       if (!resultState || !base || !view || resultState.generation !== this.queryGeneration) {
         throw new Error('Run a query before downloading results.');
       }
-      if (!this.state.resultIsCurrent) {
+      if (!this.store.state.resultIsCurrent) {
         throw new Error('Run the query again before downloading results.');
       }
       if (this.activeSort !== null) {
@@ -653,13 +637,16 @@ export class SessionController {
       return this.publishDownloadValidationFailure(error);
     }
 
-    const previousDownload = this.state.download?.generation;
+    const previousDownload = this.store.state.download?.generation;
     const generation = ++this.exportGeneration;
     const priorCleanup = this.detachExportResources();
     if (previousDownload !== undefined) {
-      this.dispatch({ type: 'downloadUpdated', generation: previousDownload, download: null });
+      this.store.dispatch({ type: 'downloadUpdated', generation: previousDownload, download: null });
     }
-    const filename = exportFilename(this.state.source?.files.map((file) => file.name) ?? [], options.format);
+    const filename = exportFilename(
+      this.store.state.source?.files.map((file) => file.name) ?? [],
+      options.format,
+    );
     const abortController = new AbortController();
     const operation: ExportOperation = {
       generation,
@@ -722,25 +709,25 @@ export class SessionController {
   saveResultsDownload(): void {
     this.assertUsable();
     const retained = this.retainedExport;
-    if (!retained || this.state.download?.generation !== retained.generation) return;
+    if (!retained || this.store.state.download?.generation !== retained.generation) return;
     try {
       // This must stay synchronous so the fallback anchor click retains user activation.
       retained.destination.save();
-      this.dispatch({
+      this.store.dispatch({
         type: 'downloadUpdated',
         generation: retained.generation,
         download: {
-          ...this.state.download,
+          ...this.store.state.download,
           phase: 'saved',
           message: 'Download handed to the browser.',
         },
       });
     } catch (error) {
-      this.dispatch({
+      this.store.dispatch({
         type: 'downloadUpdated',
         generation: retained.generation,
         download: {
-          ...this.state.download,
+          ...this.store.state.download,
           phase: 'failed',
           message: errorMessage(error, 'The prepared file could not be saved.'),
         },
@@ -750,40 +737,40 @@ export class SessionController {
 
   dismissResultsDownload(): Promise<void> {
     this.assertUsable();
-    const generation = this.state.download?.generation;
+    const generation = this.store.state.download?.generation;
     ++this.exportGeneration;
     const cleanup = this.detachExportResources();
     if (generation !== undefined) {
-      this.dispatch({ type: 'downloadUpdated', generation, download: null });
+      this.store.dispatch({ type: 'downloadUpdated', generation, download: null });
     }
     return cleanup;
   }
 
   async cancel(): Promise<void> {
     this.assertUsable();
-    const stoppedResult = this.state.result && !this.state.result.complete;
+    const stoppedResult = this.store.state.result && !this.store.state.result.complete;
     const sortCleanup = this.supersedeSort();
-    ++this.sessionGeneration;
+    this.store.nextSession();
     ++this.queryGeneration;
     const exportCleanup = this.supersedeExport().then(() => sortCleanup);
     this.cancelParser();
     this.stopActiveViewer();
     const cancellation = exportCleanup.then(() => this.closeActiveQuery({ cancel: true }));
     if (stoppedResult) {
-      this.dispatch({
+      this.store.dispatch({
         type: 'queryPageFailed',
         message: 'Query result loading was cancelled. Run the query again to load more rows.',
         retryable: false,
       });
     }
     if (
-      this.state.phase === 'opening' ||
-      this.state.phase === 'normalizing' ||
-      this.state.phase === 'parsing' ||
-      this.state.phase === 'projecting' ||
-      this.state.phase === 'querying'
+      this.store.state.phase === 'opening' ||
+      this.store.state.phase === 'normalizing' ||
+      this.store.state.phase === 'parsing' ||
+      this.store.state.phase === 'projecting' ||
+      this.store.state.phase === 'querying'
     ) {
-      this.dispatch({ type: 'cancelled' });
+      this.store.dispatch({ type: 'cancelled' });
     }
     await cancellation;
   }
@@ -793,7 +780,7 @@ export class SessionController {
     // A row index means a position in the committed display, which is exactly what a pending sort
     // is about to change.
     if (this.activeSort !== null) return;
-    this.dispatch({ type: 'rowSelected', row });
+    this.store.dispatch({ type: 'rowSelected', row });
   }
 
   getSourceBlob(file: string): Blob | null {
@@ -803,19 +790,18 @@ export class SessionController {
   selectByteRange(range: { file: string; start: number; end: number } | null): void {
     this.assertUsable();
     if (this.activeSort !== null) return;
-    this.dispatch({ type: 'byteRangeSelected', range });
+    this.store.dispatch({ type: 'byteRangeSelected', range });
   }
 
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal;
-    this.disposed = true;
+    this.store.markDisposed();
     const sortCleanup = this.supersedeSort();
-    ++this.sessionGeneration;
+    this.store.nextSession();
     ++this.queryGeneration;
     const exportCleanup = this.supersedeExport().then(() => sortCleanup);
     this.initializationAbort.abort();
-    this.subscribers.clear();
-    this.state = { ...initialSessionState, tables: [], issues: [] };
+    this.store.release();
     void this.initialization?.catch(() => undefined);
     this.sampleCache.clear();
     this.retainedBlobs = new Map();
@@ -846,7 +832,7 @@ export class SessionController {
         sweepSpillOrphans([]).catch(() => undefined),
         sweepQueryPageOrphans().catch(() => undefined),
       ]);
-      if (this.disposed) throw disposedError();
+      if (this.store.disposed) throw disposedError();
     } catch (error) {
       await this.disposeCsvClient();
       throw error;
@@ -855,7 +841,7 @@ export class SessionController {
 
   private async openBatch(entries: readonly BatchEntry[]): Promise<void> {
     const sortCleanup = this.supersedeSort();
-    const generation = ++this.sessionGeneration;
+    const generation = this.store.nextSession();
     ++this.queryGeneration;
     const exportCleanup = this.supersedeExport();
     this.cancelParser();
@@ -870,14 +856,14 @@ export class SessionController {
     if (!this.isCurrent(generation)) return;
     const okFiles = plan.files.filter((file) => file.status === 'ok');
     if (plan.formatId === null || okFiles.length === 0) {
-      this.dispatch({ type: 'failed', message: 'No registered format recognizes the selected files.' });
+      this.store.dispatch({ type: 'failed', message: 'No registered format recognizes the selected files.' });
       return;
     }
 
     this.retainedBlobs = new Map(okFiles.map((file) => [file.displayName, file.blob]));
     this.batchFileIndex = 1;
     this.batchFileCount = okFiles.length;
-    this.dispatch({
+    this.store.dispatch({
       type: 'opening',
       source: {
         files: okFiles.map((file) => ({ name: file.displayName, size: file.size })),
@@ -917,7 +903,7 @@ export class SessionController {
       });
     } catch (error) {
       if (this.isCurrent(generation)) {
-        this.dispatch({ type: 'failed', message: this.openFailureMessage(error, tierThresholdBytes) });
+        this.store.dispatch({ type: 'failed', message: this.openFailureMessage(error, tierThresholdBytes) });
       }
       return;
     }
@@ -1048,7 +1034,7 @@ export class SessionController {
             { name: 'error', type: 'Utf8', nullable: true },
           ],
         };
-        this.dispatch({
+        this.store.dispatch({
           type: 'ready',
           format: first.format,
           files: succeededFiles,
@@ -1064,10 +1050,10 @@ export class SessionController {
         await ingest.abort().catch(() => undefined);
         if (!this.isCurrent(generation)) return;
         if (isAbortError(error)) {
-          this.dispatch({ type: 'cancelled' });
+          this.store.dispatch({ type: 'cancelled' });
           return;
         }
-        this.dispatch({ type: 'failed', message: this.openFailureMessage(error, tierThresholdBytes) });
+        this.store.dispatch({ type: 'failed', message: this.openFailureMessage(error, tierThresholdBytes) });
       }
     } finally {
       settleIngest();
@@ -1110,7 +1096,7 @@ export class SessionController {
       const pendingDemand = this.resultDemand;
       if (pendingDemand) await pendingDemand.catch(() => undefined);
       this.assertCurrentExport(operation);
-      if (this.state.result?.pageError) {
+      if (this.store.state.result?.pageError) {
         throw new Error('Retry or rerun the query before downloading results.');
       }
 
@@ -1294,20 +1280,20 @@ export class SessionController {
   }
 
   private publishDownloadValidationFailure(error: unknown): Promise<void> {
-    const previousDownload = this.state.download?.generation;
+    const previousDownload = this.store.state.download?.generation;
     const generation = ++this.exportGeneration;
     const cleanup = this.detachExportResources();
     if (previousDownload !== undefined) {
-      this.dispatch({ type: 'downloadUpdated', generation: previousDownload, download: null });
+      this.store.dispatch({ type: 'downloadUpdated', generation: previousDownload, download: null });
     }
-    this.dispatch({
+    this.store.dispatch({
       type: 'downloadUpdated',
       generation,
       download: {
         generation,
         phase: 'failed',
-        rows: this.state.result?.loadedRows ?? 0,
-        totalRows: this.state.result?.complete ? this.state.result.loadedRows : null,
+        rows: this.store.state.result?.loadedRows ?? 0,
+        totalRows: this.store.state.result?.complete ? this.store.state.result.loadedRows : null,
         bytes: 0,
         message: errorMessage(error, 'The result cannot be downloaded.'),
       },
@@ -1317,7 +1303,7 @@ export class SessionController {
 
   private updateDownload(operation: ExportOperation, update: Partial<Omit<ExportState, 'generation'>>): void {
     if (operation.generation !== this.exportGeneration) return;
-    const current = this.state.download;
+    const current = this.store.state.download;
     if (current && current.generation !== operation.generation) return;
     const base: ExportState = current ?? {
       generation: operation.generation,
@@ -1327,7 +1313,7 @@ export class SessionController {
       bytes: 0,
       message: null,
     };
-    this.dispatch({
+    this.store.dispatch({
       type: 'downloadUpdated',
       generation: operation.generation,
       download: { ...base, ...update },
@@ -1335,7 +1321,7 @@ export class SessionController {
   }
 
   private refreshExportedResult(operation: ExportOperation): void {
-    const current = this.state.result;
+    const current = this.store.state.result;
     if (
       !current ||
       current.generation !== operation.resultGeneration ||
@@ -1344,7 +1330,7 @@ export class SessionController {
       return;
     }
     const status = operation.result.status();
-    this.dispatch({
+    this.store.dispatch({
       type: 'queryWindowUpdated',
       result: {
         ...current,
@@ -1359,7 +1345,7 @@ export class SessionController {
   private publishExportPageFailure(operation: ExportOperation, error: unknown): string {
     const message = this.resultPageFailureMessage(error, 'More query rows could not be loaded.');
     if (!this.isCurrentExport(operation)) return message;
-    this.dispatch({
+    this.store.dispatch({
       type: 'queryPageFailed',
       message,
       retryable: this.isRetryablePageError(error),
@@ -1382,23 +1368,23 @@ export class SessionController {
 
   private isCurrentExport(operation: ExportOperation): boolean {
     return (
-      !this.disposed &&
+      !this.store.disposed &&
       this.exportGeneration === operation.generation &&
       this.activeExport === operation &&
       this.activeQuery === operation.base &&
       this.activeResultView === operation.result &&
       this.queryGeneration === operation.resultGeneration &&
-      this.state.result?.generation === operation.resultGeneration &&
-      this.state.result.orderRevision === operation.orderRevision
+      this.store.state.result?.generation === operation.resultGeneration &&
+      this.store.state.result.orderRevision === operation.orderRevision
     );
   }
 
   private supersedeExport(): Promise<void> {
-    const generation = this.state.download?.generation;
+    const generation = this.store.state.download?.generation;
     ++this.exportGeneration;
     const cleanup = this.detachExportResources();
     if (generation !== undefined) {
-      this.dispatch({ type: 'downloadUpdated', generation, download: null });
+      this.store.dispatch({ type: 'downloadUpdated', generation, download: null });
     }
     return cleanup;
   }
@@ -1438,13 +1424,13 @@ export class SessionController {
     query: number,
     exportCleanup: Promise<void>,
   ): Promise<void> {
-    const priorResult = this.state.result;
+    const priorResult = this.store.state.result;
     try {
       await exportCleanup;
       await this.closeActiveQuery({ cancel: true });
       if (!this.isCurrentQuery(session, query)) return;
-      if (priorResult && !priorResult.complete && this.state.result === priorResult) {
-        this.dispatch({
+      if (priorResult && !priorResult.complete && this.store.state.result === priorResult) {
+        this.store.dispatch({
           type: 'queryPageFailed',
           message: 'Run the prior query again to load more rows.',
           retryable: false,
@@ -1466,15 +1452,15 @@ export class SessionController {
       const status = active.status();
       const result = await this.buildResultState(active, query, Math.max(0, status.loadedRows - 1));
       if (!result || !this.isCurrentQuery(session, query) || this.activeQuery !== active) return;
-      this.dispatch({ type: 'querySucceeded', result });
+      this.store.dispatch({ type: 'querySucceeded', result });
     } catch (error) {
       if (!this.isCurrentQuery(session, query)) return;
       await this.closeActiveQuery({ cancel: true });
       if (isAbortError(error)) {
-        this.dispatch({ type: 'cancelled' });
+        this.store.dispatch({ type: 'cancelled' });
         return;
       }
-      this.dispatch({ type: 'queryFailed', message: errorMessage(error, 'The query failed.') });
+      this.store.dispatch({ type: 'queryFailed', message: errorMessage(error, 'The query failed.') });
     }
   }
 
@@ -1490,10 +1476,10 @@ export class SessionController {
 
   private async fetchMoreResults(generation: number): Promise<void> {
     const active = this.activeQuery;
-    const current = this.state.result;
+    const current = this.store.state.result;
     if (!active || !current || current.generation !== generation) return;
     const anchor = Math.max(0, current.loadedRows - 1);
-    this.dispatch({
+    this.store.dispatch({
       type: 'queryWindowUpdated',
       result: {
         ...current,
@@ -1510,7 +1496,7 @@ export class SessionController {
     } catch (error) {
       if (!this.isActiveResult(active, generation)) return;
       const retryable = this.isRetryablePageError(error);
-      this.dispatch({
+      this.store.dispatch({
         type: 'queryPageFailed',
         message: this.resultPageFailureMessage(error, 'More query rows could not be loaded.'),
         retryable,
@@ -1520,10 +1506,10 @@ export class SessionController {
 
   private async retryPendingResult(generation: number): Promise<void> {
     const active = this.activeQuery;
-    const current = this.state.result;
+    const current = this.store.state.result;
     if (!active || !current || current.generation !== generation) return;
     const anchor = Math.max(0, current.loadedRows - 1);
-    this.dispatch({
+    this.store.dispatch({
       type: 'queryWindowUpdated',
       result: {
         ...current,
@@ -1540,7 +1526,7 @@ export class SessionController {
     } catch (error) {
       if (!this.isActiveResult(active, generation)) return;
       const retryable = this.isRetryablePageError(error);
-      this.dispatch({
+      this.store.dispatch({
         type: 'queryPageFailed',
         message: this.resultPageFailureMessage(error, 'The query result page could not be stored.'),
         retryable,
@@ -1554,10 +1540,10 @@ export class SessionController {
     try {
       const result = await this.buildResultState(active, generation, anchorRow);
       if (!result || !this.isActiveResult(active, generation)) return;
-      this.dispatch({ type: 'queryWindowUpdated', result });
+      this.store.dispatch({ type: 'queryWindowUpdated', result });
     } catch (error) {
       if (!this.isActiveResult(active, generation)) return;
-      this.dispatch({
+      this.store.dispatch({
         type: 'queryPageFailed',
         message: this.resultPageFailureMessage(error, 'The requested query rows could not be loaded.'),
         retryable: false,
@@ -1578,20 +1564,24 @@ export class SessionController {
     anchorRow: number,
   ): Promise<PagedResultState | null> {
     const view = this.activeResultView;
-    if (!view || !this.isCurrentQuery(this.sessionGeneration, generation) || this.activeQuery !== active) {
+    if (
+      !view ||
+      !this.isCurrentQuery(this.store.sessionGeneration, generation) ||
+      this.activeQuery !== active
+    ) {
       return null;
     }
-    const existing = this.state.result?.generation === generation ? this.state.result : null;
+    const existing = this.store.state.result?.generation === generation ? this.store.state.result : null;
     const revision = existing?.orderRevision ?? 0;
     const read = await readResultWindow(view, anchorRow);
     // Fence the VIEW and the committed order, not just the query: a window read from the order
     // that was on display when this started must not be published over a newer one. The revision
     // is only comparable within one generation — a result from an OLDER query says nothing about
     // the order of the one being published now.
-    const displayed = this.state.result;
+    const displayed = this.store.state.result;
     const revisionMoved = displayed?.generation === generation && displayed.orderRevision !== revision;
     if (
-      !this.isCurrentQuery(this.sessionGeneration, generation) ||
+      !this.isCurrentQuery(this.store.sessionGeneration, generation) ||
       this.activeQuery !== active ||
       this.activeResultView !== view ||
       revisionMoved
@@ -1601,7 +1591,7 @@ export class SessionController {
 
     const completeTable = read.complete ? await this.baseViewerInput(active, generation) : null;
     if (
-      !this.isCurrentQuery(this.sessionGeneration, generation) ||
+      !this.isCurrentQuery(this.store.sessionGeneration, generation) ||
       this.activeQuery !== active ||
       this.activeResultView !== view
     ) {
@@ -1641,7 +1631,7 @@ export class SessionController {
       // A result too large for the viewer budget simply has no viewer input.
       table = null;
     }
-    if (!this.isCurrentQuery(this.sessionGeneration, generation) || this.activeQuery !== active) {
+    if (!this.isCurrentQuery(this.store.sessionGeneration, generation) || this.activeQuery !== active) {
       return null;
     }
     this.baseViewerTable = table;
@@ -1652,8 +1642,8 @@ export class SessionController {
   private isActiveResult(active: QuerySession, generation: number): boolean {
     return (
       this.activeQuery === active &&
-      this.state.result?.generation === generation &&
-      this.isCurrentQuery(this.sessionGeneration, generation)
+      this.store.state.result?.generation === generation &&
+      this.isCurrentQuery(this.store.sessionGeneration, generation)
     );
   }
 
@@ -1675,7 +1665,7 @@ export class SessionController {
   private progress(generation: number, progress: ParseProgress): void {
     if (!this.isCurrent(generation)) return;
     this.lastProgress = progress;
-    this.dispatch({
+    this.store.dispatch({
       type: 'progress',
       ...progress,
       bytes: this.bytesIngested,
@@ -1692,24 +1682,13 @@ export class SessionController {
       total: null,
       label: 'Streaming data into the local database',
     };
-    this.dispatch({
+    this.store.dispatch({
       type: 'progress',
       ...base,
       bytes: this.bytesIngested,
       fileIndex: this.batchFileIndex,
       fileCount: this.batchFileCount,
     });
-  }
-
-  private dispatch(event: SessionEvent): void {
-    this.state = reduceSession(this.state, event);
-    for (const listener of this.subscribers) {
-      try {
-        listener(this.state);
-      } catch {
-        this.subscribers.delete(listener);
-      }
-    }
   }
 
   private cancelParser(): void {
@@ -1727,10 +1706,10 @@ export class SessionController {
     this.activeResultView = null;
     this.baseViewerTable = null;
     this.baseViewerMaterialized = false;
-    if (active && this.state.result?.generation === this.queryGeneration) {
+    if (active && this.store.state.result?.generation === this.queryGeneration) {
       // Tell the reducer this family is closing BEFORE its resources go, so the rows left on
       // screen stop offering actions that would reach for them.
-      this.dispatch({ type: 'resultUnavailable', queryGeneration: this.state.result.generation });
+      this.store.dispatch({ type: 'resultUnavailable', queryGeneration: this.store.state.result.generation });
     }
     await this.releaseView(view, active, null);
     try {
@@ -1767,7 +1746,7 @@ export class SessionController {
   }
 
   private isCurrent(generation: number): boolean {
-    return !this.disposed && generation === this.sessionGeneration;
+    return this.store.isCurrent(generation);
   }
 
   private isCurrentQuery(session: number, query: number): boolean {
@@ -1775,6 +1754,6 @@ export class SessionController {
   }
 
   private assertUsable(): void {
-    if (this.disposed) throw disposedError();
+    if (this.store.disposed) throw disposedError();
   }
 }
