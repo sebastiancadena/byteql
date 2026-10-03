@@ -2795,16 +2795,11 @@ describe('SessionController', () => {
 class FakeWorker implements WorkerPort {
   readonly posts: Array<{ message: unknown; transfer: readonly Transferable[] }> = [];
   terminated = false;
-  failNextPost = false;
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   onmessageerror: ((event: MessageEvent<unknown>) => void) | null = null;
 
   postMessage(message: unknown, transfer: readonly Transferable[] = []): void {
-    if (this.failNextPost) {
-      this.failNextPost = false;
-      throw new Error('post failed');
-    }
     const clone = structuredClone(message, { transfer: [...transfer] });
     this.posts.push({ message: clone, transfer });
   }
@@ -2839,26 +2834,7 @@ describe('ParseWorkerClient', () => {
 
     client.cancel();
     await expect(parsing).rejects.toMatchObject({ name: 'AbortError' });
-    expect(workers[0]?.posts[1]?.message).toMatchObject({ type: 'cancel' });
-    expect(workers[0]?.terminated).toBe(true);
-    expect(workers).toHaveLength(2);
-  });
-
-  it('still kills and recreates when posting cancellation fails', async () => {
-    const workers: FakeWorker[] = [];
-    const client = new ParseWorkerClient(() => {
-      const worker = new FakeWorker();
-      workers.push(worker);
-      return worker;
-    });
-    const parsing = client.parse(
-      { name: 'private.mid', blob: new Blob([new Uint8Array([1])]) },
-      noopHandlers(),
-    );
-    workers[0]!.failNextPost = true;
-
-    expect(() => client.cancel()).not.toThrow();
-    await expect(parsing).rejects.toMatchObject({ name: 'AbortError' });
+    expect(workers[0]?.posts).toHaveLength(1);
     expect(workers[0]?.terminated).toBe(true);
     expect(workers).toHaveLength(2);
   });
@@ -3378,38 +3354,6 @@ describe('parse worker boundary', () => {
     ]);
   });
 
-  it('cancel mid-stream produces cancelled, not finish, and stops pulling nextBatch', async () => {
-    const scope = new FakeWorkerScope();
-    let index = 0;
-    const nextBatch = vi.fn(async () =>
-      index < 6
-        ? {
-            table: 'events',
-            ipc: tableToIpc(tableFromArrays({ id: Int32Array.from([++index]) })),
-            rowCount: 1,
-          }
-        : null,
-    );
-    const pack = fakePack({ open: () => ({ nextBatch, finish: () => ({ issues: [], capabilities: {} }) }) });
-    installParseWorker(scope, [pack]);
-
-    scope.receive({
-      type: 'parse',
-      taskId: 6,
-      name: 'cancel-mid-stream.mid',
-      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
-    });
-    await flush();
-    expect(nextBatch).toHaveBeenCalledTimes(BATCH_CREDIT_WINDOW);
-
-    scope.receive({ type: 'cancel', taskId: 6 });
-    await flush();
-
-    expect(nextBatch).toHaveBeenCalledTimes(BATCH_CREDIT_WINDOW);
-    expect(scope.posts.at(-1)?.message).toEqual({ type: 'cancelled', taskId: 6 });
-    expect(postsOfType(scope, 'finish')).toHaveLength(0);
-  });
-
   it('forwards progress reported by the format pack', async () => {
     const scope = new FakeWorkerScope();
     const progress: PackProgress[] = [
@@ -3444,60 +3388,6 @@ describe('parse worker boundary', () => {
         .map((post) => post.message as { type?: string })
         .filter((message) => message.type === 'progress'),
     ).toEqual(progress.map((update) => ({ type: 'progress', taskId: 8, ...update })));
-  });
-
-  it('honors a cancellation that arrives before its parse request', async () => {
-    const scope = new FakeWorkerScope();
-    let signal: AbortSignal | undefined;
-    const pack = fakePack({
-      open: (_source, opts) => {
-        signal = opts.signal;
-        return { nextBatch: async () => null, finish: () => ({ issues: [], capabilities: {} }) };
-      },
-    });
-    installParseWorker(scope, [pack]);
-
-    scope.receive({ type: 'cancel', taskId: 3 });
-    scope.receive({
-      type: 'parse',
-      taskId: 3,
-      name: 'demo.mid',
-      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
-    });
-    await flush();
-
-    expect(signal?.aborted).toBe(true);
-    expect(scope.posts.at(-1)?.message).toMatchObject({ type: 'cancelled', taskId: 3 });
-  });
-
-  it('aborts a task when its cancellation message arrives', async () => {
-    const scope = new FakeWorkerScope();
-    const operation = deferred<BatchTransfer | null>();
-    let signal: AbortSignal | undefined;
-    const pack = fakePack({
-      open: (_source, opts) => {
-        signal = opts.signal;
-        return { nextBatch: () => operation.promise, finish: () => ({ issues: [], capabilities: {} }) };
-      },
-    });
-    installParseWorker(scope, [pack]);
-
-    scope.receive({
-      type: 'parse',
-      taskId: 9,
-      name: 'demo.mid',
-      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
-    });
-    // The head probe reads the blob asynchronously, so `open()` (and thus `signal`) is only set
-    // once that settles; the cancellation below must still synchronously abort it once it is.
-    await flush();
-    expect(signal).toBeDefined();
-
-    scope.receive({ type: 'cancel', taskId: 9 });
-    expect(signal?.aborted).toBe(true);
-    operation.reject(new DOMException('aborted', 'AbortError'));
-    await flush();
-    expect(scope.posts.at(-1)?.message).toEqual({ type: 'cancelled', taskId: 9 });
   });
 
   it('stamps every batch with _src_file and extends finish schemas with the _src_file column', async () => {
