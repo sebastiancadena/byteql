@@ -362,8 +362,8 @@ describe('stream runtime robustness', () => {
 
   it('records the true source span for a flow whose only contribution is rejected as truncated', () => {
     // A single segment already bigger than max_buffer (64) is rejected by assembler.add() as
-    // 'truncated' before it is ever stored — assembler.segmentCount stays 0 and assembler.srcSpan
-    // stays null forever, so flushStreams must fall back to the rejected contribution's own
+    // 'truncated' before it is ever stored — assembler.segmentCount stays 0 and the flow
+    // never gets a stored segment span, so flushStreams must fall back to the rejected contribution's own
     // {srcStart, srcEnd} (see fallbackSpan in project.ts), not the meaningless {0, 0}.
     // Geometry: record 0's body sits at file offset 0; the chunk's payload starts 2 bytes in
     // (past the [port, seq] header) → file [2, 72) for a 70-byte payload.

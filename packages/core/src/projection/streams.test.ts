@@ -252,10 +252,10 @@ describe('StreamAssembler releases consumed bytes', () => {
     expect(a.add(backlogStart + MIB, chunk(0, 1), 0).status).toBe('truncated');
     // A sparse segment far ahead of the consumed point counts against the cap too.
     const b = new StreamAssembler(MIB);
-    b.add(0, chunk(0, size), 0, size);
+    b.add(0, chunk(0, size), 0);
     b.consume(size);
-    expect(b.add(size + MIB - 1, chunk(0, 1), 0, 1).status).toBe('added');
-    expect(b.add(size + MIB, chunk(0, 1), 0, 1).status).toBe('truncated');
+    expect(b.add(size + MIB - 1, chunk(0, 1), 0).status).toBe('added');
+    expect(b.add(size + MIB, chunk(0, 1), 0).status).toBe('truncated');
   });
 
   it('keeps provenance, overlap reconciliation, and gap tracking identical across compaction', () => {
@@ -421,7 +421,7 @@ describe('StreamAssembler.anchor', () => {
     expect(a.hasGap()).toBe(true); // bytes 8..10 never arrived
     expect(a.anchor(12)).toBe('ignored');
     const b = new StreamAssembler(64);
-    b.add(10, bytes(1, 2), 0, 2);
+    b.add(10, bytes(1, 2), 0);
     b.consume(1);
     expect(b.anchor(5)).toBe('ignored');
     expect(b.base).toBe(10);
