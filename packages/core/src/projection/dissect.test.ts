@@ -3,7 +3,7 @@ import { IssueCollector } from '../issues.js';
 import { compileProjection } from './project.js';
 import { parseProjectionSpec } from './spec.js';
 import { createProjectionSession } from './session.js';
-import type { ParserRegistry } from './parsers.js';
+import type { ParserRegistry, RecordParser } from './parsers.js';
 
 // Envelope fixture: outer records carry a kind selector and a payload; kind 1
 // payloads parse into items, whose trailer chains onward into a grandchild.
@@ -62,7 +62,7 @@ const bodyBytes = (kind: number): Uint8Array => {
   return bytes;
 };
 
-const registry: ParserRegistry = new Map([
+const registry: ParserRegistry = new Map<string, RecordParser>([
   ['inner_parser', innerParser],
   ['never_parser', () => ({ root: {} })],
   ['deep_parser', () => ({ root: { parts: [{ flag: true }] } })],

@@ -82,6 +82,5 @@ describe('spec v0.5', () => {
   it('orders versions', () => {
     expect(specVersionAtLeast('0.5', '0.4')).toBe(true);
     expect(specVersionAtLeast('0.4', '0.4')).toBe(true);
-    expect(specVersionAtLeast('0.3', '0.4')).toBe(false);
   });
 });

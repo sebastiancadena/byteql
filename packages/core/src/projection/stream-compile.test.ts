@@ -393,7 +393,7 @@ dissect:
     ).not.toThrow();
     expect(() =>
       compileProjection(parseProjectionSpec(dualFed('chunks')), reg, streamRegistries),
-    ).toThrowError(/PROJECTION_PARENT_KEY_INVALID/u);
+    ).toThrowError(/"chunks" is not reachable from "msgs"/u);
   });
 });
 

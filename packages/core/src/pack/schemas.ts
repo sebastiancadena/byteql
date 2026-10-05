@@ -14,7 +14,7 @@ export interface ProjectionSchemaOptions {
 const ENGINE_NULLABLE = new Set(['stream_id', '_src_ranges']);
 
 const tableSchema = (table: CompiledProjectionTable): TableSchema => {
-  const declared = new Map(table.columns.map((column) => [column.name, column.nullable === true]));
+  const declared = new Map(table.columns.map((column) => [column.name, column.nullable]));
   return {
     name: table.name,
     columns: Object.entries(tableOutputTypes(table)).map(([name, type]) => ({
@@ -32,8 +32,7 @@ const tableSchema = (table: CompiledProjectionTable): TableSchema => {
 
 /**
  * Every table a session over `compiled` can emit, in engine column order, with v0.4
- * nullability. See the pack-kit design's
- * "Derived schemas" rules.
+ * nullability. See the pack-kit design's "Derived schemas" rules.
  */
 export const projectionSchemas = (
   compiled: CompiledProjection,

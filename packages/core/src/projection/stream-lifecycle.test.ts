@@ -3,7 +3,7 @@ import { IssueCollector } from '../issues.js';
 import { compileProjection } from './project.js';
 import { parseProjectionSpec } from './spec.js';
 import { createProjectionSession } from './session.js';
-import type { ParserRegistry } from './parsers.js';
+import type { ParserRegistry, RecordParser } from './parsers.js';
 import type { StreamRegistries } from './streams.js';
 
 export const lifecycleYaml = (streamExtra = '', maxBuffer = 64) => `
@@ -69,7 +69,7 @@ export const OPEN = 1;
 export const CLOSE = 2;
 export const RESET = 4;
 
-export const registry: ParserRegistry = new Map([
+export const registry: ParserRegistry = new Map<string, RecordParser>([
   [
     'chunk_parser',
     (bytes: Uint8Array) => ({

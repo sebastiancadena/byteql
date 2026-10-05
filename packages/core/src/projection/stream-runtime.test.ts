@@ -3,7 +3,7 @@ import { IssueCollector } from '../issues.js';
 import { compileProjection } from './project.js';
 import { parseProjectionSpec } from './spec.js';
 import { createProjectionSession } from './session.js';
-import type { ParserRegistry } from './parsers.js';
+import type { ParserRegistry, RecordParser } from './parsers.js';
 import type { StreamRegistries } from './streams.js';
 
 // Same table/dissect/stream YAML as stream-compile.test.ts's validYaml, with flow columns:
@@ -64,7 +64,7 @@ streams:
       - { when: 'true', parser: msg_parser, table: msgs }
 `;
 
-const registry: ParserRegistry = new Map([
+const registry: ParserRegistry = new Map<string, RecordParser>([
   // chunk bytes: [port, seq, ...payload]; payload starts at byte 2 of the chunk buffer.
   [
     'chunk_parser',
@@ -73,7 +73,7 @@ const registry: ParserRegistry = new Map([
       const headerLength = wide ? 4 : 2;
       return {
         root: {
-          port: bytes[0]! & 0x7f,
+          port: bytes[0] === undefined ? undefined : bytes[0] & 0x7f,
           seq: wide ? bytes[1]! | (bytes[2]! << 8) | (bytes[3]! << 16) : bytes[1],
           payload: { bytes: bytes.subarray(headerLength), start: headerLength },
         },
@@ -368,6 +368,30 @@ describe('stream runtime robustness', () => {
     expect(issues.issues()[0]!.message).toContain('older than max_buffer (64)');
     expect(table(finished, 'flows').arrow.getChild('status')!.get(0)).toBe('ok');
     expect(table(finished, 'msgs').rowCount).toBe(count + 1);
+  });
+
+  it('reports both STREAM_BELOW_BASE and STREAM_HISTORY_RELEASED once each for one flow', () => {
+    // Same fixture as above but the flow starts at seq 64, so a retransmission from seq 0
+    // is both below the base and (after lazy compaction) past the released history.
+    const message = [63, ...Array.from({ length: 63 }, (_, i) => 97 + (i % 26))];
+    const count = 1100;
+    const start = 64;
+    const stream = Array.from({ length: count }, (_, i) => wideChunk(7, start + i * 64, message));
+    const { issues } = project([
+      ...stream,
+      wideChunk(7, start + count * 64, [1, 65]), // the next add compacts lazily
+      wideChunk(
+        7,
+        7,
+        Array.from({ length: 128 }, () => 0xee),
+      ), // below base and released
+      wideChunk(
+        7,
+        0,
+        Array.from({ length: 128 }, () => 0xee),
+      ), // again: no second issue of either
+    ]);
+    expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_BELOW_BASE', 'STREAM_HISTORY_RELEASED']);
   });
 
   it('truncates at the buffer cap, keeping completed messages', () => {

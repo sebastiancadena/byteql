@@ -21,8 +21,9 @@ describe('spec version floor', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(ProjectionCompileError);
       expect((error as ProjectionCompileError).code).toBe('PROJECTION_SPEC_INVALID');
-      expect((error as Error).message).toMatch(
-        /spec version 0\.[123] is no longer supported; the minimum is 0\.4 \(add `nullable: true` to columns that can be null\)/u,
+      const shown = v.replaceAll("'", '');
+      expect((error as Error).message).toContain(
+        `spec version ${shown} is no longer supported; the minimum is 0.4 (add \`nullable: true\` to columns that can be null)`,
       );
     }
   });

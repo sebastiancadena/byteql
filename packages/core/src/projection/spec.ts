@@ -204,6 +204,7 @@ const projectionSpec = z.strictObject({
       z.literal('0.5'),
       z.literal(0.5),
     ])
+    // Returns every literal the union accepts; parseProjectionSpec rejects < 0.4 right after.
     .transform((value): '0.1' | '0.2' | '0.3' | '0.4' | '0.5' => {
       if (value === '0.5' || value === 0.5) return '0.5';
       if (value === '0.4' || value === 0.4) return '0.4';
@@ -226,12 +227,13 @@ const readOwnDataProperty = (value: unknown, key: string): unknown => {
   return descriptor && 'value' in descriptor ? descriptor.value : undefined;
 };
 
-const VERSION_ORDER = ['0.1', '0.2', '0.3', '0.4', '0.5'] as const;
+// Versions below 0.4 are rejected at load (see the floor check in parseProjectionSpec), so
+// only the supported versions are ordered here; the schema's version type is still the
+// full literal set the transform can return.
+const VERSION_ORDER: readonly string[] = ['0.4', '0.5'];
 
-export const specVersionAtLeast = (
-  version: ProjectionSpec['version'],
-  min: ProjectionSpec['version'],
-): boolean => VERSION_ORDER.indexOf(version) >= VERSION_ORDER.indexOf(min);
+export const specVersionAtLeast = (version: ProjectionSpec['version'], min: '0.4' | '0.5'): boolean =>
+  VERSION_ORDER.indexOf(version) >= VERSION_ORDER.indexOf(min);
 
 const validateRawMappingNames = (yamlValue: unknown): void => {
   const tables = readOwnDataProperty(yamlValue, 'tables');

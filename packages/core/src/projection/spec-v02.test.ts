@@ -163,7 +163,7 @@ tables:
   it('rejects a parent_key that points at a table outside the dissect ancestor chain (rule 7)', () => {
     // `bystander` is a valid, distinct root table whose key legitimately matches inner's
     // parent_key.column, so rules 2 and 3 both pass. It is never an ancestor of the `records`
-    // dissect entry that feeds `inner`, though, so only rule 7's fixpoint reachability check
+    // dissect entry that feeds `inner`, though, so only rule 7's must-reach reachability check
     // can catch this.
     const yaml = `
 version: '0.4'

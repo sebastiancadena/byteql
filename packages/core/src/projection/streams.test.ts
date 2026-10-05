@@ -371,6 +371,19 @@ describe('StreamAssembler consumed-history window', () => {
     }
   });
 
+  it('reports a retransmission that is both below the base and released as both trims', () => {
+    const base = 1000;
+    const a = new StreamAssembler(window);
+    for (let i = 0; i < 100; i++) {
+      expect(a.add(i * size + base, fill(i, size), 0).status).toBe('added');
+      a.consume(size);
+    }
+    expect(a.add(0, fill(0xee, base + size), 0)).toMatchObject({
+      trimmedBelowBase: true,
+      trimmedReleased: true,
+    });
+  });
+
   it('still detects a conflicting retransmission of consumed bytes within the window', () => {
     const a = streamThrough();
     const inWindow = total - window + 8; // consumed, but within maxBuffer of the consumed point
