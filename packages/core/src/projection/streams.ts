@@ -39,11 +39,14 @@ export interface AssemblerAddOutcome {
   status: AssemblerAddStatus;
   /** Some incoming bytes overlapped stored bytes and differed; the stored bytes were kept. */
   conflicted: boolean;
-  /**
-   * A prefix below the locked (consumed > 0) base, or below the retained-history floor (bytes
-   * consumed more than maxBuffer ago, released by compaction), was discarded.
-   */
+  /** A prefix below the locked (consumed > 0) base was discarded. */
   trimmedBelowBase: boolean;
+  /**
+   * A prefix below the retained-history floor (bytes consumed more than maxBuffer ago and
+   * released by compaction) was discarded: it could not be compared, so it is never accepted
+   * as a duplicate.
+   */
+  trimmedReleased: boolean;
 }
 
 interface StoredSegment {
@@ -257,22 +260,25 @@ export class StreamAssembler {
   add(offset: number, bytes: Uint8Array, srcStart: number): AssemblerAddOutcome {
     this.#maybeCompact();
     let trimmedBelowBase = false;
+    let trimmedReleased = false;
     if (this.#base !== null && this.#consumed > 0 && offset < this.#base) {
       const cut = Math.min(this.#base - offset, bytes.length);
       trimmedBelowBase = true;
-      if (cut === bytes.length) return { status: 'dropped', conflicted: false, trimmedBelowBase };
+      if (cut === bytes.length)
+        return { status: 'dropped', conflicted: false, trimmedBelowBase, trimmedReleased };
       offset += cut;
       srcStart += cut;
       bytes = bytes.subarray(cut);
     }
     // Bytes in [#base, #dataStart) were consumed more than maxBuffer ago and released by
-    // compaction, so they can no longer be compared. They are trimmed and reported as below-base
-    // (the retained-history floor), never silently accepted as duplicates: a conflicting
+    // compaction, so they can no longer be compared. They are trimmed and reported as released
+    // history (the retained-history floor), never silently accepted as duplicates: a conflicting
     // retransmission of old bytes must stay visible.
     if (offset < this.#dataStart && this.#base !== null && this.#dataStart > this.#base) {
       const cut = Math.min(this.#dataStart - offset, bytes.length);
-      trimmedBelowBase = true;
-      if (cut === bytes.length) return { status: 'dropped', conflicted: false, trimmedBelowBase };
+      trimmedReleased = true;
+      if (cut === bytes.length)
+        return { status: 'dropped', conflicted: false, trimmedBelowBase, trimmedReleased };
       offset += cut;
       srcStart += cut;
       bytes = bytes.subarray(cut);
@@ -303,7 +309,7 @@ export class StreamAssembler {
     }
     if (cursor < end) fresh.push({ start: cursor, end });
     if (fresh.length === 0) {
-      return { status: conflicted ? 'conflict' : 'duplicate', conflicted, trimmedBelowBase };
+      return { status: conflicted ? 'conflict' : 'duplicate', conflicted, trimmedBelowBase, trimmedReleased };
     }
 
     const freshStart = fresh[0]!.start;
@@ -315,7 +321,8 @@ export class StreamAssembler {
     // bytes don't count (compaction releases them), so the cap bounds a flow's backlog, not its
     // lifetime total. With nothing consumed this is exactly the extent from the (new) base.
     const outstanding = newExtent - this.#consumed;
-    if (outstanding > this.#maxBuffer) return { status: 'truncated', conflicted, trimmedBelowBase };
+    if (outstanding > this.#maxBuffer)
+      return { status: 'truncated', conflicted, trimmedBelowBase, trimmedReleased };
     // See #rebaseTo for the cost bound of a rebase.
     if (rebasing) this.#rebaseTo(newBase, newExtent);
     else if (this.#base === null) {
@@ -331,7 +338,7 @@ export class StreamAssembler {
       );
     }
     this.#advanceFrontier();
-    return { status: rebasing ? 'rebased' : 'added', conflicted, trimmedBelowBase };
+    return { status: rebasing ? 'rebased' : 'added', conflicted, trimmedBelowBase, trimmedReleased };
   }
 
   /** Index of the first stored segment whose end is past `offset` (ends are non-decreasing). */

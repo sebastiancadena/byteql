@@ -382,7 +382,7 @@ describe('stream overlap reconciliation (runtime)', () => {
     expect(rows(finished, 'flows').col('status')).toEqual(['ok']);
     expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_BELOW_BASE']);
     expect(issues.issues()[0]!.message).toMatch(
-      /: bytes before the reassembled start, or older than the retained max_buffer history, arrived after framing began and were dropped$/,
+      /: bytes before the reassembled start arrived after framing began and were dropped$/,
     );
   });
 });

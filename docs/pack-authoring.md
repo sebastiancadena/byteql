@@ -246,7 +246,7 @@ streams:
   whose backlog exceeds it goes `truncated` (`STREAM_TRUNCATED`).
   The engine also keeps the last `max_buffer` bytes of already-framed history, so overlap
   conflict detection covers retransmissions within that window; older retransmissions are
-  dropped and reported as below-base (`STREAM_BELOW_BASE`).
+  dropped and reported once per flow as `STREAM_HISTORY_RELEASED`.
 - `offset_bits` — an integer in `[8, 48]`. Raw offsets are modular in 2^N; the engine unwraps
   them into an ever-increasing extended offset per generation (RFC 1982 serial arithmetic) before
   handing them to the assembler, so a sequence number crossing 2^N no longer looks like a huge
