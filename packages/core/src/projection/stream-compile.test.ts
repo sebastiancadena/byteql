@@ -17,7 +17,7 @@ const streamRegistries: StreamRegistries = {
 // The valid v0.3 spec from Task 2 (records → chunks feed table added so parent-key
 // availability is exercised):
 const validYaml = `
-version: '0.3'
+version: '0.4'
 format: streamy
 tables:
   - name: records
@@ -406,7 +406,7 @@ streams:`,
 describe('v0.5 lifecycle compile', () => {
   const v05 = (extra: string) =>
     validYaml
-      .replace("version: '0.3'", "version: '0.5'")
+      .replace("version: '0.4'", "version: '0.5'")
       .replace('    offset: _.seq\n', `    offset: _.seq\n${extra}`);
 
   it('compiles open/close/reset/offset_bits onto the stream', () => {
@@ -424,7 +424,7 @@ describe('v0.5 lifecycle compile', () => {
     expect(stream.reset).not.toBeNull();
   });
 
-  it('leaves them null on a 0.3 stream', () => {
+  it('leaves them null on a 0.4 stream', () => {
     const stream = compileProjection(parseProjectionSpec(validYaml), registry, streamRegistries).streams[0]!;
     expect([stream.open, stream.close, stream.reset, stream.offsetBits]).toEqual([null, null, null, null]);
   });

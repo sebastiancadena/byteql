@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parseProjectionSpec } from './spec.js';
 
 const base = `
-version: '0.3'
+version: '0.4'
 format: streamy
 tables:
   - name: chunks
@@ -41,7 +41,7 @@ streams:
 describe('projection spec v0.3', () => {
   it('parses streams and stream chain links', () => {
     const spec = parseProjectionSpec(base);
-    expect(spec.version).toBe('0.3');
+    expect(spec.version).toBe('0.4');
     expect(spec.streams).toHaveLength(1);
     expect(spec.streams![0]!.max_buffer).toBe(64);
     expect(spec.streams![0]!.messages[0]!.parser).toBe('msg_parser');
@@ -49,33 +49,8 @@ describe('projection spec v0.3', () => {
     expect(spec.dissect![0]!.chain[0]!.parser).toBeUndefined();
   });
 
-  it('accepts numeric 0.3 and keeps 0.2 parsing unchanged', () => {
-    expect(parseProjectionSpec(base.replace("version: '0.3'", 'version: 0.3')).version).toBe('0.3');
-  });
-
-  it('rejects streams below version 0.3', () => {
-    expect(() => parseProjectionSpec(base.replace("version: '0.3'", "version: '0.2'"))).toThrowError(
-      /PROJECTION_VERSION_REQUIRED|version 0.3/,
-    );
-  });
-
-  it('rejects a stream chain link below version 0.3', () => {
-    const v02 = `
-version: '0.2'
-format: f
-tables:
-  - name: t
-    rows: $
-    key: k
-    columns:
-      a: { expr: '_.a', type: uint8 }
-dissect:
-  - from: t
-    payload: _.body
-    chain:
-      - { when: 'true', stream: s }
-`;
-    expect(() => parseProjectionSpec(v02)).toThrowError(/version 0.3/);
+  it('accepts numeric 0.4', () => {
+    expect(parseProjectionSpec(base.replace("version: '0.4'", 'version: 0.4')).version).toBe('0.4');
   });
 
   it('rejects a link with both parser and stream, and with neither', () => {

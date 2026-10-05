@@ -13,7 +13,7 @@ import type { StreamRegistries } from './streams.js';
 // chunk bytes layout: [port, seq, ...payload]; a port with the high bit set (wideChunk) uses
 // [port | 0x80, seq0, seq1, seq2, ...payload] for a 24-bit seq (the flow key uses port & 0x7f).
 const yaml = `
-version: '0.3'
+version: '0.4'
 format: streamy
 tables:
   - name: records

@@ -25,7 +25,7 @@ interface CompiledColumn {
   readonly expr: CompiledExpression;
   readonly type: ArrowTypeName;
   readonly when?: CompiledExpression;
-  readonly nullable: boolean | undefined;
+  readonly nullable: boolean;
 }
 
 export interface CompiledProjectionTable {
@@ -297,7 +297,7 @@ export const compileProjection = (
         name,
         expr: compileCheckedExpression(column.expr, declaredState, `${path}.expr`),
         type: column.type,
-        nullable: column.nullable,
+        nullable: column.nullable ?? false,
         ...(column.when === undefined
           ? {}
           : { when: compileCheckedExpression(column.when, declaredState, `${path}.when`) }),

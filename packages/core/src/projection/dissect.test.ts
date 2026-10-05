@@ -8,7 +8,7 @@ import type { ParserRegistry } from './parsers.js';
 // Envelope fixture: outer records carry a kind selector and a payload; kind 1
 // payloads parse into items, whose trailer chains onward into a grandchild.
 const yaml = `
-version: '0.2'
+version: '0.4'
 format: envelope
 tables:
   - name: records
@@ -172,7 +172,7 @@ describe('dissect execution', () => {
 
   it('resets a dissected child table state register per parent payload instead of carrying it across parents', () => {
     const statefulYaml = `
-version: '0.2'
+version: '0.4'
 format: envelope
 tables:
   - name: records

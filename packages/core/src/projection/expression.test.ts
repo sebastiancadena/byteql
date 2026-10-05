@@ -8,7 +8,7 @@ const evaluate = (source: string, context: Parameters<typeof evaluateExpression>
 describe('parseProjectionSpec', () => {
   it('parses a valid projection with explicit Arrow types', () => {
     const spec = parseProjectionSpec(`
-version: '0.1'
+version: '0.4'
 format: midi
 tables:
   - name: events
@@ -30,7 +30,7 @@ tables:
 `);
 
     expect(spec).toEqual({
-      version: '0.1',
+      version: '0.4',
       format: 'midi',
       tables: [
         {
@@ -59,40 +59,40 @@ tables:
 
   it.each([
     ['wrong version', "version: '1.0'\nformat: midi\ntables: []", 'version'],
-    ['empty tables', "version: '0.1'\nformat: midi\ntables: []", 'tables'],
+    ['empty tables', "version: '0.4'\nformat: midi\ntables: []", 'tables'],
     [
       'unsafe table name',
-      "version: '0.1'\nformat: midi\ntables:\n  - name: bad-name\n    rows: $\n    key: id\n    columns:\n      id: { expr: '1', type: int32 }",
+      "version: '0.4'\nformat: midi\ntables:\n  - name: bad-name\n    rows: $\n    key: id\n    columns:\n      id: { expr: '1', type: int32 }",
       'tables.0.name',
     ],
     [
       'unsafe key name',
-      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: bad-key\n    columns:\n      id: { expr: '1', type: int32 }",
+      "version: '0.4'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: bad-key\n    columns:\n      id: { expr: '1', type: int32 }",
       'tables.0.key',
     ],
     [
       'unsafe column name',
-      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    columns:\n      bad-name: { expr: '1', type: int32 }",
+      "version: '0.4'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    columns:\n      bad-name: { expr: '1', type: int32 }",
       'tables.0.columns.bad-name',
     ],
     [
       'unsafe state name',
-      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    state:\n      bad-name: { scope: $, init: 0, update: '1' }\n    columns:\n      id: { expr: '1', type: int32 }",
+      "version: '0.4'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    state:\n      bad-name: { scope: $, init: 0, update: '1' }\n    columns:\n      id: { expr: '1', type: int32 }",
       'tables.0.state.bad-name',
     ],
     [
       'prototype-pollution state name',
-      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    state:\n      constructor: { scope: $, init: 0, update: '1' }\n    columns:\n      id: { expr: '1', type: int32 }",
+      "version: '0.4'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    state:\n      constructor: { scope: $, init: 0, update: '1' }\n    columns:\n      id: { expr: '1', type: int32 }",
       'tables.0.state.constructor',
     ],
     [
       'missing column type',
-      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    columns:\n      id: { expr: '1' }",
+      "version: '0.4'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    columns:\n      id: { expr: '1' }",
       'tables.0.columns.id.type',
     ],
     [
       'unknown column type',
-      "version: '0.1'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    columns:\n      id: { expr: '1', type: float64 }",
+      "version: '0.4'\nformat: midi\ntables:\n  - name: rows\n    rows: $\n    key: id\n    columns:\n      id: { expr: '1', type: float64 }",
       'tables.0.columns.id.type',
     ],
   ])('rejects %s with a stable structured error', (_name, yaml, path) => {
@@ -111,7 +111,7 @@ tables:
   it('rejects duplicate table names', () => {
     expect(() =>
       parseProjectionSpec(`
-version: '0.1'
+version: '0.4'
 format: midi
 tables:
   - name: rows
@@ -141,7 +141,7 @@ tables:
             ? `${name}: { scope: $, init: 0, update: '1' }`
             : `${name}: { expr: '1', type: int32 }`;
         const yaml = `
-version: '0.1'
+version: '0.4'
 format: midi
 tables:
   - name: rows
@@ -183,7 +183,7 @@ tables:
   ])('rejects evaluator-reserved state name %s', (name) => {
     expect(() =>
       parseProjectionSpec(`
-version: '0.1'
+version: '0.4'
 format: midi
 tables:
   - name: rows

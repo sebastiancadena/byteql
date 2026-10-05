@@ -72,7 +72,7 @@ tables:
     // uncaught, same as a strict miss on a root table.
     const dissectCompiled = compileProjection(
       parseProjectionSpec(`
-version: '0.2'
+version: '0.4'
 format: f
 tables:
   - name: outer
