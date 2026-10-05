@@ -339,6 +339,62 @@ streams:
     const offsetYaml = validYaml.replace('offset: _.seq', 'offset: _parent');
     expect(() => compile(offsetYaml)).not.toThrow();
   });
+
+  it('D9 hop: accepts a dissect rooted at a message table that parents onto the feed table', () => {
+    const yaml = validYaml.replace(
+      'dissect:',
+      `  - name: words
+    rows: $.word
+    key: word_id
+    parent_key: { table: chunks, column: chunk_id }
+    columns:
+      w: { expr: '_.w', type: utf8 }
+dissect:
+  - from: msgs
+    payload: _.body
+    chain:
+      - { when: 'true', parser: word_parser, table: words }`,
+    );
+    expect(() =>
+      compileProjection(
+        parseProjectionSpec(yaml),
+        new Map([...registry, ['word_parser', () => ({ root: {} })]]),
+        streamRegistries,
+      ),
+    ).not.toThrow();
+  });
+
+  it('D9 must-reach: a message table also fed off-stream keeps only keys on both paths', () => {
+    // msgs is fed by the stream (keys: records, chunks) and directly by records (keys:
+    // records): a dissect from msgs may parent onto records, not onto chunks.
+    const dualFed = (parent: string) =>
+      validYaml
+        .replace(
+          "- { when: 'true', parser: chunk_parser, table: chunks }",
+          "- { when: 'true', parser: chunk_parser, table: chunks }\n      - { when: 'false', parser: msg_parser, table: msgs }",
+        )
+        .replace(
+          'dissect:',
+          `  - name: words
+    rows: $.word
+    key: word_id
+    parent_key: { table: ${parent}, column: ${parent === 'chunks' ? 'chunk_id' : 'record_id'} }
+    columns:
+      w: { expr: '_.w', type: utf8 }
+dissect:
+  - from: msgs
+    payload: _.body
+    chain:
+      - { when: 'true', parser: word_parser, table: words }`,
+        );
+    const reg: ParserRegistry = new Map([...registry, ['word_parser', () => ({ root: {} })]]);
+    expect(() =>
+      compileProjection(parseProjectionSpec(dualFed('records')), reg, streamRegistries),
+    ).not.toThrow();
+    expect(() =>
+      compileProjection(parseProjectionSpec(dualFed('chunks')), reg, streamRegistries),
+    ).toThrowError(/PROJECTION_PARENT_KEY_INVALID/u);
+  });
 });
 
 describe('bounded provenance marking', () => {

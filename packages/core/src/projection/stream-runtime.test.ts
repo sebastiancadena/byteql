@@ -249,6 +249,61 @@ describe('stream runtime', () => {
     expect(compiled.tables.find((t) => t.name === 'chunks')!.streamFed).toBe(false);
     expect(compiled.tables.find((t) => t.name === 'msgs')!.streamFed).toBe(true);
   });
+
+  it('fills a message-table dissect row with the feed table key (D9 message-table hop)', () => {
+    const hopYaml = yaml.replace(
+      'dissect:',
+      `  - name: words
+    rows: $.word
+    key: word_id
+    parent_key: { table: chunks, column: chunk_id }
+    columns:
+      w: { expr: '_.w', type: utf8 }
+dissect:
+  - from: msgs
+    payload: _.body
+    chain:
+      - { when: 'true', parser: word_parser, table: words }`,
+    );
+    const hopRegistry: ParserRegistry = new Map([
+      ...registry,
+      [
+        'msg_parser',
+        (bytes: Uint8Array) => ({
+          root: {
+            message: {
+              text: new TextDecoder().decode(bytes.subarray(1)),
+              body: { bytes: bytes.subarray(1), start: 1 },
+            },
+          },
+        }),
+      ],
+      ['word_parser', () => ({ root: { word: { w: 'x' } } })],
+    ]);
+    const compiled = compileProjection(parseProjectionSpec(hopYaml), hopRegistry, streamRegistries);
+    const issues = new IssueCollector();
+    const session = createProjectionSession(compiled, { issues });
+    session.project(
+      {
+        records: [chunk(7, 10, [1, 65])].map((bytes, index) => ({
+          n: index,
+          body: { bytes, start: index * 100 },
+        })),
+      },
+      { resolve: () => ({ start: 0, end: 4 }) },
+    );
+    const finished = session.finish();
+    expect(issues.issues()).toHaveLength(0);
+    const chunks = table(finished, 'chunks');
+    expect(chunks.rowCount).toBe(1);
+    const chunkId = chunks.arrow.getChild('chunk_id')!.get(0);
+    expect(chunkId).not.toBeNull();
+    expect(table(finished, 'msgs').rowCount).toBe(1);
+    const words = table(finished, 'words');
+    expect(words.rowCount).toBe(1);
+    expect(words.arrow.getChild('w')!.get(0)).toBe('x');
+    expect(words.arrow.getChild('chunk_id')!.get(0)).toBe(chunkId);
+  });
 });
 
 describe('stream runtime robustness', () => {

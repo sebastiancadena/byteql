@@ -670,6 +670,7 @@ export const compileProjection = (
   }
   const visiting = new Set<string>();
   const visited = new Set<string>();
+  const postorder: string[] = [];
   const detectCycle = (node: string): void => {
     if (visited.has(node)) return;
     if (visiting.has(node)) {
@@ -683,18 +684,28 @@ export const compileProjection = (
     for (const next of edges.get(node) ?? []) detectCycle(next);
     visiting.delete(node);
     visited.add(node);
+    postorder.push(node);
   };
   for (const node of edges.keys()) detectCycle(node);
+  // Reverse postorder is a topological order: every edge's source precedes its target.
+  const topoIndex = new Map(postorder.map((node, index) => [node, postorder.length - 1 - index]));
 
-  // Parent-key reachability (rules 7 and 9) is computed in one fixpoint pass over the (now
-  // acyclic) graph, then checked twice: rule 7 against each dissect entry's reachable set, and
-  // rule 9 (further below, after the stream checks) against each stream's reachable set.
+  // Parent-key reachability (rules 7 and 9) is computed in one pass over the (now acyclic)
+  // graph, then checked twice: rule 7 against each dissect entry's reachable set, and rule 9
+  // (further below, after the stream checks) against each stream's reachable set.
+  //
+  // The analysis is must-reach: a key the compiler accepts is a key the runtime fills. A node
+  // (parser id, table, or stream) with no incoming contribution — a root table — has the empty
+  // set; a node with incoming contributions has the INTERSECTION of them, so a key observable
+  // on only some of the paths into a node is not reachable from it (the runtime would fill it
+  // with null on the other paths). Contributions are processed in topological order of their
+  // source node, so every source set is final before it is read; the graph is acyclic by rule 11.
   //
   // `reachableAtEntry(entry)` is the set of tables whose row key is observable when `entry`
   // fires: its `from` table (when table-rooted) plus whatever that table inherited, or what its
-  // `from` parser id inherited. Every chain link folds its entry's set into what it feeds: its
-  // parser id, its table, or its stream. A chain link's own table is deliberately NOT added to
-  // its parser's set: at runtime, dissect entries keyed off a PARSER id run in fireDissect's
+  // `from` parser id inherited. Every chain link contributes its entry's set to what it feeds:
+  // its parser id, its table, or its stream. A chain link's own table is deliberately NOT added
+  // to its parser's set: at runtime, dissect entries keyed off a PARSER id run in fireDissect's
   // `deeper` loop with the OUTER keysByTable, so they never observe the row key of a sibling
   // link's table. Admitting a chain-fed table there would accept specs whose parent_key the
   // runtime can only fill with null. The still-legitimate way to parent a table onto an
@@ -702,16 +713,14 @@ export const compileProjection = (
   // chains fired from emitRow extend keysByTable with that table's own key before dispatching,
   // so that table (and its ancestors) are genuinely reachable.
   //
-  // Streams hop their set onto each of their message parser ids: a message-rooted deeper
-  // dissect (`from: <message parser id>`) fires at runtime with the SAME keysByTable the stream
-  // contribution captured (see contributeToStream's `keysByTable` / emitStreamMessage's
-  // `completingKeys`), so whatever was reachable at the feed table is equally reachable from
-  // one of the stream's own message parsers. There is deliberately no second hop onto message
-  // tables: rule 9 reads only the per-stream sets, which are fed exclusively by the stream's
-  // feed table — a table without bounded provenance (a bounded feed table is rejected while
-  // compiling the dissect chains above), and therefore unreachable from any message parser or
-  // message table, so no stream hop can change its set. A hop onto message tables would only
-  // widen rule 7 for entries rooted at a message table, accepting specs it rejects today.
+  // Streams contribute their set to each of their message parser ids and message tables. A
+  // message-rooted deeper dissect (`from: <message parser id>`) fires at runtime with the SAME
+  // keysByTable the stream contribution captured (see contributeToStream's `keysByTable` /
+  // emitStreamMessage's `completingKeys`), so whatever was reachable at the feed table is equally
+  // reachable from one of the stream's own message parsers. Message rows are emitted with the
+  // completing contribution's keys, and `emitRow` passes them on to its own dissects, so a
+  // dissect rooted at a message table observes the stream's set too; must-reach keeps a
+  // dual-fed message table to keys present on every path.
   const reachableByParser = new Map<string, Set<string>>();
   const reachableByTable = new Map<string, Set<string>>();
   const reachableByStream = new Map<string, Set<string>>();
@@ -723,34 +732,55 @@ export const compileProjection = (
     }
     return reachableByParser.get(entry.from) ?? new Set();
   };
-  // Unions `values` into map[name]; true when the set grew.
-  const fold = (map: Map<string, Set<string>>, name: string, values: Iterable<string>): boolean => {
-    const existing = map.get(name) ?? new Set<string>();
-    const before = existing.size;
-    for (const value of values) existing.add(value);
-    map.set(name, existing);
-    return existing.size !== before;
+  interface Contribution {
+    readonly order: number;
+    readonly target: Map<string, Set<string>>;
+    readonly name: string;
+    readonly values: () => ReadonlySet<string>;
+  }
+  // Every contribution follows graph edges (from -> parser [-> table], from -> stream,
+  // stream -> message parser [-> message table]), so its source has an outgoing edge and
+  // therefore a topological position; a missing one is an internal invariant violation.
+  const topologicalOrder = (source: string): number => {
+    const order = topoIndex.get(source);
+    if (order === undefined) {
+      throw new Error(`internal: dissect graph node ${JSON.stringify(source)} has no topological position`);
+    }
+    return order;
   };
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const entry of dissects) {
-      const entryReachable = reachableAtEntry(entry);
-      for (const link of entry.chain) {
-        if (link.parserId !== null) {
-          if (fold(reachableByParser, link.parserId, entryReachable)) changed = true;
-          if (link.table && fold(reachableByTable, link.table.name, entryReachable)) changed = true;
-        } else if (link.stream) {
-          if (fold(reachableByStream, link.stream.name, entryReachable)) changed = true;
-        }
+  const contributions: Contribution[] = [];
+  for (const entry of dissects) {
+    const values = (): ReadonlySet<string> => reachableAtEntry(entry);
+    for (const link of entry.chain) {
+      if (link.parserId !== null) {
+        const order = topologicalOrder(entry.from);
+        contributions.push({ order, target: reachableByParser, name: link.parserId, values });
+        if (link.table)
+          contributions.push({ order, target: reachableByTable, name: link.table.name, values });
+      } else if (link.stream) {
+        const order = topologicalOrder(entry.from);
+        contributions.push({ order, target: reachableByStream, name: link.stream.name, values });
       }
     }
-    for (const stream of streamByName.values()) {
-      const streamReachable = reachableByStream.get(stream.name) ?? new Set<string>();
-      for (const message of stream.messages) {
-        if (fold(reachableByParser, message.parserId, streamReachable)) changed = true;
+  }
+  for (const stream of streamByName.values()) {
+    const values = (): ReadonlySet<string> => reachableByStream.get(stream.name) ?? new Set<string>();
+    for (const message of stream.messages) {
+      const order = topologicalOrder(stream.name);
+      contributions.push({ order, target: reachableByParser, name: message.parserId, values });
+      if (message.table) {
+        contributions.push({ order, target: reachableByTable, name: message.table.name, values });
       }
     }
+  }
+  // Each source precedes its targets in topological order, so sorting by source makes each
+  // source set final (all of its own incoming contributions applied) before it is read.
+  contributions.sort((x, y) => x.order - y.order);
+  for (const { target, name, values } of contributions) {
+    const incoming = values();
+    const existing = target.get(name);
+    if (existing === undefined) target.set(name, new Set(incoming));
+    else for (const value of existing) if (!incoming.has(value)) existing.delete(value);
   }
 
   // Rule 7: for each chain link with a table, that table's parent_key.table must be reachable
@@ -824,7 +854,7 @@ export const compileProjection = (
   }
 
   // Rule 9: a message link's table parents onto a key observable when the stream's messages
-  // fire — the stream's reachable set from the fixpoint above, since messages fire once a
+  // fire — the stream's reachable set from the must-reach pass above, since messages fire once a
   // stream's assembled buffer is framed off the feed table's row.
   for (const [streamIndex, entry] of (spec.streams ?? []).entries()) {
     const stream = streamByName.get(entry.name)!;
