@@ -206,6 +206,13 @@ or in `PRD.md` §12.
   on `b9d2fa8`); `panel-resize.spec.ts:1145` flaked once under full-suite load. Evidence: the
   refactor commits from `b9d2fa8` to this entry, the unchanged goldens, and
   `packages/core/src/projection/stream-runtime.test.ts`.
+- **Spec v0.6 slices S1, S2, S7: done 2026-10-05.** `OpenOptions.signal` is optional;
+  released-history retransmissions report `STREAM_HISTORY_RELEASED` (separate from
+  `STREAM_BELOW_BASE`); the minimum projection spec version is 0.4 (0.1-0.3 fail with
+  `PROJECTION_SPEC_INVALID`); parent-key reachability is must-reach (intersection over every
+  path) and hops from a stream onto its message tables. Goldens unchanged. Plan:
+  `docs/superpowers/plans/2026-10-05-spec-v0.6-s1-s2-s7.md`; design record:
+  `docs/superpowers/specs/2026-10-03-spec-v0.6-pack-boundary-design.md`.
 - **Next (per `ROADMAP.md`):** ship one forensic investigation workflow (ROADMAP #6). The unaided
   external Phase 0 test is still open supporting work.
 
@@ -216,7 +223,7 @@ architecture: `app → db → core ← formats`. `packages/core` is zero-DOM (No
 its vitest suites run without a browser).
 
 - `packages/core` — the engine
-  - `src/projection/spec.ts` — YAML spec schema (v0.1–v0.5: tables, state, `when`/`where`,
+  - `src/projection/spec.ts` — YAML spec schema (v0.4–v0.5: tables, state, `when`/`where`,
     `parent_key`, `dissect`, v0.4's `nullable`, and v0.5's stream lifecycle fields) + zod
     validation; errors at load, never per-row
   - `src/projection/expression.ts` — jsep-based sandboxed expression evaluator (closed builtin
