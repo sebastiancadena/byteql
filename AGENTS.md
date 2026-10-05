@@ -5,7 +5,7 @@ into relational tables you query with DuckDB SQL, entirely in the browser, with 
 back to its exact source bytes. Product requirements, differentiators, and the projection DSL live in
 `PRD.md` — read §9 (architecture) and Appendix A (DSL) first.
 
-## Status (2026-10-03)
+## Status (2026-10-05)
 
 Priority order lives in `ROADMAP.md` (adopted 2026-09-15); it supersedes any "next" ordering here
 or in `PRD.md` §12.
@@ -189,7 +189,8 @@ or in `PRD.md` §12.
   `StreamAssembler` now frees consumed bytes, and `max_buffer` caps _outstanding_ (unconsumed)
   bytes rather than the whole flow; a `max_buffer`-sized consumed-history window keeps conflict
   detection, and retransmits of bytes released beyond that window are reported as
-  `STREAM_BELOW_BASE` (dropped) instead of passing as silent duplicates. Flows over 1 MiB per
+  `STREAM_BELOW_BASE` (dropped) instead of passing as silent duplicates. (superseded 2026-10-05: released-history
+  retransmits now report `STREAM_HISTORY_RELEASED`.) Flows over 1 MiB per
   direction no longer go `truncated`; per-flow peak memory is about 2-3x `max_buffer`. Removed:
   the declared-schema ingest mode (`IngestOptions.schemas`; `discover` plus backfill is the only
   path), the parse worker's `cancel`/`cancelled` messages (terminate is the only cancellation),
