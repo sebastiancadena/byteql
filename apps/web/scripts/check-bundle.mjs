@@ -11,7 +11,8 @@ const runtimeExtensions = new Set(['.css', '.js', '.mjs', '.ts', '.svelte']);
 const testFile = /(?:^|[./])(?:e2e|test|tests)(?:[./]|$)|\.(?:spec|test)\.[^.]+$/u;
 const externalSourceReference = /https?:\/\/|cdn\.jsdelivr|\bunpkg\b/giu;
 const forbiddenBuiltReference = /https?:\/\/(?:cdn\.jsdelivr\.net|unpkg\.com)(?:[/:]|$)/giu;
-const e2eOnlyMarker = /__BYTEQL_E2E__|__byteqlE2E|armParserCrash|E2E audio engine/gu;
+const e2eOnlyMarker =
+  /__BYTEQL_E2E__|armParserCrash|E2E audio engine|probeSpillCapability|probeResultSort|probeResultsExport|probeResultColumns|queryResultDiagnostics|fileStatisticsAccess/gu;
 
 async function walk(directory) {
   const entries = await readdir(directory, { withFileTypes: true });

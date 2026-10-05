@@ -43,6 +43,7 @@ import {
   type ParseWorkerScope,
 } from '../../workers/parse.worker.js';
 import { SessionController } from './controller.js';
+import { activeResultView, drainQueryResult, queryResultDiagnostics } from '../testing/query-result.js';
 import type { SampleId } from './samples.js';
 import { initialSessionState } from './state.js';
 
@@ -53,7 +54,17 @@ const {
   queryPageRows,
   queryResultMemoryBytes,
   parquetColumnNamesMock,
+  ByteqlDbErrorMock,
 } = vi.hoisted(() => ({
+  // Stand-in for the real typed error (the factory below replaces the whole module).
+  ByteqlDbErrorMock: class extends Error {
+    constructor(
+      readonly code: string,
+      message: string,
+    ) {
+      super(message);
+    }
+  },
   sweepQueryPageOrphansMock: vi.fn().mockResolvedValue(undefined),
   sweepSpillOrphansMock: vi.fn().mockResolvedValue(undefined),
   queryInitialRows: 1_024,
@@ -62,6 +73,9 @@ const {
   parquetColumnNamesMock: vi.fn(),
 }));
 vi.mock('@byteql/db', () => ({
+  ByteqlDbError: ByteqlDbErrorMock,
+  hasDbErrorCode: (error: unknown, ...codes: string[]) =>
+    error instanceof ByteqlDbErrorMock && codes.includes(error.code),
   QUERY_INITIAL_ROWS: queryInitialRows,
   QUERY_PAGE_ROWS: queryPageRows,
   QUERY_RESULT_MEMORY_BYTES: queryResultMemoryBytes,
@@ -279,7 +293,8 @@ class FakeQuerySession implements QuerySession {
     if (this.fetchError) {
       const error = this.fetchError;
       this.fetchError = null;
-      if (!error.message.includes('RESULT_SPILL_QUOTA_EXCEEDED')) this.cancelled += 1;
+      if (!(error instanceof ByteqlDbErrorMock && error.code === 'RESULT_SPILL_QUOTA_EXCEEDED'))
+        this.cancelled += 1;
       throw error;
     }
     const nextPage = this.nextPages.shift() ?? null;
@@ -455,16 +470,6 @@ const fakeDatabase = (): {
     resultSortCapability: vi.fn(() => ({ supported: true as const })),
     cancelQuery: vi.fn().mockResolvedValue(false),
     listTables: vi.fn().mockResolvedValue([]),
-    collectFileStatistics: vi.fn().mockResolvedValue(undefined),
-    exportFileStatistics: vi.fn().mockResolvedValue({
-      totalFileReadsCold: 0,
-      totalFileReadsAhead: 0,
-      totalFileReadsCached: 0,
-      totalFileWrites: 0,
-      totalPageAccesses: 0,
-      totalPageLoads: 0,
-      blockSize: 0,
-    }),
     dispose: vi.fn().mockResolvedValue(undefined),
   };
   return { database, sessions, querySessions };
@@ -923,7 +928,10 @@ describe('SessionController', () => {
     const controller = await readyController();
     await controller.runQuery('select * from events');
     const query = querySessions[0]!;
-    query.fetchError = new Error('RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.');
+    query.fetchError = new ByteqlDbErrorMock(
+      'RESULT_SPILL_QUOTA_EXCEEDED',
+      'RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.',
+    );
     query.retryPage = page(1, 1_024, [1_024]);
 
     await controller.downloadResults({ format: 'csv', includeProvenance: true });
@@ -1350,7 +1358,10 @@ describe('SessionController', () => {
     await controller.runQuery('select * from events');
     const query = querySessions[0]!;
     const storedPage = page(1, 1_024, rangeValues(8_192, 1_024));
-    query.fetchError = new Error('RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.');
+    query.fetchError = new ByteqlDbErrorMock(
+      'RESULT_SPILL_QUOTA_EXCEEDED',
+      'RESULT_SPILL_QUOTA_EXCEEDED: local result storage is full.',
+    );
     query.retryPage = storedPage;
 
     await controller.loadMoreResults();
@@ -1391,7 +1402,10 @@ describe('SessionController', () => {
     const controller = await readyController();
     await controller.runQuery('select * from events');
     const query = querySessions[0]!;
-    query.fetchError = new Error('RESULT_SPILL_UNSUPPORTED: page budget exceeded.');
+    query.fetchError = new ByteqlDbErrorMock(
+      'RESULT_SPILL_UNSUPPORTED',
+      'RESULT_SPILL_UNSUPPORTED: page budget exceeded.',
+    );
 
     await controller.loadMoreResults();
 
@@ -1494,6 +1508,30 @@ describe('SessionController', () => {
       completeTable: expect.objectContaining({ numRows: 1_024 }),
     });
     expect(query.materializeCalls).toEqual([QUERY_RESULT_MEMORY_BYTES]);
+  });
+
+  it.each([
+    ['declares none', {}],
+    ['declares only disabled ones', { audio: { enabled: false, reason: 'Not playable.' } }],
+  ])('does not materialize viewer input when the format %s', async (_label, capabilities) => {
+    const controller = new SessionController({ database, parser, csvClient, prepareDestination, stopViewer });
+    const opening = controller.openFile(midiFile('capture.mid', 1));
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    sessions[0]!.finalizeResult = [{ name: 'events', rowCount: 30_000 }];
+    parser.calls[0]!.finish({ ...streamedResult('events', 30_000), capabilities });
+    await resolveFilesAppend(sessions[0]!);
+    await opening;
+    const query = new FakeQuerySession();
+    query.completeAfterPage = true;
+    vi.mocked(database.startQuery).mockImplementationOnce(async () => {
+      querySessions.push(query);
+      return query;
+    });
+
+    await controller.runQuery('select * from events');
+
+    expect(controller.getState().result).toMatchObject({ complete: true, completeTable: null });
+    expect(query.materializeCalls).toEqual([]);
   });
 
   it('does not expose a complete table to viewers when materialization exceeds the budget', async () => {
@@ -1678,7 +1716,6 @@ describe('SessionController', () => {
     const opening = controller.openFile(file);
     await vi.waitFor(() => expect(sessions).toHaveLength(1));
     expect(database.beginIngest).toHaveBeenCalledWith({
-      schemas: 'discover',
       tier: 'memory',
       generation: 1,
     });
@@ -1761,7 +1798,10 @@ describe('SessionController', () => {
 
   it('chooses the spill tier at the threshold and fails fast when unsupported', async () => {
     vi.mocked(database.beginIngest).mockRejectedValueOnce(
-      new Error('SPILL_UNSUPPORTED: OPFS storage is not available in this environment.'),
+      new ByteqlDbErrorMock(
+        'SPILL_UNSUPPORTED',
+        'SPILL_UNSUPPORTED: OPFS storage is not available in this environment.',
+      ),
     );
     const tierThresholdBytes = 2 * 1024 * 1024;
     const controller = new SessionController({
@@ -2015,7 +2055,12 @@ describe('SessionController', () => {
       rowCount: 1,
     });
     await vi.waitFor(() => expect(sessionB.appendCalls).toHaveLength(1));
-    sessionB.appendCalls[0]!.reject(new Error('SPILL_QUOTA_EXCEEDED: failed to spill "events" to OPFS.'));
+    sessionB.appendCalls[0]!.reject(
+      new ByteqlDbErrorMock(
+        'SPILL_QUOTA_EXCEEDED',
+        'SPILL_QUOTA_EXCEEDED: failed to spill "events" to OPFS.',
+      ),
+    );
     await expect(emit).rejects.toThrow('SPILL_QUOTA_EXCEEDED');
     await openingB;
     expect(sessionB.abortCalls).toBe(1);
@@ -2419,6 +2464,34 @@ describe('SessionController', () => {
       expect(Array.from(controller.getState().result!.window.getChildAt(0)!)).toEqual([1, 2, 3]);
     });
 
+    it('keeps the diagnostics shim reading the live result bookkeeping', async () => {
+      // The e2e harness reads controller internals through a cast; a rename must fail here too.
+      const { controller, base } = await sortableController();
+      expect(activeResultView(controller)).toBe(base);
+      expect(queryResultDiagnostics(controller)).toMatchObject({
+        loadedRows: 2,
+        sortPending: false,
+        derivedViewCount: 0,
+        viewCaches: [{ kind: 'base' }],
+      });
+
+      const pending = deferred<QueryResultView>();
+      const view = sortedView([1, 2, 3]);
+      vi.mocked(database.createSortedView).mockReturnValue(pending.promise);
+      const sorting = controller.sortResults({ columnIndex: 0, direction: 'asc' });
+      expect(queryResultDiagnostics(controller).sortPending).toBe(true);
+      pending.resolve(view);
+      await sorting;
+
+      expect(activeResultView(controller)).toBe(view);
+      expect(queryResultDiagnostics(controller)).toMatchObject({
+        loadedRows: 3,
+        sortPending: false,
+        derivedViewCount: 1,
+        viewCaches: [{ kind: 'base' }, { kind: 'display' }],
+      });
+    });
+
     it('drains the remaining rows first, so the order covers the whole result', async () => {
       const { controller, base } = await sortableController();
       expect(controller.getState().result!.complete).toBe(false);
@@ -2467,7 +2540,7 @@ describe('SessionController', () => {
 
     it('never hands a sorted table to trusted viewers', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const original = controller.getState().result!.completeTable;
       expect(original).not.toBeNull();
       vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
@@ -2483,7 +2556,7 @@ describe('SessionController', () => {
 
     it('lets an in-flight window read finish first, then ignores reads made during the sort', async () => {
       const { controller, base } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const gate = deferred<void>();
       base.readGate = gate.promise;
       const inFlight = controller.loadResultWindow(2);
@@ -2527,7 +2600,7 @@ describe('SessionController', () => {
 
     it('cancels a sort without destroying the retained base or the visible order', async () => {
       const { controller, base } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const before = Array.from(controller.getState().result!.window.getChildAt(0)!);
       let observed: AbortSignal | null = null;
       vi.mocked(database.createSortedView).mockImplementation(
@@ -2571,7 +2644,7 @@ describe('SessionController', () => {
 
     it('keeps the previous order and reports the failure inline when the sort fails', async () => {
       const { controller, base } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.createSortedView).mockRejectedValue(new Error('local storage is full'));
 
       await controller.sortResults({ columnIndex: 0, direction: 'asc' }).catch(() => undefined);
@@ -2591,7 +2664,7 @@ describe('SessionController', () => {
 
     it('publishes the next query result after an order has been committed', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
       await controller.sortResults({ columnIndex: 0, direction: 'asc' });
       expect(controller.getState().result).toMatchObject({ orderRevision: 1 });
@@ -2614,7 +2687,7 @@ describe('SessionController', () => {
 
     it('refuses to sort a result left visible after a failed query', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.startQuery).mockRejectedValueOnce(new Error('syntax error'));
       await controller.runQuery('select bad');
 
@@ -2628,7 +2701,7 @@ describe('SessionController', () => {
 
     it('refuses to sort while a download owns the result', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const download = controller.downloadResults({ format: 'csv', includeProvenance: true });
       await vi.waitFor(() => expect(controller.getState().download).not.toBeNull());
 
@@ -2643,7 +2716,7 @@ describe('SessionController', () => {
 
     it('downloads the committed display order, without draining the derived view', async () => {
       const { controller, base } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
       await controller.sortResults({ columnIndex: 0, direction: 'asc' });
       const fetchesBefore = base.fetchCalls.length;
@@ -2672,7 +2745,7 @@ describe('SessionController', () => {
 
     it('refuses to start a download while a sort owns the result', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const gate = deferred<QueryResultView>();
       vi.mocked(database.createSortedView).mockReturnValue(gate.promise);
       const sorting = controller.sortResults({ columnIndex: 0, direction: 'asc' });
@@ -2688,7 +2761,7 @@ describe('SessionController', () => {
 
     it('releases a ready-to-save artifact built from the previous order', async () => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       vi.mocked(database.createSortedView).mockResolvedValue(sortedView([1, 2, 3]));
       await controller.downloadResults({ format: 'csv', includeProvenance: true });
       expect(controller.getState().download).not.toBeNull();
@@ -2715,7 +2788,7 @@ describe('SessionController', () => {
         { columnIndex: 0, label: 'value', name: 'captured_before_sort' },
       ]);
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
 
       await controller.downloadResults({ format: 'parquet', includeProvenance: true });
       expect(controller.getState().download).toMatchObject({ phase: 'ready-to-save' });
@@ -2751,7 +2824,7 @@ describe('SessionController', () => {
       ['disposal', (controller: SessionController) => controller.dispose()],
     ])('invalidates a pending sort when %s takes over', async (_label, takeOver) => {
       const { controller } = await sortableController();
-      await controller.drainQueryResult();
+      await drainQueryResult(controller);
       const gate = deferred<QueryResultView>();
       const view = sortedView([1, 2, 3]);
       vi.mocked(database.createSortedView).mockReturnValue(gate.promise);
@@ -2773,16 +2846,11 @@ describe('SessionController', () => {
 class FakeWorker implements WorkerPort {
   readonly posts: Array<{ message: unknown; transfer: readonly Transferable[] }> = [];
   terminated = false;
-  failNextPost = false;
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   onmessageerror: ((event: MessageEvent<unknown>) => void) | null = null;
 
   postMessage(message: unknown, transfer: readonly Transferable[] = []): void {
-    if (this.failNextPost) {
-      this.failNextPost = false;
-      throw new Error('post failed');
-    }
     const clone = structuredClone(message, { transfer: [...transfer] });
     this.posts.push({ message: clone, transfer });
   }
@@ -2817,26 +2885,7 @@ describe('ParseWorkerClient', () => {
 
     client.cancel();
     await expect(parsing).rejects.toMatchObject({ name: 'AbortError' });
-    expect(workers[0]?.posts[1]?.message).toMatchObject({ type: 'cancel' });
-    expect(workers[0]?.terminated).toBe(true);
-    expect(workers).toHaveLength(2);
-  });
-
-  it('still kills and recreates when posting cancellation fails', async () => {
-    const workers: FakeWorker[] = [];
-    const client = new ParseWorkerClient(() => {
-      const worker = new FakeWorker();
-      workers.push(worker);
-      return worker;
-    });
-    const parsing = client.parse(
-      { name: 'private.mid', blob: new Blob([new Uint8Array([1])]) },
-      noopHandlers(),
-    );
-    workers[0]!.failNextPost = true;
-
-    expect(() => client.cancel()).not.toThrow();
-    await expect(parsing).rejects.toMatchObject({ name: 'AbortError' });
+    expect(workers[0]?.posts).toHaveLength(1);
     expect(workers[0]?.terminated).toBe(true);
     expect(workers).toHaveLength(2);
   });
@@ -3356,38 +3405,6 @@ describe('parse worker boundary', () => {
     ]);
   });
 
-  it('cancel mid-stream produces cancelled, not finish, and stops pulling nextBatch', async () => {
-    const scope = new FakeWorkerScope();
-    let index = 0;
-    const nextBatch = vi.fn(async () =>
-      index < 6
-        ? {
-            table: 'events',
-            ipc: tableToIpc(tableFromArrays({ id: Int32Array.from([++index]) })),
-            rowCount: 1,
-          }
-        : null,
-    );
-    const pack = fakePack({ open: () => ({ nextBatch, finish: () => ({ issues: [], capabilities: {} }) }) });
-    installParseWorker(scope, [pack]);
-
-    scope.receive({
-      type: 'parse',
-      taskId: 6,
-      name: 'cancel-mid-stream.mid',
-      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
-    });
-    await flush();
-    expect(nextBatch).toHaveBeenCalledTimes(BATCH_CREDIT_WINDOW);
-
-    scope.receive({ type: 'cancel', taskId: 6 });
-    await flush();
-
-    expect(nextBatch).toHaveBeenCalledTimes(BATCH_CREDIT_WINDOW);
-    expect(scope.posts.at(-1)?.message).toEqual({ type: 'cancelled', taskId: 6 });
-    expect(postsOfType(scope, 'finish')).toHaveLength(0);
-  });
-
   it('forwards progress reported by the format pack', async () => {
     const scope = new FakeWorkerScope();
     const progress: PackProgress[] = [
@@ -3422,60 +3439,6 @@ describe('parse worker boundary', () => {
         .map((post) => post.message as { type?: string })
         .filter((message) => message.type === 'progress'),
     ).toEqual(progress.map((update) => ({ type: 'progress', taskId: 8, ...update })));
-  });
-
-  it('honors a cancellation that arrives before its parse request', async () => {
-    const scope = new FakeWorkerScope();
-    let signal: AbortSignal | undefined;
-    const pack = fakePack({
-      open: (_source, opts) => {
-        signal = opts.signal;
-        return { nextBatch: async () => null, finish: () => ({ issues: [], capabilities: {} }) };
-      },
-    });
-    installParseWorker(scope, [pack]);
-
-    scope.receive({ type: 'cancel', taskId: 3 });
-    scope.receive({
-      type: 'parse',
-      taskId: 3,
-      name: 'demo.mid',
-      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
-    });
-    await flush();
-
-    expect(signal?.aborted).toBe(true);
-    expect(scope.posts.at(-1)?.message).toMatchObject({ type: 'cancelled', taskId: 3 });
-  });
-
-  it('aborts a task when its cancellation message arrives', async () => {
-    const scope = new FakeWorkerScope();
-    const operation = deferred<BatchTransfer | null>();
-    let signal: AbortSignal | undefined;
-    const pack = fakePack({
-      open: (_source, opts) => {
-        signal = opts.signal;
-        return { nextBatch: () => operation.promise, finish: () => ({ issues: [], capabilities: {} }) };
-      },
-    });
-    installParseWorker(scope, [pack]);
-
-    scope.receive({
-      type: 'parse',
-      taskId: 9,
-      name: 'demo.mid',
-      blob: new Blob([new Uint8Array([0x4d, 0x54, 0x68, 0x64])]),
-    });
-    // The head probe reads the blob asynchronously, so `open()` (and thus `signal`) is only set
-    // once that settles; the cancellation below must still synchronously abort it once it is.
-    await flush();
-    expect(signal).toBeDefined();
-
-    scope.receive({ type: 'cancel', taskId: 9 });
-    expect(signal?.aborted).toBe(true);
-    operation.reject(new DOMException('aborted', 'AbortError'));
-    await flush();
-    expect(scope.posts.at(-1)?.message).toEqual({ type: 'cancelled', taskId: 9 });
   });
 
   it('stamps every batch with _src_file and extends finish schemas with the _src_file column', async () => {

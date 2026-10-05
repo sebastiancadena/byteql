@@ -4,16 +4,16 @@ import {
   probeResultColumns,
   probeResultsExport,
   readExportArtifact,
+  fileStatisticsAccess,
   type ExportProbeReport,
   type ResultSortProbeReport,
   type ResultColumnsProbeReport,
   type ExportArtifactInput,
   type ExportArtifactReadback,
-  type ByteqlDatabase,
   type FileStatisticsSummary,
-  type QueryResultView,
   type SpillProbeReport,
-} from '@byteql/db';
+} from '@byteql/db/testing';
+import type { ByteqlDatabase } from '@byteql/db';
 import { resultColumnLabel } from '@byteql/db/result-columns';
 import type { Table } from 'apache-arrow';
 
@@ -23,7 +23,13 @@ import {
   type ParseClientPort,
   type WorkerPort,
 } from './parse-worker-client.js';
-import type { QueryResultDiagnostics } from './session/controller.js';
+import type { SessionController } from './session/controller.js';
+import {
+  activeResultView,
+  drainQueryResult,
+  queryResultDiagnostics,
+  type QueryResultDiagnostics,
+} from './testing/query-result.js';
 import type { AudioEngine, AudioRow } from './viewers/tone-engine.js';
 
 interface AudioStats {
@@ -100,12 +106,6 @@ export interface BrowserE2EControl {
 
 export interface QueryResultMetrics extends QueryResultDiagnostics {
   readonly resultOpfsPaths: readonly string[];
-}
-
-interface QueryResultController {
-  queryResultDiagnostics(): QueryResultDiagnostics;
-  drainQueryResult(): Promise<void>;
-  loadResultWindow(globalRow: number): Promise<void>;
 }
 
 /** `FileSystemDirectoryHandle` with the async-iterable `entries()` current DOM libs omit. */
@@ -223,14 +223,14 @@ export interface BrowserE2EHarness {
    */
   attachDatabase(database: ByteqlDatabase): void;
   /** Attaches production result demand methods without adding an alternate e2e load path. */
-  attachQueryController(controller: QueryResultController): void;
+  attachQueryController(controller: SessionController): void;
 }
 
 export function createBrowserE2EHarness(): BrowserE2EHarness {
   let crashNextParse = false;
   let workerCount = 0;
   let liveDatabase: ByteqlDatabase | null = null;
-  let queryController: QueryResultController | null = null;
+  let queryController: SessionController | null = null;
   let readStatsTargets: readonly string[] = [];
   const audioStats: AudioStats = { loadCalls: 0, disposeCalls: 0, loadedRows: 0 };
 
@@ -288,13 +288,13 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
         await liveDatabase?.cancelQuery();
         const files = await collectSpillFiles();
         // Every generation directory but the current one is deleted on finalize (see
-        // `IngestSessionImpl.finalize` in packages/db/src/browser.ts), so `spillFiles()` already
-        // only ever lists the current generation's chunks in practice — filtering by table name
-        // is the only narrowing this needs.
+        // `Catalog.swap` in packages/db/src/catalog.ts), so `spillFiles()` already only ever
+        // lists the current generation's chunks in practice — filtering by table name is the
+        // only narrowing this needs.
         readStatsTargets = files.filter((path) => tables.some((table) => path.includes(`/${table}/`)));
         if (!liveDatabase) return;
         for (const relativePath of readStatsTargets) {
-          await liveDatabase.collectFileStatistics(`opfs://${relativePath}`, true);
+          await fileStatisticsAccess(liveDatabase).collectFileStatistics(`opfs://${relativePath}`, true);
         }
       },
       async readStats() {
@@ -303,11 +303,13 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
         }
         // The benchmark has already caused the measured reads. Drain through the same demand
         // path the grid uses, then release its completed cursor before exporting counters.
-        await queryController?.drainQueryResult();
+        if (queryController) await drainQueryResult(queryController);
         await liveDatabase.cancelQuery();
         let totalBytesRead = 0;
         for (const relativePath of readStatsTargets) {
-          const stats = await liveDatabase.exportFileStatistics(`opfs://${relativePath}`);
+          const stats = await fileStatisticsAccess(liveDatabase).exportFileStatistics(
+            `opfs://${relativePath}`,
+          );
           totalBytesRead += estimateBytesRead(stats);
         }
         const sizes = await Promise.all(readStatsTargets.map(spillFileSize));
@@ -315,7 +317,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
         return { totalBytesRead, spillBytes };
       },
       async queryResultMetrics() {
-        const metrics = queryController?.queryResultDiagnostics() ?? {
+        const metrics = (queryController ? queryResultDiagnostics(queryController) : null) ?? {
           loadedRows: 0,
           complete: false,
           windowStart: 0,
@@ -332,8 +334,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       },
       async storedResult() {
         // The DISPLAY view, so a readback reflects the committed order rather than the base.
-        const result = (queryController as unknown as { activeResultView?: QueryResultView } | null)
-          ?.activeResultView;
+        const result = queryController ? activeResultView(queryController) : null;
         if (!result) throw new Error('No stored query result is attached.');
         const rowCap = 20_000;
         if (result.status().loadedRows > rowCap) {
@@ -355,7 +356,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
       exportFiles: () => collectOpfsFiles(EXPORT_ROOT_NAME),
       readExportArtifact,
       async drainQueryResult() {
-        await queryController?.drainQueryResult();
+        if (queryController) await drainQueryResult(queryController);
       },
       async loadResultWindow(globalRow) {
         await queryController?.loadResultWindow(globalRow);
@@ -405,7 +406,7 @@ export function createBrowserE2EHarness(): BrowserE2EHarness {
     attachDatabase(database: ByteqlDatabase) {
       liveDatabase = database;
     },
-    attachQueryController(controller: QueryResultController) {
+    attachQueryController(controller: SessionController) {
       queryController = controller;
     },
   };

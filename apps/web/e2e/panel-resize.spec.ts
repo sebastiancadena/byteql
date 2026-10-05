@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-import { openMidiSample, runSql, waitForAppReady } from './support/app.js';
+import { audioStats, metrics, openMidiSample, runSql, waitForAppReady } from './support/app.js';
 
 test.use({ viewport: { width: 1440, height: 960 } });
 
@@ -178,7 +178,7 @@ test('a mode switch keeps focus on the panel it was in, and never remounts the a
   await expect(page.getByRole('heading', { name: 'Audio playback' })).toBeVisible();
 
   const viewer = page.getByRole('heading', { name: 'Audio playback' });
-  const loads = () => page.evaluate(() => window.__byteqlE2E?.audioStats().loadCalls ?? -1);
+  const loads = () => audioStats(page).then((stats) => stats.loadCalls);
   const before = await loads();
 
   // Focus lives inside Values when the dock becomes tabbed.
@@ -534,11 +534,11 @@ test('a long query keeps one scroll owner, its selection and its undo history ac
   await expect(editor).toContainText(LONG_LINE);
 
   // A theme switch is a CodeMirror reconfigure, never a rerun: the result generation stands.
-  const before = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  const before = await metrics(page);
   await page.getByRole('button', { name: 'Use dark appearance' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(editor).toContainText('select 1 as sentinel');
-  const after = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  const after = await metrics(page);
   expect(after.sendCount).toBe(before.sendCount);
   expect(after.resultOpfsPaths).toEqual(before.resultOpfsPaths);
 });
@@ -564,14 +564,12 @@ test('enlarging Results crosses the demand threshold with no scroll event', asyn
   await expect.poll(async () => scroll.evaluate((node) => node.clientHeight)).toBeGreaterThan(parked.height);
   expect(await scroll.evaluate((node) => node.scrollTop)).toBe(parked.top);
 
-  await expect
-    .poll(async () => (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).loadedRows)
-    .toBeGreaterThan(1024);
+  await expect.poll(async () => (await metrics(page)).loadedRows).toBeGreaterThan(1024);
 
   // One generation throughout: growing a panel never re-sends the query.
-  const metrics = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
-  expect(metrics.sendCount).toBe(1);
-  const generations = new Set(metrics.resultOpfsPaths.map((path) => path.split('/')[1]));
+  const result = await metrics(page);
+  expect(result.sendCount).toBe(1);
+  const generations = new Set(result.resultOpfsPaths.map((path) => path.split('/')[1]));
   expect(generations.size).toBe(1);
 });
 

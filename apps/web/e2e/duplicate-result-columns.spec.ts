@@ -1,19 +1,20 @@
-import { Buffer } from 'node:buffer';
 import { readFile } from 'node:fs/promises';
 
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 
-import type { BrowserE2EControl, SerializableResult } from '../src/lib/e2e-harness.js';
-
 import {
   beginDownload,
   expectRows,
+  exportFiles,
+  loadResultWindow,
   metrics,
   openDownloadOptions,
   openMidiSample,
+  readExportArtifact,
   runSql,
   saveDownload,
   sortBy,
+  storedResult,
 } from './support/app.js';
 
 type ExportFormat = 'csv' | 'parquet';
@@ -54,9 +55,6 @@ const CSV_READER_COLUMNS = [
   { name: 'read_position_2', type: 'VARCHAR' },
   { name: 'read_position_3', type: 'DOUBLE' },
 ];
-
-const storedResult = (page: Page): Promise<SerializableResult> =>
-  page.evaluate(() => (window.__byteqlE2E as unknown as BrowserE2EControl).storedResult());
 
 const rowCells = (page: Page, row: number) =>
   page.getByRole('row', { name: `Row ${row}`, exact: true }).getByRole('gridcell');
@@ -120,31 +118,14 @@ function csvDataLineCount(bytes: Uint8Array): number {
   return text.split('\r\n').filter((line) => line !== '').length - 1;
 }
 
-/**
- * Reads a downloaded artifact back through the isolated export reader.
- *
- * The file crosses into the page as base64 and is expanded there: handing Playwright a
- * three-quarter-megabyte `number[]` costs minutes of protocol serialization per call, and this
- * spec reads six artifacts back.
- */
+/** Reads a downloaded artifact back through the isolated export reader. */
 async function readArtifact(
   page: Page,
   bytes: Uint8Array,
   format: ExportFormat,
   csvColumns?: Array<{ name: string; type: string }>,
 ): Promise<ArtifactReadback> {
-  return page.evaluate(
-    ({ format, base64, csvColumns }) => {
-      const binary = atob(base64);
-      const decoded = Array.from({ length: binary.length }, (_, index) => binary.charCodeAt(index));
-      return (window.__byteqlE2E as unknown as BrowserE2EControl).readExportArtifact({
-        format,
-        bytes: decoded,
-        csvColumns,
-      });
-    },
-    { format, base64: Buffer.from(bytes).toString('base64'), csvColumns },
-  );
+  return readExportArtifact(page, { format, bytes, csvColumns });
 }
 
 const capture = (rows: ArtifactReadback['rows']): CapturedRow[] =>
@@ -177,7 +158,7 @@ test('carries duplicate labels through the grid, the inspector, sorting and both
 
   // ---- A window past row 16,384 shows the same two labels and the result's last row. ----
   // The streamed result already ends on this window; asking for it again makes that explicit.
-  await page.evaluate(() => window.__byteqlE2E.loadResultWindow(20_000));
+  await loadResultWindow(page, 20_000);
   await expect.poll(async () => (await metrics(page)).windowStart, { timeout: 60_000 }).toBeGreaterThan(0);
   const later = await metrics(page);
   expect(later.windowRows).toBe(16_384);
@@ -207,7 +188,7 @@ test('carries duplicate labels through the grid, the inspector, sorting and both
   expect(new Set(original.map((row) => row.token)).size).toBeGreaterThan(ROWS / 2);
 
   // ---- The first window and the inspector name both duplicates and read them by position. ----
-  await page.evaluate(() => window.__byteqlE2E.loadResultWindow(0));
+  await loadResultWindow(page, 0);
   await expect.poll(async () => (await metrics(page)).windowStart, { timeout: 60_000 }).toBe(0);
   await scrollToRow(page, 1, -1);
   await expect(rowCells(page, 1).nth(0)).toHaveText('0');
@@ -302,7 +283,7 @@ test('carries duplicate labels through the grid, the inspector, sorting and both
   expect(final.sendCount).toBe(1);
   expect(final.loadedRows).toBe(ROWS);
   expect(final.orderRevision).toBe(5);
-  await expect.poll(() => page.evaluate(() => window.__byteqlE2E.exportFiles())).toEqual([]);
+  await expect.poll(() => exportFiles(page)).toEqual([]);
 });
 
 test('keeps duplicate labels, empty results and hidden columns distinct in both export formats', async ({

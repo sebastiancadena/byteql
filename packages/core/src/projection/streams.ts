@@ -39,7 +39,10 @@ export interface AssemblerAddOutcome {
   status: AssemblerAddStatus;
   /** Some incoming bytes overlapped stored bytes and differed; the stored bytes were kept. */
   conflicted: boolean;
-  /** A prefix below the locked (consumed > 0) base was discarded. */
+  /**
+   * A prefix below the locked (consumed > 0) base, or below the retained-history floor (bytes
+   * consumed more than maxBuffer ago, released by compaction), was discarded.
+   */
   trimmedBelowBase: boolean;
 }
 
@@ -93,12 +96,41 @@ export const unwrapOffset = (raw: number, bits: number, reference: number | null
   return candidate;
 };
 
+/**
+ * Smallest releasable prefix worth compacting away. Compaction also waits until the releasable
+ * prefix is at least half of the buffered extent, so each compaction copies no more retained
+ * bytes than it frees: the total copy cost stays linear in the bytes consumed (amortized O(1)
+ * per byte) and the in-order append path never pays for it.
+ *
+ * Only consumed bytes more than `maxBuffer` behind the consumed point are releasable: the most
+ * recent `maxBuffer` bytes of consumed history stay stored, so a retransmission overlapping them
+ * is still compared byte for byte (first-bytes-win conflict detection is unchanged for any flow
+ * whose history fits in `maxBuffer`). Older retransmissions are trimmed and reported as
+ * below-base, never silently accepted as duplicates.
+ */
+const COMPACT_MIN_BYTES = 65_536;
+
 export class StreamAssembler {
   readonly #maxBuffer: number;
+  /**
+   * The stream origin (absolute offset space): every stream-relative value this class exposes
+   * (`consumed`, `contiguousEnd`, `highestEnd`, `segmentsOverlapping`) is measured from it. It
+   * moves only by a rebase, which is allowed only while nothing is consumed, so once framing
+   * has begun it is fixed for the flow's life — compaction never moves it.
+   */
   #base: number | null = null;
+  /**
+   * Absolute offset of `#data[0]`. Equal to `#base` until the first compaction; afterwards it
+   * is the release point of that compaction (bytes below it are released: dropped from `#data`,
+   * and segments wholly below it are dropped from `#segments`). It always trails the consumed
+   * point by at least `#maxBuffer`.
+   */
+  #dataStart = 0;
   #data = new Uint8Array(0);
   /** Sorted by start; absolute offset space. */
   #segments: StoredSegment[] = [];
+  /** Stored segments released by compaction, so `segmentCount` still counts every stored one. */
+  #releasedSegments = 0;
   #consumed = 0;
   #contiguousEnd = 0; // relative to #base
   #byteCount = 0;
@@ -106,9 +138,6 @@ export class StreamAssembler {
   #frontierIndex = 0;
   /** Highest absolute segment end seen so far (absolute offset space), null when no segments. */
   #highestEndAbs: number | null = null;
-  /** Lowest/highest absolute srcStart/srcEnd seen so far, null when no segments. */
-  #srcMin: number | null = null;
-  #srcMax: number | null = null;
 
   constructor(maxBuffer: number) {
     this.#maxBuffer = maxBuffer;
@@ -117,11 +146,16 @@ export class StreamAssembler {
   get base(): number | null {
     return this.#base;
   }
+  /** Every segment ever stored, including ones compaction has since released. */
   get segmentCount(): number {
-    return this.#segments.length;
+    return this.#releasedSegments + this.#segments.length;
   }
   get byteCount(): number {
     return this.#byteCount;
+  }
+  /** Allocated reassembly-buffer bytes (diagnostic: tests assert it stays bounded). */
+  get bufferCapacity(): number {
+    return this.#data.length;
   }
   get consumed(): number {
     return this.#consumed;
@@ -132,10 +166,6 @@ export class StreamAssembler {
   get highestEnd(): number {
     return this.#highestEndAbs === null ? 0 : this.#highestEndAbs - (this.#base ?? 0);
   }
-  get srcSpan(): { start: number; end: number } | null {
-    if (this.#srcMin === null || this.#srcMax === null) return null;
-    return { start: this.#srcMin, end: this.#srcMax };
-  }
 
   hasGap(): boolean {
     return this.highestEnd > this.#contiguousEnd;
@@ -144,17 +174,76 @@ export class StreamAssembler {
     return this.#contiguousEnd - this.#consumed;
   }
   contiguousView(): Uint8Array {
-    return this.#data.subarray(this.#consumed, this.#contiguousEnd);
+    const shift = (this.#base ?? 0) - this.#dataStart;
+    return this.#data.subarray(this.#consumed + shift, this.#contiguousEnd + shift);
   }
+  // Compaction is lazy: consume() only advances the watermark, and the release runs at the start
+  // of the next add(). The caller reads the just-consumed message's provenance
+  // (segmentsOverlapping) after consume(), so nothing may be released in between. (The history
+  // window alone already keeps those segments, since a message is never longer than maxBuffer;
+  // laziness makes that independent of the window.)
   consume(length: number): void {
     this.#consumed += length;
   }
 
+  /**
+   * Compaction trigger (amortized, see COMPACT_MIN_BYTES): the release point trails the consumed
+   * point by `#maxBuffer`; compact once the releasable prefix is both at least COMPACT_MIN_BYTES
+   * and at least half of the buffered extent.
+   */
+  #maybeCompact(): void {
+    if (this.#base === null || this.#highestEndAbs === null) return;
+    const releasePoint = this.#base + this.#consumed - this.#maxBuffer;
+    const releasable = releasePoint - this.#dataStart;
+    const extent = this.#highestEndAbs - this.#dataStart;
+    if (releasable >= COMPACT_MIN_BYTES && releasable * 2 >= extent) this.#compact(releasePoint);
+  }
+
+  /**
+   * Releases everything below `releasePoint` (absolute, at least `#maxBuffer` behind the
+   * consumed point): drops segments that end at or before it, slides `#data` so it starts
+   * there, and keeps every stream-relative value unchanged (the origin `#base` does not move).
+   * A segment straddling the point is kept whole — its metadata still maps pieces exactly — but
+   * its released bytes are gone, which is safe because `add` trims incoming bytes below
+   * `#dataStart` before reconciling.
+   */
+  #compact(releasePoint: number): void {
+    const drop = this.#firstEndingAfter(releasePoint);
+    if (drop > 0) {
+      this.#segments.splice(0, drop);
+      this.#releasedSegments += drop;
+      this.#frontierIndex = Math.max(0, this.#frontierIndex - drop);
+    }
+    const released = releasePoint - this.#dataStart;
+    const retained = Math.max(0, this.#highestEndAbs! - releasePoint);
+    const keep = Math.max(0, Math.min(this.#data.length - released, retained));
+    // The buffer may be much larger than what it still holds (it grew for a backlog burst that has
+    // since been consumed): reallocate down instead of keeping the peak until finish(). The target
+    // leaves room to double the retained bytes (the in-order compaction trigger) plus one
+    // COMPACT_MIN_BYTES add, so an in-order flow does not immediately regrow past it. The copy is
+    // the same `keep` bytes copyWithin would move, so the amortized bound holds.
+    const target = 2 * retained + COMPACT_MIN_BYTES;
+    if (this.#data.length > target) {
+      const smaller = new Uint8Array(target);
+      smaller.set(this.#data.subarray(released, released + keep));
+      this.#data = smaller;
+    } else {
+      this.#data.copyWithin(0, released, released + keep);
+    }
+    this.#dataStart = releasePoint;
+  }
+
   segmentsOverlapping(start: number, end: number): AssemblerSegment[] {
     const base = this.#base ?? 0;
-    return this.#segments
-      .filter((s) => s.start - base < end && start < s.end - base)
-      .map((s) => ({ start: s.start - base, end: s.end - base, srcStart: s.srcStart, srcEnd: s.srcEnd }));
+    const result: AssemblerSegment[] = [];
+    // Segments are sorted and non-overlapping (ends non-decreasing): binary-search the first
+    // candidate instead of filtering every stored segment per message.
+    for (let i = this.#firstEndingAfter(base + start); i < this.#segments.length; i += 1) {
+      const s = this.#segments[i]!;
+      if (s.start - base >= end) break;
+      result.push({ start: s.start - base, end: s.end - base, srcStart: s.srcStart, srcEnd: s.srcEnd });
+    }
+    return result;
   }
 
   /**
@@ -165,14 +254,23 @@ export class StreamAssembler {
    * `_src_ranges` provenance per stored piece stays correct. A prefix below the locked
    * (`#consumed > 0`) base is trimmed and reported rather than rejecting the whole call.
    */
-  // `srcEnd` is accepted (every caller passes it, matching srcStart/bytes.length symmetrically)
-  // but unused in the body: an accepted range's end is always srcStart + bytes.length, computed
-  // fresh per stored piece in #store below.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site symmetry, see above
-  add(offset: number, bytes: Uint8Array, srcStart: number, srcEnd: number): AssemblerAddOutcome {
+  add(offset: number, bytes: Uint8Array, srcStart: number): AssemblerAddOutcome {
+    this.#maybeCompact();
     let trimmedBelowBase = false;
     if (this.#base !== null && this.#consumed > 0 && offset < this.#base) {
       const cut = Math.min(this.#base - offset, bytes.length);
+      trimmedBelowBase = true;
+      if (cut === bytes.length) return { status: 'dropped', conflicted: false, trimmedBelowBase };
+      offset += cut;
+      srcStart += cut;
+      bytes = bytes.subarray(cut);
+    }
+    // Bytes in [#base, #dataStart) were consumed more than maxBuffer ago and released by
+    // compaction, so they can no longer be compared. They are trimmed and reported as below-base
+    // (the retained-history floor), never silently accepted as duplicates: a conflicting
+    // retransmission of old bytes must stay visible.
+    if (offset < this.#dataStart && this.#base !== null && this.#dataStart > this.#base) {
+      const cut = Math.min(this.#dataStart - offset, bytes.length);
       trimmedBelowBase = true;
       if (cut === bytes.length) return { status: 'dropped', conflicted: false, trimmedBelowBase };
       offset += cut;
@@ -213,17 +311,23 @@ export class StreamAssembler {
     const rebasing = this.#base !== null && freshStart < this.#base; // consumed === 0 here
     const newBase = this.#base === null ? freshStart : Math.min(this.#base, freshStart);
     const newExtent = Math.max(freshEnd, this.#highestEndAbs ?? freshEnd) - newBase;
-    if (newExtent > this.#maxBuffer) return { status: 'truncated', conflicted, trimmedBelowBase };
+    // max_buffer caps OUTSTANDING bytes: everything buffered past the consumed point. Consumed
+    // bytes don't count (compaction releases them), so the cap bounds a flow's backlog, not its
+    // lifetime total. With nothing consumed this is exactly the extent from the (new) base.
+    const outstanding = newExtent - this.#consumed;
+    if (outstanding > this.#maxBuffer) return { status: 'truncated', conflicted, trimmedBelowBase };
     // See #rebaseTo for the cost bound of a rebase.
     if (rebasing) this.#rebaseTo(newBase, newExtent);
-    else this.#base = newBase;
+    else if (this.#base === null) {
+      this.#base = newBase;
+      this.#dataStart = newBase;
+    }
 
     for (const piece of fresh) {
       this.#store(
         piece.start,
         bytes.subarray(piece.start - offset, piece.end - offset),
         srcStart + (piece.start - offset),
-        srcStart + (piece.end - offset),
       );
     }
     this.#advanceFrontier();
@@ -243,31 +347,36 @@ export class StreamAssembler {
   }
 
   #matchesStored(start: number, end: number, bytes: Uint8Array, offset: number): boolean {
-    const base = this.#base!;
+    const dataStart = this.#dataStart;
     for (let p = start; p < end; p += 1) {
-      if (this.#data[p - base] !== bytes[p - offset]) return false;
+      if (this.#data[p - dataStart] !== bytes[p - offset]) return false;
     }
     return true;
   }
 
   /**
    * Stores one fresh (already known not to overlap any existing segment), non-empty piece:
-   * grows/copies `#data`, inserts a sorted `StoredSegment`, and updates the byte/src-span
-   * counters and `#highestEndAbs`. Assumes `#base` is already final for this `add` call — the
+   * grows/copies `#data`, inserts a sorted `StoredSegment`, and updates the byte
+   * counter and `#highestEndAbs`. Assumes `#base` is already final for this `add` call — the
    * caller settles the base (including any rebase) before calling this.
    */
-  #store(start: number, bytes: Uint8Array, srcStart: number, srcEnd: number): void {
+  #store(start: number, bytes: Uint8Array, srcStart: number): void {
     const end = start + bytes.length;
-    const relStart = start - this.#base!;
+    const relStart = start - this.#dataStart;
     if (relStart + bytes.length > this.#data.length) {
       const needed = relStart + bytes.length;
-      const grown = new Uint8Array(Math.min(Math.max(needed, this.#data.length * 2), this.#maxBuffer));
+      // Outstanding bytes are capped at #maxBuffer, but #data also holds the consumed history in
+      // front of them (the maxBuffer window plus any not-yet-compacted prefix), so the growth
+      // ceiling includes it. #compact reallocates #data down when it is well over twice what it
+      // still holds, so a past backlog burst doesn't pin its peak allocation until finish().
+      const ceiling = this.#maxBuffer + Math.max(0, (this.#base ?? 0) + this.#consumed - this.#dataStart);
+      const grown = new Uint8Array(Math.max(needed, Math.min(this.#data.length * 2, ceiling)));
       grown.set(this.#data);
       this.#data = grown;
     }
     this.#data.set(bytes, relStart);
 
-    const segment: StoredSegment = { start, end, srcStart, srcEnd };
+    const segment: StoredSegment = { start, end, srcStart, srcEnd: srcStart + bytes.length };
     let insertedAt: number;
     const lastSegment = this.#segments[this.#segments.length - 1];
     if (lastSegment === undefined || start > lastSegment.start) {
@@ -285,8 +394,6 @@ export class StreamAssembler {
     }
     this.#byteCount += bytes.length;
     this.#highestEndAbs = this.#highestEndAbs === null ? end : Math.max(this.#highestEndAbs, end);
-    this.#srcMin = this.#srcMin === null ? srcStart : Math.min(this.#srcMin, srcStart);
-    this.#srcMax = this.#srcMax === null ? srcEnd : Math.max(this.#srcMax, srcEnd);
     if (insertedAt < this.#frontierIndex) this.#frontierIndex = insertedAt;
   }
 
@@ -296,11 +403,12 @@ export class StreamAssembler {
    * nothing has been consumed yet, and the resulting extent fits `maxBuffer` — the base moves
    * down and stored data shifts accordingly. `'ignored'`: any other case (offset at/above base,
    * consumed > 0, or the rebase extent would exceed the cap). Never stores a segment; does not
-   * change `byteCount`, `segmentCount`, or `srcSpan`.
+   * change `byteCount`, `segmentCount`, or the source ranges.
    */
   anchor(offset: number): 'anchored' | 'rebased' | 'ignored' {
     if (this.#base === null) {
       this.#base = offset;
+      this.#dataStart = offset;
       return 'anchored';
     }
     if (offset >= this.#base || this.#consumed > 0) return 'ignored';
@@ -324,9 +432,12 @@ export class StreamAssembler {
   // O(log n) insertion (e.g. a sorted tree/skip list) instead.
   #rebaseTo(newBase: number, newExtent: number): void {
     const shift = this.#base! - newBase;
-    const shiftedLen = Math.min(Math.max(this.#data.length + shift, newExtent), this.#maxBuffer);
+    // newExtent (<= maxBuffer, checked by both callers) covers every stored byte after the shift;
+    // spare capacity past it is kept only up to maxBuffer. #data may already be maxBuffer long,
+    // so copy only the prefix that fits — bytes past the stored extent are unused capacity.
+    const shiftedLen = Math.max(newExtent, Math.min(this.#data.length + shift, this.#maxBuffer));
     const shifted = new Uint8Array(shiftedLen);
-    shifted.set(this.#data, shift);
+    shifted.set(this.#data.subarray(0, shiftedLen - shift), shift);
     this.#data = shifted;
     // contiguousEnd is a filled-from-base frontier; a rebase moves the base, so reset it
     // (and the cached frontier scan index) here and let #advanceFrontier recompute it from
@@ -334,6 +445,7 @@ export class StreamAssembler {
     this.#contiguousEnd = 0;
     this.#frontierIndex = 0;
     this.#base = newBase;
+    this.#dataStart = newBase; // nothing consumed, so nothing was ever compacted
   }
 
   #advanceFrontier(): void {

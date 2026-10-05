@@ -1,4 +1,4 @@
-import { missingProperty, readOwnDataProperty } from './anchors.js';
+import { missingProperty, readOwnDataProperty } from './own-property.js';
 import type { AnchorMatch, CompiledAnchor } from './anchors.js';
 
 export interface MatcherNode {

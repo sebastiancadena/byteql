@@ -1,8 +1,17 @@
 import { expect, test, type Page } from '@playwright/test';
 
-import { expectRows as expectRowsWithTimeout, metrics, openMidiSample, sortBy } from './support/app.js';
+import {
+  drainQueryResult,
+  expectRows as expectRowsWithTimeout,
+  exportFiles,
+  loadResultWindow,
+  metrics,
+  openMidiSample,
+  sortBy,
+  storedResult,
+} from './support/app.js';
 
-const storedRows = (page: Page) => page.evaluate(() => window.__byteqlE2E.storedResult());
+const storedRows = (page: Page) => storedResult(page);
 
 const runQuery = async (page: Page, sql: string): Promise<void> => {
   const editor = page.getByRole('textbox', { name: 'SQL query' });
@@ -118,7 +127,7 @@ test('sorts each duplicate label by position, with nulls last and ties in query 
   await expect(page.locator('[role="columnheader"][aria-sort]')).toHaveCount(0);
   await expect(page.getByRole('columnheader', { name: 'other, column 2, Utf8', exact: true })).toBeVisible();
   expect((await storedRows(page)).columns).toEqual(['other', 'other']);
-  expect(await page.evaluate(() => window.__byteqlE2E.exportFiles())).toEqual([]);
+  expect(await exportFiles(page)).toEqual([]);
 });
 
 test('sorts the rows a LIMIT selected without choosing different ones', async ({ page }) => {
@@ -129,7 +138,7 @@ test('sorts the rows a LIMIT selected without choosing different ones', async ({
   await expect
     .poll(
       async () => {
-        await page.evaluate(() => window.__byteqlE2E.drainQueryResult());
+        await drainQueryResult(page);
         return (await metrics(page)).loadedRows;
       },
       { timeout: 60_000 },
@@ -222,7 +231,7 @@ test('reveals the exact source bytes of a row selected after sorting', async ({ 
   await openMidiSample(page);
   await runQuery(page, 'select note, velocity, _src_start, _src_end from events order by _src_start');
   await expect.poll(async () => (await metrics(page)).loadedRows, { timeout: 60_000 }).toBeGreaterThan(1);
-  await page.evaluate(() => window.__byteqlE2E.drainQueryResult());
+  await drainQueryResult(page);
 
   await sortBy(page, 'Sort velocity ascending');
   await sortBy(page, 'Sort velocity descending');
@@ -330,7 +339,7 @@ test('sorts a million numeric rows and keeps both ends reachable', async ({ page
   expect(sorted.sendCount).toBe(1);
   expect(sorted.derivedViewCount).toBe(1);
 
-  await page.evaluate(() => window.__byteqlE2E.loadResultWindow(999_999));
+  await loadResultWindow(page, 999_999);
   await expect
     .poll(async () => (await metrics(page)).windowStart, { timeout: 60_000 })
     .toBeGreaterThan(900_000);
@@ -366,7 +375,7 @@ test('sorts a million numeric rows and keeps both ends reachable', async ({ page
   expect(geometry.scrollers).toBe(1);
   expect(geometry.spacerHeight).toBeLessThanOrEqual(16_384 * 36);
 
-  await page.evaluate(() => window.__byteqlE2E.loadResultWindow(0));
+  await loadResultWindow(page, 0);
   await expect.poll(async () => (await metrics(page)).windowStart, { timeout: 60_000 }).toBeLessThan(16_384);
   await scroll.hover();
   for (let attempt = 0; attempt < 80; attempt++) {
@@ -440,7 +449,7 @@ test('a replacement query during a sort leaves no stale order or scratch file be
   expect(after.sort).toBeNull();
   expect(after.derivedViewCount).toBe(0);
   await expect(page.locator('[role="columnheader"][aria-sort]')).toHaveCount(0);
-  const leftovers = await page.evaluate(() => window.__byteqlE2E.exportFiles());
+  const leftovers = await exportFiles(page);
   expect(leftovers).toEqual([]);
 });
 
@@ -461,11 +470,11 @@ test('cancelling a long sort keeps the result, its order and its rows', async ({
   expect(after.sendCount).toBe(1);
   // Rows kept arriving while the sort drained, so the visible window may have moved; what must
   // not have changed is the ORDER, which still starts where the query's own output did.
-  await page.evaluate(() => window.__byteqlE2E.loadResultWindow(0));
+  await loadResultWindow(page, 0);
   await expect.poll(async () => (await metrics(page)).windowStart, { timeout: 60_000 }).toBe(0);
   await expect(firstCell(page)).toHaveText('120000');
   await expect(page.locator('[role="alert"]')).toHaveCount(0);
-  expect(await page.evaluate(() => window.__byteqlE2E.exportFiles())).toEqual([]);
+  expect(await exportFiles(page)).toEqual([]);
 
   // The result is still usable: a second sort succeeds.
   await sortBy(page, 'Sort value ascending');

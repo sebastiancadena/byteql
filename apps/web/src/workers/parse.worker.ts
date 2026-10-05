@@ -6,6 +6,7 @@ import {
   type TableOverview,
 } from '@byteql/core';
 
+import { BATCH_CREDIT_WINDOW, type WorkerRequest } from '../lib/parse-protocol.js';
 import { PROBE_HEAD_BYTES, REGISTERED_PACKS, selectPack } from '../lib/packs.js';
 import { stampSourceFile, withSourceFileColumn } from './stamp-source-file.js';
 
@@ -14,19 +15,11 @@ export interface ParseWorkerScope {
   postMessage(message: unknown, transfer?: readonly Transferable[]): void;
 }
 
-/** In-flight batch messages a worker may have outstanding for one task before it must wait for acks. */
-export const BATCH_CREDIT_WINDOW = 4;
-
-type WorkerRequest =
-  | { type: 'parse'; taskId: number; name: string; blob: Blob; formatId?: string }
-  | { type: 'cancel'; taskId: number }
-  | { type: 'batchAck'; taskId: number; seq: number };
+export { BATCH_CREDIT_WINDOW };
 
 /**
  * A small async semaphore: `take()` resolves immediately while permits remain, otherwise it
- * waits for a `release()`. `releaseAll()` drains every current waiter without touching the
- * permit count — it exists purely so a cancelled task's pull loop can observe the abort instead
- * of hanging forever on a credit that will never arrive.
+ * waits for a `release()`.
  */
 class CreditGate {
   private permits: number;
@@ -48,10 +41,6 @@ class CreditGate {
     const waiter = this.waiters.shift();
     if (waiter) waiter();
     else this.permits += 1;
-  }
-
-  releaseAll(): void {
-    while (this.waiters.length > 0) this.waiters.shift()!();
   }
 }
 
@@ -76,8 +65,8 @@ const deriveColumns = (pack: FormatPack, table: string, ipc: Uint8Array): readon
   }));
 };
 
-const isAbortError = (error: unknown): boolean =>
-  error instanceof DOMException ? error.name === 'AbortError' : false;
+/** Cancellation terminates the worker, so a task's signal never fires; packs still require one. */
+const NEVER_ABORTED: AbortSignal = new AbortController().signal;
 
 const errorMessage = (error: unknown, packTitle: string): string =>
   error instanceof Error && error.message
@@ -88,9 +77,8 @@ export function installParseWorker(
   scope: ParseWorkerScope,
   packs: readonly FormatPack[] = REGISTERED_PACKS,
 ): void {
-  const active = new Map<number, AbortController>();
-  const cancelled = new Set<number>();
-  const credits = new Map<number, CreditGate>();
+  // The client runs one task per worker (cancelling replaces the worker), so one gate suffices.
+  let current: { taskId: number; gate: CreditGate } | null = null;
 
   const runParse = async (taskId: number, name: string, blob: Blob, formatId?: string): Promise<void> => {
     const head = new Uint8Array(await blob.slice(0, PROBE_HEAD_BYTES).arrayBuffer());
@@ -107,16 +95,12 @@ export function installParseWorker(
     }
     const pack = selected.pack;
 
-    const controller = new AbortController();
-    active.set(taskId, controller);
-    if (cancelled.has(taskId)) controller.abort();
-
     const gate = new CreditGate(BATCH_CREDIT_WINDOW);
-    credits.set(taskId, gate);
+    current = { taskId, gate };
 
     try {
       const source = pack.open(blobByteSource(blob), {
-        signal: controller.signal,
+        signal: NEVER_ABORTED,
         onProgress: (progress) => scope.postMessage({ type: 'progress', taskId, ...progress }),
         ...(selected.container !== undefined ? { container: selected.container } : {}),
       });
@@ -124,14 +108,9 @@ export function installParseWorker(
       const overview: TableOverview[] = [];
       const index = new Map<string, number>();
       let seq = 0;
-      let cancelledInLoop = false;
 
       for (;;) {
         await gate.take();
-        if (controller.signal.aborted || cancelled.has(taskId)) {
-          cancelledInLoop = true;
-          break;
-        }
         const batch = await source.nextBatch();
         if (batch === null) break;
 
@@ -148,18 +127,13 @@ export function installParseWorker(
             columns: deriveColumns(pack, batch.table, stamped),
           });
         }
-        const current = overview[position]!;
-        overview[position] = { ...current, rowCount: current.rowCount + batch.rowCount };
+        const entry = overview[position]!;
+        overview[position] = { ...entry, rowCount: entry.rowCount + batch.rowCount };
 
         scope.postMessage(
           { type: 'batch', taskId, seq, table: batch.table, ipc: stamped, rowCount: batch.rowCount },
           [stamped.buffer],
         );
-      }
-
-      if (cancelledInLoop || controller.signal.aborted || cancelled.has(taskId)) {
-        scope.postMessage({ type: 'cancelled', taskId });
-        return;
       }
 
       const finish = source.finish();
@@ -177,10 +151,6 @@ export function installParseWorker(
         schemas: withSourceFileColumn(pack.schemas()),
       });
     } catch (error) {
-      if (controller.signal.aborted || cancelled.has(taskId) || isAbortError(error)) {
-        scope.postMessage({ type: 'cancelled', taskId });
-        return;
-      }
       scope.postMessage({
         type: 'error',
         taskId,
@@ -189,9 +159,7 @@ export function installParseWorker(
         message: errorMessage(error, pack.title),
       });
     } finally {
-      active.delete(taskId);
-      cancelled.delete(taskId);
-      credits.delete(taskId);
+      if (current?.taskId === taskId) current = null;
     }
   };
 
@@ -199,16 +167,8 @@ export function installParseWorker(
     const request = event.data as WorkerRequest;
     if (!request || typeof request !== 'object') return;
 
-    if (request.type === 'cancel') {
-      // Recorded even when the parse has not arrived yet: task ids are never
-      // reused, so a racing cancel must abort the parse that follows it.
-      cancelled.add(request.taskId);
-      active.get(request.taskId)?.abort();
-      credits.get(request.taskId)?.releaseAll();
-      return;
-    }
     if (request.type === 'batchAck') {
-      credits.get(request.taskId)?.release();
+      if (current?.taskId === request.taskId) current.gate.release();
       return;
     }
     if (request.type !== 'parse') return;

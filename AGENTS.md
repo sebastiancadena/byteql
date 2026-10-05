@@ -5,7 +5,7 @@ into relational tables you query with DuckDB SQL, entirely in the browser, with 
 back to its exact source bytes. Product requirements, differentiators, and the projection DSL live in
 `PRD.md` — read §9 (architecture) and Appendix A (DSL) first.
 
-## Status (2026-09-24)
+## Status (2026-10-03)
 
 Priority order lives in `ROADMAP.md` (adopted 2026-09-15); it supersedes any "next" ordering here
 or in `PRD.md` §12.
@@ -183,6 +183,29 @@ or in `PRD.md` §12.
   `ROADMAP.md` priority 5's "Remaining limitations". Evidence:
   `packages/core/src/projection/stream-lifecycle.test.ts`,
   `packages/formats/pcap/test/tcp-identity.test.ts`.
+- **Architecture cleanup: done 2026-10-03.** Behavior-preserving refactors across core, db, and
+  web (goldens, schema snapshots, and e2e behavior unchanged), plus one deliberate engine change.
+  Plan: `docs/superpowers/plans/2026-10-03-architecture-cleanup.md`. **Behavior change:**
+  `StreamAssembler` now frees consumed bytes, and `max_buffer` caps _outstanding_ (unconsumed)
+  bytes rather than the whole flow; a `max_buffer`-sized consumed-history window keeps conflict
+  detection, and retransmits of bytes released beyond that window are reported as
+  `STREAM_BELOW_BASE` (dropped) instead of passing as silent duplicates. Flows over 1 MiB per
+  direction no longer go `truncated`; per-flow peak memory is about 2-3x `max_buffer`. Removed:
+  the declared-schema ingest mode (`IngestOptions.schemas`; `discover` plus backfill is the only
+  path), the parse worker's `cancel`/`cancelled` messages (terminate is the only cancellation),
+  the `__byteqlE2E` global (only `__BYTEQL_E2E__` remains), and the public core exports
+  `createStreamsRuntime`, `flushStreams`, `streamSegmentsOutputTypes`, and `projectTree`.
+  `ByteqlDbError` (typed `code`) replaces string-matched spill failures. Design record for the
+  follow-on work: `docs/superpowers/specs/2026-10-03-spec-v0.6-pack-boundary-design.md` (spec
+  v0.6 pack boundary, slices S1-S10; written, not implemented). Documented limitations: core
+  test files have pre-existing type errors that `pnpm check` cannot see (tests are excluded from
+  `tsc`); `StreamRuntimeEntry.segments` still grows and there is no cross-flow memory cap; the
+  review's hot-path allocation work, the `Workbench.svelte` split, e2e suite cleanup, and the
+  `mvp` bundle decision remain open (`ROADMAP.md` Supporting work). Known e2e failures on `main`
+  (not regressions): `panel-resize.spec.ts:861` and `saved-queries.spec.ts:122` (fails in isolation
+  on `b9d2fa8`); `panel-resize.spec.ts:1145` flaked once under full-suite load. Evidence: the
+  refactor commits from `b9d2fa8` to this entry, the unchanged goldens, and
+  `packages/core/src/projection/stream-runtime.test.ts`.
 - **Next (per `ROADMAP.md`):** ship one forensic investigation workflow (ROADMAP #6). The unaided
   external Phase 0 test is still open supporting work.
 
@@ -201,8 +224,17 @@ its vitest suites run without a browser).
   - `src/projection/anchors.ts` — anchor-path compile + single-anchor traversal (dissect child
     trees use this)
   - `src/projection/walk.ts` — combined anchor matcher trie + single-pass document-order walker
-  - `src/projection/project.ts` — compile + execution: row emit, synthetic keys, state
-    registers, dissect chains (key propagation, composed provenance), `IssueCollector` wiring
+  - `src/projection/compile.ts` — `compileProjection`: spec validation and the compile-time
+    rules (anchors, dissect chains, parent-key reachability), producing the compiled form
+  - `src/projection/emit.ts` — row emission (`emitRow` takes one row frame): synthetic keys,
+    state registers, dissect chains (key propagation, composed provenance)
+  - `src/projection/stream-runtime.ts` — the stream runtime (flows, generations, flush at
+    finish, the engine-owned `streams`/`stream_segments` tables); internal, not exported from the
+    package
+  - `src/projection/project.ts` — a re-export barrel for compile, emit, and the stream runtime
+  - `src/projection/own-property.ts` — the shared own-property helpers
+  - `src/projection/project-tree.test-helper.ts` — test-only `projectTree` (no longer a public
+    export)
   - `src/projection/session.ts` — `ProjectionSession`: multi-root projection with persistent
     state/keys over per-table batch builders
   - `src/projection/parsers.ts` — `RecordParser`/`ParserRegistry` seam for dissect child parsers
@@ -244,10 +276,23 @@ its vitest suites run without a browser).
   `src/pack.generated.ts`), `src/new.mjs` (`byteql-pack new <id>`: scaffolds a pack from
   `templates/`), `src/ksy.mjs` (Kaitai compilation), `src/emit.mjs`/`src/queries.mjs`
   (generated-file and query-lint helpers). See `docs/pack-authoring.md`.
-- `packages/db` — DuckDB-WASM wrapper (`src/browser.ts`): local-asset init, hardening PRAGMAs,
-  `replaceTables` (Arrow IPC in-memory only), serialized query path
+- `packages/db` — DuckDB-WASM wrapper. `src/browser.ts` is the `ByteqlDatabase` façade over
+  `src/runtime.ts` (the DuckDB runtime: local-asset init, serialized query path),
+  `src/hardening.ts` (the one hardening and local-instantiation routine, shared with the
+  probes), `src/bundles.ts` (bundle selection), `src/errors.ts` (`ByteqlDbError`, typed `code`),
+  `src/sql.ts` (SQL helpers), `src/catalog.ts` (`Catalog`: the table/view registry ingest
+  sessions share), `src/ingest-session.ts` (generation-scoped ingest and the OPFS spill tier,
+  one rotate-on-quota path), `src/query-session.ts` (paged query results),
+  `src/shard-workspace.ts` (the Parquet shard workspace shared by sort and export), and
+  `src/file-statistics.ts`. `src/testing/` is the `@byteql/db/testing` subpath export (never
+  imported by production code): the capability probes (`probeSpillCapability`,
+  `probeResultSort`, `probeResultColumns`, the export probes) and `fileStatisticsAccess`
 - `apps/web` — Svelte UI: `src/workers/parse.worker.ts` (probe registry → `FormatPack.open` →
-  drain batches → one `ParseResult`), `src/lib/session/` (controller + state machine),
+  drain batches → one `ParseResult`), `src/lib/parse-protocol.ts` (the shared app/worker
+  message contract), `src/lib/session/` (`controller.ts` is the façade; state lives in
+  `session-store.ts`, the query/result family in `result-session.ts`, sorting in
+  `result-sorter.ts`, downloads in `result-exporter.ts`, batch intake in `intake.ts`; plus the
+  state machine), `src/lib/testing/query-result.ts` (harness-only result accessor),
   `src/components/`, `src/lib/viewers/` (capability-gated viewer registry; audio today),
   `src/lib/ui/` (layout-agnostic panel resizing/coordination: `resize-handle.ts`,
   `use-panel-layout.svelte.ts`, `panel-layout.ts`), `src/lib/queries/` (saved queries and

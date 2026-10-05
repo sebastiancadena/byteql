@@ -1,8 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
-import type { ResultSortProbeReport } from '@byteql/db';
 
-import { openMidiSample } from './support/app.js';
+import { openMidiSample, probeResultSort } from './support/app.js';
 
 /**
  * The execution gate this feature's plan puts before any controller or UI work: the whole
@@ -17,17 +16,6 @@ import { openMidiSample } from './support/app.js';
  * runtime rather than to this feature, so a future runtime upgrade that fixes it fails this test
  * and prompts re-enabling. See docs/result-column-sorting-compatibility.md.
  */
-const readReport = async (page: import('@playwright/test').Page, variant: 'mvp' | 'eh') =>
-  page.evaluate(
-    (v) =>
-      (
-        window.__byteqlE2E as unknown as {
-          probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSortProbeReport>;
-        }
-      ).probeResultSort(v),
-    variant,
-  );
-
 for (const variant of ['mvp', 'eh'] as const) {
   test(`snapshot sorting in the ${variant} bundle`, async ({ page }, testInfo) => {
     test.setTimeout(180_000);
@@ -36,7 +24,7 @@ for (const variant of ['mvp', 'eh'] as const) {
     const requests: Array<{ url: string; at: number }> = [];
     page.on('request', (request) => requests.push({ url: request.url(), at: Date.now() }));
 
-    const report = await readReport(page, variant);
+    const report = await probeResultSort(page, variant);
 
     const networkAfterReady = requests
       .filter((request) => report.readyAtEpochMs !== null && request.at >= report.readyAtEpochMs)

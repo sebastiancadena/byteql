@@ -1,5 +1,6 @@
 import { type Table, tableFromIPC, tableToIPC } from 'apache-arrow';
 
+import { ByteqlDbError, isStorageUnavailableError } from './errors.js';
 import { isQuotaError } from './spill-files.js';
 
 export const QUERY_RESULT_MEMORY_BYTES = 64 * 1024 * 1024;
@@ -52,11 +53,6 @@ const opfsAvailable = (): boolean => typeof navigator !== 'undefined' && !!navig
 const isNotFoundError = (error: unknown): boolean =>
   (error instanceof Error ? error.name : (error as { name?: unknown } | null)?.name) === 'NotFoundError';
 
-const isOpfsUnavailableError = (error: unknown): boolean => {
-  const name = error instanceof Error ? error.name : (error as { name?: unknown } | null)?.name;
-  return name === 'NotSupportedError' || name === 'SecurityError';
-};
-
 const assertGeneratedNumber = (value: number, label: string): void => {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`${label} must be a non-negative safe integer.`);
@@ -64,12 +60,19 @@ const assertGeneratedNumber = (value: number, label: string): void => {
 };
 
 const quotaExceeded = (cause: unknown): Error =>
-  new Error('RESULT_SPILL_QUOTA_EXCEEDED: failed to persist a query result page in OPFS.', {
-    cause,
-  });
+  new ByteqlDbError(
+    'RESULT_SPILL_QUOTA_EXCEEDED',
+    'RESULT_SPILL_QUOTA_EXCEEDED: failed to persist a query result page in OPFS.',
+    {
+      cause,
+    },
+  );
 
 const spillUnsupported = (): Error =>
-  new Error('RESULT_SPILL_UNSUPPORTED: this browser cannot retain more query result pages locally.');
+  new ByteqlDbError(
+    'RESULT_SPILL_UNSUPPORTED',
+    'RESULT_SPILL_UNSUPPORTED: this browser cannot retain more query result pages locally.',
+  );
 
 const toStoredPage = (metadata: PageMetadata, table: Table): StoredQueryPage => ({
   ...metadata,
@@ -354,7 +357,7 @@ export const createOpfsQueryPagePersistence = async (
     const generationRoot = await resultRoot.getDirectoryHandle(generationName, { create: true });
     return new OpfsQueryPagePersistence(resultRoot, generationName, generationRoot);
   } catch (error) {
-    if (isOpfsUnavailableError(error)) return null;
+    if (isStorageUnavailableError(error)) return null;
     throw error;
   }
 };

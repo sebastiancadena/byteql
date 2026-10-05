@@ -2,14 +2,16 @@ import { AsyncDuckDB, VoidLogger, type AsyncDuckDBConnection } from '@duckdb/duc
 import { Table, tableFromIPC, type Schema } from 'apache-arrow';
 import { RecordBatchStreamWriter, Schema as DuckdbSchema, Table as DuckdbTable } from 'apache-arrow-duckdb';
 
-import { LOCAL_BUNDLES } from './browser.js';
-import type { ExportFiles } from './export-files.js';
-import { QueryPageStore } from './query-pages.js';
-import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from './result-arrow.js';
-import { resultColumnLabel } from './result-columns.js';
-import { resultSortRuntimeSupported } from './result-sort.js';
-import { writeSortedResult } from './sort-result.js';
-import type { QuerySession } from './types.js';
+import { LOCAL_BUNDLES } from '../bundles.js';
+import { absoluteBundle, hardenConnection, openLocalConnection } from '../hardening.js';
+import type { ExportFiles } from '../export-files.js';
+import { QueryPageStore } from '../query-pages.js';
+import { normalizeDuckdbResultBatch, normalizeDuckdbResultSchema } from '../result-arrow.js';
+import { resultColumnLabel } from '../result-columns.js';
+import { resultSortRuntimeSupported } from '../result-sort.js';
+import { writeSortedResult } from '../sort-result.js';
+import { quoteString } from '../sql.js';
+import type { QuerySession } from '../types.js';
 
 const PAGE_ROWS = 8_192;
 const PROBE_ROWS = 20_000;
@@ -48,8 +50,6 @@ export interface ResultSortProbeReport {
   diagnostics: string[];
 }
 
-const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
 /** The exact Arrow 17 writer -> IPC -> Arrow 21 reader bridge the query path uses. */
 const convert = async (connection: AsyncDuckDBConnection, sql: string): Promise<Table[]> => {
   const reader = await connection.send(sql);
@@ -67,7 +67,7 @@ const convert = async (connection: AsyncDuckDBConnection, sql: string): Promise<
     if (next.done === true) break;
     const batch = normalizeDuckdbResultBatch(next.value, reader.schema);
     schema = batch.schema;
-    // Mirror the production reader (browser.ts): Arrow represents a schema-only stream with an
+    // Mirror the production reader (query-session.ts): Arrow represents a schema-only stream with an
     // internal zero-row placeholder batch. Handing that batch's own (possibly List-typed) buffers
     // straight to the Arrow 17 writer crashes on assembly; only its schema is authoritative here.
     if (batch.numRows === 0) continue;
@@ -173,28 +173,15 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
   };
 
   try {
-    let moduleUrl = new URL(bundle.mainModule, location.href).href;
-    if (moduleUrl.endsWith('.gz')) {
-      const response = await fetch(moduleUrl);
-      if (!response.ok || !response.body) throw new Error('Local WASM fetch failed');
-      moduleUrl = URL.createObjectURL(
-        await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).blob(),
-      );
-    }
-    await database.instantiate(moduleUrl);
-    primary = await database.connect();
-
-    const extension = new URL(
-      `/duckdb-extensions/v1.5.4/wasm_${variant}/parquet.duckdb_extension.wasm`,
-      location.origin,
-    ).href;
-    await primary.query(`LOAD ${quote(extension)}`);
+    primary = await openLocalConnection(database, absoluteBundle(bundle), (opened) => {
+      primary = opened;
+    });
 
     // Prove the denied path is writable BEFORE hardening, so a later refusal is attributable to
     // the allowlist rather than to a path that never worked.
     await database.registerOPFSFileName(deniedPath);
     registered.add(deniedPath);
-    await primary.query(`COPY (SELECT 41 AS sentinel) TO ${quote(deniedPath)} (FORMAT PARQUET)`);
+    await primary.query(`COPY (SELECT 41 AS sentinel) TO ${quoteString(deniedPath)} (FORMAT PARQUET)`);
     await dropPath(deniedPath);
     const sentinel = new Uint8Array(
       await (await (await deniedOwned.getFileHandle('sentinel.parquet')).getFile()).arrayBuffer(),
@@ -202,16 +189,7 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     await database.registerOPFSFileName(deniedPath);
     registered.add(deniedPath);
 
-    for (const statement of [
-      "SET allowed_directories = ['opfs://byteql-exports/']",
-      'SET enable_external_access = false',
-      'SET autoinstall_known_extensions = false',
-      'SET autoload_known_extensions = false',
-      'SET allow_community_extensions = false',
-      'SET lock_configuration = true',
-    ]) {
-      await primary.query(statement);
-    }
+    await hardenConnection(primary, { allowedDirectories: ['opfs://byteql-exports/'] });
 
     const ready = performance.now();
     report.readyAtEpochMs = Date.now();
@@ -227,7 +205,7 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     // --- Privacy: no OPFS path outside the allowlist, no external URL. ---
     let deniedOpfs = false;
     try {
-      await primary.query(`COPY (SELECT 42 AS sentinel) TO ${quote(deniedPath)} (FORMAT PARQUET)`);
+      await primary.query(`COPY (SELECT 42 AS sentinel) TO ${quoteString(deniedPath)} (FORMAT PARQUET)`);
     } catch (error) {
       deniedOpfs = true;
       report.diagnostics.push(`Denied OPFS path: ${String(error)}`);
@@ -624,10 +602,10 @@ export async function probeResultSort(variant: 'mvp' | 'eh'): Promise<ResultSort
     const baselinePath = await registerPath('runtime-baseline.parquet');
     try {
       await primary.query(
-        `COPY (SELECT * FROM ${baselineValues}) TO ${quote(baselinePath)} (FORMAT PARQUET)`,
+        `COPY (SELECT * FROM ${baselineValues}) TO ${quoteString(baselinePath)} (FORMAT PARQUET)`,
       );
       const scanned = await primary.query(
-        `SELECT v FROM parquet_scan(${quote(baselinePath)}) ORDER BY v ASC NULLS LAST`,
+        `SELECT v FROM parquet_scan(${quoteString(baselinePath)}) ORDER BY v ASC NULLS LAST`,
       );
       report.runtimeOrderBy.parquet = scanned.numRows === 2;
     } catch (error) {

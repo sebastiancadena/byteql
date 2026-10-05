@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildFilesTableIpc,
   dedupeDisplayNames,
+  filesTableOverview,
   mergeTableOverviews,
   planBatch,
   type BatchEntry,
@@ -99,6 +100,28 @@ describe('buildFilesTableIpc', () => {
     expect(table.getChild('status')!.get(1)).toBe('skipped');
     expect(Number(table.getChild('size')!.get(1))).toBe(9);
     expect(table.getChild('error')!.get(0)).toBeNull();
+  });
+});
+
+describe('filesTableOverview', () => {
+  it('lists the same columns, in the same order and types, as the _files batch', () => {
+    const overview = filesTableOverview(2);
+    expect(overview).toEqual({
+      name: '_files',
+      rowCount: 2,
+      columns: [
+        { name: 'file', type: 'Utf8', nullable: false },
+        { name: 'original_name', type: 'Utf8', nullable: false },
+        { name: 'size', type: 'Uint64', nullable: false },
+        { name: 'ingest_order', type: 'Int32', nullable: false },
+        { name: 'status', type: 'Utf8', nullable: false },
+        { name: 'error', type: 'Utf8', nullable: true },
+      ],
+    });
+    const table = ipcToTable(buildFilesTableIpc([]));
+    expect(table.schema.fields.map((field) => [field.name, field.type.toString()])).toEqual(
+      overview.columns.map((column) => [column.name, column.type]),
+    );
   });
 });
 

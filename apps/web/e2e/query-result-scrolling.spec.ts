@@ -1,5 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { openMidiSample } from './support/app.js';
+import {
+  drainQueryResult,
+  loadResultWindow,
+  metrics,
+  openMidiSample,
+  seedResultPageOrphan,
+} from './support/app.js';
 
 test('physical scrolling reaches the last row of a 300-row result', async ({ page }) => {
   await openMidiSample(page);
@@ -78,12 +84,12 @@ test('seamless demand reaches row one million with bounded geometry', async ({ p
     })
     .toBeGreaterThan(1_024);
 
-  await page.evaluate(async () => window.__BYTEQL_E2E__!.drainQueryResult());
+  await drainQueryResult(page);
 
   await expect(
     page.locator('.results-heading-meta').getByText('1,000,000 rows', { exact: true }),
   ).toBeVisible();
-  await page.evaluate(async () => window.__BYTEQL_E2E__!.loadResultWindow(999_999));
+  await loadResultWindow(page, 999_999);
   await scroll.evaluate(async (node) => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     node.scrollTop = node.scrollHeight;
@@ -95,23 +101,23 @@ test('seamless demand reaches row one million with bounded geometry', async ({ p
     '999999',
   );
 
-  const metrics = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
-  expect(metrics).toMatchObject({
+  const result = await metrics(page);
+  expect(result).toMatchObject({
     loadedRows: 1_000_000,
     complete: true,
     windowStart: 983_616,
     sendCount: 1,
   });
-  expect(metrics.windowRows).toBeLessThanOrEqual(16_384);
-  expect(metrics.decodedBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+  expect(result.windowRows).toBeLessThanOrEqual(16_384);
+  expect(result.decodedBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
   expect(await page.locator('.grid-virtual-space').evaluate((node) => node.scrollHeight)).toBeLessThanOrEqual(
     16_384 * 36,
   );
 
-  expect(metrics.resultOpfsPaths).toHaveLength(123);
-  expect(metrics.resultOpfsPaths.every((path) => /^byteql-results\/\d+\/\d+\.arrow$/u.test(path))).toBe(true);
+  expect(result.resultOpfsPaths).toHaveLength(123);
+  expect(result.resultOpfsPaths.every((path) => /^byteql-results\/\d+\/\d+\.arrow$/u.test(path))).toBe(true);
 
-  await page.evaluate(async () => window.__BYTEQL_E2E__!.loadResultWindow(0));
+  await loadResultWindow(page, 0);
   await scroll.evaluate(async (node) => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     node.scrollTop = 0;
@@ -120,7 +126,7 @@ test('seamless demand reaches row one million with bounded geometry', async ({ p
   });
   await expect(page.getByRole('row', { name: 'Row 1', exact: true })).toBeVisible();
   await expect(page.getByRole('row', { name: 'Row 1', exact: true }).getByRole('gridcell')).toHaveText('0');
-  expect((await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).sendCount).toBe(1);
+  expect((await metrics(page)).sendCount).toBe(1);
 });
 
 test('replacement removes every path from an incomplete result generation', async ({ page }) => {
@@ -133,21 +139,15 @@ test('replacement removes every path from an incomplete result generation', asyn
     page.locator('.results-heading-meta').getByText('1,024 loaded · more available', { exact: true }),
   ).toBeVisible();
 
-  const previousPaths = (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics()))
-    .resultOpfsPaths;
+  const previousPaths = (await metrics(page)).resultOpfsPaths;
   expect(previousPaths).toHaveLength(1);
 
   await expect(editor).toHaveAttribute('contenteditable', 'true');
   await editor.fill('select i from range(2) t(i)');
   await page.getByRole('button', { name: 'Run query' }).click();
   await expect(page.locator('.results-heading-meta').getByText('2 rows', { exact: true })).toBeVisible();
-  await expect
-    .poll(
-      async () =>
-        (await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics())).resultOpfsPaths.length,
-    )
-    .toBe(1);
-  const replacement = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  await expect.poll(async () => (await metrics(page)).resultOpfsPaths.length).toBe(1);
+  const replacement = await metrics(page);
   expect(replacement.resultOpfsPaths).toHaveLength(1);
   expect(replacement.resultOpfsPaths.some((path) => previousPaths.includes(path))).toBe(false);
   expect(replacement.sendCount).toBe(1);
@@ -156,8 +156,8 @@ test('replacement removes every path from an incomplete result generation', asyn
 test('startup sweeps a seeded result-page orphan but preserves unrelated OPFS entries', async ({ page }) => {
   await page.goto('/');
   await page.locator('[data-app-ready="true"]').waitFor();
-  const seeded = await page.evaluate(() => window.__BYTEQL_E2E__!.seedResultPageOrphan());
-  const beforeReload = await page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
+  const seeded = await seedResultPageOrphan(page);
+  const beforeReload = await metrics(page);
   expect(beforeReload.resultOpfsPaths).toEqual(
     expect.arrayContaining([seeded.orphanPath, seeded.unrelatedPath]),
   );
@@ -165,7 +165,7 @@ test('startup sweeps a seeded result-page orphan but preserves unrelated OPFS en
   await page.reload();
   await page.locator('[data-app-ready="true"]').waitFor();
   await expect
-    .poll(() => page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics()))
+    .poll(() => metrics(page))
     .toMatchObject({
       resultOpfsPaths: [seeded.unrelatedPath],
     });

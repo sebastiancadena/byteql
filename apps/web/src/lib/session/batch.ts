@@ -1,5 +1,5 @@
 import { tableToIpc, type FormatPack, type TableOverview } from '@byteql/core';
-import { Int32, Table, Uint64, Utf8, vectorFromArray } from 'apache-arrow';
+import { Int32, Table, Uint64, Utf8, vectorFromArray, type DataType } from 'apache-arrow';
 
 import { PROBE_HEAD_BYTES, selectPack } from '../packs.js';
 
@@ -95,36 +95,42 @@ export interface FilesRow {
   error: string | null;
 }
 
-/** Builds the `_files` catalog batch (spec: file/original_name/size/ingest_order/status/error). */
+/**
+ * The `_files` catalog columns (spec: file/original_name/size/ingest_order/status/error), defined
+ * once: both the ingested Arrow batch and the table overview the explorer lists derive from it.
+ */
+const FILES_COLUMNS: readonly {
+  name: string;
+  type: DataType;
+  nullable: boolean;
+  value: (row: FilesRow) => unknown;
+}[] = [
+  { name: 'file', type: new Utf8(), nullable: false, value: (row) => row.file },
+  { name: 'original_name', type: new Utf8(), nullable: false, value: (row) => row.originalName },
+  { name: 'size', type: new Uint64(), nullable: false, value: (row) => BigInt(row.size) },
+  { name: 'ingest_order', type: new Int32(), nullable: false, value: (row) => row.ingestOrder },
+  { name: 'status', type: new Utf8(), nullable: false, value: (row) => row.status },
+  { name: 'error', type: new Utf8(), nullable: true, value: (row) => row.error },
+];
+
+/** Builds the `_files` catalog batch. */
 export function buildFilesTableIpc(rows: readonly FilesRow[]): Uint8Array {
   return tableToIpc(
-    new Table({
-      file: vectorFromArray(
-        rows.map((row) => row.file),
-        new Utf8(),
+    new Table(
+      Object.fromEntries(
+        FILES_COLUMNS.map((column) => [column.name, vectorFromArray(rows.map(column.value), column.type)]),
       ),
-      original_name: vectorFromArray(
-        rows.map((row) => row.originalName),
-        new Utf8(),
-      ),
-      size: vectorFromArray(
-        rows.map((row) => BigInt(row.size)),
-        new Uint64(),
-      ),
-      ingest_order: vectorFromArray(
-        rows.map((row) => row.ingestOrder),
-        new Int32(),
-      ),
-      status: vectorFromArray(
-        rows.map((row) => row.status),
-        new Utf8(),
-      ),
-      error: vectorFromArray(
-        rows.map((row) => row.error),
-        new Utf8(),
-      ),
-    }),
+    ),
   );
+}
+
+/** The `_files` catalog as the explorer lists it. */
+export function filesTableOverview(rowCount: number): TableOverview {
+  return {
+    name: '_files',
+    rowCount,
+    columns: FILES_COLUMNS.map(({ name, type, nullable }) => ({ name, type: type.toString(), nullable })),
+  };
 }
 
 /** Unions per-file parse overviews: row counts sum by name; first-seen order and columns win. */

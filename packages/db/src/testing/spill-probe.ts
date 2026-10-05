@@ -1,7 +1,7 @@
 import { AsyncDuckDB, VoidLogger, selectBundle } from '@duckdb/duckdb-wasm';
 
-// reuse LOCAL_BUNDLES by exporting it from browser.ts (internal export)
-import { LOCAL_BUNDLES } from './browser.js';
+import { LOCAL_BUNDLES } from '../bundles.js';
+import { hardenConnection, openLocalConnection } from '../hardening.js';
 
 export interface SpillProbeReport {
   opfsAvailable: boolean;
@@ -38,8 +38,7 @@ export async function probeSpillCapability(): Promise<SpillProbeReport> {
   const worker = new Worker(bundle.mainWorker);
   const db = new AsyncDuckDB(new VoidLogger(), worker);
   try {
-    await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-    const conn = await db.connect();
+    const conn = await openLocalConnection(db, bundle);
     const path = 'opfs://byteql-spill/__probe__/t/0.parquet';
     const secondPath = 'opfs://byteql-spill/__probe__/t/1.parquet';
     try {
@@ -77,8 +76,7 @@ export async function probeSpillCapability(): Promise<SpillProbeReport> {
       }
     }
     try {
-      await conn.query(`SET allowed_directories = ['opfs://byteql-spill/'];`);
-      await conn.query(`SET enable_external_access = false;`);
+      await hardenConnection(conn, { allowedDirectories: ['opfs://byteql-spill/'] });
       // whitelisted path must still work, non-whitelisted must fail:
       await conn.query(`SELECT count(*) FROM parquet_scan('${path}');`);
       let leaked = false;

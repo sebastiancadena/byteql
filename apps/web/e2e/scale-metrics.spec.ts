@@ -9,7 +9,14 @@ import { expect, test } from '@playwright/test';
 
 import { createScaleBenchmarkRecord } from '../src/lib/benchmark.js';
 import { generateCapture } from './support/capture.js';
-import { runSql, setSessionOverrides, waitForAppReady, type SessionOverrides } from './support/app.js';
+import {
+  enableReadStats,
+  readStats,
+  runSql,
+  type SessionOverrides,
+  setSessionOverrides,
+  waitForAppReady,
+} from './support/app.js';
 
 // "GB" here means the decimal 1e9 bytes, matching createScaleBenchmarkRecord's own unit choice
 // (see the comment there) and the run-scale-bench.mjs `--gb` flag — NOT the binary MiB/GiB used
@@ -73,12 +80,12 @@ test('scaled capture meets proportional throughput and pushdown read-fraction', 
     await expect(page.getByRole('region', { name: 'Tables' })).toBeVisible({ timeout: 570_000 });
     const parseElapsedMs = performance.now() - openStartedAt;
 
-    await page.evaluate((tables) => window.__byteqlE2E!.enableReadStats(tables), ['packets']);
+    await enableReadStats(page, ['packets']);
     const queryStartedAt = performance.now();
     await runSql(page, 'select ts, caplen, len from packets where caplen > 900');
     await expect(page.getByRole('columnheader', { name: /^ts /u })).toBeVisible();
     const queryElapsedMs = performance.now() - queryStartedAt;
-    const stats = await page.evaluate(() => window.__byteqlE2E!.readStats());
+    const stats = await readStats(page);
 
     // Denominator is the ORIGINAL raw capture size, not the (much smaller) parquet spill size —
     // this measures how little of the source file's byte budget the pushdown query needed to

@@ -1,30 +1,7 @@
-import type { FormatCapability, PackQuery, ParseIssue, TableOverview, TableSchema } from '@byteql/core';
-
 import InlineParseWorker from '../workers/parse.worker.ts?worker&inline';
+import type { BatchMessage, ParseProgress, StreamedParseResult, WorkerResponse } from './parse-protocol.js';
 
-export interface ParseProgress {
-  stage: 'normalizing' | 'parsing' | 'projecting';
-  completed: number;
-  total: number | null;
-  label: string;
-}
-
-export interface BatchMessage {
-  seq: number;
-  table: string;
-  ipc: Uint8Array;
-  rowCount: number;
-}
-
-export interface StreamedParseResult {
-  format: { id: string; title: string };
-  tables: readonly TableOverview[];
-  issues: readonly ParseIssue[];
-  queries: readonly PackQuery[];
-  capabilities: Readonly<Record<string, FormatCapability>>;
-  /** Every table the format pack declares (`FormatPack.schemas()`), not just populated ones. */
-  schemas: readonly TableSchema[];
-}
+export type { BatchMessage, ParseProgress, StreamedParseResult } from './parse-protocol.js';
 
 export interface ParseHandlers {
   onProgress(progress: ParseProgress): void;
@@ -60,17 +37,9 @@ interface ActiveTask {
   ackChain: Promise<void>;
 }
 
-type WorkerResponse =
-  | ({ type: 'progress'; taskId: number } & ParseProgress)
-  | ({ type: 'batch'; taskId: number } & BatchMessage)
-  | ({ type: 'finish'; taskId: number } & StreamedParseResult)
-  | { type: 'error'; taskId: number; message: string }
-  | { type: 'cancelled'; taskId: number };
-
 const abortError = (): DOMException => new DOMException('The parse was cancelled.', 'AbortError');
 
-export const createInlineParseWorker = (): WorkerPort =>
-  new InlineParseWorker({ name: 'byteql-midi-parser' });
+export const createInlineParseWorker = (): WorkerPort => new InlineParseWorker({ name: 'byteql-parser' });
 
 export class ParseWorkerClient implements ParseClientPort {
   private worker: WorkerPort;
@@ -137,11 +106,6 @@ export class ParseWorkerClient implements ParseClientPort {
     if (this.disposed || !this.active) return;
     const active = this.active;
     this.active = null;
-    try {
-      this.worker.postMessage({ type: 'cancel', taskId: active.id });
-    } catch {
-      // Termination below remains authoritative if cooperative cancellation cannot be posted.
-    }
     active.reject(abortError());
     this.replaceWorker();
   }
@@ -239,11 +203,6 @@ export class ParseWorkerClient implements ParseClientPort {
             active.reject(error);
             if (this.active !== active) return;
             this.active = null;
-            try {
-              this.worker.postMessage({ type: 'cancel', taskId: active.id });
-            } catch {
-              // Termination below remains authoritative if cooperative cancellation cannot be posted.
-            }
             this.replaceWorker();
           });
         break;
@@ -290,10 +249,6 @@ export class ParseWorkerClient implements ParseClientPort {
         );
         break;
       }
-      case 'cancelled':
-        this.active = null;
-        active.reject(abortError());
-        break;
     }
   }
 

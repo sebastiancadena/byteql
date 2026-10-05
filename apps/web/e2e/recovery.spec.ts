@@ -1,6 +1,13 @@
 import { expect, test } from '@playwright/test';
 
-import { fixturePath, openFixture, runSql, waitForAppReady } from './support/app.js';
+import {
+  armParserCrash,
+  fixturePath,
+  openFixture,
+  runSql,
+  waitForAppReady,
+  workerCount,
+} from './support/app.js';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
@@ -22,13 +29,13 @@ test('keeps recoverable rows and exposes the malformed-track error to SQL', asyn
 });
 
 test('recreates a crashed parser worker and accepts an explicit file retry', async ({ page }) => {
-  const initialWorkerCount = await page.evaluate(() => window.__byteqlE2E?.workerCount() ?? -1);
+  const initialWorkerCount = await workerCount(page);
   expect(initialWorkerCount).toBe(1);
 
-  await page.evaluate(() => window.__byteqlE2E?.armParserCrash());
+  await armParserCrash(page);
   await page.getByLabel('Open file input').setInputFiles(fixturePath('malformed-then-valid.mid'));
   await expect(page.getByRole('alert')).toContainText('worker stopped unexpectedly');
-  await expect.poll(() => page.evaluate(() => window.__byteqlE2E?.workerCount() ?? -1)).toBe(2);
+  await expect.poll(() => workerCount(page)).toBe(2);
 
   await openFixture(page, 'malformed-then-valid.mid');
   await expect(page.getByRole('navigation', { name: 'Data explorer' })).toContainText('1 parse diagnostic');

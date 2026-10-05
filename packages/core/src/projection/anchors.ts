@@ -1,4 +1,5 @@
 import { ProjectionCompileError } from './expression.js';
+import { missingProperty, readOwnDataProperty } from './own-property.js';
 
 export type AnchorStep =
   | { readonly kind: 'field'; readonly name: string }
@@ -92,16 +93,6 @@ export const isAnchorPrefix = (prefix: CompiledAnchor, anchor: CompiledAnchor): 
     if (step.kind === 'index') return candidate.kind === 'index' && candidate.index === step.index;
     return true;
   });
-};
-
-export const missingProperty = Symbol('missing property');
-
-export const readOwnDataProperty = (value: unknown, key: string): unknown | typeof missingProperty => {
-  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
-    return missingProperty;
-  }
-  const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  return descriptor && 'value' in descriptor ? descriptor.value : missingProperty;
 };
 
 interface TraversalCandidate {

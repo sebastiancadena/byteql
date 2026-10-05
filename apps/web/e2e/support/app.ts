@@ -1,61 +1,86 @@
+import { Buffer } from 'node:buffer';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { expect, type Download, type Page, type TestInfo } from '@playwright/test';
 
-import type { SpillProbeReport } from '@byteql/db';
+import type {
+  BrowserE2EControl,
+  ReadStats,
+  SerializableResult,
+  SessionOverrides,
+} from '../../src/lib/e2e-harness.js';
 
-export interface AudioStats {
-  loadCalls: number;
-  disposeCalls: number;
-  loadedRows: number;
-}
-
-export interface SessionOverrides {
-  tiering?: { tierThresholdBytes?: number; rotationBytes?: number };
-}
-
-export interface ReadStats {
-  totalBytesRead: number;
-  spillBytes: number;
-}
-
-export interface ByteqlE2EControl {
-  armParserCrash(): void;
-  workerCount(): number;
-  audioStats(): AudioStats;
-  spillProbe(): Promise<SpillProbeReport>;
-  sessionOverrides?: SessionOverrides;
-  spillFiles(): Promise<readonly string[]>;
-  enableReadStats(tables: readonly string[]): Promise<void>;
-  readStats(): Promise<ReadStats>;
-  queryResultMetrics(): Promise<{
-    loadedRows: number;
-    complete: boolean;
-    windowStart: number;
-    windowRows: number;
-    sendCount: number;
-    decodedBytes: number;
-    orderRevision: number;
-    sort: { columnIndex: number; direction: 'asc' | 'desc' } | null;
-    sortPending: boolean;
-    derivedViewCount: number;
-    viewCaches: readonly { kind: 'base' | 'display'; decodedBytes: number }[];
-    resultOpfsPaths: readonly string[];
-  }>;
-  exportFiles(): Promise<readonly string[]>;
-  drainQueryResult(): Promise<void>;
-  loadResultWindow(globalRow: number): Promise<void>;
-  seedResultPageOrphan(): Promise<{ orphanPath: string; unrelatedPath: string }>;
-}
+export type { ReadStats, SerializableResult, SessionOverrides };
 
 declare global {
   interface Window {
-    __byteqlE2E?: ByteqlE2EControl;
-    __BYTEQL_E2E__?: ByteqlE2EControl;
+    __BYTEQL_E2E__?: BrowserE2EControl;
     __byteqlE2EOverrides?: SessionOverrides;
   }
 }
+
+type Variant = 'mvp' | 'eh';
+
+/*
+ * Typed access to the e2e control object (`window.__BYTEQL_E2E__`, present only in the
+ * instrumented build). Specs go through these helpers instead of touching the global, so the
+ * object's name and shape live in one place.
+ */
+
+export const hasE2EControl = (page: Page): Promise<boolean> =>
+  page.evaluate(() => typeof window.__BYTEQL_E2E__ === 'object');
+
+export const audioStats = (page: Page) => page.evaluate(() => window.__BYTEQL_E2E__!.audioStats());
+export const workerCount = (page: Page) => page.evaluate(() => window.__BYTEQL_E2E__!.workerCount());
+export const armParserCrash = (page: Page) => page.evaluate(() => window.__BYTEQL_E2E__!.armParserCrash());
+export const spillProbe = (page: Page) => page.evaluate(() => window.__BYTEQL_E2E__!.spillProbe());
+export const spillFiles = (page: Page) => page.evaluate(() => window.__BYTEQL_E2E__!.spillFiles());
+export const exportFiles = (page: Page) => page.evaluate(() => window.__BYTEQL_E2E__!.exportFiles());
+export const storedResult = (page: Page) => page.evaluate(() => window.__BYTEQL_E2E__!.storedResult());
+export const drainQueryResult = (page: Page) =>
+  page.evaluate(() => window.__BYTEQL_E2E__!.drainQueryResult());
+export const loadResultWindow = (page: Page, globalRow: number) =>
+  page.evaluate((row) => window.__BYTEQL_E2E__!.loadResultWindow(row), globalRow);
+export const seedResultPageOrphan = (page: Page) =>
+  page.evaluate(() => window.__BYTEQL_E2E__!.seedResultPageOrphan());
+export const enableReadStats = (page: Page, tables: readonly string[]) =>
+  page.evaluate((names) => window.__BYTEQL_E2E__!.enableReadStats(names), tables);
+export const readStats = (page: Page) => page.evaluate(() => window.__BYTEQL_E2E__!.readStats());
+/**
+ * Reads an exported artifact back through the isolated export reader. The bytes cross into the
+ * page as base64 and are expanded there: handing Playwright a large `number[]` costs minutes of
+ * protocol serialization per call.
+ */
+export const readExportArtifact = (
+  page: Page,
+  input: {
+    format: 'csv' | 'parquet';
+    bytes: Uint8Array | readonly number[];
+    csvColumns?: Array<{ name: string; type: string }>;
+  },
+) =>
+  page.evaluate(
+    ({ format, base64, csvColumns }) => {
+      const binary = atob(base64);
+      const bytes = Array.from({ length: binary.length }, (_, index) => binary.charCodeAt(index));
+      return window.__BYTEQL_E2E__!.readExportArtifact({ format, bytes, csvColumns });
+    },
+    {
+      format: input.format,
+      base64: Buffer.from(input.bytes).toString('base64'),
+      csvColumns: input.csvColumns,
+    },
+  );
+export const probeResultSort = (page: Page, variant: Variant) =>
+  page.evaluate((v) => window.__BYTEQL_E2E__!.probeResultSort(v), variant);
+export const probeResultsExport = (page: Page, variant: Variant, rows: number) =>
+  page.evaluate(({ v, count }) => window.__BYTEQL_E2E__!.probeResultsExport(v, count), {
+    v: variant,
+    count: rows,
+  });
+export const probeResultColumns = (page: Page, variant: Variant) =>
+  page.evaluate((v) => window.__BYTEQL_E2E__!.probeResultColumns(v), variant);
 
 /**
  * Arms `SessionOverrides` for the next page load. Must run BEFORE `page.goto()`: the app reads
@@ -127,7 +152,7 @@ export async function openAudioViewer(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Audio playback' })).toBeVisible();
 }
 
-export const metrics = (page: Page) => page.evaluate(() => window.__byteqlE2E.queryResultMetrics());
+export const metrics = (page: Page) => page.evaluate(() => window.__BYTEQL_E2E__!.queryResultMetrics());
 
 /** Clicks a sort control by its accessible name and waits for the sort to commit. */
 export const sortBy = async (page: Page, name: string): Promise<void> => {
@@ -148,7 +173,7 @@ export const expectRows = async (
   await expect
     .poll(
       async () => {
-        await page.evaluate(() => window.__byteqlE2E.drainQueryResult());
+        await drainQueryResult(page);
         return (await metrics(page)).loadedRows;
       },
       { timeout: options.timeout ?? 120_000 },

@@ -2,6 +2,7 @@ import { DataType, type Schema } from 'apache-arrow';
 
 import { isSupportedParquetType } from './export-types.js';
 import { resultColumnLabel } from './result-columns.js';
+import { quoteString } from './sql.js';
 
 /**
  * Private ordinal carried alongside every snapshot page. It records each row's position in the
@@ -44,7 +45,7 @@ export const SORT_UNAVAILABLE_RUNTIME =
  * statement succeeds on `eh`. That is a limitation of the runtime rather than of the snapshot
  * path — measured with the staging machinery removed entirely — so sorting is refused outright
  * there instead of failing unpredictably on particular data. See
- * `docs/result-column-sorting-compatibility.md`; `sort-probe.ts` guards the finding.
+ * `docs/result-column-sorting-compatibility.md`; `testing/sort-probe.ts` guards the finding.
  *
  * `mvp` is selected only for browsers without WebAssembly exception handling; everything current
  * gets `eh`.
@@ -94,8 +95,6 @@ export function resultSortEligibility(schema: Schema): ResultSortEligibility {
   }
   return { supported: true };
 }
-
-const quoteString = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
 /**
  * Builds the ordering statement. Nothing user-controlled reaches the SQL text: column names are

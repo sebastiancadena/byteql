@@ -88,3 +88,20 @@ export function resultSortInteractionBlocked(state: SessionState): boolean {
   if (isResultSorting(state)) return true;
   return hasActiveDownload(state);
 }
+
+/**
+ * The one busy predicate sort and download consult about each other, so neither reaches into the
+ * other's bookkeeping: a sort refuses to start while a download still owns the result, and a
+ * download refuses to start while a sort is pending.
+ * The gate sort controls actually consult is `resultSortInteractionBlocked`, over session state.
+ */
+export interface ResultBusy {
+  /** A sort has been requested and has not yet committed, failed, or been cancelled. */
+  sortPending(): boolean;
+  /** A download still owns the result (`hasActiveDownload`). */
+  downloadActive(): boolean;
+}
+
+export function createResultBusy(state: () => SessionState, sortPending: () => boolean): ResultBusy {
+  return { sortPending, downloadActive: () => hasActiveDownload(state()) };
+}

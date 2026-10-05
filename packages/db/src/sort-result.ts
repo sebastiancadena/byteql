@@ -1,8 +1,8 @@
 import type { AsyncDuckDB, AsyncDuckDBConnection } from '@duckdb/duckdb-wasm';
-import { tableToIPC, type Table } from 'apache-arrow';
 import type { RecordBatch as DuckdbRecordBatch, Schema as DuckdbSchema } from 'apache-arrow-duckdb';
 
 import { convertDuckdbTable } from './arrow-bridge.js';
+import { hasDbErrorCode, isStorageUnavailableError } from './errors.js';
 import type { ExportFiles } from './export-files.js';
 import type { QueryPageStore } from './query-pages.js';
 import {
@@ -14,12 +14,15 @@ import {
 } from './result-sort.js';
 import { resultSortKeyRefusal } from './result-columns.js';
 import { restoreResultSchema, snapshotPage } from './result-snapshot.js';
+import { ShardWorkspace } from './shard-workspace.js';
 import { isQuotaError } from './spill-files.js';
 import { StoredResultView } from './stored-result-view.js';
 import { QUERY_PAGE_ROWS, type QueryPageSummary, type QueryResultView, type QuerySession } from './types.js';
 
 /** Connection-local staging table every snapshot page is appended into, one shard at a time. */
 const SORT_PAGE_TABLE = '__byteql_sort_page';
+/** Prefix of the per-operation seed table that establishes the staging table's column types. */
+const SORT_SEED_PREFIX = '__byteql_sort_seed_';
 
 export interface ResultSortDependencies {
   readonly database: Pick<AsyncDuckDB, 'registerOPFSFileName' | 'dropFile'>;
@@ -34,16 +37,8 @@ export interface ResultSortDependencies {
   onCleanupFailure(retry: () => Promise<void>, error: unknown): void;
 }
 
-const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
-const quoteString = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
 const isAbortError = (error: unknown): boolean =>
   error instanceof DOMException ? error.name === 'AbortError' : false;
-
-const isStorageUnavailable = (error: unknown): boolean => {
-  const name = error instanceof Error ? error.name : (error as { name?: unknown } | null)?.name;
-  return name === 'NotSupportedError' || name === 'SecurityError';
-};
 
 /**
  * Maps a failure onto the sort's own error codes without flattening the ones that already carry
@@ -51,12 +46,12 @@ const isStorageUnavailable = (error: unknown): boolean => {
  */
 const asSortError = (error: unknown): unknown => {
   if (isAbortError(error) || error instanceof ResultSortError) return error;
-  if (isStorageUnavailable(error)) {
+  if (isStorageUnavailableError(error)) {
     return new ResultSortError('SORT_UNAVAILABLE', 'Column sorting requires local browser storage (OPFS).', {
       cause: error,
     });
   }
-  if (isQuotaError(error) || String((error as Error)?.message ?? '').includes('QUOTA_EXCEEDED')) {
+  if (isQuotaError(error) || hasDbErrorCode(error, 'SPILL_QUOTA_EXCEEDED', 'RESULT_SPILL_QUOTA_EXCEEDED')) {
     return new ResultSortError(
       'SORT_STORAGE_FULL',
       'Local storage ran out of space while sorting. Free up space and try again.',
@@ -73,15 +68,11 @@ type SlicableBatch = DuckdbRecordBatch & {
 };
 
 class SortedResultWriter {
-  private readonly registeredPaths: string[] = [];
   private readonly shards: string[] = [];
   private readonly summaries: QueryPageSummary[] = [];
-  private readonly seedTable = `__byteql_sort_seed_${crypto.randomUUID().replaceAll('-', '')}`;
-  private connection: AsyncDuckDBConnection | null = null;
-  private files: ExportFiles | null = null;
+  private workspace: ShardWorkspace | null = null;
   private store: QueryPageStore | null = null;
   private storeAdopted = false;
-  private stagingReady = false;
   private outputRows = 0;
 
   constructor(
@@ -111,8 +102,7 @@ class SortedResultWriter {
       this.storeAdopted = true;
       return view;
     } catch (error) {
-      await this.abandon();
-      throw asSortError(error);
+      throw await this.abandon(asSortError(error));
     }
   }
 
@@ -140,9 +130,13 @@ class SortedResultWriter {
   }
 
   private async acquire(): Promise<void> {
-    this.files = await this.dependencies.createFiles();
+    this.workspace = await ShardWorkspace.open(this.dependencies, {
+      staging: { kind: 'temp-table', table: SORT_PAGE_TABLE, seedPrefix: SORT_SEED_PREFIX },
+      label: 'Result sort',
+      signal: this.options.signal,
+    });
     this.options.signal.throwIfAborted();
-    this.connection = await this.dependencies.connect();
+    await this.workspace.connect();
     this.options.signal.throwIfAborted();
     this.store = await this.dependencies.createStore();
     this.options.signal.throwIfAborted();
@@ -156,86 +150,20 @@ class SortedResultWriter {
       this.options.signal.throwIfAborted();
       const page = await this.base.readPage(summary.index);
       this.options.signal.throwIfAborted();
-      await this.appendStagingPage(snapshotPage(page.table, summary.startRow, SORT_ORDINAL_COLUMN));
-      const shard = await this.register(`sort-shard-${summary.index}.parquet`);
-      this.shards.push(shard);
-      await this.runStatement(
-        `COPY ${quoteIdentifier(SORT_PAGE_TABLE)} TO ${quoteString(shard)} ` +
-          '(FORMAT PARQUET, COMPRESSION SNAPPY)',
-      );
-      await this.connection!.query(`TRUNCATE ${quoteIdentifier(SORT_PAGE_TABLE)}`);
+      const snapshot = snapshotPage(page.table, summary.startRow, SORT_ORDINAL_COLUMN);
+      this.shards.push(await this.workspace!.writeShard(snapshot, `sort-shard-${summary.index}.parquet`));
       staged += summary.rowCount;
       this.options.onProgress({ phase: 'staging', rows: staged, totalRows });
     }
-  }
-
-  /**
-   * Appends one snapshot page into the connection-local staging table.
-   *
-   * The table's exact column types are established once, from a zero-row insert into a
-   * per-operation seed table that is then moved into TEMP and dropped. Going through TEMP keeps the
-   * staging table invisible to the rest of the database and disposed of by closing the connection,
-   * and the generated seed name keeps it from ever colliding with a user table.
-   */
-  private async appendStagingPage(staged: Table): Promise<void> {
-    if (!this.stagingReady) {
-      const empty = tableToIPC(staged.slice(0, 0), 'stream').slice();
-      await this.connection!.insertArrowFromIPCStream(empty, { name: this.seedTable, create: true });
-      this.options.signal.throwIfAborted();
-      await this.connection!.query(
-        `CREATE TEMP TABLE ${quoteIdentifier(SORT_PAGE_TABLE)} AS ` +
-          `SELECT * FROM ${quoteIdentifier(this.seedTable)} WHERE false`,
-      );
-      await this.connection!.query(`DROP TABLE ${quoteIdentifier(this.seedTable)}`);
-      this.stagingReady = true;
-    }
-    // insertArrowFromIPCStream is not a cancellable SQL cursor: let it settle, then recheck.
-    await this.connection!.insertArrowFromIPCStream(tableToIPC(staged, 'stream').slice(), {
-      name: SORT_PAGE_TABLE,
-      create: false,
-    });
-    this.options.signal.throwIfAborted();
   }
 
   /** Orders the shards on the dedicated connection and stores the output as bounded pages. */
   private async order(totalRows: number): Promise<void> {
     this.options.onProgress({ phase: 'sorting', rows: 0, totalRows });
     const sql = buildResultSortSql(this.shards, this.base.schema, this.options.sort);
-    this.options.signal.throwIfAborted();
-
-    const reader = await this.connection!.send(sql, true);
-    const iterator = reader[Symbol.asyncIterator]();
-    let cancelled: Promise<boolean> | null = null;
-    const abort = (): void => {
-      cancelled ??= this.connection!.cancelSent();
-    };
-    const joinCancellation = async (): Promise<void> => {
-      if (cancelled) await cancelled.catch(() => false);
-    };
-    if (this.options.signal.aborted) abort();
-    else this.options.signal.addEventListener('abort', abort, { once: true });
-
-    let primary: unknown = null;
-    try {
-      for (;;) {
-        const next = await iterator.next();
-        if (next.done === true) break;
-        await this.storeBatch(reader.schema, next.value as SlicableBatch, totalRows);
-        this.options.signal.throwIfAborted();
-      }
-    } catch (error) {
-      primary = error;
-    } finally {
-      this.options.signal.removeEventListener('abort', abort);
-      await joinCancellation();
-      try {
-        await iterator.return?.();
-      } catch {
-        // The reader is already finished or cancelled; that must not mask the primary failure.
-      }
-    }
-    if (primary !== null) throw primary;
-
+    await this.workspace!.stream(sql, (schema, batch) =>
+      this.storeBatch(schema, batch as SlicableBatch, totalRows),
+    );
     if (this.outputRows !== totalRows) {
       throw new ResultSortError(
         'SORT_FAILED',
@@ -264,58 +192,11 @@ class SortedResultWriter {
     }
   }
 
-  private async register(name: string): Promise<string> {
-    const path = this.files!.path(name);
-    await this.dependencies.database.registerOPFSFileName(path);
-    this.registeredPaths.push(path);
-    return path;
-  }
-
-  /** Runs one long statement, cancelling only this connection if the caller aborts. */
-  private async runStatement(sql: string): Promise<void> {
-    this.options.signal.throwIfAborted();
-    let cancelled: Promise<boolean> | null = null;
-    const abort = (): void => {
-      cancelled ??= this.connection!.cancelSent();
-    };
-    const joinCancellation = async (): Promise<void> => {
-      if (cancelled) await cancelled.catch(() => false);
-    };
-    this.options.signal.addEventListener('abort', abort, { once: true });
-    let primary: unknown = null;
-    try {
-      const reader = await this.connection!.send(sql, true);
-      for await (const batch of reader) void batch;
-      this.options.signal.throwIfAborted();
-    } catch (error) {
-      primary = error;
-    } finally {
-      this.options.signal.removeEventListener('abort', abort);
-      await joinCancellation();
-    }
-    if (primary !== null) throw primary;
-  }
-
-  /**
-   * Releases everything the sort borrowed, on the success path.
-   *
-   * The connection is joined before file handles are dropped — a live connection can still hold a
-   * shard open — and every cleanup is attempted even when an earlier one fails.
-   */
+  /** Releases everything the sort borrowed, on the success path. */
   private async release(): Promise<void> {
-    const errors: unknown[] = [];
-    await this.closeConnection(errors);
-    await this.dropRegisteredPaths(errors);
-    const files = this.files;
-    this.files = null;
-    if (files) {
-      try {
-        await files.dispose();
-      } catch (error) {
-        errors.push(error);
-        this.dependencies.onCleanupFailure(() => files.dispose(), error);
-      }
-    }
+    const workspace = this.workspace;
+    this.workspace = null;
+    const errors = workspace ? await workspace.release() : [];
     if (errors.length > 0) {
       throw new ResultSortError(
         'SORT_CLEANUP_FAILED',
@@ -325,57 +206,31 @@ class SortedResultWriter {
     }
   }
 
-  /** Releases everything on a failure path, and disposes the candidate that will never commit. */
-  private async abandon(): Promise<void> {
-    const errors: unknown[] = [];
-    await this.closeConnection(errors);
-    await this.dropRegisteredPaths(errors);
-    const files = this.files;
-    this.files = null;
-    if (files) {
-      try {
-        await files.dispose();
-      } catch (error) {
-        this.dependencies.onCleanupFailure(() => files.dispose(), error);
-      }
-    }
+  /**
+   * Releases everything on a failure path, disposes the candidate that will never commit, and
+   * returns the error to raise: `primary` itself when every cleanup succeeded, otherwise a
+   * `SORT_CLEANUP_FAILED` whose cause aggregates `primary` first and then each cleanup failure.
+   * Failed releases are also handed to `onCleanupFailure` for a later retry.
+   */
+  private async abandon(primary: unknown): Promise<unknown> {
+    const workspace = this.workspace;
+    this.workspace = null;
+    const errors = workspace ? await workspace.release() : [];
     if (!this.storeAdopted && this.store) {
       const store = this.store;
       this.store = null;
       try {
         await store.dispose();
       } catch (error) {
+        errors.push(error);
         this.dependencies.onCleanupFailure(() => store.dispose(), error);
       }
     }
-  }
-
-  private async closeConnection(errors: unknown[]): Promise<void> {
-    const connection = this.connection;
-    this.connection = null;
-    if (!connection) return;
-    try {
-      // Closing removes the TEMP staging table with it; the seed table is dropped during staging.
-      await connection.close();
-    } catch (error) {
-      errors.push(error);
-      this.dependencies.onCleanupFailure(() => connection.close(), error);
-    }
-  }
-
-  private async dropRegisteredPaths(errors: unknown[]): Promise<void> {
-    const paths = [...this.registeredPaths];
-    this.registeredPaths.length = 0;
-    for (const path of paths) {
-      try {
-        await this.dependencies.database.dropFile(path);
-      } catch (error) {
-        errors.push(error);
-        this.dependencies.onCleanupFailure(async () => {
-          await this.dependencies.database.dropFile(path);
-        }, error);
-      }
-    }
+    if (errors.length === 0) return primary;
+    const message = 'The sort did not finish, and temporary local files could not be released.';
+    return new ResultSortError('SORT_CLEANUP_FAILED', message, {
+      cause: new AggregateError([primary, ...errors], message, { cause: primary }),
+    });
   }
 }
 

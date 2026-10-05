@@ -2,7 +2,7 @@
  * OPFS lifecycle helpers for the DuckDB spill tier.
  *
  * DuckDB-WASM's `opfs://` glob syntax does not enumerate files in this build (verified by the
- * Task 1 capability probe — see `spill-probe.ts`), so spill views are always built from an
+ * Task 1 capability probe — see `testing/spill-probe.ts`), so spill views are always built from an
  * explicit, session-tracked `parquet_scan([...])` path array, never a glob. These helpers only
  * manage the OPFS directory tree itself (composing paths, deleting generations, sweeping
  * orphans); they never read or enumerate the parquet files DuckDB writes.

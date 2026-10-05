@@ -11,6 +11,7 @@ import {
 } from 'apache-arrow';
 import { Table as DuckdbTable, tableFromIPC as duckdbTableFromIPC } from 'apache-arrow-duckdb';
 import { describe, expect, it, vi } from 'vitest';
+import { ByteqlDbError } from './errors.js';
 
 import { duplicateResultTable } from '../test-support/result-columns.js';
 import { QueryPageStore } from './query-pages.js';
@@ -422,7 +423,10 @@ describe('writeSortedResult', () => {
       const store = new QueryPageStore({ persistence: null });
       environments.stores.push(store);
       vi.spyOn(store, 'put').mockRejectedValue(
-        new Error('RESULT_SPILL_QUOTA_EXCEEDED: failed to persist a page.'),
+        new ByteqlDbError(
+          'RESULT_SPILL_QUOTA_EXCEEDED',
+          'RESULT_SPILL_QUOTA_EXCEEDED: failed to persist a page.',
+        ),
       );
       return store;
     });
@@ -470,7 +474,77 @@ describe('writeSortedResult', () => {
     expect(environments.files.dispose).toHaveBeenCalled();
   });
 
+  it('reports a cleanup failure on a failure path, keeping the primary error first', async () => {
+    const base = fakeBase([page([3, 1]), page([2])]);
+    const environments = environment({ output: [page([1, 2])] });
+    const failure = new Error('scratch still held');
+    environments.files.dispose = vi.fn().mockRejectedValue(failure);
+    const { options } = sortOptions();
+    const error = await writeSortedResult(environments.dependencies, base, options).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toMatchObject({ code: 'SORT_CLEANUP_FAILED' });
+    const cause = (error as ResultSortError).cause as AggregateError;
+    expect(cause).toBeInstanceOf(AggregateError);
+    expect(cause.errors).toHaveLength(2);
+    expect(cause.errors[0]).toMatchObject({ code: 'SORT_FAILED' });
+    expect(cause.errors[1]).toBe(failure);
+    expect(environments.cleanupFailures.map((entry) => entry.error)).toEqual([failure]);
+    expect(() => environments.stores[0]!.get(0)).toThrow(/disposed/iu);
+  });
+
   describe('cancellation', () => {
+    it('reports instead of swallowing a cleanup failure after an abort', async () => {
+      const base = fakeBase([page([3]), page([1])]);
+      const environments = environment({ output: [page([1, 3])] });
+      const failure = new Error('handle still open');
+      environments.database.dropFile = vi.fn().mockRejectedValue(failure);
+      const controller = new AbortController();
+      const originalRead = base.readPage.bind(base);
+      let reads = 0;
+      base.readPage = async (index: number) => {
+        const result = await originalRead(index);
+        if (reads++ === 1) controller.abort(new DOMException('cancelled', 'AbortError'));
+        return result;
+      };
+      const { options } = sortOptions({ signal: controller.signal });
+      const error = await writeSortedResult(environments.dependencies, base, options).catch(
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toMatchObject({ code: 'SORT_CLEANUP_FAILED' });
+      const cause = (error as ResultSortError).cause as AggregateError;
+      expect(cause.errors[0]).toMatchObject({ name: 'AbortError' });
+      expect(cause.errors.slice(1)).toEqual([failure]);
+      expect(environments.cleanupFailures.map((entry) => entry.error)).toEqual([failure]);
+    });
+
+    it('reports a failed statement cancellation instead of swallowing it', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const base = fakeBase([page([2, 1])]);
+      const environments = environment({ output: [page([1, 2])], gate });
+      const cancelFailure = new Error('cancel refused');
+      environments.connection.cancelSent = vi.fn().mockRejectedValue(cancelFailure);
+      const controller = new AbortController();
+      const { options } = sortOptions({ signal: controller.signal });
+      const pending = writeSortedResult(environments.dependencies, base, options);
+      await environments.orderingStarted;
+      controller.abort(new DOMException('cancelled', 'AbortError'));
+      release();
+      const error = await pending.catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ResultSortError);
+      const cause = (error as ResultSortError).cause as AggregateError;
+      expect(cause).toBeInstanceOf(AggregateError);
+      expect(cause.errors[0]).toMatchObject({ name: 'AbortError' });
+      expect(cause.errors[1]).toBe(cancelFailure);
+      expect(environments.connection.close).toHaveBeenCalled();
+    });
+
     it('rejects before acquiring anything when the signal is already aborted', async () => {
       const base = fakeBase([page([1])]);
       const environments = environment();

@@ -3,7 +3,13 @@ import { Buffer } from 'node:buffer';
 import { expect, test, type Page } from '@playwright/test';
 
 import { generateCapture } from './support/capture.js';
-import { runSql, setSessionOverrides, waitForAppReady, type SessionOverrides } from './support/app.js';
+import {
+  runSql,
+  type SessionOverrides,
+  setSessionOverrides,
+  spillFiles,
+  waitForAppReady,
+} from './support/app.js';
 
 // Lowers the tiering thresholds well below production defaults so a modest capture exercises the
 // OPFS spill tier and rolls multiple parquet chunks within a CI-friendly runtime. `rotationBytes`
@@ -114,7 +120,7 @@ test('a large capture streams through the opfs spill tier and stays queryable', 
   expect(spillTierProvenance).toEqual(memoryTierProvenance);
 
   // Rotation actually happened, not just a single residual flush at finalize.
-  const files = await page.evaluate(() => window.__byteqlE2E!.spillFiles());
+  const files = await spillFiles(page);
   const packetsChunks = files.filter((path) => path.includes('/packets/'));
   expect(packetsChunks.length).toBeGreaterThanOrEqual(2);
 });
@@ -136,6 +142,6 @@ test('the memory tier still serves small files with identical values', async ({ 
   await page.getByRole('columnheader', { name: /^n /u }).waitFor();
   await expect(page.getByRole('gridcell', { name: String(dnsCount), exact: true })).toBeVisible();
 
-  const files = await page.evaluate(() => window.__byteqlE2E!.spillFiles());
+  const files = await spillFiles(page);
   expect(files).toEqual([]);
 });

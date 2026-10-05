@@ -4,8 +4,11 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, test } from '@playwright/test';
 
+import { hasE2EControl } from './support/app.js';
+
 const webRoot = fileURLToPath(new URL('../', import.meta.url));
-const e2eMarkers = /__BYTEQL_E2E__|__byteqlE2E|armParserCrash|E2E audio engine/u;
+const e2eMarkers =
+  /__BYTEQL_E2E__|armParserCrash|E2E audio engine|probeSpillCapability|probeResultSort|probeResultsExport|probeResultColumns|queryResultDiagnostics/u;
 
 async function readJavaScript(directory: string): Promise<string> {
   const names = (await readdir(directory)).filter((name) => name.endsWith('.js'));
@@ -24,5 +27,5 @@ test('serves instrumented output without changing deployable dist', async ({ pag
 
   await page.goto('/');
   await page.locator('[data-app-ready="true"]').waitFor();
-  expect(await page.evaluate(() => typeof window.__byteqlE2E)).toBe('object');
+  expect(await hasE2EControl(page)).toBe(true);
 });
