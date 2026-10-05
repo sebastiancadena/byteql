@@ -62,7 +62,8 @@ export interface ParseProgress {
 }
 
 export interface OpenOptions {
-  signal: AbortSignal;
+  /** Optional: the web app cancels by terminating the worker and passes none. */
+  signal?: AbortSignal;
   onProgress?: (progress: ParseProgress) => void;
   /** Container id to open as, bypassing re-probing (pack-kit multi-container packs). */
   container?: string;

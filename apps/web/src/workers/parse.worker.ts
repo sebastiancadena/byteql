@@ -65,9 +65,6 @@ const deriveColumns = (pack: FormatPack, table: string, ipc: Uint8Array): readon
   }));
 };
 
-/** Cancellation terminates the worker, so a task's signal never fires; packs still require one. */
-const NEVER_ABORTED: AbortSignal = new AbortController().signal;
-
 const errorMessage = (error: unknown, packTitle: string): string =>
   error instanceof Error && error.message
     ? error.message
@@ -100,7 +97,6 @@ export function installParseWorker(
 
     try {
       const source = pack.open(blobByteSource(blob), {
-        signal: NEVER_ABORTED,
         onProgress: (progress) => scope.postMessage({ type: 'progress', taskId, ...progress }),
         ...(selected.container !== undefined ? { container: selected.container } : {}),
       });
