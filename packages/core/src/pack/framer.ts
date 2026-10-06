@@ -56,6 +56,5 @@ export interface DriverTuning {
 }
 
 export interface DriverOptions extends DriverTuning {
-  ordinalColumn: string;
   strictFields?: boolean;
 }

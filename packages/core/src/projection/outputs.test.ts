@@ -3,7 +3,6 @@ import { compileProjection } from './project.js';
 import { parseProjectionSpec } from './spec.js';
 import type { ParserRegistry } from './parsers.js';
 import type { StreamRegistries } from './streams.js';
-import { projectionSchemas } from '../pack/schemas.js';
 
 const registry: ParserRegistry = new Map([
   ['chunk_parser', () => ({ root: {} })],
@@ -161,9 +160,14 @@ describe('compiled outputs', () => {
     expect(outputs.find((o) => o.name === 'flows2')!.kind).toBe('flow');
   });
 
-  it.each([undefined, 'track'])('equals the legacy derived schemas (ordinal %s)', (ordinal) => {
-    const compiled = compile(yaml(), ordinal ? { issues: { ordinalColumn: ordinal } } : {});
-    const legacy = projectionSchemas(compiled, { ordinalColumn: ordinal ?? 'record' });
-    expect(compiled.outputs.map(({ name, columns }) => ({ name, columns }))).toEqual(legacy);
+  it('gives a flow table its key, declared columns, provenance, and nullable ranges', () => {
+    const flows = compile(yaml()).outputs.find((o) => o.name === 'flows')!;
+    expect(flows.columns).toEqual([
+      { name: 'flow_id', type: 'int64', nullable: false },
+      { name: 'status', type: 'utf8', nullable: false },
+      { name: '_src_start', type: 'uint64', nullable: false },
+      { name: '_src_end', type: 'uint64', nullable: false },
+      { name: '_src_ranges', type: 'src_ranges', nullable: true },
+    ]);
   });
 });

@@ -22,7 +22,7 @@ export type {
 } from './protocol.js';
 
 export { IssueCollector } from './issues.js';
-export type { IssueCollectorOptions, IssueReport } from './issues.js';
+export type { IssueReport } from './issues.js';
 
 export { memoryByteSource, readAll } from './byte-source.js';
 

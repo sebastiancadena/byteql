@@ -21,7 +21,7 @@ tables:
 describe('projectionSchemas', () => {
   it('derives order, types, and v0.4 nullability plus the errors table', () => {
     const compiled = compileProjection(parseProjectionSpec(yaml('0.4')));
-    expect(projectionSchemas(compiled, { ordinalColumn: 'record' })).toEqual([
+    expect(projectionSchemas(compiled)).toEqual([
       {
         name: 'parent',
         columns: [
@@ -104,7 +104,7 @@ streams:
       - { when: 'true', parser: msg_parser, table: msgs }
 `;
     const compiled = compileProjection(parseProjectionSpec(streamYaml), registry, streamRegistries);
-    const schemas = projectionSchemas(compiled, { ordinalColumn: 'record' });
+    const schemas = projectionSchemas(compiled);
 
     const msgs = schemas.find((table) => table.name === 'msgs')!;
     expect(msgs.columns.find((c) => c.name === 'stream_id')!.nullable).toBe(true);

@@ -50,7 +50,7 @@ describe('createProjectionSession', () => {
 
   it('returns empty tables when nothing was projected', () => {
     const finished = createProjectionSession(compiled).finish();
-    expect(finished.map((table) => table.name)).toEqual(['items', 'meta']);
+    expect(finished.map((table) => table.name)).toEqual(['items', 'meta', 'errors']);
     expect(finished.every((table) => table.rowCount === 0)).toBe(true);
   });
 
@@ -138,5 +138,69 @@ tables:
     expect(session.pendingRowCount()).toBe(0);
     session.project({ items: [{ value: 4 }] }, resolver);
     expect(session.pendingRowCount()).toBe(1);
+  });
+});
+
+describe('session errors output', () => {
+  const errorsCompiled = compileProjection(
+    parseProjectionSpec(`
+version: '0.4'
+format: f
+tables:
+  - name: rec
+    rows: $
+    key: rec_id
+    columns:
+      v: { expr: _.v, type: uint32 }
+`),
+    new Map(),
+    {},
+    { issues: { ordinalColumn: 'track' } },
+  );
+
+  it('finishes with a zero-row errors table carrying the full schema', () => {
+    const finished = createProjectionSession(errorsCompiled).finish();
+    expect(finished.map((t) => t.name)).toEqual(['rec', 'errors']);
+    const errors = finished.at(-1)!;
+    expect(errors.rowCount).toBe(0);
+    expect(errors.arrow.schema.fields.map((f) => f.name)).toEqual([
+      'error_id',
+      'stage',
+      'track',
+      'code',
+      'message',
+      'recoverable',
+      '_src_start',
+      '_src_end',
+    ]);
+  });
+
+  it('appends issues as errors rows with sequential error_id', () => {
+    const session = createProjectionSession(errorsCompiled);
+    session.appendIssue({
+      stage: 'framing',
+      track: 3,
+      code: 'A',
+      message: 'a',
+      recoverable: true,
+      sourceStart: 4,
+      sourceEnd: 9,
+    });
+    session.appendIssue({
+      stage: 'projecting',
+      track: null,
+      code: 'B',
+      message: 'b',
+      recoverable: false,
+      sourceStart: null,
+      sourceEnd: null,
+    });
+    const errors = session.finish().at(-1)!;
+    expect(errors.rowCount).toBe(2);
+    expect(errors.arrow.getChild('error_id')!.toArray()).toEqual(BigInt64Array.from([1n, 2n]));
+    expect(errors.arrow.getChild('track')!.get(0)).toBe(3);
+    expect(errors.arrow.getChild('track')!.get(1)).toBeNull();
+    expect(errors.arrow.getChild('_src_start')!.get(0)).toBe(4n);
+    expect(errors.arrow.getChild('recoverable')!.get(1)).toBe(false);
   });
 });

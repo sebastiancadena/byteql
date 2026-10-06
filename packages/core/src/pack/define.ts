@@ -56,11 +56,16 @@ export const definePack = <Hooks extends PackHooks<string, string, string, strin
       `PACK_FORMAT_MISMATCH: spec format ${JSON.stringify(spec.format)} != pack id ${JSON.stringify(manifest.id)}`,
     );
   }
-  const compiled = compileProjection(spec, new Map(Object.entries(hooks.parsers)), {
-    keyExtractors: new Map(Object.entries(hooks.keyExtractors)),
-    framers: new Map(Object.entries(hooks.streamFramers)),
-  });
-  const schemas = projectionSchemas(compiled, { ordinalColumn: manifest.errors.ordinal });
+  const compiled = compileProjection(
+    spec,
+    new Map(Object.entries(hooks.parsers)),
+    {
+      keyExtractors: new Map(Object.entries(hooks.keyExtractors)),
+      framers: new Map(Object.entries(hooks.streamFramers)),
+    },
+    { issues: { ordinalColumn: manifest.errors.ordinal } },
+  );
+  const schemas = projectionSchemas(compiled);
 
   const probes = manifest.containers.map((container) => {
     if ('hook' in container.probe) {
@@ -121,7 +126,6 @@ export const definePack = <Hooks extends PackHooks<string, string, string, strin
       if (!framer)
         throw new Error(`PACK_CONTAINER_UNKNOWN: ${manifest.id} has no container ${JSON.stringify(id)}`);
       inner = openFramedSource(compiled, framer, source, opts, {
-        ordinalColumn: manifest.errors.ordinal,
         ...(options.chunkBytes !== undefined ? { chunkBytes: options.chunkBytes } : {}),
         ...(options.flushRowThreshold !== undefined ? { flushRowThreshold: options.flushRowThreshold } : {}),
         ...(options.yieldInterval !== undefined ? { yieldInterval: options.yieldInterval } : {}),

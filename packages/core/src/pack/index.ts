@@ -1,5 +1,4 @@
 export { projectionSchemas } from './schemas.js';
-export type { ProjectionSchemaOptions } from './schemas.js';
 
 export { PackFatalError } from './framer.js';
 export type {

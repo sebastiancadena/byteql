@@ -1,15 +1,13 @@
 import type { Table } from 'apache-arrow';
 import { TableBatchBuilder } from '../arrow/batch.js';
 import type { IssueCollector } from '../issues.js';
+import type { ParseIssue } from '../protocol.js';
 import {
   createRuntimes,
   createStreamsRuntime,
   flushStreams,
   projectInto,
-  streamSegmentsOutputTypes,
-  tableOutputTypes,
   type CompiledProjection,
-  type EmitContext,
   type ProvenanceResolver,
   type RowSink,
   type StreamsRuntime,
@@ -32,6 +30,13 @@ export interface FinishedTable {
 
 export interface ProjectionSession {
   project(root: unknown, resolver: ProvenanceResolver, options?: ProjectCallOptions): void;
+  /** Appends one `errors` row; `error_id` is assigned in append order, starting at 1. */
+  appendIssue(issue: ParseIssue): void;
+  /**
+   * Flushes stream flow rows (and any engine issues that raises). Idempotent; `finish()` calls
+   * it, so call it directly only to collect the engine issues before `appendIssue`-ing them.
+   */
+  flush(): void;
   finish(): FinishedTable[];
   /**
    * Seals and returns every table's rows appended since the last `drain()` (or since session
@@ -61,23 +66,19 @@ export const createProjectionSession = (
   options: ProjectionSessionOptions = {},
 ): ProjectionSession => {
   const builders = new Map<string, TableBatchBuilder>(
-    compiled.tables.map((table) => [
-      table.name,
-      new TableBatchBuilder(table.name, tableOutputTypes(table), options),
-    ]),
-  );
-  // One extra builder per stream's segments_table — these have no CompiledProjectionTable of
-  // their own (see streamSegmentsOutputTypes), so they are not covered by the loop above.
-  for (const segmentsTable of compiled.segmentsTables) {
-    builders.set(
-      segmentsTable.name,
+    compiled.outputs.map((output) => [
+      output.name,
       new TableBatchBuilder(
-        segmentsTable.name,
-        streamSegmentsOutputTypes(segmentsTable.feedKeyColumn),
+        output.name,
+        Object.fromEntries(output.columns.map((column) => [column.name, column.type])),
         options,
       ),
-    );
-  }
+    ]),
+  );
+  const errorsBuilder = builders.get('errors')!;
+  const ordinalColumn = compiled.errorsOrdinalColumn;
+  let issueCount = 0;
+  let flushed = false;
   const runtimes = createRuntimes(compiled);
   const streams: StreamsRuntime = createStreamsRuntime(compiled);
   let pendingSinceDrain = 0;
@@ -103,6 +104,20 @@ export const createProjectionSession = (
         options.strictFields ?? false,
       );
     },
+    appendIssue(issue) {
+      issueCount += 1;
+      errorsBuilder.appendRow({
+        error_id: BigInt(issueCount),
+        stage: issue.stage,
+        [ordinalColumn]: issue.track,
+        code: issue.code,
+        message: issue.message,
+        recoverable: issue.recoverable,
+        _src_start: issue.sourceStart === null ? null : BigInt(issue.sourceStart),
+        _src_end: issue.sourceEnd === null ? null : BigInt(issue.sourceEnd),
+      });
+      pendingSinceDrain += 1;
+    },
     drain() {
       const drained: FinishedTable[] = [];
       for (const [name, builder] of builders) {
@@ -115,28 +130,26 @@ export const createProjectionSession = (
     pendingRowCount() {
       return pendingSinceDrain;
     },
-    finish() {
-      // Streams flush first: their flow (and, transitively, message) rows must land before the
-      // rest of `finish()` reads back row counts / seals builders.
-      const emitContext: EmitContext = {
+    flush() {
+      if (flushed) return;
+      flushed = true;
+      // Streams flush first: their flow (and, transitively, message) rows must land before
+      // `finish()` reads back row counts / seals builders.
+      flushStreams({
         compiled,
         runtimes,
         sink,
         streams,
         ...(options.issues ? { issues: options.issues } : {}),
         ...(options.strictFields ? { strictFields: options.strictFields } : {}),
-      };
-      flushStreams(emitContext);
-      return [
-        ...compiled.tables.map((table) => {
-          const builder = builders.get(table.name)!;
-          return { name: table.name, arrow: builder.finish(), rowCount: builder.rowCount };
-        }),
-        ...compiled.segmentsTables.map((segmentsTable) => {
-          const builder = builders.get(segmentsTable.name)!;
-          return { name: segmentsTable.name, arrow: builder.finish(), rowCount: builder.rowCount };
-        }),
-      ];
+      });
+    },
+    finish() {
+      this.flush();
+      return compiled.outputs.map((output) => {
+        const builder = builders.get(output.name)!;
+        return { name: output.name, arrow: builder.finish(), rowCount: builder.rowCount };
+      });
     },
   };
 };
