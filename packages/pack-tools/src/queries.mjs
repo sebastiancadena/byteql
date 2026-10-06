@@ -3,12 +3,13 @@
 // `from unnest(...)` or `from range(...)`, which this lint does not attempt to validate.
 const TABLE_REF = /\b(?:from|join)\s+("?)([A-Za-z_][A-Za-z0-9_]*)\1(?![A-Za-z0-9_])(?!\s*\()/giu;
 const CTE_NAME = /(?:\bwith\s+(?:recursive\s+)?|,\s*)([A-Za-z_][A-Za-z0-9_]*)\s+as\s*\(/giu;
-const ENGINE_TABLES = ['errors', '_files'];
+// Tables the app, not the pack, provides.
+const APP_TABLES = ['_files'];
 
 /**
  * Validates a parsed `queries.yaml` (`{ version, queries }`, no other top-level key — `format`
  * is stale from before the pack manifest carried the id and is rejected like any other unknown
- * key) against the pack's own spec tables plus the engine/app tables every pack may reference.
+ * key) against the pack's outputs plus the app-owned `_files`.
  * Returns the query list on success; throws `Error` with a `file: queries.N: message` prefix
  * on the first problem found.
  */
@@ -36,7 +37,7 @@ export const lintQueries = (queryPack, { tables, capabilities, file }) => {
     const ctes = new Set([...query.sql.matchAll(CTE_NAME)].map((m) => m[1].toLowerCase()));
     for (const match of query.sql.matchAll(TABLE_REF)) {
       const name = match[2].toLowerCase();
-      if (!tables.has(name) && !ctes.has(name) && !ENGINE_TABLES.includes(name)) {
+      if (!tables.has(name) && !ctes.has(name) && !APP_TABLES.includes(name)) {
         throw new Error(`${at}: unknown table "${match[2]}"`);
       }
     }
@@ -44,10 +45,6 @@ export const lintQueries = (queryPack, { tables, capabilities, file }) => {
   return queryPack.queries;
 };
 
-/** The lower-cased table names a compiled `ProjectionSpec` exposes to queries: declared tables
- * plus every stream's `segments_table` (a stream's `table` is itself a declared table already). */
-export const specTableNames = (spec) =>
-  new Set([
-    ...spec.tables.map((t) => t.name.toLowerCase()),
-    ...(spec.streams ?? []).map((s) => s.segments_table.toLowerCase()),
-  ]);
+/** The lower-cased names of every table a compiled projection emits (its `outputs`). */
+export const outputTableNames = (compiled) =>
+  new Set(compiled.outputs.map((output) => output.name.toLowerCase()));
