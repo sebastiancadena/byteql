@@ -43,8 +43,8 @@ export interface ProjectionSession {
    * creation), as one `FinishedTable` per table that has pending rows — tables with nothing new
    * are omitted. Unlike `finish()`, each `FinishedTable.rowCount` here is the row count of just
    * this drained batch, **not** the table's cumulative row count. `drain()` never flushes
-   * streams — `finish()` keeps sole responsibility for that — so stream flow/segment rows only
-   * ever appear via `finish()`.
+   * streams — `flush()` (called by `finish()`) is the only path that does — so stream
+   * flow/segment rows only ever appear after `flush()` or `finish()`.
    */
   drain(): FinishedTable[];
   /** Rows appended across all tables since the last `drain()` (or since session creation). */
@@ -89,8 +89,26 @@ export const createProjectionSession = (
     },
   };
 
+  const flush = (): void => {
+    if (flushed) return;
+    // A throwing flush is fatal to the session (the driver treats it as fatal), so `flushed`
+    // is set first and no retry is attempted.
+    flushed = true;
+    // Streams flush first: their flow (and, transitively, message) rows must land before
+    // `finish()` reads back row counts / seals builders.
+    flushStreams({
+      compiled,
+      runtimes,
+      sink,
+      streams,
+      ...(options.issues ? { issues: options.issues } : {}),
+      ...(options.strictFields ? { strictFields: options.strictFields } : {}),
+    });
+  };
+
   return {
     project(root, resolver, callOptions) {
+      if (flushed) throw new Error('PROJECTION_SESSION_FLUSHED: project() called after flush()');
       const subset = callOptions?.tables === undefined ? null : new Set(callOptions.tables);
       projectInto(
         compiled,
@@ -130,22 +148,9 @@ export const createProjectionSession = (
     pendingRowCount() {
       return pendingSinceDrain;
     },
-    flush() {
-      if (flushed) return;
-      flushed = true;
-      // Streams flush first: their flow (and, transitively, message) rows must land before
-      // `finish()` reads back row counts / seals builders.
-      flushStreams({
-        compiled,
-        runtimes,
-        sink,
-        streams,
-        ...(options.issues ? { issues: options.issues } : {}),
-        ...(options.strictFields ? { strictFields: options.strictFields } : {}),
-      });
-    },
+    flush,
     finish() {
-      this.flush();
+      flush();
       return compiled.outputs.map((output) => {
         const builder = builders.get(output.name)!;
         return { name: output.name, arrow: builder.finish(), rowCount: builder.rowCount };

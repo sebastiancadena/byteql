@@ -48,6 +48,17 @@ describe('createProjectionSession', () => {
     expect(finished.find((table) => table.name === 'items')!.rowCount).toBe(2);
   });
 
+  it('rejects project() after flush()', () => {
+    const session = createProjectionSession(compiled);
+    session.flush();
+    expect(() => session.project({ items: [{ value: 1 }] }, resolver)).toThrow(/PROJECTION_SESSION_FLUSHED/u);
+  });
+
+  it('lets finish() be destructured', () => {
+    const { finish } = createProjectionSession(compiled);
+    expect(finish().map((table) => table.name)).toEqual(['items', 'meta', 'errors']);
+  });
+
   it('returns empty tables when nothing was projected', () => {
     const finished = createProjectionSession(compiled).finish();
     expect(finished.map((table) => table.name)).toEqual(['items', 'meta', 'errors']);

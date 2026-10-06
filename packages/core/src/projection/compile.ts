@@ -159,6 +159,19 @@ const errorsColumns = (ordinalColumn: string): OutputColumn[] => [
 
 const reservedOutputNames = new Set(['_src_start', '_src_end', '_src_ranges', '_src_file']);
 
+// Tables the engine (`errors`) or the app (`_files`) owns; compared case-insensitively
+// because DuckDB table names are.
+const engineOwnedTableNames = new Set(['errors', '_files']);
+const assertNotEngineOwned = (name: string, path: string): void => {
+  if (engineOwnedTableNames.has(name.toLowerCase())) {
+    throw new ProjectionCompileError(
+      'PROJECTION_TABLE_RESERVED',
+      path,
+      `table name ${JSON.stringify(name)} is reserved for an engine- or app-owned table`,
+    );
+  }
+};
+
 const compileAtPath = (source: string, path: string): CompiledExpression => {
   try {
     return compileExpression(source);
@@ -306,6 +319,7 @@ export const compileProjection = (
   const tables = spec.tables.map((table, tableIndex): CompiledProjectionTable => {
     const tablePath = `tables.${tableIndex}`;
     const streamFed = streamFedNames.has(table.name);
+    assertNotEngineOwned(table.name, `${tablePath}.name`);
     if (reservedOutputNames.has(table.key)) {
       throw new ProjectionCompileError(
         'PROJECTION_SPEC_INVALID',
@@ -492,6 +506,7 @@ export const compileProjection = (
       );
     }
 
+    assertNotEngineOwned(entry.segments_table, `${path}.segments_table`);
     // Rule 7 (immediate half): segments_table must not collide with a declared table, stream,
     // or parser id. (The "shared segments_table implies shared feed table" half is checked
     // later, once every stream's feedTable is known.)
@@ -990,6 +1005,11 @@ export const compileProjection = (
     })),
     { name: 'errors', kind: 'errors' as const, columns: errorsColumns(ordinalColumn) },
   ]);
+
+  // Internal invariant: every output name is unique (reserved-name checks above guarantee it).
+  if (new Set(outputs.map((output) => output.name)).size !== outputs.length) {
+    throw new Error('compileProjection invariant: duplicate output table name');
+  }
 
   return Object.freeze({
     specVersion: spec.version,

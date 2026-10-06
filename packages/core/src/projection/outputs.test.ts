@@ -170,4 +170,16 @@ describe('compiled outputs', () => {
       { name: '_src_ranges', type: 'src_ranges', nullable: true },
     ]);
   });
+
+  it.each(['errors', 'ERRORS', '_files', '_Files'])('rejects the engine-owned spec table name %s', (name) => {
+    const source = yaml()
+      .replace('name: flows\n', `name: ${name}\n`)
+      .replace('table: flows', `table: ${name}`);
+    expect(() => compile(source)).toThrow(/PROJECTION_TABLE_RESERVED/u);
+  });
+
+  it.each(['errors', 'Errors', '_files'])('rejects the engine-owned segments_table name %s', (name) => {
+    const source = yaml().replace('segments_table: flow_segments', `segments_table: ${name}`);
+    expect(() => compile(source)).toThrow(/PROJECTION_TABLE_RESERVED/u);
+  });
 });

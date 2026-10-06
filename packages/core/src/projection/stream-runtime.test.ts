@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { ipcToTable } from '../arrow/build.js';
+import { memoryByteSource } from '../byte-source.js';
 import { IssueCollector } from '../issues.js';
+import { openFramedSource } from '../pack/driver.js';
 import { compileProjection } from './project.js';
 import { parseProjectionSpec } from './spec.js';
 import { createProjectionSession } from './session.js';
@@ -691,5 +694,42 @@ describe('stream lifecycle: neutral values on a spec with no lifecycle fields', 
       flows.arrow.getChild('generation')!.get(0),
       flows.arrow.getChild('conflict_count')!.get(0),
     ]).toEqual([false, null, 1, 0]);
+  });
+
+  it('flush() is idempotent: a gap issue reaches errors once and flow rows do not duplicate', async () => {
+    const compiled = compileProjection(parseProjectionSpec(yaml), registry, streamRegistries);
+    // Driver path: the stream's gap issue is raised by the driver's flush and lands in errors.
+    const roots = [
+      { records: [{ n: 0, body: { bytes: chunk(7, 0, [4, 97]), start: 0 } }] },
+      { records: [{ n: 1, body: { bytes: chunk(7, 4, [100]), start: 100 } }] },
+    ];
+    const rs = openFramedSource(
+      compiled,
+      async function* () {
+        for (const root of roots) yield { root, provenance: { start: 0, end: 4 } };
+      },
+      memoryByteSource(new Uint8Array(8)),
+      { signal: new AbortController().signal },
+      {},
+    );
+    const rows = new Map<string, ReturnType<typeof ipcToTable>>();
+    for (let b = await rs.nextBatch(); b; b = await rs.nextBatch()) rows.set(b.table, ipcToTable(b.ipc));
+    const codes = Array.from({ length: rows.get('errors')!.numRows }, (_, i) =>
+      rows.get('errors')!.getChild('code')!.get(i),
+    );
+    expect(codes).toEqual(['STREAM_GAP']);
+    expect(rows.get('flows')!.numRows).toBe(1);
+
+    // Session path: repeated flush() calls change nothing.
+    const issues = new IssueCollector();
+    const session = createProjectionSession(compiled, { issues });
+    session.project(roots[0]!, { resolve: () => ({ start: 0, end: 4 }) });
+    session.project(roots[1]!, { resolve: () => ({ start: 0, end: 4 }) });
+    session.flush();
+    session.flush();
+    expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_GAP']);
+    const finished = session.finish();
+    expect(table(finished, 'flows').rowCount).toBe(1);
+    expect(table(finished, 'flow_segments').rowCount).toBe(2);
   });
 });
