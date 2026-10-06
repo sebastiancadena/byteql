@@ -22,7 +22,7 @@ export type {
 } from './protocol.js';
 
 export { IssueCollector } from './issues.js';
-export type { IssueCollectorOptions, IssueReport } from './issues.js';
+export type { IssueReport } from './issues.js';
 
 export { memoryByteSource, readAll } from './byte-source.js';
 
@@ -65,11 +65,14 @@ export type {
 } from './projection/streams.js';
 export { compileProjection, ProjectionFieldError } from './projection/project.js';
 export type {
+  CompileOptions,
   CompiledChainLink,
   CompiledDissect,
   CompiledProjection,
   CompiledProjectionTable,
   CompiledStream,
+  OutputColumn,
+  OutputTable,
   ProjectedTable,
   ProvenanceResolver,
   SourceRange,

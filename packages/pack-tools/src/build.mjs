@@ -6,7 +6,7 @@ import { parse as parseYaml } from 'yaml';
 
 import { emitGenerated, hookNames } from './emit.mjs';
 import { compileKsy } from './ksy.mjs';
-import { lintQueries, specTableNames } from './queries.mjs';
+import { lintQueries, outputTableNames } from './queries.mjs';
 
 const placeholder = () => {
   throw new Error('placeholder hook');
@@ -22,13 +22,19 @@ export const buildPack = async (dir) => {
   const manifest = parsePackManifest(parseYaml(await readFile(join(dir, 'pack.yaml'), 'utf8')), 'pack.yaml');
   const specYaml = await readFile(join(dir, manifest.spec), 'utf8');
   let spec;
+  let compiled;
   try {
     spec = parseProjectionSpec(specYaml);
     const names = hookNames(manifest, spec);
-    compileProjection(spec, new Map(names.parsers.map((n) => [n, placeholder])), {
-      keyExtractors: new Map(names.keyExtractors.map((n) => [n, placeholder])),
-      framers: new Map(names.streamFramers.map((n) => [n, placeholder])),
-    });
+    compiled = compileProjection(
+      spec,
+      new Map(names.parsers.map((n) => [n, placeholder])),
+      {
+        keyExtractors: new Map(names.keyExtractors.map((n) => [n, placeholder])),
+        framers: new Map(names.streamFramers.map((n) => [n, placeholder])),
+      },
+      { issues: { ordinalColumn: manifest.errors.ordinal } },
+    );
   } catch (error) {
     throw new Error(`${manifest.spec}: ${error.message}`, { cause: error });
   }
@@ -36,7 +42,7 @@ export const buildPack = async (dir) => {
     throw new Error(`${manifest.spec}: format "${spec.format}" must equal pack id "${manifest.id}"`);
   }
   const queries = lintQueries(parseYaml(await readFile(join(dir, manifest.queries), 'utf8')), {
-    tables: specTableNames(spec),
+    tables: outputTableNames(compiled),
     capabilities: manifest.capabilities,
     file: manifest.queries,
   });

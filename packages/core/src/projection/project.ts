@@ -6,11 +6,14 @@ export {
   compileProjection,
   streamSegmentsOutputTypes,
   tableOutputTypes,
+  type CompileOptions,
   type CompiledChainLink,
   type CompiledDissect,
   type CompiledProjection,
   type CompiledProjectionTable,
   type CompiledStream,
+  type OutputColumn,
+  type OutputTable,
 } from './compile.js';
 export {
   ProjectionFieldError,

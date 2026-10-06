@@ -91,9 +91,86 @@ export interface CompiledProjection {
   readonly dissectByFrom: ReadonlyMap<string, readonly CompiledDissect[]>;
   readonly streams: readonly CompiledStream[];
   readonly segmentsTables: readonly { name: string; feedKeyColumn: string }[];
+  // Every table a session over this projection can emit, in emit order: spec tables, then
+  // segments tables, then `errors`.
+  readonly outputs: readonly OutputTable[];
+  readonly errorsOrdinalColumn: string;
 }
 
+export interface OutputColumn {
+  readonly name: string;
+  readonly type: ArrowTypeName;
+  readonly nullable: boolean;
+}
+
+export interface OutputTable {
+  readonly name: string;
+  readonly kind: 'projected' | 'flow' | 'segments' | 'errors';
+  readonly columns: readonly OutputColumn[];
+}
+
+export interface CompileOptions {
+  readonly issues?: { readonly ordinalColumn?: string };
+}
+
+const ENGINE_NULLABLE = new Set(['stream_id', '_src_ranges']);
+
+const projectedColumns = (table: CompiledProjectionTable): OutputColumn[] => {
+  const declared = new Map(table.columns.map((column) => [column.name, column.nullable]));
+  return Object.entries(tableOutputTypes(table)).map(([name, type]) => ({
+    name,
+    type,
+    nullable:
+      name === table.key || name === table.parentKey?.column || name === '_src_start' || name === '_src_end'
+        ? false
+        : ENGINE_NULLABLE.has(name) && !declared.has(name)
+          ? true
+          : (declared.get(name) ?? false),
+  }));
+};
+
+const segmentsColumns = (feedKeyColumn: string): OutputColumn[] =>
+  Object.entries(streamSegmentsOutputTypes(feedKeyColumn)).map(([name, type]) => ({
+    name,
+    type,
+    nullable: name === feedKeyColumn,
+  }));
+
+const RESERVED_ORDINAL_COLUMNS = new Set([
+  'error_id',
+  'stage',
+  'code',
+  'message',
+  'recoverable',
+  '_src_start',
+  '_src_end',
+]);
+
+const errorsColumns = (ordinalColumn: string): OutputColumn[] => [
+  { name: 'error_id', type: 'int64', nullable: false },
+  { name: 'stage', type: 'utf8', nullable: false },
+  { name: ordinalColumn, type: 'int32', nullable: true },
+  { name: 'code', type: 'utf8', nullable: false },
+  { name: 'message', type: 'utf8', nullable: false },
+  { name: 'recoverable', type: 'bool', nullable: false },
+  { name: '_src_start', type: 'uint64', nullable: true },
+  { name: '_src_end', type: 'uint64', nullable: true },
+];
+
 const reservedOutputNames = new Set(['_src_start', '_src_end', '_src_ranges', '_src_file']);
+
+// Tables the engine (`errors`) or the app (`_files`) owns; compared case-insensitively
+// because DuckDB table names are.
+const engineOwnedTableNames = new Set(['errors', '_files']);
+const assertNotEngineOwned = (name: string, path: string): void => {
+  if (engineOwnedTableNames.has(name.toLowerCase())) {
+    throw new ProjectionCompileError(
+      'PROJECTION_TABLE_RESERVED',
+      path,
+      `table name ${JSON.stringify(name)} is reserved for an engine- or app-owned table`,
+    );
+  }
+};
 
 const compileAtPath = (source: string, path: string): CompiledExpression => {
   try {
@@ -189,7 +266,14 @@ export const compileProjection = (
   spec: ProjectionSpec,
   registry: ParserRegistry = new Map(),
   streamRegistries: StreamRegistries = {},
+  options: CompileOptions = {},
 ): CompiledProjection => {
+  const ordinalColumn = options.issues?.ordinalColumn ?? 'record';
+  if (RESERVED_ORDINAL_COLUMNS.has(ordinalColumn)) {
+    throw new Error(
+      `ISSUE_ORDINAL_COLUMN_RESERVED: ordinalColumn ${JSON.stringify(ordinalColumn)} collides with a fixed issues-table column`,
+    );
+  }
   const specTableByName = new Map(spec.tables.map((table) => [table.name, table]));
   // Rule 8/10 pre-scan: a table named as a stream `messages[].table` is stream-fed. Tables are
   // compiled (and frozen) before streams exist, so this must be known up front — both to reject
@@ -235,6 +319,7 @@ export const compileProjection = (
   const tables = spec.tables.map((table, tableIndex): CompiledProjectionTable => {
     const tablePath = `tables.${tableIndex}`;
     const streamFed = streamFedNames.has(table.name);
+    assertNotEngineOwned(table.name, `${tablePath}.name`);
     if (reservedOutputNames.has(table.key)) {
       throw new ProjectionCompileError(
         'PROJECTION_SPEC_INVALID',
@@ -421,6 +506,7 @@ export const compileProjection = (
       );
     }
 
+    assertNotEngineOwned(entry.segments_table, `${path}.segments_table`);
     // Rule 7 (immediate half): segments_table must not collide with a declared table, stream,
     // or parser id. (The "shared segments_table implies shared feed table" half is checked
     // later, once every stream's feedTable is known.)
@@ -906,6 +992,25 @@ export const compileProjection = (
     [...dissectListsByFrom].map(([from, list]) => [from, Object.freeze(list)]),
   );
 
+  const outputs: readonly OutputTable[] = Object.freeze([
+    ...tables.map((table) => ({
+      name: table.name,
+      kind: flowTableNames.has(table.name) ? ('flow' as const) : ('projected' as const),
+      columns: projectedColumns(table),
+    })),
+    ...segmentsTables.map((segments) => ({
+      name: segments.name,
+      kind: 'segments' as const,
+      columns: segmentsColumns(segments.feedKeyColumn),
+    })),
+    { name: 'errors', kind: 'errors' as const, columns: errorsColumns(ordinalColumn) },
+  ]);
+
+  // Internal invariant: every output name is unique (reserved-name checks above guarantee it).
+  if (new Set(outputs.map((output) => output.name)).size !== outputs.length) {
+    throw new Error('compileProjection invariant: duplicate output table name');
+  }
+
   return Object.freeze({
     specVersion: spec.version,
     format: spec.format,
@@ -914,6 +1019,8 @@ export const compileProjection = (
     dissectByFrom,
     streams,
     segmentsTables,
+    outputs,
+    errorsOrdinalColumn: ordinalColumn,
   });
 };
 

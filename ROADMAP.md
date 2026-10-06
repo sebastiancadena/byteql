@@ -142,7 +142,7 @@ Product context: [PRD roadmap](PRD.md#12-roadmap).
   split along the seams the review found (see `AGENTS.md`), and the stream assembler now frees
   consumed bytes. The spec v0.6 pack boundary is designed in
   [the v0.6 design record](docs/superpowers/specs/2026-10-03-spec-v0.6-pack-boundary-design.md)
-  (slices S1-S10, with open questions; S1, S2, S7 done 2026-10-05); implementing it is the
+  (slices S1-S10, with open questions; S1, S2, S3, S7 done 2026-10-05); implementing it is the
   prerequisite for an EVTX pack that needs zero edits to `packages/core`. Still open from the review: hot-path allocation work
   in the engine; the `Workbench.svelte` split; e2e suite cleanup (split `panel-resize.spec.ts`,
   replace fixed sleeps with polls, and fix the failures on `main` at `panel-resize.spec.ts:861`

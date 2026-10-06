@@ -1,4 +1,4 @@
-import { projectedTableToArrow, tableToIpc } from '../arrow/build.js';
+import { tableToIpc } from '../arrow/build.js';
 import { IssueCollector } from '../issues.js';
 import {
   ProjectionFieldError,
@@ -85,8 +85,8 @@ export const openFramedSource = (
   // (see yield.ts) is only safe under one strictly sequential pump loop. Two openFramedSource
   // calls pumping concurrently in the same worker must not share one yield instance.
   const yieldToWorker = createYield();
-  const framerIssues = new IssueCollector({ ordinalColumn: options.ordinalColumn });
-  const engineIssues = new IssueCollector({ ordinalColumn: options.ordinalColumn });
+  const framerIssues = new IssueCollector();
+  const engineIssues = new IssueCollector();
   const session = createProjectionSession(compiled, {
     issues: engineIssues,
     flushRowThreshold: threshold,
@@ -129,17 +129,18 @@ export const openFramedSource = (
   let sinceYield = 0;
 
   const finishTail = (): void => {
-    const finished = session.finish();
-    const ordered = new IssueCollector({ ordinalColumn: options.ordinalColumn });
+    // Flush first: stream flush can raise engine issues that must land in `errors`.
+    session.flush();
+    const ordered = new IssueCollector();
     for (const issue of [...framerIssues.issues(), ...engineIssues.issues()]) {
       ordered.report({ ...issue, ordinal: issue.track });
+      session.appendIssue(issue);
     }
     finalIssues = ordered;
-    const errors = ordered.table();
-    pending = [
-      ...toBatches(finished.filter((table) => table.arrow.numRows > 0)),
-      ...toBatches([{ name: errors.name, arrow: projectedTableToArrow(errors), rowCount: errors.rowCount }]),
-    ];
+    // errors is always emitted (last in outputs order), even with zero rows.
+    pending = toBatches(
+      session.finish().filter((table) => table.name === 'errors' || table.arrow.numRows > 0),
+    );
     tailEmitted = true;
     flushBytes(true);
   };

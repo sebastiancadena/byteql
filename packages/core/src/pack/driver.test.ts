@@ -62,7 +62,7 @@ describe('openFramedSource', () => {
       seen = ctx.signal;
       yield { root: { v: 1 }, provenance: { start: 0, end: 1 } };
     };
-    const rs = openFramedSource(compiled, framer, source, {}, { ordinalColumn: 'record' });
+    const rs = openFramedSource(compiled, framer, source, {}, {});
     expect(await drain(rs)).toEqual([
       { table: 'rec', rows: 1 },
       { table: 'errors', rows: 0 },
@@ -76,7 +76,7 @@ describe('openFramedSource', () => {
       yield { root: { v: 1 }, provenance: { start: 0, end: 4 } };
       return { capabilities: { audio: { enabled: true, reason: null } } };
     };
-    const rs = openFramedSource(compiled, framer, source, opts(), { ordinalColumn: 'record' });
+    const rs = openFramedSource(compiled, framer, source, opts(), {});
     expect(await drain(rs)).toEqual([
       { table: 'rec', rows: 1 },
       { table: 'errors', rows: 0 },
@@ -86,7 +86,6 @@ describe('openFramedSource', () => {
 
   it('drains at the flush threshold', async () => {
     const rs = openFramedSource(compiled, records(5), source, opts(), {
-      ordinalColumn: 'record',
       flushRowThreshold: 2,
     });
     const batches = await drain(rs);
@@ -109,7 +108,7 @@ describe('openFramedSource', () => {
       };
       ctx.report({ code: 'TRUNCATED', message: 't', sourceStart: 9, sourceEnd: 10 });
     };
-    const rs = openFramedSource(compiled, framer, source, opts(), { ordinalColumn: 'record' });
+    const rs = openFramedSource(compiled, framer, source, opts(), {});
     await drain(rs);
     const issues = rs.finish().issues;
     expect(issues.map((i) => [i.stage, i.code, i.track])).toEqual([
@@ -123,7 +122,6 @@ describe('openFramedSource', () => {
       yield { root: { w: 1 }, provenance: { start: 0, end: 1 } };
     };
     const rs = openFramedSource(compiled, framer, source, opts(), {
-      ordinalColumn: 'record',
       strictFields: true,
     });
     await expect(drain(rs)).rejects.toBeInstanceOf(ProjectionFieldError);
@@ -132,20 +130,14 @@ describe('openFramedSource', () => {
 
   it('rejects with AbortError even when every batch is already queued', async () => {
     const controller = new AbortController();
-    const rs = openFramedSource(
-      compiled,
-      records(3),
-      source,
-      { signal: controller.signal },
-      { ordinalColumn: 'record' },
-    );
+    const rs = openFramedSource(compiled, records(3), source, { signal: controller.signal }, {});
     await rs.nextBatch();
     controller.abort();
     await expect(rs.nextBatch()).rejects.toMatchObject({ name: 'AbortError' });
   });
 
   it('finish() before draining throws RECORD_SOURCE_NOT_DRAINED', () => {
-    const rs = openFramedSource(compiled, records(1), source, opts(), { ordinalColumn: 'record' });
+    const rs = openFramedSource(compiled, records(1), source, opts(), {});
     expect(() => rs.finish()).toThrow(/RECORD_SOURCE_NOT_DRAINED/u);
   });
 
@@ -156,7 +148,7 @@ describe('openFramedSource', () => {
       records(10),
       source,
       { signal: new AbortController().signal, onProgress: (p) => seen.push(p.completed) },
-      { ordinalColumn: 'record', yieldInterval: 4 },
+      { yieldInterval: 4 },
     );
     await drain(rs);
     expect(seen).toEqual([4, 8, 10]);
@@ -171,7 +163,7 @@ describe('openFramedSource', () => {
       records(8),
       source,
       { signal: new AbortController().signal, onProgress: (p) => seen.push(p.completed) },
-      { ordinalColumn: 'record', yieldInterval: 4 },
+      { yieldInterval: 4 },
     );
     await drain(rs);
     expect(seen).toEqual([4, 8, 8]);
@@ -194,7 +186,7 @@ describe('openFramedSource', () => {
         }),
       };
     };
-    const rs = openFramedSource(compiled, framer, source, opts(), { ordinalColumn: 'record' });
+    const rs = openFramedSource(compiled, framer, source, opts(), {});
     await drain(rs);
     const issues = rs.finish().issues;
     expect(issues).toEqual([
@@ -215,7 +207,7 @@ describe('openFramedSource', () => {
       yield { root: { v: 1 }, provenance: { start: 0, end: 1 } }; // feeds both rec and other
       yield { root: { v: 2 }, provenance: { start: 1, end: 2 }, tables: ['rec'] }; // rec only
     };
-    const rs = openFramedSource(compiledTwoTables, framer, source, opts(), { ordinalColumn: 'record' });
+    const rs = openFramedSource(compiledTwoTables, framer, source, opts(), {});
     const batches = await drain(rs);
     const rowsOf = (table: string) =>
       batches.filter((b) => b.table === table).reduce((sum, b) => sum + b.rows, 0);
@@ -235,7 +227,7 @@ describe('openFramedSource', () => {
       framer,
       source,
       { signal: new AbortController().signal, onProgress: (p) => progressStages.push(p.stage) },
-      { ordinalColumn: 'record', yieldInterval: 1_000_000 }, // never reached via byte cadence
+      { yieldInterval: 1_000_000 }, // never reached via byte cadence
     );
     await drain(rs);
     expect(progressStages).toEqual(['probing']);
@@ -255,7 +247,7 @@ describe('openFramedSource', () => {
     const framer: Framer = async function* () {
       yield { root: explodingRoot, provenance: { start: 3, end: 9 } };
     };
-    const rs = openFramedSource(compiled, framer, source, opts(), { ordinalColumn: 'record' });
+    const rs = openFramedSource(compiled, framer, source, opts(), {});
     await drain(rs);
     const issues = rs.finish().issues;
     expect(issues).toEqual([
@@ -276,7 +268,7 @@ describe('openFramedSource', () => {
     const framer: Framer = async function* () {
       throw new Error('UNRECOGNIZED: nope');
     };
-    const rs = openFramedSource(compiled, framer, source, opts(), { ordinalColumn: 'record' });
+    const rs = openFramedSource(compiled, framer, source, opts(), {});
     await expect(rs.nextBatch()).rejects.toThrow(/UNRECOGNIZED/u);
     await expect(rs.nextBatch()).rejects.toThrow(/UNRECOGNIZED/u);
   });
@@ -284,7 +276,6 @@ describe('openFramedSource', () => {
   it('merged rows are identical for any threshold', async () => {
     const rows = async (threshold: number) => {
       const rs = openFramedSource(compiled, records(7), source, opts(), {
-        ordinalColumn: 'record',
         flushRowThreshold: threshold,
       });
       const vs: number[] = [];
@@ -294,5 +285,34 @@ describe('openFramedSource', () => {
       return vs;
     };
     expect(await rows(1)).toEqual(await rows(65_536));
+  });
+
+  it('names the errors ordinal column from the compile option', async () => {
+    const trackCompiled = compileProjection(
+      parseProjectionSpec(`
+version: '0.4'
+format: f
+tables:
+  - name: rec
+    rows: $
+    key: rec_id
+    columns:
+      v: { expr: _.v, type: uint32 }
+`),
+      new Map(),
+      {},
+      { issues: { ordinalColumn: 'track' } },
+    );
+    const framer: Framer = async function* (_source, ctx) {
+      ctx.report({ code: 'X', message: 'm', ordinal: 2 });
+      yield { root: { v: 1 }, provenance: { start: 0, end: 1 } };
+    };
+    const rs = openFramedSource(trackCompiled, framer, source, opts(), {});
+    let errorsIpc: Uint8Array | null = null;
+    for (let b = await rs.nextBatch(); b; b = await rs.nextBatch()) {
+      if (b.table === 'errors') errorsIpc = b.ipc;
+    }
+    const table = ipcToTable(errorsIpc!);
+    expect(table.getChild('track')!.get(0)).toBe(2);
   });
 });

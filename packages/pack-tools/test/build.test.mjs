@@ -118,15 +118,42 @@ const existingPacks = [
 
 for (const pack of existingPacks) {
   test(`lintQueries accepts ${pack.dir}'s existing queries.yaml`, async () => {
-    const { parseProjectionSpec } = await import('@byteql/core');
-    const { lintQueries, specTableNames } = await import('../src/queries.mjs');
+    const { compileProjection, parsePackManifest, parseProjectionSpec } = await import('@byteql/core');
+    const { hookNames } = await import('../src/emit.mjs');
+    const { lintQueries, outputTableNames } = await import('../src/queries.mjs');
     const { parse: parseYaml } = await import('yaml');
     const packDir = join(formatsDir, pack.dir);
+    const manifest = parsePackManifest(
+      parseYaml(await readFile(join(packDir, 'pack.yaml'), 'utf8')),
+      'pack.yaml',
+    );
     const spec = parseProjectionSpec(await readFile(join(packDir, pack.spec), 'utf8'));
+    const names = hookNames(manifest, spec);
+    const placeholder = () => null;
+    const compiled = compileProjection(
+      spec,
+      new Map(names.parsers.map((n) => [n, placeholder])),
+      {
+        keyExtractors: new Map(names.keyExtractors.map((n) => [n, placeholder])),
+        framers: new Map(names.streamFramers.map((n) => [n, placeholder])),
+      },
+      { issues: { ordinalColumn: manifest.errors.ordinal } },
+    );
+    const tables = outputTableNames(compiled);
+    assert.ok(tables.has('errors'));
+    assert.doesNotThrow(() =>
+      lintQueries(
+        {
+          version: '0.1',
+          queries: [{ id: 'x', title: 'x', kind: 'grid', sql: 'select * from errors join _files on true' }],
+        },
+        { tables, capabilities: [], file: 'q.yaml' },
+      ),
+    );
     const queryPack = parseYaml(await readFile(join(packDir, 'queries.yaml'), 'utf8'));
     assert.doesNotThrow(() =>
       lintQueries(queryPack, {
-        tables: specTableNames(spec),
+        tables,
         capabilities: pack.capabilities,
         file: `${pack.dir}/queries.yaml`,
       }),
