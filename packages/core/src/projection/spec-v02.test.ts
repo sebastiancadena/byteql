@@ -9,7 +9,7 @@ const registry: ParserRegistry = new Map([
 ]);
 
 const baseYaml = `
-version: '0.2'
+version: '0.4'
 format: envelope
 tables:
   - name: records
@@ -41,38 +41,10 @@ describe('spec v0.2', () => {
     });
   });
 
-  it('parses an unquoted numeric version: 0.2 the same as the quoted string', () => {
-    const yaml = baseYaml.replace("version: '0.2'", 'version: 0.2');
+  it('parses an unquoted numeric version: 0.4 the same as the quoted string', () => {
+    const yaml = baseYaml.replace("version: '0.4'", 'version: 0.4');
     const compiled = compileProjection(parseProjectionSpec(yaml), registry);
     expect(compiled.dissectByFrom.get('records')).toHaveLength(1);
-  });
-
-  it('rejects dissect under version 0.1', () => {
-    const yaml = baseYaml.replace("version: '0.2'", "version: '0.1'");
-    expect(() => parseProjectionSpec(yaml)).toThrowError(/PROJECTION_VERSION_REQUIRED/u);
-  });
-
-  it('rejects parent_key under version 0.1 even without a dissect block', () => {
-    // parent_key is a version-0.2 feature on its own, independent of whether a dissect block
-    // is present — this pins the second (parent_key-scanning) branch of parseProjectionSpec's
-    // version-0.1 guard, distinct from the dissect-block branch covered above.
-    const yaml = `
-version: '0.1'
-format: plain
-tables:
-  - name: records
-    rows: $.records[*]
-    key: record_id
-    columns:
-      kind: { expr: '_.kind', type: uint8 }
-  - name: inner
-    rows: $.items[*]
-    key: inner_id
-    parent_key: { table: records, column: record_id }
-    columns:
-      label: { expr: '_.label', type: utf8 }
-`;
-    expect(() => parseProjectionSpec(yaml)).toThrowError(/PROJECTION_VERSION_REQUIRED/u);
   });
 
   it('rejects a parent_key.table that names an undeclared table', () => {
@@ -164,9 +136,9 @@ tables:
     );
   });
 
-  it('keeps version 0.1 specs compiling without a registry', () => {
+  it('keeps specs without dissect compiling without a registry', () => {
     const yaml = `
-version: '0.1'
+version: '0.4'
 format: plain
 tables:
   - name: rows
@@ -191,10 +163,10 @@ tables:
   it('rejects a parent_key that points at a table outside the dissect ancestor chain (rule 7)', () => {
     // `bystander` is a valid, distinct root table whose key legitimately matches inner's
     // parent_key.column, so rules 2 and 3 both pass. It is never an ancestor of the `records`
-    // dissect entry that feeds `inner`, though, so only rule 7's fixpoint reachability check
+    // dissect entry that feeds `inner`, though, so only rule 7's must-reach reachability check
     // can catch this.
     const yaml = `
-version: '0.2'
+version: '0.4'
 format: envelope
 tables:
   - name: records

@@ -5,7 +5,7 @@ into relational tables you query with DuckDB SQL, entirely in the browser, with 
 back to its exact source bytes. Product requirements, differentiators, and the projection DSL live in
 `PRD.md` — read §9 (architecture) and Appendix A (DSL) first.
 
-## Status (2026-10-03)
+## Status (2026-10-05)
 
 Priority order lives in `ROADMAP.md` (adopted 2026-09-15); it supersedes any "next" ordering here
 or in `PRD.md` §12.
@@ -189,7 +189,8 @@ or in `PRD.md` §12.
   `StreamAssembler` now frees consumed bytes, and `max_buffer` caps _outstanding_ (unconsumed)
   bytes rather than the whole flow; a `max_buffer`-sized consumed-history window keeps conflict
   detection, and retransmits of bytes released beyond that window are reported as
-  `STREAM_BELOW_BASE` (dropped) instead of passing as silent duplicates. Flows over 1 MiB per
+  `STREAM_BELOW_BASE` (dropped) instead of passing as silent duplicates. (superseded 2026-10-05: released-history
+  retransmits now report `STREAM_HISTORY_RELEASED`.) Flows over 1 MiB per
   direction no longer go `truncated`; per-flow peak memory is about 2-3x `max_buffer`. Removed:
   the declared-schema ingest mode (`IngestOptions.schemas`; `discover` plus backfill is the only
   path), the parse worker's `cancel`/`cancelled` messages (terminate is the only cancellation),
@@ -206,6 +207,13 @@ or in `PRD.md` §12.
   on `b9d2fa8`); `panel-resize.spec.ts:1145` flaked once under full-suite load. Evidence: the
   refactor commits from `b9d2fa8` to this entry, the unchanged goldens, and
   `packages/core/src/projection/stream-runtime.test.ts`.
+- **Spec v0.6 slices S1, S2, S7: done 2026-10-05.** `OpenOptions.signal` is optional;
+  released-history retransmissions report `STREAM_HISTORY_RELEASED` (separate from
+  `STREAM_BELOW_BASE`); the minimum projection spec version is 0.4 (0.1-0.3 fail with
+  `PROJECTION_SPEC_INVALID`); parent-key reachability is must-reach (intersection over every
+  path) and hops from a stream onto its message tables. Goldens unchanged. Plan:
+  `docs/superpowers/plans/2026-10-05-spec-v0.6-s1-s2-s7.md`; design record:
+  `docs/superpowers/specs/2026-10-03-spec-v0.6-pack-boundary-design.md`.
 - **Next (per `ROADMAP.md`):** ship one forensic investigation workflow (ROADMAP #6). The unaided
   external Phase 0 test is still open supporting work.
 
@@ -216,7 +224,7 @@ architecture: `app → db → core ← formats`. `packages/core` is zero-DOM (No
 its vitest suites run without a browser).
 
 - `packages/core` — the engine
-  - `src/projection/spec.ts` — YAML spec schema (v0.1–v0.5: tables, state, `when`/`where`,
+  - `src/projection/spec.ts` — YAML spec schema (v0.4–v0.5: tables, state, `when`/`where`,
     `parent_key`, `dissect`, v0.4's `nullable`, and v0.5's stream lifecycle fields) + zod
     validation; errors at load, never per-row
   - `src/projection/expression.ts` — jsep-based sandboxed expression evaluator (closed builtin

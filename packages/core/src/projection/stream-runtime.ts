@@ -102,6 +102,8 @@ export interface StreamRuntimeEntry {
   // De-dupes the one-per-flow STREAM_BELOW_BASE issue (Task 6): true once that issue has been
   // reported for this entry.
   belowBaseReported: boolean;
+  // De-dupes the one-per-flow STREAM_HISTORY_RELEASED issue: true once reported for this entry.
+  releasedReported: boolean;
   // Count of ACCEPTED data (non-control) contributions only — segments.length also counts
   // control segments, so this is the exact-and-only source for a data-only segment count
   // (Task 8 switches the flow root's `segment_count` to this field).
@@ -170,6 +172,7 @@ const createFlowEntry = (
     generation,
     conflictCount: 0,
     belowBaseReported: false,
+    releasedReported: false,
     dataSegmentCount: 0,
     unwrapReference: null,
   };
@@ -386,7 +389,18 @@ export const contributeToStream = (
       stage: 'reassembling',
       code: 'STREAM_BELOW_BASE',
       recoverable: true,
-      message: `${flow}: bytes before the reassembled start, or older than the retained max_buffer history, arrived after framing began and were dropped`,
+      message: `${flow}: bytes before the reassembled start arrived after framing began and were dropped`,
+      sourceStart: srcStart,
+      sourceEnd: srcEnd,
+    });
+  }
+  if (outcome.trimmedReleased && !entry.releasedReported) {
+    entry.releasedReported = true;
+    emitContext.issues?.report({
+      stage: 'reassembling',
+      code: 'STREAM_HISTORY_RELEASED',
+      recoverable: true,
+      message: `${flow}: retransmitted bytes older than max_buffer (${stream.maxBuffer}) of history could not be compared and were dropped`,
       sourceStart: srcStart,
       sourceEnd: srcEnd,
     });

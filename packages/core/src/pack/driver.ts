@@ -22,8 +22,11 @@ const DEFAULT_YIELD_INTERVAL = 256;
 
 const mb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(2);
 
-const throwIfAborted = (signal: AbortSignal): void => {
-  if (!signal.aborted) return;
+/** Handed to framers when the caller passed no signal; framers keep a non-optional contract. */
+const NEVER_ABORTED: AbortSignal = new AbortController().signal;
+
+const throwIfAborted = (signal: AbortSignal | undefined): void => {
+  if (signal === undefined || !signal.aborted) return;
   signal.throwIfAborted();
   throw new DOMException('The operation was aborted.', 'AbortError');
 };
@@ -107,7 +110,7 @@ export const openFramedSource = (
     });
   };
   const ctx: FramerContext = {
-    signal: opts.signal,
+    signal: opts.signal ?? NEVER_ABORTED,
     chunkBytes: options.chunkBytes,
     report: (issue) => report(framerIssues, issue, 'framing'),
     progress: (progress) => opts.onProgress?.(progress),

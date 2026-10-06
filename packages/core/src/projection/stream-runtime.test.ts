@@ -3,16 +3,17 @@ import { IssueCollector } from '../issues.js';
 import { compileProjection } from './project.js';
 import { parseProjectionSpec } from './spec.js';
 import { createProjectionSession } from './session.js';
-import type { ParserRegistry } from './parsers.js';
+import type { ParserRegistry, RecordParser } from './parsers.js';
 import type { StreamRegistries } from './streams.js';
 
 // Same table/dissect/stream YAML as stream-compile.test.ts's validYaml, with flow columns:
 //   flows: peer utf8, segment_count uint32, byte_count uint32, message_count uint32,
 //          pending_bytes uint32, status utf8
 // records root shape: { records: [{ n, body: { bytes, start } }] }
-// chunk bytes layout: [port, seq, ...payload]
+// chunk bytes layout: [port, seq, ...payload]; a port with the high bit set (wideChunk) uses
+// [port | 0x80, seq0, seq1, seq2, ...payload] for a 24-bit seq (the flow key uses port & 0x7f).
 const yaml = `
-version: '0.3'
+version: '0.4'
 format: streamy
 tables:
   - name: records
@@ -63,17 +64,21 @@ streams:
       - { when: 'true', parser: msg_parser, table: msgs }
 `;
 
-const registry: ParserRegistry = new Map([
+const registry: ParserRegistry = new Map<string, RecordParser>([
   // chunk bytes: [port, seq, ...payload]; payload starts at byte 2 of the chunk buffer.
   [
     'chunk_parser',
-    (bytes: Uint8Array) => ({
-      root: {
-        port: bytes[0],
-        seq: bytes[1],
-        payload: { bytes: bytes.subarray(2), start: 2 },
-      },
-    }),
+    (bytes: Uint8Array) => {
+      const wide = (bytes[0]! & 0x80) !== 0;
+      const headerLength = wide ? 4 : 2;
+      return {
+        root: {
+          port: bytes[0] === undefined ? undefined : bytes[0] & 0x7f,
+          seq: wide ? bytes[1]! | (bytes[2]! << 8) | (bytes[3]! << 16) : bytes[1],
+          payload: { bytes: bytes.subarray(headerLength), start: headerLength },
+        },
+      };
+    },
   ],
   // message bytes: [len, ...ascii]; text decodes the ascii payload.
   [
@@ -110,6 +115,8 @@ const streamRegistries: StreamRegistries = {
 
 // One record per chunk; chunk n at file offset n*100 for readable provenance.
 const chunk = (port: number, seq: number, payload: number[]) => Uint8Array.from([port, seq, ...payload]);
+const wideChunk = (port: number, seq: number, payload: number[]) =>
+  Uint8Array.from([port | 0x80, seq & 0xff, (seq >> 8) & 0xff, (seq >> 16) & 0xff, ...payload]);
 const project = (chunks: Uint8Array[], issues = new IssueCollector()) => {
   const compiled = compileProjection(parseProjectionSpec(yaml), registry, streamRegistries);
   const session = createProjectionSession(compiled, { issues });
@@ -242,6 +249,61 @@ describe('stream runtime', () => {
     expect(compiled.tables.find((t) => t.name === 'chunks')!.streamFed).toBe(false);
     expect(compiled.tables.find((t) => t.name === 'msgs')!.streamFed).toBe(true);
   });
+
+  it('fills a message-table dissect row with the feed table key (D9 message-table hop)', () => {
+    const hopYaml = yaml.replace(
+      'dissect:',
+      `  - name: words
+    rows: $.word
+    key: word_id
+    parent_key: { table: chunks, column: chunk_id }
+    columns:
+      w: { expr: '_.w', type: utf8 }
+dissect:
+  - from: msgs
+    payload: _.body
+    chain:
+      - { when: 'true', parser: word_parser, table: words }`,
+    );
+    const hopRegistry: ParserRegistry = new Map([
+      ...registry,
+      [
+        'msg_parser',
+        (bytes: Uint8Array) => ({
+          root: {
+            message: {
+              text: new TextDecoder().decode(bytes.subarray(1)),
+              body: { bytes: bytes.subarray(1), start: 1 },
+            },
+          },
+        }),
+      ],
+      ['word_parser', () => ({ root: { word: { w: 'x' } } })],
+    ]);
+    const compiled = compileProjection(parseProjectionSpec(hopYaml), hopRegistry, streamRegistries);
+    const issues = new IssueCollector();
+    const session = createProjectionSession(compiled, { issues });
+    session.project(
+      {
+        records: [chunk(7, 10, [1, 65])].map((bytes, index) => ({
+          n: index,
+          body: { bytes, start: index * 100 },
+        })),
+      },
+      { resolve: () => ({ start: 0, end: 4 }) },
+    );
+    const finished = session.finish();
+    expect(issues.issues()).toHaveLength(0);
+    const chunks = table(finished, 'chunks');
+    expect(chunks.rowCount).toBe(1);
+    const chunkId = chunks.arrow.getChild('chunk_id')!.get(0);
+    expect(chunkId).not.toBeNull();
+    expect(table(finished, 'msgs').rowCount).toBe(1);
+    const words = table(finished, 'words');
+    expect(words.rowCount).toBe(1);
+    expect(words.arrow.getChild('w')!.get(0)).toBe('x');
+    expect(words.arrow.getChild('chunk_id')!.get(0)).toBe(chunkId);
+  });
 });
 
 describe('stream runtime robustness', () => {
@@ -287,6 +349,49 @@ describe('stream runtime robustness', () => {
     const flows = table(finished, 'flows');
     expect(flows.arrow.getChild('status')!.get(0)).toBe('ok');
     expect(table(finished, 'msgs').rowCount).toBe(1);
+  });
+
+  it('reports a retransmission of released history as STREAM_HISTORY_RELEASED, once per flow', () => {
+    // Compaction releases history only once at least 64 KiB is releasable, so consume 1100
+    // 64-byte messages (len 63 + 63 bytes; 70400 bytes) as they arrive, far more than
+    // max_buffer (64) of history. Offsets exceed one byte, hence wideChunk.
+    const message = [63, ...Array.from({ length: 63 }, (_, i) => 97 + (i % 26))];
+    const count = 1100;
+    const stream = Array.from({ length: count }, (_, i) => wideChunk(7, i * 64, message));
+    const { finished, issues } = project([
+      ...stream,
+      wideChunk(7, count * 64, [1, 65]), // the next add compacts lazily, releasing the oldest history
+      wideChunk(7, 0, message), // released history: dropped, reported once
+      wideChunk(7, 64, message), // released history again: no second issue
+    ]);
+    expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_HISTORY_RELEASED']);
+    expect(issues.issues()[0]!.message).toContain('older than max_buffer (64)');
+    expect(table(finished, 'flows').arrow.getChild('status')!.get(0)).toBe('ok');
+    expect(table(finished, 'msgs').rowCount).toBe(count + 1);
+  });
+
+  it('reports both STREAM_BELOW_BASE and STREAM_HISTORY_RELEASED once each for one flow', () => {
+    // Same fixture as above but the flow starts at seq 64, so a retransmission from seq 0
+    // is both below the base and (after lazy compaction) past the released history.
+    const message = [63, ...Array.from({ length: 63 }, (_, i) => 97 + (i % 26))];
+    const count = 1100;
+    const start = 64;
+    const stream = Array.from({ length: count }, (_, i) => wideChunk(7, start + i * 64, message));
+    const { issues } = project([
+      ...stream,
+      wideChunk(7, start + count * 64, [1, 65]), // the next add compacts lazily
+      wideChunk(
+        7,
+        7,
+        Array.from({ length: 128 }, () => 0xee),
+      ), // below base and released
+      wideChunk(
+        7,
+        0,
+        Array.from({ length: 128 }, () => 0xee),
+      ), // again: no second issue of either
+    ]);
+    expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_BELOW_BASE', 'STREAM_HISTORY_RELEASED']);
   });
 
   it('truncates at the buffer cap, keeping completed messages', () => {

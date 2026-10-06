@@ -56,6 +56,21 @@ const records = (n: number): Framer =>
   };
 
 describe('openFramedSource', () => {
+  it('runs without a caller signal and still hands the framer one', async () => {
+    let seen: AbortSignal | undefined;
+    const framer: Framer = async function* (_source, ctx) {
+      seen = ctx.signal;
+      yield { root: { v: 1 }, provenance: { start: 0, end: 1 } };
+    };
+    const rs = openFramedSource(compiled, framer, source, {}, { ordinalColumn: 'record' });
+    expect(await drain(rs)).toEqual([
+      { table: 'rec', rows: 1 },
+      { table: 'errors', rows: 0 },
+    ]);
+    expect(seen).toBeInstanceOf(AbortSignal);
+    expect(seen!.aborted).toBe(false);
+  });
+
   it('projects every record, always emits errors last, and finish() returns capabilities', async () => {
     const framer: Framer = async function* () {
       yield { root: { v: 1 }, provenance: { start: 0, end: 4 } };

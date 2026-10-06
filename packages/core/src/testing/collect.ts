@@ -51,7 +51,7 @@ export const collectSource = async (
   options: CollectOptions = {},
 ): Promise<ParseResult> => {
   const opts: OpenOptions = {
-    signal: options.signal ?? new AbortController().signal,
+    ...(options.signal ? { signal: options.signal } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
   };
   const open = options.open ?? ((source, o) => pack.open(source, o));

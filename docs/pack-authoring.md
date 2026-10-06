@@ -194,9 +194,10 @@ resolver `(table, match) => SourceRange` when different tables (or different row
 
 Spec v0.4 (`version: '0.4'` in the `.tables.yaml`) adds optional `nullable: true` on a column
 spec. In v0.4, spec columns are **non-null by default** — the opposite of v0.1–v0.3, where
-every spec column was implicitly nullable (specs declaring `0.1`–`0.3` still load unchanged and
-keep treating every spec column as nullable; behavior changes only when a pack's spec migrates
-to `0.4`).
+every spec column was implicitly nullable. The minimum supported version is `0.4`: specs
+declaring `0.1`–`0.3` fail to load with `PROJECTION_SPEC_INVALID` ("spec version 0.3 is no
+longer supported; the minimum is 0.4 (add `nullable: true` to columns that can be null)"). To
+upgrade, bump the version to `0.4` and add `nullable: true` to every column that can be null.
 
 Engine-owned columns follow fixed rules, independent of what the spec declares, matching what the
 engine actually writes:
@@ -246,11 +247,11 @@ streams:
   whose backlog exceeds it goes `truncated` (`STREAM_TRUNCATED`).
   The engine also keeps the last `max_buffer` bytes of already-framed history, so overlap
   conflict detection covers retransmissions within that window; older retransmissions are
-  dropped and reported as below-base (`STREAM_BELOW_BASE`).
+  dropped and reported once per flow as `STREAM_HISTORY_RELEASED`.
 - `offset_bits` — an integer in `[8, 48]`. Raw offsets are modular in 2^N; the engine unwraps
   them into an ever-increasing extended offset per generation (RFC 1982 serial arithmetic) before
   handing them to the assembler, so a sequence number crossing 2^N no longer looks like a huge
-  jump or a below-base segment. Omit it to keep raw, unwrapped offsets (v0.3/v0.4 behavior).
+  jump or a below-base segment. Omit it to keep raw, unwrapped offsets (v0.4 behavior).
 - `open` — an expression that marks a segment as starting a connection (TCP: the SYN flag). An
   open segment anchors the assembler's base to its own offset even with an empty payload, so a
   capture that misses the connection's first data segment reports a gap instead of silently
@@ -265,7 +266,7 @@ streams:
   `closed_by` to `'reset'`; reset takes precedence over a later close, and a later reset always
   overwrites a prior close.
 
-Specs at `0.3` and `0.4` stay valid and behave exactly as today; a stream declaration only needs
+Specs at `0.4` stay valid and behave exactly as today; a stream declaration only needs
 `version: '0.5'` when it uses one of these four fields.
 
 **Compile rules** (`ProjectionCompileError`, code `PROJECTION_STREAM_INVALID` unless noted):
@@ -287,7 +288,7 @@ or non-boolean result counts as false.
 (`'close' | 'reset' | null`), `generation` (1-based; 2 or more means the key was reused within the
 capture), and `conflict_count` (how many overlapping segments disagreed with already-stored
 bytes). A stream declaration that uses none of the v0.5 fields gets the neutral values `false`,
-`null`, `1`, and `0` on every row, so existing packs on `0.3`/`0.4` specs see no schema or data
+`null`, `1`, and `0` on every row, so existing packs on `0.4` specs see no schema or data
 change. The engine-synthesized `stream_segments` schema is unchanged; every contributing segment
 with an empty payload (SYN/FIN/RST with no data) is now also recorded there, with its provenance
 set to the feeding row's own source range, since it has no payload bytes of its own.

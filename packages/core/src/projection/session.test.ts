@@ -10,7 +10,7 @@ const columnValues = (arrow: Table, column: string): unknown[] =>
   Array.from({ length: arrow.numRows }, (_, index) => arrow.getChild(column)!.get(index));
 
 const spec = parseProjectionSpec(`
-version: '0.1'
+version: '0.4'
 format: fixture
 tables:
   - name: items
@@ -68,7 +68,7 @@ describe('createProjectionSession', () => {
     // index never changes across calls, so it must keep accumulating rather than
     // restarting from `init` on every call.
     const statefulSpec = parseProjectionSpec(`
-version: '0.1'
+version: '0.4'
 format: fixture
 tables:
   - name: items

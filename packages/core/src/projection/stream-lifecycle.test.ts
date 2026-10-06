@@ -3,7 +3,7 @@ import { IssueCollector } from '../issues.js';
 import { compileProjection } from './project.js';
 import { parseProjectionSpec } from './spec.js';
 import { createProjectionSession } from './session.js';
-import type { ParserRegistry } from './parsers.js';
+import type { ParserRegistry, RecordParser } from './parsers.js';
 import type { StreamRegistries } from './streams.js';
 
 export const lifecycleYaml = (streamExtra = '', maxBuffer = 64) => `
@@ -69,7 +69,7 @@ export const OPEN = 1;
 export const CLOSE = 2;
 export const RESET = 4;
 
-export const registry: ParserRegistry = new Map([
+export const registry: ParserRegistry = new Map<string, RecordParser>([
   [
     'chunk_parser',
     (bytes: Uint8Array) => ({
@@ -382,7 +382,7 @@ describe('stream overlap reconciliation (runtime)', () => {
     expect(rows(finished, 'flows').col('status')).toEqual(['ok']);
     expect(issues.issues().map((i) => i.code)).toEqual(['STREAM_BELOW_BASE']);
     expect(issues.issues()[0]!.message).toMatch(
-      /: bytes before the reassembled start, or older than the retained max_buffer history, arrived after framing began and were dropped$/,
+      /: bytes before the reassembled start arrived after framing began and were dropped$/,
     );
   });
 });

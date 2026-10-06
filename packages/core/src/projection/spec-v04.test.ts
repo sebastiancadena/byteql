@@ -20,12 +20,6 @@ describe('spec v0.4', () => {
     expect(parsed.tables[0]!.columns.a!.nullable).toBe(true);
   });
 
-  it('rejects nullable before v0.4', () => {
-    expect(() => parseProjectionSpec(spec('0.3', '{ expr: _.a, type: utf8, nullable: true }'))).toThrow(
-      /nullable requires version 0.4/u,
-    );
-  });
-
   it('v0.4 keeps streams and dissect available', () => {
     expect(parseProjectionSpec(spec('0.4', '{ expr: _.a, type: utf8 }')).version).toBe('0.4');
   });

@@ -42,6 +42,7 @@ describe('StreamAssembler', () => {
       status: 'added',
       conflicted: false,
       trimmedBelowBase: true,
+      trimmedReleased: false,
     });
     expect([...a.contiguousView()]).toEqual([2, 3]);
     expect(a.add(4, bytes(7, 7), 30).status).toBe('dropped');
@@ -54,6 +55,7 @@ describe('StreamAssembler', () => {
       status: 'duplicate',
       conflicted: false,
       trimmedBelowBase: false,
+      trimmedReleased: false,
     });
     expect(a.add(1, bytes(2), 60).status).toBe('duplicate'); // subsumed
     expect(a.byteCount).toBe(3);
@@ -61,6 +63,7 @@ describe('StreamAssembler', () => {
       status: 'added',
       conflicted: true,
       trimmedBelowBase: false,
+      trimmedReleased: false,
     });
     expect([...a.contiguousView()]).toEqual([1, 2, 3, 4]); // 3 kept, only the new tail stored
     expect(a.segmentsOverlapping(3, 4)).toEqual([{ start: 3, end: 4, srcStart: 71, srcEnd: 72 }]);
@@ -87,6 +90,7 @@ describe('StreamAssembler', () => {
       status: 'conflict',
       conflicted: true,
       trimmedBelowBase: false,
+      trimmedReleased: false,
     });
     expect([...a.contiguousView()]).toEqual([1, 2]);
   });
@@ -175,6 +179,7 @@ describe('StreamAssembler', () => {
       status: 'added',
       conflicted: true,
       trimmedBelowBase: false,
+      trimmedReleased: false,
     });
 
     // segmentsOverlapping returns ranges relative to the CURRENT base (8).
@@ -314,12 +319,14 @@ describe('StreamAssembler releases consumed bytes', () => {
       status: 'conflict',
       conflicted: true,
       trimmedBelowBase: false,
+      trimmedReleased: false,
     });
     // Bytes below the stream origin are still trimmed and reported as below-base.
     expect(a.add(400, chunk(0, 100), 0)).toEqual({
       status: 'dropped',
       conflicted: false,
       trimmedBelowBase: true,
+      trimmedReleased: false,
     });
     // Overlap with retained, unconsumed bytes still reconciles first-bytes-win.
     const tail = 500 + cursor - 4;
@@ -328,6 +335,7 @@ describe('StreamAssembler releases consumed bytes', () => {
       status: 'added',
       conflicted: true,
       trimmedBelowBase: false,
+      trimmedReleased: false,
     });
     expect(a.contiguousEnd).toBe(cursor + 2);
     expect(a.segmentsOverlapping(cursor, cursor + 2)).toEqual([
@@ -363,6 +371,19 @@ describe('StreamAssembler consumed-history window', () => {
     }
   });
 
+  it('reports a retransmission that is both below the base and released as both trims', () => {
+    const base = 1000;
+    const a = new StreamAssembler(window);
+    for (let i = 0; i < 100; i++) {
+      expect(a.add(i * size + base, fill(i, size), 0).status).toBe('added');
+      a.consume(size);
+    }
+    expect(a.add(0, fill(0xee, base + size), 0)).toMatchObject({
+      trimmedBelowBase: true,
+      trimmedReleased: true,
+    });
+  });
+
   it('still detects a conflicting retransmission of consumed bytes within the window', () => {
     const a = streamThrough();
     const inWindow = total - window + 8; // consumed, but within maxBuffer of the consumed point
@@ -370,28 +391,31 @@ describe('StreamAssembler consumed-history window', () => {
       status: 'conflict',
       conflicted: true,
       trimmedBelowBase: false,
+      trimmedReleased: false,
     });
     const owner = Math.floor(inWindow / size);
     expect(a.add(inWindow, fill(owner, 16), 0).status).toBe('duplicate');
   });
 
-  it('reports a retransmission of released bytes beyond the window as below-base, not a duplicate', () => {
+  it('reports a retransmission of released bytes beyond the window as released, not a duplicate', () => {
     const a = streamThrough();
     a.add(total, fill(1, 1), 0); // compaction is lazy: the next add releases old history
     expect(a.add(0, fill(0, 16), 0)).toEqual({
       status: 'dropped',
       conflicted: false,
-      trimmedBelowBase: true,
+      trimmedBelowBase: false,
+      trimmedReleased: true,
     });
     expect(a.add(size, fill(0xee, 16), 0)).toEqual({
       status: 'dropped',
       conflicted: false,
-      trimmedBelowBase: true,
+      trimmedBelowBase: false,
+      trimmedReleased: true,
     });
     // A retransmission straddling the release floor keeps its comparable part.
-    // (The floor trails the consumed point by at least the window; it starts above 0.)
     const straddle = a.add(0, fill(0xee, total - window + size), 0);
-    expect(straddle.trimmedBelowBase).toBe(true);
+    expect(straddle.trimmedReleased).toBe(true);
+    expect(straddle.trimmedBelowBase).toBe(false);
     expect(straddle.conflicted).toBe(true);
   });
 });

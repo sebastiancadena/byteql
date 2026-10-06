@@ -80,7 +80,7 @@ export interface TableSpec {
 }
 
 export interface ProjectionSpec {
-  version: '0.1' | '0.2' | '0.3' | '0.4' | '0.5';
+  version: '0.4' | '0.5';
   format: string;
   tables: TableSpec[];
   dissect?: DissectSpec[];
@@ -204,6 +204,7 @@ const projectionSpec = z.strictObject({
       z.literal('0.5'),
       z.literal(0.5),
     ])
+    // Returns every literal the union accepts; parseProjectionSpec rejects < 0.4 right after.
     .transform((value): '0.1' | '0.2' | '0.3' | '0.4' | '0.5' => {
       if (value === '0.5' || value === 0.5) return '0.5';
       if (value === '0.4' || value === 0.4) return '0.4';
@@ -226,12 +227,13 @@ const readOwnDataProperty = (value: unknown, key: string): unknown => {
   return descriptor && 'value' in descriptor ? descriptor.value : undefined;
 };
 
-const VERSION_ORDER = ['0.1', '0.2', '0.3', '0.4', '0.5'] as const;
+// Versions below 0.4 are rejected at load (see the floor check in parseProjectionSpec), so
+// only the supported versions are ordered here; the schema's version type is still the
+// full literal set the transform can return.
+const VERSION_ORDER: readonly string[] = ['0.4', '0.5'];
 
-export const specVersionAtLeast = (
-  version: ProjectionSpec['version'],
-  min: ProjectionSpec['version'],
-): boolean => VERSION_ORDER.indexOf(version) >= VERSION_ORDER.indexOf(min);
+export const specVersionAtLeast = (version: ProjectionSpec['version'], min: '0.4' | '0.5'): boolean =>
+  VERSION_ORDER.indexOf(version) >= VERSION_ORDER.indexOf(min);
 
 const validateRawMappingNames = (yamlValue: unknown): void => {
   const tables = readOwnDataProperty(yamlValue, 'tables');
@@ -280,6 +282,15 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
     throw new ProjectionCompileError('PROJECTION_SPEC_INVALID', path, issue.message);
   }
 
+  const version = parsed.data.version;
+  if (version !== '0.4' && version !== '0.5') {
+    throw new ProjectionCompileError(
+      'PROJECTION_SPEC_INVALID',
+      'version',
+      `spec version ${version} is no longer supported; the minimum is 0.4 (add \`nullable: true\` to columns that can be null)`,
+    );
+  }
+
   const names = new Set<string>();
   for (const [index, table] of parsed.data.tables.entries()) {
     if (names.has(table.name)) {
@@ -304,65 +315,13 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
     streamNames.add(stream.name);
   }
 
-  if (parsed.data.version === '0.1') {
-    if (parsed.data.dissect !== undefined) {
-      throw new ProjectionCompileError(
-        'PROJECTION_VERSION_REQUIRED',
-        'dissect',
-        'dissect requires version 0.2',
-      );
-    }
-    const indexed = parsed.data.tables.findIndex((table) => table.parent_key !== undefined);
-    if (indexed >= 0) {
-      throw new ProjectionCompileError(
-        'PROJECTION_VERSION_REQUIRED',
-        `tables.${indexed}.parent_key`,
-        'parent_key requires version 0.2',
-      );
-    }
-  }
-
-  if (parsed.data.version === '0.1' || parsed.data.version === '0.2') {
-    if (parsed.data.streams !== undefined) {
-      throw new ProjectionCompileError(
-        'PROJECTION_VERSION_REQUIRED',
-        'streams',
-        'streams requires version 0.3',
-      );
-    }
-    const entryIndex = (parsed.data.dissect ?? []).findIndex((entry) =>
-      entry.chain.some((link) => link.stream !== undefined),
-    );
-    if (entryIndex >= 0) {
-      throw new ProjectionCompileError(
-        'PROJECTION_VERSION_REQUIRED',
-        `dissect.${entryIndex}.chain`,
-        'stream chain links require version 0.3',
-      );
-    }
-  }
-
-  if (!specVersionAtLeast(parsed.data.version, '0.4')) {
-    for (const [tableIndex, table] of parsed.data.tables.entries()) {
-      for (const [name, column] of Object.entries(table.columns)) {
-        if (column.nullable !== undefined) {
-          throw new ProjectionCompileError(
-            'PROJECTION_VERSION_REQUIRED',
-            `tables.${tableIndex}.columns.${name}.nullable`,
-            'nullable requires version 0.4',
-          );
-        }
-      }
-    }
-  }
-
   for (const [index, stream] of (parsed.data.streams ?? []).entries()) {
     const v05 =
       stream.offset_bits !== undefined ||
       stream.open !== undefined ||
       stream.close !== undefined ||
       stream.reset !== undefined;
-    if (v05 && !specVersionAtLeast(parsed.data.version, '0.5')) {
+    if (v05 && !specVersionAtLeast(version, '0.5')) {
       throw new ProjectionCompileError(
         'PROJECTION_VERSION_REQUIRED',
         `streams.${index}`,
@@ -387,5 +346,5 @@ export const parseProjectionSpec = (yamlText: string): ProjectionSpec => {
     }
   }
 
-  return parsed.data as ProjectionSpec;
+  return { ...parsed.data, version } as ProjectionSpec;
 };

@@ -48,13 +48,6 @@ describe('projectionSchemas', () => {
     ]);
   });
 
-  it('treats every spec column as nullable before v0.4', () => {
-    const compiled = compileProjection(parseProjectionSpec(yaml('0.3')));
-    const parent = projectionSchemas(compiled, { ordinalColumn: 'record' })[0]!;
-    expect(parent.columns.find((c) => c.name === 'size')!.nullable).toBe(true);
-    expect(parent.columns.find((c) => c.name === 'parent_id')!.nullable).toBe(false);
-  });
-
   it('marks stream-engine columns nullable: message stream_id/_src_ranges, segments feed key', () => {
     const registry: ParserRegistry = new Map([
       ['chunk_parser', () => ({ root: {} })],

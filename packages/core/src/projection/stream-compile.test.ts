@@ -17,7 +17,7 @@ const streamRegistries: StreamRegistries = {
 // The valid v0.3 spec from Task 2 (records → chunks feed table added so parent-key
 // availability is exercised):
 const validYaml = `
-version: '0.3'
+version: '0.4'
 format: streamy
 tables:
   - name: records
@@ -339,6 +339,62 @@ streams:
     const offsetYaml = validYaml.replace('offset: _.seq', 'offset: _parent');
     expect(() => compile(offsetYaml)).not.toThrow();
   });
+
+  it('D9 hop: accepts a dissect rooted at a message table that parents onto the feed table', () => {
+    const yaml = validYaml.replace(
+      'dissect:',
+      `  - name: words
+    rows: $.word
+    key: word_id
+    parent_key: { table: chunks, column: chunk_id }
+    columns:
+      w: { expr: '_.w', type: utf8 }
+dissect:
+  - from: msgs
+    payload: _.body
+    chain:
+      - { when: 'true', parser: word_parser, table: words }`,
+    );
+    expect(() =>
+      compileProjection(
+        parseProjectionSpec(yaml),
+        new Map([...registry, ['word_parser', () => ({ root: {} })]]),
+        streamRegistries,
+      ),
+    ).not.toThrow();
+  });
+
+  it('D9 must-reach: a message table also fed off-stream keeps only keys on both paths', () => {
+    // msgs is fed by the stream (keys: records, chunks) and directly by records (keys:
+    // records): a dissect from msgs may parent onto records, not onto chunks.
+    const dualFed = (parent: string) =>
+      validYaml
+        .replace(
+          "- { when: 'true', parser: chunk_parser, table: chunks }",
+          "- { when: 'true', parser: chunk_parser, table: chunks }\n      - { when: 'false', parser: msg_parser, table: msgs }",
+        )
+        .replace(
+          'dissect:',
+          `  - name: words
+    rows: $.word
+    key: word_id
+    parent_key: { table: ${parent}, column: ${parent === 'chunks' ? 'chunk_id' : 'record_id'} }
+    columns:
+      w: { expr: '_.w', type: utf8 }
+dissect:
+  - from: msgs
+    payload: _.body
+    chain:
+      - { when: 'true', parser: word_parser, table: words }`,
+        );
+    const reg: ParserRegistry = new Map([...registry, ['word_parser', () => ({ root: {} })]]);
+    expect(() =>
+      compileProjection(parseProjectionSpec(dualFed('records')), reg, streamRegistries),
+    ).not.toThrow();
+    expect(() =>
+      compileProjection(parseProjectionSpec(dualFed('chunks')), reg, streamRegistries),
+    ).toThrowError(/"chunks" is not reachable from "msgs"/u);
+  });
 });
 
 describe('bounded provenance marking', () => {
@@ -406,7 +462,7 @@ streams:`,
 describe('v0.5 lifecycle compile', () => {
   const v05 = (extra: string) =>
     validYaml
-      .replace("version: '0.3'", "version: '0.5'")
+      .replace("version: '0.4'", "version: '0.5'")
       .replace('    offset: _.seq\n', `    offset: _.seq\n${extra}`);
 
   it('compiles open/close/reset/offset_bits onto the stream', () => {
@@ -424,7 +480,7 @@ describe('v0.5 lifecycle compile', () => {
     expect(stream.reset).not.toBeNull();
   });
 
-  it('leaves them null on a 0.3 stream', () => {
+  it('leaves them null on a 0.4 stream', () => {
     const stream = compileProjection(parseProjectionSpec(validYaml), registry, streamRegistries).streams[0]!;
     expect([stream.open, stream.close, stream.reset, stream.offsetBits]).toEqual([null, null, null, null]);
   });

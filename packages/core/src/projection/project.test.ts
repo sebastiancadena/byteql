@@ -5,7 +5,7 @@ import { projectTree } from './project-tree.test-helper.js';
 import type { ProjectionSpec } from './spec.js';
 
 const projection = (table: ProjectionSpec['tables'][number]): ProjectionSpec => ({
-  version: '0.1',
+  version: '0.4',
   format: 'test',
   tables: [table],
 });
