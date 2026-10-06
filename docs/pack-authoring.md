@@ -210,7 +210,7 @@ engine actually writes:
 - A stream segments table's feed-key column: **nullable**.
 - `errors.<ordinal>`: **nullable**; every other `errors` column: **non-null**.
 
-`pack.schemas()` (built by `projectionSchemas(compiled, { ordinalColumn })`) derives every
+`pack.schemas()` (built by `projectionSchemas(compiled)`, a view of the compiled `outputs`) derives every
 table's `TableSchema` — names, Arrow types, and nullability — directly from the compiled spec, in
 engine column order, following the rules above. Nothing hand-writes a schema anymore: the
 conformance kit's schema check compares every emitted Arrow batch against `pack.schemas()`

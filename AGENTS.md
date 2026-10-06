@@ -214,6 +214,14 @@ or in `PRD.md` §12.
   path) and hops from a stream onto its message tables. Goldens unchanged. Plan:
   `docs/superpowers/plans/2026-10-05-spec-v0.6-s1-s2-s7.md`; design record:
   `docs/superpowers/specs/2026-10-03-spec-v0.6-pack-boundary-design.md`.
+- **Spec v0.6 slice S3 (one output-table list): done 2026-10-05.** `compileProjection` returns
+  `outputs`, the single definition of every emitted table (projected, flow, segments, `errors`
+  last); the session, `projectionSchemas`, the driver, and the `byteql-pack build` query lint all
+  read it. `errors` is built by `TableBatchBuilder` through `ProjectionSession.appendIssue`, and
+  its ordinal column is a compile option (`{ issues: { ordinalColumn } }`, reserved names
+  rejected at compile). `ProjectionSession.flush()` is new and idempotent (the driver flushes,
+  appends issues framer-first then engine, then finishes). `IssueCollector` no longer builds a
+  table. Goldens unchanged. Plan: `docs/superpowers/plans/2026-10-05-spec-v0.6-s3-output-tables.md`.
 - **Next (per `ROADMAP.md`):** ship one forensic investigation workflow (ROADMAP #6). The unaided
   external Phase 0 test is still open supporting work.
 
@@ -233,7 +241,7 @@ its vitest suites run without a browser).
     trees use this)
   - `src/projection/walk.ts` — combined anchor matcher trie + single-pass document-order walker
   - `src/projection/compile.ts` — `compileProjection`: spec validation and the compile-time
-    rules (anchors, dissect chains, parent-key reachability), producing the compiled form
+    rules (anchors, dissect chains, parent-key reachability), producing the compiled form, including `outputs` (one `OutputTable` list for every emitted table, `errors` last)
   - `src/projection/emit.ts` — row emission (`emitRow` takes one row frame): synthetic keys,
     state registers, dissect chains (key propagation, composed provenance)
   - `src/projection/stream-runtime.ts` — the stream runtime (flows, generations, flush at
@@ -244,18 +252,18 @@ its vitest suites run without a browser).
   - `src/projection/project-tree.test-helper.ts` — test-only `projectTree` (no longer a public
     export)
   - `src/projection/session.ts` — `ProjectionSession`: multi-root projection with persistent
-    state/keys over per-table batch builders
+    state/keys over one batch builder per compiled output (including `errors`, via `appendIssue`; idempotent `flush()`)
   - `src/projection/parsers.ts` — `RecordParser`/`ParserRegistry` seam for dissect child parsers
   - `src/arrow/build.ts` — column vectors + IPC (`timestamp_us` writes exact int64 µs; `binary`)
   - `src/arrow/batch.ts` — `TableBatchBuilder`, the flush-threshold seam Phase 1 streaming
     attaches to
-  - `src/issues.ts` — `IssueCollector`: `ParseIssue[]` + the generic per-record `errors` table
+  - `src/issues.ts` — `IssueCollector`: `ParseIssue[]` collection (the `errors` table itself is built by the session)
   - `src/protocol.ts` — app/worker contracts and `FormatPack`/`RecordSource` (TypeScript mirror
     of the PRD's WIT `record-source`)
   - `src/pack/` — the pack kit runtime (zero-DOM), re-exported from `@byteql/core`:
     `manifest.ts` (`pack.yaml` zod schema), `define.ts` (`definePack`), `framer.ts` (the
     `Framer` contract, `PackFatalError`), `driver.ts` (`openFramedSource`, the generic
-    pull-driven `RecordSource`), `schemas.ts` (`projectionSchemas`, derives `TableSchema[]`
+    pull-driven `RecordSource`), `schemas.ts` (`projectionSchemas`, a view of the compiled `outputs`, derives `TableSchema[]`
     from a compiled spec instead of hand-written maps), `yield.ts` (the unclamped yield
     helper, created per `openFramedSource` call, not a module singleton)
   - `src/kaitai/index.ts` — the `@byteql/core/kaitai` subpath export: `kaitaiParse` and
