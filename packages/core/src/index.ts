@@ -65,11 +65,14 @@ export type {
 } from './projection/streams.js';
 export { compileProjection, ProjectionFieldError } from './projection/project.js';
 export type {
+  CompileOptions,
   CompiledChainLink,
   CompiledDissect,
   CompiledProjection,
   CompiledProjectionTable,
   CompiledStream,
+  OutputColumn,
+  OutputTable,
   ProjectedTable,
   ProvenanceResolver,
   SourceRange,
